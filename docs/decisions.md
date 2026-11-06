@@ -77,3 +77,46 @@ budgets, and a job's leftover processes being sent TERM when its main process en
 - **A `wait` for a job an earlier daemon ran is answered from the event log.** Job ids continue from
   the highest id in the log.
 - The event log carries the whole job in every event, so any one line describes its job.
+
+## Sharing take-slot.zsh's directory (Proposed, branch `take-slot-interop`)
+
+Each of these is **Proposed**: made for the transition while sysl's scripts move to marshal, for the
+user to settle.
+
+- **take-slot's waiters join marshal's queue by arrival time, under marshal's backfill rule.** A
+  waiter that fits is counted as holding its units (take-slot will admit it within its next look); a
+  blocked one is never overtaken by a job that could delay it; one behind a blocked head takes
+  nothing, as take-slot will not admit it either. Why: take-slot is strict first come first served,
+  and its waiters must not be starved by marshal's stream of jobs. Alternatives: strict FIFO against
+  every take-slot waiter (simpler, and wastes units marshal's backfill now uses); ignoring waiters
+  (starves take-slot's tests).
+- **take-slot's holders are expected to end at once.** Their files say nothing about when they
+  started or how long they run, so a head waiting on them has its start "now" and nothing backfills
+  behind it. Alternative: estimating from the file's age and take-slot's deadlines (more guessing,
+  for a few weeks of use).
+- **The reverse needs no change to take-slot: marshal posts one ticket**, named as take-slot names
+  one with the arrival of its first waiting development job and the daemon's pid, holding the units
+  and a second line `marshal` (take-slot never reads a ticket). take-slot admits only its earliest
+  ticket, so its later runs wait behind marshal's head; the ticket goes when the job starts or the
+  daemon stops. Why one ticket and not one per job: take-slot only ever looks at the earliest.
+- **Decisions and registrations are made under take-slot's mutex**, as take-slot makes its own, so
+  neither side can admit into units the other has just taken. The mutex holder is the daemon; its
+  stale rule (a dead holder's mutex is removed) is take-slot's.
+- **A job is registered by its own pid** (the process group leader `nice` becomes), so take-slot's
+  `kill -0` sees it live exactly while it runs, even if the daemon dies.
+- **A 3-second look while jobs wait**: take-slot's runs end without telling marshal. The daemon reads
+  nothing while its queue is empty. Alternative: watching the directory with kqueue (Avin has no file
+  watching).
+- **A daemon after one that died removes its lost jobs' registrations and landing lock, alive or
+  not**, and its tickets (only those marked `marshal`, so a take-slot run since given the same pid
+  keeps its own). Why: the next daemon no longer counts those jobs, and a pid reused by an unrelated
+  process would otherwise hold units for ever. Alternative: keeping a lost job's file while its pid
+  lives (it may still be running and using the machine). Review with the user.
+- **Where**: `take_slot` in `config.json`, `""` for none, and `MARSHAL_TAKE_SLOT_DIR` over it; with
+  neither, the sysl repository's `.git` when it exists. The brief named the key `takeSlot`; it is
+  `take_slot` to match every other key of the file. A named directory that does not exist stops the
+  daemon from starting, rather than silently sharing nothing.
+- **take-slot's units are clamped to marshal's budget** when they ask for more, as take-slot clamps
+  to its own; each side measures against its own budget, so the two must be set equal.
+- **`status --json`** is one object: the budget fields of the protocol's status reply, `take_slot`,
+  and `running` and `queued` arrays of jobs as the protocol writes them.

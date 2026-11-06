@@ -13,7 +13,7 @@ thread of its own, so a client blocked in `wait` holds up nobody else.
 | `wait` | `id` | `{"ok":true,"job":JOB}` once the job has ended; at once for a job already ended, including one an earlier daemon ran |
 | `kill` | `id` | `{"ok":true}`; the job's end is what `wait` answers |
 | `ls` | | `{"ok":true,"jobs":[JOB...]}`: running, then queued, then the last ten ended |
-| `status` | | `{"ok":true,"units":U,"unit_budget":B,"mem":M,"mem_budget":MB,"running":R,"queued":Q,"landing":id or null}` |
+| `status` | | `{"ok":true,"units":U,"unit_budget":B,"mem":M,"mem_budget":MB,"running":R,"queued":Q,"landing":id or null,"take_slot":{"dir":D,"units":TU,"waiting":TW,"landing":bool} or null}` |
 | `stop` | `force` (bool), `wait` (bool) | `{"ok":true}` once the daemon has removed its socket; refused while jobs run unless one of the two is true |
 
 Any request may be refused: `{"ok":false,"error":"<a sentence>"}`, for a request that is not JSON,
@@ -36,6 +36,6 @@ stopped at its deadline.
 ## The event log
 
 `events.jsonl` holds one line per step, the job object above preceded by `ts` (milliseconds since
-1970) and `event`: `submitted`, `started` (adds `pgid`), and one ending, `finished`, `timeout`,
+1970) and `event`: `submitted`, `started` (adds `pgid` and `pid`, the job's main process), and one ending, `finished`, `timeout`,
 `killed` or `lost`, which adds `run_ms` and `exit`, the status `wait` exits with. `lost` also adds
 `pgid` and `group_alive`, whether the job's processes were still running when the new daemon looked.

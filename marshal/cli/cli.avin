@@ -31,7 +31,7 @@ usage: marshal <command> [options]
   ls                                 the jobs queued, running and recently ended
   kill <id>                          stop a job and every process it started
   tail <id> [-f] [-n <lines>]        a job's log; -f follows it until the job ends
-  status                             how much of the budget is in use
+  status [--json]                    how much of the budget is in use; --json adds the jobs, for scripts
   stop [--wait | --force]            stop the daemon: refused while jobs run, unless it may wait for them or kill them
   daemon                             run the daemon in the foreground
 
@@ -52,7 +52,10 @@ main(args: Vector[string]) -> int
         "wait" -> withId(rest, id -> waitFor(id))
         "kill" -> withId(rest, id -> simple(Request.Kill(id), s"marshal: job $id is being stopped"))
         "ls" -> list()
-        "status" -> status()
+        "status" -> rest match
+            [] -> status()
+            ["--json"] -> statusJson()
+            _ -> complain("marshal: status takes --json or nothing")
         "tail" -> tail(rest)
         "stop" -> stop(rest)
         "daemon" -> daemon.run(home())
@@ -177,6 +180,24 @@ status() -> int
     ask(conn, Request.Status) match
         Ok(Using(u)) ->
             println(marshal.usageLine(u))
+            0
+        Ok(Failed(e)) -> complain(s"marshal: $e")
+        Ok(other) -> complain(s"marshal: unexpected reply $other")
+        Err(e) -> complain(e)
+
+// The budget in use and the running and queued jobs, as one JSON object on one line.
+statusJson() -> int
+    val conn = connect(true) match
+        Ok(c) -> c
+        Err(e) -> return complain(e)
+    val usage = ask(conn, Request.Status) match
+        Ok(Using(u)) -> u
+        Ok(Failed(e)) -> return complain(s"marshal: $e")
+        Ok(other) -> return complain(s"marshal: unexpected reply $other")
+        Err(e) -> return complain(e)
+    ask(conn, Request.List) match
+        Ok(Jobs(jobs)) ->
+            println(marshal.statusJson(usage, jobs).render())
             0
         Ok(Failed(e)) -> complain(s"marshal: $e")
         Ok(other) -> complain(s"marshal: unexpected reply $other")

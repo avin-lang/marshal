@@ -14,6 +14,7 @@ import avin.time
 import avin.time.millis
 import json
 import json.Json
+import marshal
 
 val outputs: Atomic[int] = Atomic(0)
 
@@ -21,21 +22,26 @@ data Ran(code: int, out: string)
 
 bin() -> string = process.env("MARSHAL_BIN").getOrElse(fail("MARSHAL_BIN names the marshal executable to test; scripts/test.sh sets it"))
 
-// A home of its own, with `config` as its config.json when it is not empty.
+// A home of its own, with `config` as its config.json when it is not empty, and a take-slot
+// directory of its own (`slots`), never the real one.
 newHome(config: string = "") -> string
     val home = fs.createTempDir("marshal-").ok().get()
+    fs.createDir(slots(home)).ok().get()
     if config.nonEmpty() then fs.writeText(home + "/config.json", config).ok().get()
     home
 
 // Runs the command line with `args` against `home`; its standard output and error, together.
 m(home: string, args: string*) -> Ran
     val out = s"$home/cli.${outputs.add(1)}.out"
-    val status = Command(bin(), args*).withEnv("MARSHAL_HOME", home).toFile(out).errorsToOutput().run().ok().get()
+    val status = Command(bin(), args*).withEnv("MARSHAL_HOME", home).withEnv("MARSHAL_TAKE_SLOT_DIR", slots(home)).toFile(out).errorsToOutput().run().ok().get()
     val code = status match
         ExitStatus.Exited(c) -> c
         ExitStatus.Signalled(s) -> 128 + s
         ExitStatus.TimedOut -> 124
     Ran(code, fs.readText(out).getOrElse(""))
+
+// The take-slot directory the home's daemon shares.
+slots(home: string) -> string = home + "/take-slot"
 
 // Stops the home's daemon, killing what it runs, and removes the home.
 cleanUp(home: string)
@@ -417,4 +423,280 @@ usage()
     assertEq(m(home, "wait", "x").code, 2)
     assertEq(m(home, "stop", "--now").code, 2)
     assertEq(m(home, "help").code, 0)
+    fs.removeDirAll(home)
+
+// ---- sharing take-slot.zsh's directory ----
+
+// The take-slot script the transition shares with; $TAKE_SLOT overrides.
+takeSlotScript() -> string = process.env("TAKE_SLOT").getOrElse("/Users/ed/dev/sysl-lang/sysl/.claude/scripts/take-slot.zsh")
+
+// A process that lives until it is killed, standing for a run that holds something.
+data Sleeper(pid: long)
+
+sleeper() -> Sleeper
+    val child = Command("sleep", "120").start().ok().get()
+    val pid = child.pid()
+    spawn(() -> child.waitFor())
+    Sleeper(pid)
+
+stopSleeper(s: Sleeper) = process.signal(s.pid, 9)
+
+// A pid no process has: above the system's largest.
+val NoProcess: long = 99999999
+
+// Waits up to `ms` for `cond`; answers whether it came true.
+within(ms: long, cond: () -> bool) -> bool
+    val until = time.monotonic() + millis(ms)
+    while time.monotonic() < until
+        if cond() then return true
+        threads.sleep(millis(100))
+    cond()
+
+// Starts take-slot.zsh on the home's take-slot directory, running `cmd` in the home, with `env` set
+// besides; answers its pid, and its exit code once it ends lands in `code`.
+data Run(pid: long, code: Atomic[int])
+
+takeSlot(home: string, env: Vector[(string, string)], cmd: string*) -> Run
+    var c = Command("zsh", ([takeSlotScript(), home] ++ cmd.toVector())*).withEnv("SLOT_LOCKDIR", slots(home)).toFile(s"$home/take-slot.${outputs.add(1)}.out").errorsToOutput()
+    for (k, v) in env do c = c.withEnv(k, v)
+    val child = c.start().ok().get()
+    val code = Atomic(-1)
+    spawn(() ->
+        val st = child.waitFor()
+        code.store(st match
+            Ok(ExitStatus.Exited(n)) -> n
+            Ok(ExitStatus.Signalled(s)) -> 128 + s
+            _ -> 125))
+    Run(child.pid(), code)
+
+started(home: string, id: long) -> bool = eventsOf(home, id).contains("started")
+ended(home: string, id: long) -> bool = eventsOf(home, id).exists(e -> e == "finished" || e == "killed")
+pidOf(home: string, id: long) -> long =
+    events(home).find(e -> e("id").asLong() == Some(id) && e("event").asString() == Some("started")).get()("pid").asLong().get()
+held(home: string) -> Vector[string] = fs.listDir(slots(home) + "/slot-units").getOrElse([])
+tickets(home: string) -> Vector[string] = fs.listDir(slots(home) + "/slot-waiting").getOrElse([])
+daemonPid(home: string) -> long = fs.readText(home + "/daemon.pid").ok().get().trim().toLong()
+
+@test("a take-slot holder's units leave marshal less room, until its process ends")
+foreignHolder()
+    val home = newHome("{\"units\": 8}")
+    val holder = sleeper()
+    fs.createDirAll(slots(home) + "/slot-units").ok().get()
+    fs.writeText(slots(home) + s"/slot-units/${holder.pid}", "4\n").ok().get()
+    val a = submitted(home, "--units", "4", "--", "sleep", "60")
+    assert(within(2000, () -> started(home, a)))
+    val b = submitted(home, "--units", "1", "--", "true")
+    threads.sleep(millis(4000))
+    assert(!started(home, b), "a job started over the shared budget")
+    val status = json.parse(m(home, "status", "--json").out).ok().get()
+    assertEq(status("take_slot")("units").asInt(), Some(4))
+    assertEq(status("units").asInt(), Some(4))
+    assertEq(status("queued").asVector().get().length(), 1)
+    stopSleeper(holder)
+    assert(within(8000, () -> ended(home, b)), "the job did not start once the holder ended")
+    cleanUp(home)
+
+@test("stale take-slot files — dead holders, waiters and locks — are removed and hold nothing back")
+staleIgnored()
+    val home = newHome("{\"units\": 4}")
+    val d = slots(home)
+    fs.createDirAll(d + "/slot-units").ok().get()
+    fs.createDirAll(d + "/slot-waiting").ok().get()
+    fs.writeText(d + s"/slot-units/$NoProcess", "4\n").ok().get()
+    fs.writeText(d + s"/slot-waiting/1.000000-$NoProcess", "4\n").ok().get()
+    for lock in ["build.lock", "land.lock", "slot-units.mutex"]
+        fs.createDir(d + "/" + lock).ok().get()
+        fs.writeText(d + s"/$lock/pid", NoProcess.toString()).ok().get()
+    assertEq(m(home, "run", "--units", "4", "--", "true").code, 0)
+    assertEq(m(home, "run", "--landing", "--", "true").code, 0)
+    assertEq(held(home), [])
+    assertEq(tickets(home), [])
+    for lock in ["build.lock", "land.lock", "slot-units.mutex"] do assert(!fs.exists(d + "/" + lock), lock)
+    cleanUp(home)
+
+@test("a live slot of the old script counts 4 units")
+oldScriptSlot()
+    val home = newHome("{\"units\": 4}")
+    val holder = sleeper()
+    fs.createDir(slots(home) + "/build3.lock").ok().get()
+    fs.writeText(slots(home) + "/build3.lock/pid", holder.pid.toString()).ok().get()
+    val id = submitted(home, "--units", "1", "--", "true")
+    threads.sleep(millis(1500))
+    assert(!started(home, id))
+    stopSleeper(holder)
+    assert(within(8000, () -> ended(home, id)))
+    assert(!fs.exists(slots(home) + "/build3.lock"))
+    cleanUp(home)
+
+@test("a running job is registered in take-slot's format and unregistered when it ends")
+registration()
+    val home = newHome()
+    val id = submitted(home, "--units", "3", "--", "sleep", "60")
+    assert(within(2000, () -> started(home, id)))
+    val pid = pidOf(home, id)
+    assertEq(held(home), [pid.toString()])
+    assertEq(fs.readText(slots(home) + s"/slot-units/$pid").ok().get().trim(), "3")
+    assert(!fs.exists(slots(home) + "/slot-units.mutex"), "the mutex was left held")
+    assertEq(m(home, "kill", id.toString()).code, 0)
+    m(home, "wait", id.toString())
+    assertEq(held(home), [])
+    // a landing job holds land.lock instead, and counts no units
+    val land = submitted(home, "--landing", "--", "sleep", "60")
+    assert(within(2000, () -> started(home, land)))
+    assertEq(fs.readText(slots(home) + "/land.lock/pid").ok().get().trim(), pidOf(home, land).toString())
+    assertEq(held(home), [])
+    m(home, "kill", land.toString())
+    m(home, "wait", land.toString())
+    assert(!fs.exists(slots(home) + "/land.lock"))
+    // a program that cannot start leaves neither behind
+    assertEq(m(home, "run", "--landing", "--", "/no/such/program").code, 127)
+    assertEq(m(home, "run", "--", "/no/such/program").code, 127)
+    assert(!fs.exists(slots(home) + "/land.lock"))
+    assertEq(held(home), [])
+    cleanUp(home)
+
+@test("take-slot.zsh waits while marshal's jobs fill the budget")
+takeSlotWaitsForMarshal()
+    val home = newHome()
+    val id = submitted(home, "--units", "12", "--", "sleep", "60")
+    assert(within(2000, () -> started(home, id)))
+    val run = takeSlot(home, [("SLOT_UNITS", "1")], "touch", "marker")
+    threads.sleep(millis(3000))
+    assert(!fs.exists(home + "/marker"), "take-slot ran over marshal's units")
+    assertEq(run.code.load(), -1)
+    assert(tickets(home).exists(t -> t.endsWith(s"-${run.pid}")), tickets(home).mkString(" "))
+    m(home, "kill", id.toString())
+    assert(within(15000, () -> run.code.load() >= 0), "take-slot never took its slot")
+    assertEq(run.code.load(), 0)
+    assert(fs.exists(home + "/marker"))
+    cleanUp(home)
+
+@test("marshal waits while take-slot.zsh's runs fill the budget")
+marshalWaitsForTakeSlot()
+    val home = newHome()
+    val run = takeSlot(home, [("SLOT_UNITS", "12")], "sleep", "60")
+    assert(within(5000, () -> held(home) == [run.pid.toString()]), held(home).mkString(" "))
+    val id = submitted(home, "--units", "1", "--", "true")
+    threads.sleep(millis(4000))
+    assert(!started(home, id), "marshal ran over take-slot's units")
+    process.signal(run.pid, 15)
+    assert(within(10000, () -> ended(home, id)), "marshal's job never started")
+    cleanUp(home)
+
+@test("marshal's blocked job holds take-slot's later runs back with a ticket of its arrival")
+marshalTicketHoldsTakeSlot()
+    val home = newHome()
+    val holder = sleeper()
+    fs.createDirAll(slots(home) + "/slot-units").ok().get()
+    fs.writeText(slots(home) + s"/slot-units/${holder.pid}", "10\n").ok().get()
+    val id = submitted(home, "--units", "4", "--", "sleep", "60")
+    val mine = s"-${daemonPid(home)}"
+    assert(within(2000, () -> tickets(home).exists(t -> t.endsWith(mine))), tickets(home).mkString(" "))
+    val ticket = tickets(home).find(t -> t.endsWith(mine)).get()
+    assertEq(fs.readText(slots(home) + "/slot-waiting/" + ticket).ok().get(), "4\nmarshal\n")
+    // one unit is free, but marshal's job arrived first
+    val run = takeSlot(home, [("SLOT_UNITS", "1")], "touch", "marker")
+    threads.sleep(millis(12000))
+    assert(!fs.exists(home + "/marker"), "take-slot overtook marshal's waiting job")
+    stopSleeper(holder)
+    assert(within(6000, () -> started(home, id)))
+    assert(!tickets(home).exists(t -> t.endsWith(mine)), "the ticket outlived the wait")
+    assert(within(15000, () -> run.code.load() == 0), "take-slot never followed")
+    assert(fs.exists(home + "/marker"))
+    cleanUp(home)
+
+@test("take-slot's earlier waiter holds marshal's later job back, even where the job would fit")
+takeSlotTicketHoldsMarshal()
+    val home = newHome()
+    val holder = sleeper()
+    val waiter = sleeper()
+    fs.createDirAll(slots(home) + "/slot-units").ok().get()
+    fs.createDirAll(slots(home) + "/slot-waiting").ok().get()
+    fs.writeText(slots(home) + s"/slot-units/${holder.pid}", "10\n").ok().get()
+    val ticket = slots(home) + "/slot-waiting/" + marshal.ticketName(time.now().epochMicros - 1000000, waiter.pid)
+    fs.writeText(ticket, "4\n").ok().get()
+    val id = submitted(home, "--units", "1", "--", "true")
+    threads.sleep(millis(4000))
+    assert(!started(home, id), "marshal overtook take-slot's waiter")
+    fs.remove(ticket).ok().get()
+    assert(within(6000, () -> ended(home, id)))
+    stopSleeper(holder)
+    stopSleeper(waiter)
+    cleanUp(home)
+
+@test("a take-slot landing keeps marshal's landing job waiting until it ends")
+takeSlotLandingFirst()
+    val home = newHome()
+    val run = takeSlot(home, [("LANDING", "1")], "sleep", "60")
+    assert(within(5000, () -> fs.readText(slots(home) + "/land.lock/pid").ok().exists(t -> t.trim() == run.pid.toString())))
+    val id = submitted(home, "--landing", "--", "true")
+    threads.sleep(millis(4000))
+    assert(!started(home, id), "two landings at once")
+    process.signal(run.pid, 15)
+    assert(within(10000, () -> ended(home, id)))
+    assert(!fs.exists(slots(home) + "/land.lock"))
+    cleanUp(home)
+
+@test("marshal's landing job keeps a take-slot landing waiting until it ends")
+marshalLandingFirst()
+    val home = newHome()
+    val id = submitted(home, "--landing", "--", "sleep", "60")
+    assert(within(2000, () -> started(home, id)))
+    val run = takeSlot(home, [("LANDING", "1")], "touch", "marker")
+    threads.sleep(millis(3000))
+    assert(!fs.exists(home + "/marker"), "two landings at once")
+    m(home, "kill", id.toString())
+    assert(within(25000, () -> run.code.load() == 0), "take-slot's landing never followed")
+    assert(fs.exists(home + "/marker"))
+    cleanUp(home)
+
+@test("a daemon that starts after one died removes what that one left in take-slot's directory, and only that")
+restartCleansRegistrations()
+    val home = newHome("{\"units\": 4}")
+    val other = sleeper()
+    fs.createDirAll(slots(home) + "/slot-units").ok().get()
+    fs.writeText(slots(home) + s"/slot-units/${other.pid}", "0\n").ok().get()
+    val id = submitted(home, "--units", "3", "--", "sleep", "60")
+    assert(within(2000, () -> started(home, id)))
+    val queued = submitted(home, "--units", "4", "--", "true")
+    val pid = pidOf(home, id)
+    val daemon = daemonPid(home)
+    assert(within(2000, () -> tickets(home).exists(t -> t.endsWith(s"-$daemon"))))
+    process.signal(daemon, 9).ok().get()
+    process.signal(-pgidOf(home, id), 9)
+    while process.signal(daemon, 0).isOk() || process.signal(pid, 0).isOk() do threads.sleep(millis(20))
+    assert(held(home).contains(pid.toString()))
+    assertEq(m(home, "status").code, 0)
+    assertEq(held(home), [other.pid.toString()])
+    assert(!tickets(home).exists(t -> t.endsWith(s"-$daemon")), tickets(home).mkString(" "))
+    assert(eventsOf(home, queued).contains("lost"))
+    stopSleeper(other)
+    cleanUp(home)
+
+@test("status --json is one object of the budget in use and the running and queued jobs")
+statusJson()
+    val home = newHome("{\"units\": 4, \"memory\": \"8G\"}")
+    val running = submitted(home, "--units", "3", "--mem", "2G", "--", "sleep", "60")
+    val queued = submitted(home, "--units", "2", "--", "sleep", "60")
+    assert(within(2000, () -> started(home, running)))
+    val r = m(home, "status", "--json")
+    assertEq(r.code, 0)
+    assertEq(r.out.lines().toVector().length(), 1)
+    val j = json.parse(r.out).ok().get()
+    assertEq(j("units").asInt(), Some(3))
+    assertEq(j("unit_budget").asInt(), Some(4))
+    assertEq(j("mem").asLong(), Some(long(2) * 1024 * 1024 * 1024))
+    assertEq(j("running").asVector().get().map(x -> x("id").asLong().get()), [running])
+    assertEq(j("queued").asVector().get().map(x -> x("id").asLong().get()), [queued])
+    assertEq(j("take_slot")("dir").asString(), Some(slots(home)))
+    assertEq(m(home, "status", "--yaml").code, 2)
+    cleanUp(home)
+
+@test("a take-slot directory that is not one keeps the daemon from starting")
+missingTakeSlotDir()
+    val home = newHome()
+    fs.removeDir(slots(home)).ok().get()
+    val r = m(home, "status")
+    assertEq(r.code, 2)
+    assert(r.out.contains("is not a directory"), r.out)
     fs.removeDirAll(home)

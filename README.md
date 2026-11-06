@@ -15,7 +15,7 @@ marshal wait <id>                          waits for the job; prints one result 
 marshal ls                                 jobs queued, running and recently ended
 marshal kill <id>                          stops the job's whole process tree (a queued job is cancelled)
 marshal tail <id> [-f] [-n <lines>]        the job's log; -f follows it until the job ends
-marshal status                             the budget in use
+marshal status [--json]                    the budget in use; --json: one JSON object with the running and queued jobs
 marshal stop [--wait | --force]            stops the daemon; refused while jobs run unless it may wait for them or kill them
 marshal daemon                             runs the daemon in the foreground
 ```
@@ -69,7 +69,38 @@ ends: nothing polls.
   what runs and cancels what waits.
 
 `config.json` in marshal's home changes the defaults: `units`, `memory` (`"56G"` or bytes),
-`reserve`, `deadline_floor` (`"5m"`), `learn_window` and `learn_min_runs`.
+`reserve`, `deadline_floor` (`"5m"`), `learn_window`, `learn_min_runs` and `take_slot` (below).
+
+`marshal status --json` prints `units`, `unit_budget`, `mem`, `mem_budget`, `landing` (the landing
+job's id or null), `take_slot` (`dir`, `units`, `waiting`, `landing`, or null when none is shared),
+and `running` and `queued`, arrays of jobs as [the protocol](docs/protocol.md) writes them.
+
+## Sharing the machine with take-slot.zsh
+
+While scripts move to marshal one at a time, sysl's agents keep running heavy commands through
+`take-slot.zsh`. The two share **one unit budget and one landing lane** through take-slot's own lock
+directory, with no change to take-slot:
+
+- **marshal counts take-slot's runs.** A live `slot-units/<pid>` file counts its units, and an old
+  `build*.lock` slot held by a live process counts 4. take-slot's waiters (`slot-waiting/<time>-<pid>`)
+  stand in marshal's queue by arrival time: a waiter that fits keeps its units, one that does not is
+  overtaken only by a job expected to end before it could start, and since take-slot's runs may end
+  at any moment, nothing overtakes a waiter or job that is waiting for them.
+- **take-slot counts marshal's jobs.** A development job is written as `slot-units/<its pid>`
+  holding its units, under take-slot's `slot-units.mutex`, and removed when it ends. While a job
+  waits, the daemon keeps a ticket of the first waiting job's arrival in `slot-waiting`, so
+  take-slot's later runs wait behind it as they wait behind each other.
+- **One landing lane.** A `--landing` job takes `land.lock` as take-slot does and holds it until it
+  ends; while a take-slot landing holds it, marshal's landing job waits.
+- Files whose process has died are removed by whichever side meets them; a daemon that starts after
+  one died removes what that one left (its ticket, and its lost jobs' files).
+
+take-slot does not tell marshal when its runs end, so while jobs wait the daemon reads the
+directory every 3 seconds; take-slot itself looks every 10 (20 for a landing). The directory is
+`take_slot` in `config.json` (`""` for none), overridden by `$MARSHAL_TAKE_SLOT_DIR` (empty for
+none); by default it is `/Users/ed/dev/sysl-lang/sysl/.git` when that exists. Keep take-slot's
+`SLOT_BUDGET` and marshal's `units` equal (12 both by default): each side measures the other's use
+against its own budget. `marshal status` shows what take-slot holds.
 
 The protocol between the command line and the daemon is in [docs/protocol.md](docs/protocol.md),
 and the choices behind the design in [docs/decisions.md](docs/decisions.md).
@@ -82,5 +113,6 @@ scripts/test.sh
 ```
 
 `scripts/test.sh` builds marshal and runs the unit tests (scheduler, deadlines, protocol, event log,
-settings) and the end-to-end tests, which start real daemons in temporary homes. `$AVIN` names the
-compiler.
+settings, take-slot's format) and the end-to-end tests, which start real daemons in temporary homes,
+each with a take-slot directory of its own, and run the real `take-slot.zsh` against it (`$TAKE_SLOT`
+names the script). `$AVIN` names the compiler.

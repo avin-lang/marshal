@@ -5,7 +5,7 @@ import json
 import json.Json
 import marshal
 import marshal.cli
-import marshal.{Budget, JobInfo, Learning, Outcome, Usage}
+import marshal.{Budget, JobInfo, Learning, Outcome, TakeSlotUse, Usage}
 
 info(id: long, kind: string = "test", landing: bool = false, state: string = "queued", outcome: Option[Outcome] = None, elapsed: long = 0) -> JobInfo =
     JobInfo(id, kind, 4, 0, landing, "/d", ["make", "it"], state, outcome, false, 5, elapsed, 60000, s"/h/jobs/$id.log", None)
@@ -141,8 +141,21 @@ listings()
 
 @test("the status line shows units, memory, counts and the landing lane")
 usageLines()
-    assertEq(marshal.usageLine(Usage(8, 12, 2 * G, 56 * G, 3, 2, Some(5))), "units 8/12, memory 2G/56G, 3 running, 2 queued, landing lane job 5")
-    assertEq(marshal.usageLine(Usage(0, 12, 0, long.MaxValue, 0, 0, None)), "units 0/12, memory 0, 0 running, 0 queued, landing lane free")
+    assertEq(marshal.usageLine(Usage(8, 12, 2 * G, 56 * G, 3, 2, Some(5), None)), "units 8/12, memory 2G/56G, 3 running, 2 queued, landing lane job 5")
+    assertEq(marshal.usageLine(Usage(0, 12, 0, long.MaxValue, 0, 0, None, None)), "units 0/12, memory 0, 0 running, 0 queued, landing lane free")
+
+@test("the status line adds what a shared take-slot directory holds")
+usageLinesTakeSlot()
+    assertEq(marshal.usageLine(Usage(1, 12, 0, long.MaxValue, 1, 0, None, Some(TakeSlotUse("/d", 4, 2, false)))), "units 1/12, memory 0, 1 running, 0 queued, landing lane free; take-slot holds 4 units, 2 waiting")
+    assertEq(marshal.usageLine(Usage(0, 12, 0, long.MaxValue, 0, 0, None, Some(TakeSlotUse("/d", 0, 0, true)))), "units 0/12, memory 0, 0 running, 0 queued, landing lane free; take-slot holds 0 units, 0 waiting, the landing lane")
+
+@test("take_slot names take-slot's directory, \"\" none, and nothing leaves it to the default")
+configTakeSlot()
+    assertEq(marshal.readConfig("", 64 * G).ok().get().takeSlot, None)
+    assertEq(marshal.readConfig("{\"take_slot\": \"/x/.git\"}", 64 * G).ok().get().takeSlot, Some("/x/.git"))
+    assertEq(marshal.readConfig("{\"take_slot\": \"\"}", 64 * G).ok().get().takeSlot, Some(""))
+    for bad in ["{\"take_slot\": 3}", "{\"take_slot\": null}", "{\"take_slot\": false}"]
+        assert(marshal.readConfig(bad, 64 * G).err().exists(e -> e.contains("`take_slot` is a directory")), bad)
 
 @test("the command line's options are read, with kind and units defaulted")
 submissions()

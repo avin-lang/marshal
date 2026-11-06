@@ -1,0 +1,40 @@
+module tests
+
+// The take-slot format: which directory is shared, and the waiters' ticket names.
+import marshal
+
+@test("the environment wins over config.json, empty text in either shares nothing, and neither leaves the default")
+takeSlotDirs()
+    assertEq(marshal.takeSlotDir(None, None, true), Some(marshal.DefaultTakeSlotDir))
+    assertEq(marshal.takeSlotDir(None, None, false), None)
+    assertEq(marshal.takeSlotDir(None, Some("/c"), true), Some("/c"))
+    assertEq(marshal.takeSlotDir(None, Some("/c"), false), Some("/c"))
+    assertEq(marshal.takeSlotDir(Some("/e"), Some("/c"), true), Some("/e"))
+    assertEq(marshal.takeSlotDir(Some(""), Some("/c"), true), None)
+    assertEq(marshal.takeSlotDir(None, Some(""), true), None)
+    assertEq(marshal.takeSlotDir(Some("/e"), Some(""), false), Some("/e"))
+
+@test("a ticket is named as take-slot names one: seconds, six digits of fraction, the pid")
+ticketNames()
+    assertEq(marshal.ticketName(1762400000123456, 4242), "1762400000.123456-4242")
+    assertEq(marshal.ticketName(1762400000000001, 7), "1762400000.000001-7")
+    assertEq(marshal.ticketName(5, 9), "0.000005-9")
+    assertEq(marshal.ticketName(0, 1), "0.000000-1")
+
+@test("a ticket name reads back as its arrival and pid")
+ticketRoundTrip()
+    for (t, pid) in [(long(1762400000123456), long(4242)), (long(0), long(1)), (long(999999), long(99999))]
+        assertEq(marshal.parseTicket(marshal.ticketName(t, pid)), Some((t, pid)))
+
+@test("a fraction of other than six digits and a whole number of seconds are read as written")
+ticketShapes()
+    assertEq(marshal.parseTicket("17.5-3"), Some((long(17500000), long(3))))
+    assertEq(marshal.parseTicket("17.1234567-3"), Some((long(17123456), long(3))))
+    assertEq(marshal.parseTicket("17-3"), Some((long(17000000), long(3))))
+    // take-slot's ordering is by name, and so is the arrival a name gives
+    assert(marshal.parseTicket("1762400000.100000-9").get().0 < marshal.parseTicket("1762400000.900000-1").get().0)
+
+@test("a name take-slot never writes is not a ticket")
+notTickets()
+    for name in ["", "-3", "17.5-", "17.5-x", "x-1", "17.-3", "17.12a-3", ".5-3", "17.5", "17.5--3", "1 7.5-3", "１７.5-3"]
+        assert(marshal.parseTicket(name).isEmpty(), name)

@@ -228,6 +228,18 @@ private decodeTakeSlot(j: Json) -> Result[Option[TakeSlotUse], string]
         field(j, "waiting", v -> v.asInt(), "an int")?,
         field(j, "landing", v -> v.asBool(), "a bool")?)))
 
+// What `status --json` prints: the budget in use, what take-slot holds (null when no directory is
+// shared), and the running and queued jobs, each as the protocol gives a job.
+statusJson(u: Usage, jobs: Vector[JobInfo]) -> Json = Json.obj(
+    ("units", Json.num(u.units)),
+    ("unit_budget", Json.num(u.unitBudget)),
+    ("mem", Json.num(u.memory)),
+    ("mem_budget", Json.num(u.memoryBudget)),
+    ("landing", u.landing.map(id -> Json.num(id)).getOrElse(Json.Null)),
+    ("take_slot", u.takeSlot.map(encodeTakeSlot).getOrElse(Json.Null)),
+    ("running", Json.Arr(jobs.filter(j -> j.state == "running").map(encodeJob))),
+    ("queued", Json.Arr(jobs.filter(j -> j.state == "queued").map(encodeJob))))
+
 encodeReply(r: Reply) -> Json = r match
     Submitted(id, log) -> Json.obj(("ok", Json.Bool(true)), ("id", Json.num(id)), ("log", Json.str(log)))
     Ended(job) -> Json.obj(("ok", Json.Bool(true)), ("job", encodeJob(job)))
