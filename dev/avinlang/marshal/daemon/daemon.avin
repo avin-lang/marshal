@@ -1,4 +1,4 @@
-module marshal.daemon
+module dev.avinlang.marshal.daemon
 
 // The daemon: it listens on `<home>/sock`, keeps the queue, starts jobs when the scheduler says they
 // fit, ends them at their deadlines, and records every step in `<home>/events.jsonl`.
@@ -24,11 +24,11 @@ import avin.time
 import avin.time.{millis, seconds}
 import json
 import json.Json
-import marshal
-import marshal.{Config, JobInfo, JobSpec, Outcome, Outside, Reply, Request, Started, TakeSlot, TakeSlotUse, Usage, Waiting}
-import marshal.{Submit, Wait, Kill, Status, Stop}
-import marshal.{Submitted, Ended, Jobs, Using, Done, Failed}
-import marshal.{Cancelled, TimedOut}
+import dev.avinlang.marshal
+import dev.avinlang.marshal.{Config,JobInfo, JobSpec, Outcome, Outside, Reply, Request, Started, TakeSlot, TakeSlotUse, Usage, Waiting}
+import dev.avinlang.marshal.{Submit, Wait, Kill, Status, Stop}
+import dev.avinlang.marshal.{Submitted, Ended, Jobs, Using, Done, Failed}
+import dev.avinlang.marshal.{Cancelled, TimedOut}
 
 data Message
     FromClient(request: Request, reply: Channel[Reply])

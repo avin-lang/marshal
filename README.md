@@ -20,6 +20,10 @@ marshal stop [--wait | --force]            stops the daemon; refused while jobs 
 marshal daemon                             runs the daemon in the foreground
 ```
 
+`marshal --help` (or `-h`, or `help`) prints these lines and the options below; `marshal <command> --help`
+describes one command, and both exit 0. A bare `marshal` prints the same usage to standard error and
+exits 2. After `--` nothing is an option, so `marshal run -- prog --help` runs `prog`.
+
 Options of `submit` and `run`:
 
 | Option | Meaning |

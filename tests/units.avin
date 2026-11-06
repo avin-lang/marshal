@@ -1,7 +1,7 @@
 module tests
 
 // Sizes, deadlines and processor times as they are written on a command line or printed by `ps`.
-import marshal
+import dev.avinlang.marshal
 
 val G: long = 1024 * 1024 * 1024
 

@@ -1,4 +1,4 @@
-module marshal
+module dev.avinlang.marshal
 
 // What the command line prints: a job's one-line result, a listing, the budget's use.
 

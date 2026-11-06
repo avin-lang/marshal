@@ -1,4 +1,4 @@
-module marshal
+module dev.avinlang.marshal
 
 // What the command line and the daemon say to each other: one JSON object per line each way, a
 // request and then its reply. docs/protocol.md describes the text.
@@ -35,12 +35,12 @@ data Outcome
 // The exit status `wait` and `run` end with: the job's own code, 128 + the signal that ended it,
 // 124 for a timeout, 143 for a job cancelled before it started (as a TERM would) and 125 for a job
 // lost with a daemon that died.
-exitCode(o: Outcome) -> int = o match
-    Exited(code) -> code
-    Signalled(sig) -> 128 + sig
-    TimedOut -> 124
-    Cancelled -> 143
-    Lost -> 125
+exitCode(o: Outcome) -> int
+exitCode(Exited(code)) = code
+exitCode(Signalled(sig)) = 128 + sig
+exitCode(TimedOut) = 124
+exitCode(Cancelled) = 143
+exitCode(Lost) = 125
 
 // One job as a listing shows it. `state` is `queued`, `running` or `done`; `elapsedMs` is the time
 // queued for a queued job and the time run for the others.
@@ -87,22 +87,22 @@ data Reply
 
 private strings(xs: Vector[string]) -> Json = Json.Arr(xs.map(x -> Json.str(x)))
 
-encodeRequest(r: Request) -> Json = r match
-    Submit(s) -> Json.obj(
-        ("op", Json.str("submit")),
-        ("kind", Json.str(s.kind)),
-        ("units", Json.num(s.units)),
-        ("mem", Json.num(s.memory)),
-        ("landing", Json.Bool(s.landing)),
-        ("dir", Json.str(s.dir)),
-        ("deadline_ms", s.deadlineMs.map(d -> Json.num(d)).getOrElse(Json.Null)),
-        ("cmd", strings(s.cmd)),
-        ("env", Json.Obj(s.env.map(e -> (e.0, Json.str(e.1))))))
-    Wait(id) -> Json.obj(("op", Json.str("wait")), ("id", Json.num(id)))
-    Kill(id) -> Json.obj(("op", Json.str("kill")), ("id", Json.num(id)))
-    List -> Json.obj(("op", Json.str("ls")))
-    Status -> Json.obj(("op", Json.str("status")))
-    Stop(force, drain) -> Json.obj(("op", Json.str("stop")), ("force", Json.Bool(force)), ("wait", Json.Bool(drain)))
+encodeRequest(r: Request) -> Json
+encodeRequest(Submit(s)) = Json.obj(
+    ("op", Json.str("submit")),
+    ("kind", Json.str(s.kind)),
+    ("units", Json.num(s.units)),
+    ("mem", Json.num(s.memory)),
+    ("landing", Json.Bool(s.landing)),
+    ("dir", Json.str(s.dir)),
+    ("deadline_ms", s.deadlineMs.map(d -> Json.num(d)).getOrElse(Json.Null)),
+    ("cmd", strings(s.cmd)),
+    ("env", Json.Obj(s.env.map(e -> (e.0, Json.str(e.1))))))
+encodeRequest(Wait(id)) = Json.obj(("op", Json.str("wait")), ("id", Json.num(id)))
+encodeRequest(Kill(id)) = Json.obj(("op", Json.str("kill")), ("id", Json.num(id)))
+encodeRequest(List) = Json.obj(("op", Json.str("ls")))
+encodeRequest(Status) = Json.obj(("op", Json.str("status")))
+encodeRequest(Stop(force, drain)) = Json.obj(("op", Json.str("stop")), ("force", Json.Bool(force)), ("wait", Json.Bool(drain)))
 
 private field[T](j: Json, key: string, read: (Json) -> Option[T], what: string) -> Result[T, string] =
     j.get(key) match
@@ -157,12 +157,12 @@ decodeRequest(text: string) -> Result[Request, string]
 
 // Outcomes.
 
-encodeOutcome(o: Outcome) -> Json = o match
-    Exited(code) -> Json.obj(("how", Json.str("exit")), ("code", Json.num(code)))
-    Signalled(sig) -> Json.obj(("how", Json.str("signal")), ("signal", Json.num(sig)))
-    TimedOut -> Json.obj(("how", Json.str("timeout")))
-    Cancelled -> Json.obj(("how", Json.str("cancelled")))
-    Lost -> Json.obj(("how", Json.str("lost")))
+encodeOutcome(o: Outcome) -> Json
+encodeOutcome(Exited(code)) = Json.obj(("how", Json.str("exit")), ("code", Json.num(code)))
+encodeOutcome(Signalled(sig)) = Json.obj(("how", Json.str("signal")), ("signal", Json.num(sig)))
+encodeOutcome(TimedOut) = Json.obj(("how", Json.str("timeout")))
+encodeOutcome(Cancelled) = Json.obj(("how", Json.str("cancelled")))
+encodeOutcome(Lost) = Json.obj(("how", Json.str("lost")))
 
 decodeOutcome(j: Json) -> Result[Outcome, string]
     field(j, "how", v -> v.asString(), "a string")? match
@@ -240,22 +240,22 @@ statusJson(u: Usage, jobs: Vector[JobInfo]) -> Json = Json.obj(
     ("running", Json.Arr(jobs.filter(j -> j.state == "running").map(encodeJob))),
     ("queued", Json.Arr(jobs.filter(j -> j.state == "queued").map(encodeJob))))
 
-encodeReply(r: Reply) -> Json = r match
-    Submitted(id, log) -> Json.obj(("ok", Json.Bool(true)), ("id", Json.num(id)), ("log", Json.str(log)))
-    Ended(job) -> Json.obj(("ok", Json.Bool(true)), ("job", encodeJob(job)))
-    Jobs(jobs) -> Json.obj(("ok", Json.Bool(true)), ("jobs", Json.Arr(jobs.map(encodeJob))))
-    Using(u) -> Json.obj(
-        ("ok", Json.Bool(true)),
-        ("units", Json.num(u.units)),
-        ("unit_budget", Json.num(u.unitBudget)),
-        ("mem", Json.num(u.memory)),
-        ("mem_budget", Json.num(u.memoryBudget)),
-        ("running", Json.num(u.running)),
-        ("queued", Json.num(u.queued)),
-        ("landing", u.landing.map(id -> Json.num(id)).getOrElse(Json.Null)),
-        ("take_slot", u.takeSlot.map(encodeTakeSlot).getOrElse(Json.Null)))
-    Done -> Json.obj(("ok", Json.Bool(true)))
-    Failed(message) -> Json.obj(("ok", Json.Bool(false)), ("error", Json.str(message)))
+encodeReply(r: Reply) -> Json
+encodeReply(Submitted(id, log)) = Json.obj(("ok", Json.Bool(true)), ("id", Json.num(id)), ("log", Json.str(log)))
+encodeReply(Ended(job)) = Json.obj(("ok", Json.Bool(true)), ("job", encodeJob(job)))
+encodeReply(Jobs(jobs)) = Json.obj(("ok", Json.Bool(true)), ("jobs", Json.Arr(jobs.map(encodeJob))))
+encodeReply(Using(u)) = Json.obj(
+    ("ok", Json.Bool(true)),
+    ("units", Json.num(u.units)),
+    ("unit_budget", Json.num(u.unitBudget)),
+    ("mem", Json.num(u.memory)),
+    ("mem_budget", Json.num(u.memoryBudget)),
+    ("running", Json.num(u.running)),
+    ("queued", Json.num(u.queued)),
+    ("landing", u.landing.map(id -> Json.num(id)).getOrElse(Json.Null)),
+    ("take_slot", u.takeSlot.map(encodeTakeSlot).getOrElse(Json.Null)))
+encodeReply(Done) = Json.obj(("ok", Json.Bool(true)))
+encodeReply(Failed(message)) = Json.obj(("ok", Json.Bool(false)), ("error", Json.str(message)))
 
 decodeReply(text: string) -> Result[Reply, string]
     val j = json.parse(text) match

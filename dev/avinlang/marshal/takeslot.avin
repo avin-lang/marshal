@@ -1,4 +1,4 @@
-module marshal
+module dev.avinlang.marshal
 
 // Sharing the machine with take-slot.zsh, which keeps its state in files of one directory:
 //

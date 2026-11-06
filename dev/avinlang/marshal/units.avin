@@ -1,4 +1,4 @@
-module marshal
+module dev.avinlang.marshal
 
 // Sizes and lengths of time as people write them on a command line and read them in a listing.
 

@@ -1,4 +1,4 @@
-module marshal
+module dev.avinlang.marshal
 
 // The daemon's settings, from `config.json` in marshal's home directory. Every key is optional:
 //

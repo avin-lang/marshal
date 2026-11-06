@@ -1,8 +1,8 @@
 module tests
 
 // Deadlines learned per kind from recorded durations.
-import marshal
-import marshal.Learning
+import dev.avinlang.marshal
+import dev.avinlang.marshal.Learning
 
 val minute: long = 60000
 val learning: Learning = marshal.defaultLearning

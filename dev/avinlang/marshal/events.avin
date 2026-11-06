@@ -1,4 +1,4 @@
-module marshal
+module dev.avinlang.marshal
 
 // The event log, `events.jsonl`: one JSON object per line, appended as jobs move. Each event holds
 // the whole job as a listing shows it (the fields of `encodeJob`) and, before them, `ts` (the wall

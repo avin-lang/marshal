@@ -2,8 +2,8 @@ module tests
 
 // The line protocol: every request and reply reads back as itself, and malformed text is refused
 // with a reason.
-import marshal
-import marshal.{JobInfo, JobSpec, Outcome, Reply, Request, Usage}
+import dev.avinlang.marshal
+import dev.avinlang.marshal.{JobInfo, JobSpec, Outcome, Reply, Request, Usage}
 
 val spec: JobSpec = JobSpec("test", 4, 29 * 1024 * 1024 * 1024, false, "/work/dir", Some(90000), ["sysl", "test", "compiler", "--timeout", "1800"], [("PATH", "/bin"), ("LANG", "")])
 

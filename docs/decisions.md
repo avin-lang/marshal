@@ -120,3 +120,15 @@ sysl's scripts move to marshal.
   to its own; each side measures against its own budget, so the two must be set equal.
 - **`status --json`** is one object: the budget fields of the protocol's status reply, `take_slot`,
   and `running` and `queued` arrays of jobs as the protocol writes them.
+
+## Help and the module prefix
+
+- **A bare `marshal` prints the usage to standard error and exits 2**: it is a command line that
+  names no command, and a script that ran it by mistake must not read the usage as output. `--help`,
+  `-h`, `help` and `<command> --help` are asked for, so they print to standard output and exit 0.
+- **`submit` and `run` read `--help` only among their options**, up to `--` or the command's first
+  word, so `marshal run -- prog --help` and `marshal run prog --help` run `prog`; an option's value
+  is never help (`run --kind --help` is a kind, then no command). The other commands take `--help` or
+  `-h` anywhere before a `--`.
+- **The modules are `dev.avinlang.marshal`, `.cli` and `.daemon`**, laid out under
+  `dev/avinlang/marshal/` as the package's directories require; the package is still named `marshal`.

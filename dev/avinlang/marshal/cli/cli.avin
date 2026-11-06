@@ -1,4 +1,4 @@
-module marshal.cli
+module dev.avinlang.marshal.cli
 
 // The command line: each command is one request to the daemon, which it starts when none is
 // listening.
@@ -11,32 +11,67 @@ import avin.threads
 import avin.threads.{Atomic, spawn}
 import avin.time
 import avin.time.millis
-import marshal
-import marshal.{JobInfo, JobSpec, Reply, Request}
-import marshal.{Submitted, Ended, Jobs, Using, Done, Failed}
-import marshal.daemon
+import dev.avinlang.marshal
+import dev.avinlang.marshal.{JobInfo, JobSpec, Reply, Request}
+import dev.avinlang.marshal.{Submitted, Ended, Jobs, Using, Done, Failed}
+import dev.avinlang.marshal.daemon
 
-val usage: string = """
-usage: marshal <command> [options]
+// Each command: how it is written after `marshal`, and what it does. The README's command list
+// is these lines, word for word.
+val Commands: Vector[(string, string)] = [
+    ("submit [options] -- <command...>", "queue a job; prints its id"),
+    ("run [options] -- <command...>", "submit and wait: prints the log's path, then the result; exits with the job's status"),
+    ("wait <id>", "waits for the job; prints one result line; exits with the job's status"),
+    ("ls", "jobs queued, running and recently ended"),
+    ("kill <id>", "stops the job's whole process tree (a queued job is cancelled)"),
+    ("tail <id> [-f] [-n <lines>]", "the job's log; -f follows it until the job ends"),
+    ("status [--json]", "the budget in use; --json: one JSON object with the running and queued jobs"),
+    ("stop [--wait | --force]", "stops the daemon; refused while jobs run unless it may wait for them or kill them"),
+    ("daemon", "runs the daemon in the foreground")]
 
-  submit [options] -- <command...>   queue a job and print its id
-  run [options] -- <command...>      queue a job, wait for it, exit with its status
-      --kind <k>        the job's kind (default: test when a word of the command is `test`, else build)
-      --units <n>       its weight in units (default: 4 for a test, 1 otherwise)
-      --mem <size>      the memory it needs, such as 29G (default: 0)
-      --landing         run it in the landing lane: first, outside the unit budget, not niced
-      --dir <d>         the directory to run it in (default: this one)
-      --deadline <t>    stop it after t: minutes, or 90s, 30m, 2h (default: learned for the kind)
-  wait <id>                          wait for a job; exit with its status
-  ls                                 the jobs queued, running and recently ended
-  kill <id>                          stop a job and every process it started
-  tail <id> [-f] [-n <lines>]        a job's log; -f follows it until the job ends
-  status [--json]                    how much of the budget is in use; --json adds the jobs, for scripts
-  stop [--wait | --force]            stop the daemon: refused while jobs run, unless it may wait for them or kill them
-  daemon                             run the daemon in the foreground
-
-Marshal's files are in $MARSHAL_HOME, or ~/.marshal.\
+// The options of `submit` and `run`.
+val Options: string = """
+Options of submit and run:
+  --kind <k>        what the job is, for learning its deadline (default: test when a word of the command is `test`, else build)
+  --units <n>       its weight in units (default: 4 for a test, 1 otherwise)
+  --mem <size>      the memory it needs, such as 29G or 512M (default: 0)
+  --landing         run it in the landing lane: first, outside the unit budget, not niced
+  --dir <d>         the directory to run it in, relative to this one (default: this one)
+  --deadline <t>    stop it after t: minutes, or 90s, 30m, 2h (default: learned for the kind)
+  --                the command begins after this; nothing after it is an option\
 """
+
+val Footer: string = "Marshal's files are in $MARSHAL_HOME, or ~/.marshal. `marshal <command> --help` describes one command."
+
+// One line of the command list: `marshal` and the command, then what it does.
+commandLine(c: (string, string)) -> string = ("marshal " + c.0).padEnd(43, ' ') + c.1
+
+// What `marshal --help` prints.
+val usage: string = "usage: marshal <command> [options]\n\n" + Commands.map(commandLine).mkString("\n") + "\n\n" + Options + "\n\n" + Footer
+
+// What `marshal <command> --help` prints, or None for a word that is not a command.
+commandHelp(name: string) -> Option[string]
+    Commands.find(c -> c.0.split(" ")(0) == name).map(c ->
+        val head = s"usage: marshal ${c.0}\n\n${c.1}"
+        if name == "submit" || name == "run" then head + "\n\n" + Options else head)
+
+private isHelp(word: string) -> bool = word == "--help" || word == "-h"
+
+// Whether the arguments after a command ask for its help. `submit` and `run` read options up to `--`
+// or the first word that is not one, so `run prog --help` runs prog; the other commands read every
+// argument before a `--`.
+asksHelp(command: string, args: Vector[string]) -> bool
+asksHelp("submit" | "run", args) = optionsAskHelp(args, 0)
+asksHelp(_, args) = args.takeWhile(a -> a != "--").exists(isHelp)
+
+private optionsAskHelp(args: Vector[string], i: int) -> bool
+optionsAskHelp(args, i) | i >= args.length() = false
+optionsAskHelp(args, i)
+    | args(i) == "--" = false
+    | isHelp(args(i)) = true
+    | args(i) == "--landing" = optionsAskHelp(args, i + 1)
+    | args(i).startsWith("--") = optionsAskHelp(args, i + 2)
+    | _ = false
 
 // Marshal's own failures (a bad command line, no daemon) exit with this; a job's status is its own.
 val Trouble: int = 2
@@ -46,6 +81,11 @@ home() -> string = process.env("MARSHAL_HOME").getOrElse(process.homeDir().getOr
 main(args: Vector[string]) -> int
     if args.isEmpty() then return complain(usage)
     val rest = args.drop(1)
+    commandHelp(args(0)) match
+        Some(text) if asksHelp(args(0), rest) ->
+            println(text)
+            return 0
+        _ -> ()
     args(0) match
         "submit" -> submit(rest, false)
         "run" -> submit(rest, true)
@@ -59,20 +99,30 @@ main(args: Vector[string]) -> int
         "tail" -> tail(rest)
         "stop" -> stop(rest)
         "daemon" -> daemon.run(home())
-        "help" | "--help" | "-h" ->
+        "--help" | "-h" ->
             println(usage)
             0
+        "help" -> rest match
+            [] ->
+                println(usage)
+                0
+            [name] -> commandHelp(name) match
+                Some(text) ->
+                    println(text)
+                    0
+                None -> complain(s"marshal: no command `$name`\n\n$usage")
+            _ -> complain("marshal: help takes one command")
         other -> complain(s"marshal: no command `$other`\n\n$usage")
 
 complain(message: string) -> int
     eprintln(message)
     Trouble
 
-withId(args: Vector[string], body: (long) -> int) -> int = args match
-    [word] -> word.toLongOption() match
-        Some(id) -> body(id)
-        None -> complain(s"marshal: `$word` is not a job id")
-    _ -> complain("marshal: give one job id")
+withId(args: Vector[string], body: (long) -> int) -> int
+withId([word], body) = word.toLongOption() match
+    Some(id) -> body(id)
+    None -> complain(s"marshal: `$word` is not a job id")
+withId(_, _) = complain("marshal: give one job id")
 
 // Reads the options of `submit` and `run`, `[options] [--] command...`. The command begins after `--`, or at the first word that is
 // not an option.
@@ -287,13 +337,13 @@ tail(args: Vector[string]) -> int
     f.close()
     reportEnd(waiter.join())
 
-reportEnd(result: Result[Reply, string]) -> int = result match
-    Ok(Ended(j)) ->
-        println(marshal.resultLine(j))
-        j.outcome.map(marshal.exitCode).getOrElse(Trouble)
-    Ok(Failed(e)) -> complain(s"marshal: $e")
-    Ok(other) -> complain(s"marshal: unexpected reply $other")
-    Err(e) -> complain(e)
+reportEnd(result: Result[Reply, string]) -> int
+reportEnd(Ok(Ended(j))) =
+    println(marshal.resultLine(j))
+    j.outcome.map(marshal.exitCode).getOrElse(Trouble)
+reportEnd(Ok(Failed(e))) = complain(s"marshal: $e")
+reportEnd(Ok(other)) = complain(s"marshal: unexpected reply $other")
+reportEnd(Err(e)) = complain(e)
 
 // One request and its reply.
 ask(conn: UnixStream, request: Request) -> Result[Reply, string]

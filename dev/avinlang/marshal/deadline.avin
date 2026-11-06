@@ -1,4 +1,4 @@
-module marshal
+module dev.avinlang.marshal
 
 // Deadlines learned from how long jobs of a kind have taken.
 //

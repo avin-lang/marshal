@@ -1,4 +1,4 @@
-module marshal
+module dev.avinlang.marshal
 
 // Which waiting jobs start now. Pure: the daemon hands it what is running and what is waiting, and
 // starts what it answers.

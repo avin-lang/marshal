@@ -1,7 +1,7 @@
 module tests
 
 // The take-slot format: which directory is shared, and the waiters' ticket names.
-import marshal
+import dev.avinlang.marshal
 
 @test("the environment wins over config.json, empty text in either shares nothing, and neither leaves the default")
 takeSlotDirs()

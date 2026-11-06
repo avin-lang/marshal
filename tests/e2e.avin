@@ -14,7 +14,7 @@ import avin.time
 import avin.time.millis
 import json
 import json.Json
-import marshal
+import dev.avinlang.marshal
 
 val outputs: Atomic[int] = Atomic(0)
 
@@ -423,6 +423,140 @@ usage()
     assertEq(m(home, "wait", "x").code, 2)
     assertEq(m(home, "stop", "--now").code, 2)
     assertEq(m(home, "help").code, 0)
+    fs.removeDirAll(home)
+
+// ---- help ----
+
+data Split(code: int, out: string, err: string)
+
+// Like `m`, with standard output and standard error kept apart.
+split(home: string, args: string*) -> Split
+    val n = outputs.add(1)
+    val out = s"$home/split.$n.out"
+    val err = s"$home/split.$n.err"
+    val status = Command(bin(), args*).withEnv("MARSHAL_HOME", home).withEnv("MARSHAL_TAKE_SLOT_DIR", slots(home)).toFile(out).errorsToFile(err).run().ok().get()
+    val code = status match
+        ExitStatus.Exited(c) -> c
+        ExitStatus.Signalled(s) -> 128 + s
+        ExitStatus.TimedOut -> 124
+    Split(code, fs.readText(out).getOrElse(""), fs.readText(err).getOrElse(""))
+
+val commandNames: Vector[string] = ["submit", "run", "wait", "ls", "kill", "tail", "status", "stop", "daemon"]
+
+@test("`--help` and `-h` after any command print that command's usage on standard output, exit 0, and start no daemon")
+helpOfEveryCommand()
+    val home = newHome()
+    for name in commandNames do
+        for flag in ["--help", "-h"] do
+            val r = split(home, name, flag)
+            assert(r.code == 0, s"$name $flag")
+            assert(r.out.startsWith(s"usage: marshal $name"), s"$name $flag: ${r.out}")
+            assert(r.err == "", s"$name $flag")
+    assert(!fs.exists(home + "/sock"), "help started a daemon")
+    assert(!fs.exists(home + "/events.jsonl"), "help wrote an event")
+    fs.removeDirAll(home)
+
+@test("help after other arguments of the command, and after options, is still help")
+helpAmongArguments()
+    val home = newHome()
+    for args in [["run", "--kind", "test", "--help"], ["submit", "--landing", "-h"], ["run", "--landing", "--units", "2", "--help"], ["tail", "7", "-f", "--help"], ["tail", "-h", "7"], ["status", "--json", "-h"], ["stop", "--force", "--help"], ["wait", "3", "--help"], ["kill", "-h", "x"]] do
+        val r = split(home, args*)
+        assert(r.code == 0, args.mkString(" "))
+        assert(r.out.startsWith(s"usage: marshal ${args(0)}"), args.mkString(" "))
+    fs.removeDirAll(home)
+
+@test("`--help`, `-h` and `help` print the whole usage on standard output and exit 0")
+helpOfAll()
+    val home = newHome()
+    for args in [["--help"], ["-h"], ["help"]] do
+        val r = split(home, args*)
+        assert(r.code == 0, args.mkString(" "))
+        assert(r.err == "", args.mkString(" "))
+        assert(r.out.startsWith("usage: marshal <command> [options]"), r.out)
+        for name in commandNames do assert(r.out.contains(s"marshal $name"), s"$name missing: ${r.out}")
+        assert(r.out.contains("--landing"), r.out)
+    fs.removeDirAll(home)
+
+@test("a bare `marshal` prints the usage on standard error and exits 2, with nothing on standard output")
+bareMarshal()
+    val home = newHome()
+    val r = split(home)
+    assertEq(r.code, 2)
+    assertEq(r.out, "")
+    assert(r.err.startsWith("usage: marshal <command> [options]"), r.err)
+    fs.removeDirAll(home)
+
+@test("`help <command>` describes one command; an unknown one is refused")
+helpWord()
+    val home = newHome()
+    val r = split(home, "help", "tail")
+    assertEq(r.code, 0)
+    assert(r.out.startsWith("usage: marshal tail <id> [-f] [-n <lines>]"), r.out)
+    val bad = split(home, "help", "dance")
+    assertEq(bad.code, 2)
+    assertEq(bad.out, "")
+    assert(bad.err.contains("no command `dance`"), bad.err)
+    assertEq(split(home, "help", "run", "wait").code, 2)
+    fs.removeDirAll(home)
+
+@test("an unknown command is refused even with --help, and help for it is not invented")
+helpOfUnknown()
+    val home = newHome()
+    val r = split(home, "dance", "--help")
+    assertEq(r.code, 2)
+    assertEq(r.out, "")
+    assert(r.err.contains("no command `dance`"), r.err)
+    fs.removeDirAll(home)
+
+@test("the usage of submit and run lists the options, and the others do not")
+helpOptionsOnlyWhereTheyApply()
+    val home = newHome()
+    for name in ["submit", "run"] do
+        val r = split(home, name, "--help")
+        for flag in ["--kind", "--units", "--mem", "--landing", "--dir", "--deadline"] do
+            assert(r.out.contains(flag), s"$name: $flag missing")
+    assert(!split(home, "ls", "--help").out.contains("--kind"))
+    fs.removeDirAll(home)
+
+@test("after `--` nothing is an option: `run -- prog --help` runs prog")
+helpAfterDashDash()
+    val home = newHome()
+    val id = submitted(home, "--", "echo", "--help")
+    assertEq(m(home, "wait", id.toString()).code, 0)
+    assertEq(fs.readText(s"$home/jobs/$id.log").ok().get().trim(), "--help")
+    val run = split(home, "run", "--", "echo", "-h")
+    assertEq(run.code, 0)
+    assert(run.out.contains("exited 0"), run.out)
+    assert(!run.out.contains("usage:"), run.out)
+    cleanUp(home)
+
+@test("a command that begins at its first word runs even when its own arguments are --help")
+helpAfterTheCommandWord()
+    val home = newHome()
+    val run = split(home, "run", "echo", "--help")
+    assertEq(run.code, 0)
+    assert(run.out.contains("exited 0"), run.out)
+    assert(!run.out.contains("usage:"), run.out)
+    val after = split(home, "run", "--kind", "x", "echo", "-h")
+    assertEq(after.code, 0)
+    assert(!after.out.contains("usage:"), after.out)
+    cleanUp(home)
+
+@test("an option's value is not help: `run --kind --help` is a kind, then no command")
+helpAsAValue()
+    val home = newHome()
+    val r = split(home, "run", "--kind", "--help")
+    assertEq(r.code, 2)
+    assertEq(r.out, "")
+    assert(r.err.contains("no command to run"), r.err)
+    fs.removeDirAll(home)
+
+@test("a `--` ends help for the other commands too")
+helpAfterDashDashOthers()
+    val home = newHome()
+    val r = split(home, "wait", "--", "--help")
+    assertEq(r.code, 2)
+    assert(!r.out.contains("usage:"), r.out)
     fs.removeDirAll(home)
 
 // ---- sharing take-slot.zsh's directory ----

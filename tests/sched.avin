@@ -2,8 +2,8 @@ module tests
 
 // The scheduler: the unit and memory budgets, first come first served, the landing lane and the
 // backfill rule, each pinned by what `schedule` answers.
-import marshal
-import marshal.{Budget, Outside, Started, Ticket, Waiting}
+import dev.avinlang.marshal
+import dev.avinlang.marshal.{Budget, Outside, Started, Ticket, Waiting}
 
 val budget: Budget = Budget(12, 64 * 1024)
 val hour: long = 3600000

@@ -3,9 +3,9 @@ module tests
 // The event log as a restarting daemon reads it, the settings file, and what the command line prints.
 import json
 import json.Json
-import marshal
-import marshal.cli
-import marshal.{Budget, JobInfo, Learning, Outcome, TakeSlotUse, Usage}
+import dev.avinlang.marshal
+import dev.avinlang.marshal.cli
+import dev.avinlang.marshal.{Budget, JobInfo, Learning, Outcome, TakeSlotUse, Usage}
 
 info(id: long, kind: string = "test", landing: bool = false, state: string = "queued", outcome: Option[Outcome] = None, elapsed: long = 0) -> JobInfo =
     JobInfo(id, kind, 4, 0, landing, "/d", ["make", "it"], state, outcome, false, 5, elapsed, 60000, s"/h/jobs/$id.log", None)
