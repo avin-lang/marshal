@@ -1,6 +1,8 @@
 # Decisions
 
-Each choice the brief left open, with why, and what else was weighed. All are **Proposed**.
+Each choice the brief left open, with why, and what else was weighed. All are **settled on the user's
+delegation 2026-11-06** (branch `stage1`). Review with the user: the landing lane ignoring both
+budgets, and a job's leftover processes being sent TERM when its main process ends.
 
 ## The scheduler
 
