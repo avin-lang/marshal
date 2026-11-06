@@ -9,10 +9,14 @@ module marshal
 //   deadline_floor  the shortest deadline learning may give, as `--deadline` writes one ("5m")
 //   learn_window    how many recent runs of a kind learning reads (20)
 //   learn_min_runs  how many runs a kind needs before its deadline is learned (3)
+//   take_slot       take-slot.zsh's lock directory, whose budget and landing lane marshal shares;
+//                   "" shares none. By default the sysl repository's `.git` when it exists, and
+//                   `MARSHAL_TAKE_SLOT_DIR` overrides both (see `takeSlotDir`)
 import json
 import json.Json
 
-data Config(budget: Budget, learning: Learning)
+// `takeSlot` is what config.json says, None where it says nothing.
+data Config(budget: Budget, learning: Learning, takeSlot: Option[string])
 
 private val DefaultReserve: long = 8 * 1024 * 1024 * 1024
 
@@ -24,7 +28,7 @@ readConfig(text: string, machineMemory: long) -> Result[Config, string]
         Err(e) -> return Err(s"config.json is not JSON: $e")
     if j.asMembers().isEmpty() then return Err("config.json holds an object")
     for key in j.keys()
-        if !["units", "memory", "reserve", "deadline_floor", "learn_window", "learn_min_runs"].contains(key)
+        if !["units", "memory", "reserve", "deadline_floor", "learn_window", "learn_min_runs", "take_slot"].contains(key)
             return Err(s"config.json: no setting `$key`")
     val units = whole(j, "units", 12)?
     if units < 1 then return Err("config.json: `units` is at least 1")
@@ -39,7 +43,12 @@ readConfig(text: string, machineMemory: long) -> Result[Config, string]
     val window = whole(j, "learn_window", defaultLearning.window)?
     val minRuns = whole(j, "learn_min_runs", defaultLearning.minRuns)?
     if window < 1 || minRuns < 1 then return Err("config.json: `learn_window` and `learn_min_runs` are at least 1")
-    Ok(Config(Budget(units, memory), Learning(window, minRuns, defaultLearning.factor, floor)))
+    val takeSlot = j.get("take_slot") match
+        None -> None
+        Some(v) -> v.asString() match
+            Some(dir) -> Some(dir)
+            None -> return Err("config.json: `take_slot` is a directory, or \"\" for none")
+    Ok(Config(Budget(units, memory), Learning(window, minRuns, defaultLearning.factor, floor), takeSlot))
 
 private whole(j: Json, key: string, absent: int) -> Result[int, string] = j.get(key) match
     None -> Ok(absent)

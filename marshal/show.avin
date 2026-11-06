@@ -42,4 +42,5 @@ listing(jobs: Vector[JobInfo]) -> string
 usageLine(u: Usage) -> string
     val memory = if u.memoryBudget == long.MaxValue then formatSize(u.memory) else s"${formatSize(u.memory)}/${formatSize(u.memoryBudget)}"
     val lane = u.landing.map(id -> s"job $id").getOrElse("free")
-    s"units ${u.units}/${u.unitBudget}, memory $memory, ${u.running} running, ${u.queued} queued, landing lane $lane"
+    val outside = u.takeSlot.map(t -> s"; take-slot holds ${t.units} units, ${t.waiting} waiting" + (if t.landing then ", the landing lane" else "")).getOrElse("")
+    s"units ${u.units}/${u.unitBudget}, memory $memory, ${u.running} running, ${u.queued} queued, landing lane $lane$outside"

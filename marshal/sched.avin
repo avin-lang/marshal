@@ -11,24 +11,43 @@ module marshal
 // - The landing lane holds one landing job at a time, outside the unit budget: a landing job starts
 //   as soon as the lane is free, whatever development jobs hold. Its memory is counted, so
 //   development jobs make room for it rather than the other way round.
+// - What take-slot.zsh holds and waits for (`Outside`) shares the same budget and the same arrival
+//   order. Its holders take units and are expected to end at any moment, so nothing backfills behind
+//   a head that waits for them; its waiters stand in the queue by arrival time, and one marshal can
+//   not start is never overtaken by a marshal job. Take-slot admits only its earliest waiter and
+//   only when it fits, so a waiter that fits now holds its units as if it had started, and one behind
+//   a blocked head waits.
 
 data Budget(units: int, memory: long)
 
 // A job waiting to start, as the scheduler weighs it: `expectedMs` is how long it is expected to run.
-data Waiting(id: long, units: int, memory: long, landing: bool, expectedMs: long)
+// `arrived` is when it was submitted, in microseconds of the wall clock, which is how it is ordered
+// against take-slot's waiters.
+data Waiting(id: long, units: int, memory: long, landing: bool, expectedMs: long, arrived: long)
 
 // A job running since `startedMs` (the daemon's clock, in milliseconds).
 data Started(id: long, units: int, memory: long, landing: bool, startedMs: long, expectedMs: long)
 
+// A take-slot waiter: when it arrived (wall-clock microseconds) and the units it waits for.
+data Ticket(arrived: long, units: int)
+
+// What take-slot holds outside marshal: `units` held by its live runs, its live `waiting` tickets,
+// and whether one of its runs holds the landing lock.
+data Outside(units: int, waiting: Vector[Ticket], landing: bool)
+
+// Nothing outside marshal.
+val NoOutside: Outside = Outside(0, [], false)
+
 // The ids of the jobs to start now, in the order to start them: a landing job first, then
 // development jobs in queue order.
-schedule(budget: Budget, running: Vector[Started], queue: Vector[Waiting], now: long) -> Vector[long]
+schedule(budget: Budget, running: Vector[Started], queue: Vector[Waiting], now: long, outside: Outside = NoOutside) -> Vector[long]
     val starts = Buffer[long]()
     // When each running or starting job is expected to end, with the units and memory it frees.
     val ends = Buffer[(long, int, long)]()
-    var units = 0
     var memory: long = 0
-    var laneBusy = false
+    var laneBusy = outside.landing
+    var units = outside.units
+    if outside.units > 0 then ends += (now, outside.units, 0)
     for r in running
         if r.landing then laneBusy = true else units += r.units
         memory += r.memory
@@ -42,33 +61,53 @@ schedule(budget: Budget, running: Vector[Started], queue: Vector[Waiting], now: 
             None -> ()
     // When the blocked head of the queue can start; None while the head has not been met.
     var headStart: Option[long] = None
-    for w in queue
-        if w.landing then continue
-        val fits = units + w.units <= budget.units && memory + w.memory <= budget.memory
+    for e in arrivalOrder(queue, outside.waiting)
+        val fits = units + e.units <= budget.units && memory + e.memory <= budget.memory
         val go = headStart match
             None ->
-                if !fits then headStart = Some(whenFits(budget, units, memory, w, ends))
+                if !fits then headStart = Some(whenFits(budget, units, memory, e.units, e.memory, ends))
                 fits
-            Some(at) -> fits && now + w.expectedMs <= at
+            // take-slot never lets a waiter overtake; a marshal job may, when it delays nobody
+            Some(at) -> e.job.isDefined() && fits && now + e.expectedMs <= at
         if go
-            starts += w.id
-            units += w.units
-            memory += w.memory
-            ends += (now + w.expectedMs, w.units, w.memory)
+            e.job.foreach(w -> starts += w.id)
+            units += e.units
+            memory += e.memory
+            ends += (now + e.expectedMs, e.units, e.memory)
     starts.toVector()
 
 // A running job past its expected end may end at any moment: it is expected now.
 private expectedEnd(startedMs: long, expectedMs: long, now: long) -> long =
     if startedMs + expectedMs > now then startedMs + expectedMs else now
 
-// The earliest time `w` fits, if the jobs in `ends` end when they are expected to.
-private whenFits(budget: Budget, units: int, memory: long, w: Waiting, ends: Buffer[(long, int, long)]) -> long
-    var freeUnits = budget.units - units
+// A development job (`job`) or a take-slot waiter (no job, expected to end at once) in the queue.
+private data Entry(job: Option[Waiting], units: int, memory: long, expectedMs: long)
+
+// The development jobs of `queue` and take-slot's `tickets` in one arrival order; a ticket goes first
+// on a tie.
+private arrivalOrder(queue: Vector[Waiting], tickets: Vector[Ticket]) -> Vector[Entry]
+    val sorted = tickets.sortBy(t -> t.arrived)
+    val out = Buffer[Entry]()
+    var t = 0
+    for w in queue
+        if w.landing then continue
+        while t < sorted.length() && sorted(t).arrived <= w.arrived
+            out += Entry(None, sorted(t).units, 0, 0)
+            t += 1
+        out += Entry(Some(w), w.units, w.memory, w.expectedMs)
+    while t < sorted.length()
+        out += Entry(None, sorted(t).units, 0, 0)
+        t += 1
+    out.toVector()
+
+// The earliest time `units` and `memory` more fit, if the jobs in `ends` end when they are expected to.
+private whenFits(budget: Budget, used: int, memory: long, units: int, needs: long, ends: Buffer[(long, int, long)]) -> long
+    var freeUnits = budget.units - used
     var freeMemory = budget.memory - memory
     for (at, u, m) in ends.sortBy(e -> e.0)
         freeUnits += u
         freeMemory += m
-        if w.units <= freeUnits && w.memory <= freeMemory then return at
+        if units <= freeUnits && needs <= freeMemory then return at
     long.MaxValue
 
 // Why a job can never start under `budget`, or None when it can.

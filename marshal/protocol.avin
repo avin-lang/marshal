@@ -68,7 +68,12 @@ data Usage(
     memoryBudget: long,
     running: int,
     queued: int,
-    landing: Option[long])
+    landing: Option[long],
+    takeSlot: Option[TakeSlotUse])
+
+// What take-slot.zsh holds in the directory `dir` that marshal shares: units its runs hold, how many
+// of its runs wait, and whether one of them holds the landing lane.
+data TakeSlotUse(dir: string, units: int, waiting: int, landing: bool)
 
 data Reply
     Submitted(id: long, log: string)
@@ -209,6 +214,20 @@ decodeJob(j: Json) -> Result[JobInfo, string]
         field(j, "log", v -> v.asString(), "a string")?,
         optional(j, "sample", v -> v.asString().map(s -> Some(s)), "a string", None)?))
 
+encodeTakeSlot(t: TakeSlotUse) -> Json = Json.obj(
+    ("dir", Json.str(t.dir)),
+    ("units", Json.num(t.units)),
+    ("waiting", Json.num(t.waiting)),
+    ("landing", Json.Bool(t.landing)))
+
+private decodeTakeSlot(j: Json) -> Result[Option[TakeSlotUse], string]
+    if j == Json.Null then return Ok(None)
+    Ok(Some(TakeSlotUse(
+        field(j, "dir", v -> v.asString(), "a string")?,
+        field(j, "units", v -> v.asInt(), "an int")?,
+        field(j, "waiting", v -> v.asInt(), "an int")?,
+        field(j, "landing", v -> v.asBool(), "a bool")?)))
+
 encodeReply(r: Reply) -> Json = r match
     Submitted(id, log) -> Json.obj(("ok", Json.Bool(true)), ("id", Json.num(id)), ("log", Json.str(log)))
     Ended(job) -> Json.obj(("ok", Json.Bool(true)), ("job", encodeJob(job)))
@@ -221,7 +240,8 @@ encodeReply(r: Reply) -> Json = r match
         ("mem_budget", Json.num(u.memoryBudget)),
         ("running", Json.num(u.running)),
         ("queued", Json.num(u.queued)),
-        ("landing", u.landing.map(id -> Json.num(id)).getOrElse(Json.Null)))
+        ("landing", u.landing.map(id -> Json.num(id)).getOrElse(Json.Null)),
+        ("take_slot", u.takeSlot.map(encodeTakeSlot).getOrElse(Json.Null)))
     Done -> Json.obj(("ok", Json.Bool(true)))
     Failed(message) -> Json.obj(("ok", Json.Bool(false)), ("error", Json.str(message)))
 
@@ -245,6 +265,7 @@ decodeReply(text: string) -> Result[Reply, string]
             field(j, "mem_budget", v -> v.asLong(), "a whole number")?,
             field(j, "running", v -> v.asInt(), "an int")?,
             field(j, "queued", v -> v.asInt(), "an int")?,
-            optional(j, "landing", someLong, "a whole number", None)?)))
+            optional(j, "landing", someLong, "a whole number", None)?,
+            decodeTakeSlot(j.get("take_slot").getOrElse(Json.Null))?)))
     if j.has("id") then return Ok(Submitted(field(j, "id", v -> v.asLong(), "a whole number")?, field(j, "log", v -> v.asString(), "a string")?))
     Ok(Done)
