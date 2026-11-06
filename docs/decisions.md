@@ -78,10 +78,10 @@ budgets, and a job's leftover processes being sent TERM when its main process en
   the highest id in the log.
 - The event log carries the whole job in every event, so any one line describes its job.
 
-## Sharing take-slot.zsh's directory (Proposed, branch `take-slot-interop`)
+## Sharing take-slot.zsh's directory (branch `take-slot-interop`)
 
-Each of these is **Proposed**: made for the transition while sysl's scripts move to marshal, for the
-user to settle.
+Each of these is **settled on the user's delegation 2026-11-06**, made for the transition while
+sysl's scripts move to marshal.
 
 - **take-slot's waiters join marshal's queue by arrival time, under marshal's backfill rule.** A
   waiter that fits is counted as holding its units (take-slot will admit it within its next look); a
