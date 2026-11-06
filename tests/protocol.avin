@@ -1,0 +1,99 @@
+module tests
+
+// The line protocol: every request and reply reads back as itself, and malformed text is refused
+// with a reason.
+import marshal
+import marshal.{JobInfo, JobSpec, Outcome, Reply, Request, Usage}
+
+val spec: JobSpec = JobSpec("test", 4, 29 * 1024 * 1024 * 1024, false, "/work/dir", Some(90000), ["sysl", "test", "compiler", "--timeout", "1800"], [("PATH", "/bin"), ("LANG", "")])
+
+roundTrip(r: Request) = assertEq(marshal.decodeRequest(marshal.encodeRequest(r).render()), Ok(r))
+
+replyRoundTrip(r: Reply) = assertEq(marshal.decodeReply(marshal.encodeReply(r).render()), Ok(r))
+
+job(state: string, outcome: Option[Outcome], sample: Option[string] = None) -> JobInfo =
+    JobInfo(7, "build", 1, 0, true, "/d", ["sh", "-c", "exit 3"], state, outcome, false, 12, 3400, 1200000, "/h/jobs/7.log", sample)
+
+@test("every request reads back as itself")
+requests()
+    roundTrip(Request.Submit(spec))
+    roundTrip(Request.Submit(JobSpec("build", 1, 0, true, "/", None, ["make"], [])))
+    roundTrip(Request.Wait(1))
+    roundTrip(Request.Wait(long.MaxValue))
+    roundTrip(Request.Kill(42))
+    roundTrip(Request.List)
+    roundTrip(Request.Status)
+    roundTrip(Request.Stop(false, false))
+    roundTrip(Request.Stop(true, false))
+    roundTrip(Request.Stop(false, true))
+
+@test("a command's words keep quotes, new lines, empty words and characters beyond ASCII")
+awkwardWords()
+    roundTrip(Request.Submit(JobSpec("é", 1, 0, false, "/tmp/ü dir", None, ["sh", "-c", "echo \"a\\b\"\n\t", "", "日本 😀"], [("X", "a=b")])))
+
+@test("every reply reads back as itself")
+replies()
+    replyRoundTrip(Reply.Submitted(3, "/h/jobs/3.log"))
+    replyRoundTrip(Reply.Done)
+    replyRoundTrip(Reply.Failed("no job 9"))
+    replyRoundTrip(Reply.Failed(""))
+    replyRoundTrip(Reply.Using(Usage(8, 12, 30, 64, 3, 2, Some(5))))
+    replyRoundTrip(Reply.Using(Usage(0, 12, 0, 0, 0, 0, None)))
+    replyRoundTrip(Reply.Jobs([]))
+    replyRoundTrip(Reply.Jobs([job("queued", None), job("running", None)]))
+    for o in [Outcome.Exited(0), Outcome.Exited(255), Outcome.Signalled(9), Outcome.TimedOut, Outcome.Cancelled, Outcome.Lost]
+        replyRoundTrip(Reply.Ended(job("done", Some(o))))
+    replyRoundTrip(Reply.Ended(job("done", Some(Outcome.TimedOut), Some("/h/jobs/7.sample.txt"))))
+
+@test("a request is one line: rendered JSON holds no line break")
+oneLine()
+    val text = marshal.encodeRequest(Request.Submit(JobSpec("k", 1, 0, false, "/", None, ["a\nb"], [("V", "x\ny")]))).render()
+    assert(!text.contains("\n"))
+
+@test("text that is not a request is refused with a reason")
+badRequests()
+    val cases = [
+        ("", "not JSON"),
+        ("[1]", "a request is a JSON object"),
+        ("{}", "`op` is missing"),
+        ("{\"op\": 1}", "`op` is not a string"),
+        ("{\"op\": \"dance\"}", "no such request: `dance`"),
+        ("{\"op\": \"wait\"}", "`id` is missing"),
+        ("{\"op\": \"wait\", \"id\": \"7\"}", "`id` is not a whole number"),
+        ("{\"op\": \"kill\", \"id\": 1.5}", "`id` is not a whole number"),
+        ("{\"op\": \"submit\", \"kind\": \"x\", \"units\": 1, \"mem\": 0, \"dir\": \"/\", \"cmd\": []}", "`cmd` is empty"),
+        ("{\"op\": \"submit\", \"kind\": \"x\", \"units\": 1, \"mem\": 0, \"dir\": \"/\", \"cmd\": [1]}", "`cmd` is not an array of strings"),
+        ("{\"op\": \"submit\", \"kind\": \"x\", \"units\": 1, \"mem\": 0, \"cmd\": [\"a\"]}", "`dir` is missing"),
+        ("{\"op\": \"submit\", \"kind\": \"x\", \"units\": 3000000000, \"mem\": 0, \"dir\": \"/\", \"cmd\": [\"a\"]}", "`units` is not an int"),
+        ("{\"op\": \"submit\", \"kind\": \"x\", \"units\": 1, \"mem\": 0, \"dir\": \"/\", \"cmd\": [\"a\"], \"env\": {\"A\": 1}}", "`env` is not an object of strings"),
+        ("{\"op\": \"stop\", \"force\": \"yes\"}", "`force` is not a bool")]
+    for (text, why) in cases
+        marshal.decodeRequest(text) match
+            Err(e) -> assert(e.contains(why), s"$text: $e")
+            Ok(r) -> fail(s"$text read as $r")
+
+@test("absent optional fields take their defaults, and null is absent")
+requestDefaults()
+    assertEq(marshal.decodeRequest("{\"op\": \"submit\", \"kind\": \"x\", \"units\": 1, \"mem\": 0, \"dir\": \"/\", \"cmd\": [\"a\"]}"), Ok(Request.Submit(JobSpec("x", 1, 0, false, "/", None, ["a"], []))))
+    assertEq(marshal.decodeRequest("{\"op\": \"submit\", \"kind\": \"x\", \"units\": 1, \"mem\": 0, \"dir\": \"/\", \"cmd\": [\"a\"], \"landing\": null, \"deadline_ms\": null}"), Ok(Request.Submit(JobSpec("x", 1, 0, false, "/", None, ["a"], []))))
+    assertEq(marshal.decodeRequest("{\"op\": \"stop\"}"), Ok(Request.Stop(false, false)))
+    assertEq(marshal.decodeRequest(" {\"op\": \"ls\", \"extra\": true} "), Ok(Request.List))
+
+@test("a reply that is not one is refused")
+badReplies()
+    assert(marshal.decodeReply("").isErr())
+    assert(marshal.decodeReply("{}").isErr())
+    assert(marshal.decodeReply("{\"ok\": false}").isErr())
+    assert(marshal.decodeReply("{\"ok\": true, \"job\": {\"id\": 1}}").isErr())
+    assert(marshal.decodeReply("{\"ok\": true, \"job\": {\"id\": 1, \"kind\": \"k\", \"units\": 1, \"mem\": 0, \"landing\": false, \"dir\": \"/\", \"cmd\": [], \"state\": \"done\", \"outcome\": {\"how\": \"melted\"}, \"killed\": false, \"queued_ms\": 0, \"elapsed_ms\": 0, \"deadline_ms\": 0, \"log\": \"l\"}}").isErr())
+
+@test("each outcome's exit status: the code, 128 + the signal, 124, 143 and 125")
+exitCodes()
+    assertEq(marshal.exitCode(Outcome.Exited(0)), 0)
+    assertEq(marshal.exitCode(Outcome.Exited(3)), 3)
+    assertEq(marshal.exitCode(Outcome.Exited(255)), 255)
+    assertEq(marshal.exitCode(Outcome.Signalled(9)), 137)
+    assertEq(marshal.exitCode(Outcome.Signalled(15)), 143)
+    assertEq(marshal.exitCode(Outcome.TimedOut), 124)
+    assertEq(marshal.exitCode(Outcome.Cancelled), 143)
+    assertEq(marshal.exitCode(Outcome.Lost), 125)

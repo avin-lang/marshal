@@ -1,0 +1,84 @@
+module marshal
+
+// Which waiting jobs start now. Pure: the daemon hands it what is running and what is waiting, and
+// starts what it answers.
+//
+// - Development jobs share a budget of units and of memory. A job starts when its units and its
+//   memory fit beside what is running.
+// - The queue is first come, first served: the job at its head is never overtaken by one that would
+//   delay it. A later job may start ahead of a head that does not fit only if it fits now AND it is
+//   expected to end before the head could start (backfill), so the head starts no later for it.
+// - The landing lane holds one landing job at a time, outside the unit budget: a landing job starts
+//   as soon as the lane is free, whatever development jobs hold. Its memory is counted, so
+//   development jobs make room for it rather than the other way round.
+
+data Budget(units: int, memory: long)
+
+// A job waiting to start, as the scheduler weighs it: `expectedMs` is how long it is expected to run.
+data Waiting(id: long, units: int, memory: long, landing: bool, expectedMs: long)
+
+// A job running since `startedMs` (the daemon's clock, in milliseconds).
+data Started(id: long, units: int, memory: long, landing: bool, startedMs: long, expectedMs: long)
+
+// The ids of the jobs to start now, in the order to start them: a landing job first, then
+// development jobs in queue order.
+schedule(budget: Budget, running: Vector[Started], queue: Vector[Waiting], now: long) -> Vector[long]
+    val starts = Buffer[long]()
+    // When each running or starting job is expected to end, with the units and memory it frees.
+    val ends = Buffer[(long, int, long)]()
+    var units = 0
+    var memory: long = 0
+    var laneBusy = false
+    for r in running
+        if r.landing then laneBusy = true else units += r.units
+        memory += r.memory
+        ends += (expectedEnd(r.startedMs, r.expectedMs, now), if r.landing then 0 else r.units, r.memory)
+    if !laneBusy
+        queue.find(w -> w.landing) match
+            Some(w) ->
+                starts += w.id
+                memory += w.memory
+                ends += (now + w.expectedMs, 0, w.memory)
+            None -> ()
+    // When the blocked head of the queue can start; None while the head has not been met.
+    var headStart: Option[long] = None
+    for w in queue
+        if w.landing then continue
+        val fits = units + w.units <= budget.units && memory + w.memory <= budget.memory
+        val go = headStart match
+            None ->
+                if !fits then headStart = Some(whenFits(budget, units, memory, w, ends))
+                fits
+            Some(at) -> fits && now + w.expectedMs <= at
+        if go
+            starts += w.id
+            units += w.units
+            memory += w.memory
+            ends += (now + w.expectedMs, w.units, w.memory)
+    starts.toVector()
+
+// A running job past its expected end may end at any moment: it is expected now.
+private expectedEnd(startedMs: long, expectedMs: long, now: long) -> long =
+    if startedMs + expectedMs > now then startedMs + expectedMs else now
+
+// The earliest time `w` fits, if the jobs in `ends` end when they are expected to.
+private whenFits(budget: Budget, units: int, memory: long, w: Waiting, ends: Buffer[(long, int, long)]) -> long
+    var freeUnits = budget.units - units
+    var freeMemory = budget.memory - memory
+    for (at, u, m) in ends.sortBy(e -> e.0)
+        freeUnits += u
+        freeMemory += m
+        if w.units <= freeUnits && w.memory <= freeMemory then return at
+    long.MaxValue
+
+// Why a job can never start under `budget`, or None when it can.
+neverFits(budget: Budget, units: int, memory: long, landing: bool) -> Option[string]
+    if units < 1 then return Some(s"a job weighs at least 1 unit, not $units")
+    if memory < 0 then return Some("a job's memory is not negative")
+    if landing then return None
+    if units > budget.units then return Some(s"the job needs $units units and the budget is ${budget.units}")
+    if memory > budget.memory then return Some(s"the job needs ${formatSize(memory)} of memory and the budget is ${formatSize(budget.memory)}")
+    None
+
+// The units a job of `kind` weighs when it does not say: a test 4, anything else 1.
+defaultUnits(kind: string) -> int = if kind == "test" then 4 else 1

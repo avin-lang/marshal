@@ -1,0 +1,45 @@
+module marshal
+
+// What the command line prints: a job's one-line result, a listing, the budget's use.
+
+// The line `wait` and `run` end with.
+resultLine(j: JobInfo) -> string
+    val took = formatMillis(j.elapsedMs)
+    val how = j.outcome match
+        Some(Exited(code)) -> s"exited $code after $took"
+        Some(Signalled(sig)) -> if j.killed then s"killed (signal $sig) after $took" else s"ended by signal $sig after $took"
+        Some(TimedOut) ->
+            val sample = j.sample.map(s -> s"; stack sample in $s").getOrElse("")
+            s"timed out after $took (deadline ${formatMillis(j.deadlineMs)})$sample"
+        Some(Cancelled) -> "cancelled before it started"
+        Some(Lost) -> "lost: the daemon stopped while it was queued or running"
+        None -> s"is ${j.state}"
+    s"marshal: job ${j.id} $how; log ${j.log}"
+
+// A job's state as a listing's column shows it.
+stateColumn(j: JobInfo) -> string = j.outcome match
+    Some(Exited(code)) -> s"exit $code"
+    Some(Signalled(sig)) -> if j.killed then "killed" else s"signal $sig"
+    Some(TimedOut) -> "timeout"
+    Some(Cancelled) -> "cancelled"
+    Some(Lost) -> "lost"
+    None -> j.state
+
+// The listing `ls` prints: a header, then one row per job.
+listing(jobs: Vector[JobInfo]) -> string
+    val rows = [["ID", "STATE", "KIND", "UNITS", "MEM", "ELAPSED", "COMMAND"]] ++ jobs.map(j -> [
+        j.id.toString(),
+        stateColumn(j),
+        if j.landing then j.kind + "*" else j.kind,
+        j.units.toString(),
+        if j.memory == 0 then "-" else formatSize(j.memory),
+        formatMillis(j.elapsedMs),
+        j.cmd.mkString(" ")])
+    val widths = (0..<6).map(c -> rows.map(r -> r(c).charCount()).max())
+    rows.map(r -> (0..<6).map(c -> r(c).padEnd(widths(c), ' ')).mkString("  ") + "  " + r(6)).mkString("\n")
+
+// The line `status` prints.
+usageLine(u: Usage) -> string
+    val memory = if u.memoryBudget == long.MaxValue then formatSize(u.memory) else s"${formatSize(u.memory)}/${formatSize(u.memoryBudget)}"
+    val lane = u.landing.map(id -> s"job $id").getOrElse("free")
+    s"units ${u.units}/${u.unitBudget}, memory $memory, ${u.running} running, ${u.queued} queued, landing lane $lane"

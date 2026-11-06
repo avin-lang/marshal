@@ -1,0 +1,155 @@
+module tests
+
+// The event log as a restarting daemon reads it, the settings file, and what the command line prints.
+import json
+import json.Json
+import marshal
+import marshal.cli
+import marshal.{Budget, JobInfo, Learning, Outcome, Usage}
+
+info(id: long, kind: string = "test", landing: bool = false, state: string = "queued", outcome: Option[Outcome] = None, elapsed: long = 0) -> JobInfo =
+    JobInfo(id, kind, 4, 0, landing, "/d", ["make", "it"], state, outcome, false, 5, elapsed, 60000, s"/h/jobs/$id.log", None)
+
+line(event: string, j: JobInfo, extra: Vector[(string, Json)] = []) -> string = marshal.eventLine(1000, event, j, extra)
+
+ended(id: long, run: long, exit: int, kind: string = "test", landing: bool = false) -> string =
+    line("finished", info(id, kind, landing, "done", Some(Outcome.Exited(exit)), run), [("run_ms", Json.num(run)), ("exit", Json.num(exit))])
+
+@test("an event line is one JSON object: ts and event first, then the job")
+eventShape()
+    val j = json.parse(line("started", info(3), [("pgid", Json.num(77))])).ok().get()
+    assertEq(j.keys().take(3), ["ts", "event", "id"])
+    assertEq(j("event").asString(), Some("started"))
+    assertEq(j("pgid").asLong(), Some(long(77)))
+    assertEq(marshal.decodeJob(j), Ok(info(3)))
+
+@test("an empty log recovers to nothing, and ids start at 1")
+emptyLog()
+    val r = marshal.recover([])
+    assertEq(r.nextId, 1)
+    assert(r.open.isEmpty())
+    assert(r.histories.isEmpty())
+    assertEq(r.unreadable, 0)
+
+@test("jobs begun and never ended are open, as their last event; ended ones are not")
+openJobs()
+    val lines = [
+        line("submitted", info(1)), line("started", info(1, state = "running")), ended(1, 100, 0),
+        line("submitted", info(2)), line("started", info(2, state = "running")),
+        line("submitted", info(3)),
+        line("submitted", info(4)), line("killed", info(4, state = "done", outcome = Some(Outcome.Cancelled))),
+        line("submitted", info(5)), line("started", info(5, state = "running")), line("timeout", info(5, state = "done", outcome = Some(Outcome.TimedOut))),
+        line("submitted", info(6)), line("lost", info(6, state = "done", outcome = Some(Outcome.Lost)))]
+    val r = marshal.recover(lines)
+    assertEq(r.nextId, 7)
+    assertEq(r.open.map(e -> e("id").asLong().get()), [long(2), long(3)])
+    assertEq(r.open.map(e -> e("event").asString().get()), ["started", "submitted"])
+
+@test("histories hold the run times of runs that exited 0, by kind and lane, oldest first")
+histories()
+    val lines = [ended(1, 100, 0), ended(2, 200, 1), ended(3, 300, 0), ended(4, 400, 0, "build"), ended(5, 500, 0, "test", true)]
+    val r = marshal.recover(lines)
+    assertEq(r.histories.get("test"), Some([long(100), long(300)]))
+    assertEq(r.histories.get("build"), Some([long(400)]))
+    assertEq(r.histories.get("test+landing"), Some([long(500)]))
+
+@test("lines that are not events are counted and skipped, blank lines ignored")
+unreadable()
+    val r = marshal.recover(["", "not json", "{\"event\": \"started\"}", "[1]", ended(9, 1, 0), "   "])
+    assertEq(r.unreadable, 3)
+    assertEq(r.nextId, 10)
+
+@test("a lost event marks the job done with the outcome Lost and says whether its group lives")
+lostEvents()
+    val ev = json.parse(line("started", info(2, state = "running"), [("pgid", Json.num(55))])).ok().get()
+    val lost = json.parse(marshal.lostLine(2000, ev, true).get()).ok().get()
+    assertEq(lost("event").asString(), Some("lost"))
+    assertEq(lost("state").asString(), Some("done"))
+    assertEq(marshal.decodeOutcome(lost("outcome")), Ok(Outcome.Lost))
+    assertEq(lost("exit").asLong(), Some(long(125)))
+    assertEq(lost("pgid").asLong(), Some(long(55)))
+    assertEq(lost("group_alive").asBool(), Some(true))
+    assertEq(marshal.lostLine(2000, Json.obj(("id", Json.num(1))), false), None)
+
+@test("a job's ending is found by its id alone, the last one winning, and not a longer id's")
+endings()
+    val lines = [line("submitted", info(1)), ended(1, 10, 3), line("submitted", info(12)), ended(12, 10, 0)]
+    assertEq(marshal.endOf(lines, 1).flatMap(e -> e("exit").asLong()), Some(long(3)))
+    assertEq(marshal.endOf(lines, 12).flatMap(e -> e("exit").asLong()), Some(long(0)))
+    assertEq(marshal.endOf(lines, 2), None)
+    assertEq(marshal.endOf([line("submitted", info(1))], 1), None)
+
+
+@test("an empty settings file is every default: 12 units, the machine's memory less 8G")
+configDefaults()
+    val c = marshal.readConfig("", 64 * G).ok().get()
+    assertEq(c.budget, Budget(12, 56 * G))
+    assertEq(c.learning, marshal.defaultLearning)
+    assertEq(marshal.readConfig("  \n", 64 * G).ok().get().budget, Budget(12, 56 * G))
+
+@test("a machine whose memory is unknown has no memory budget; a small one keeps half")
+configMachines()
+    assertEq(marshal.readConfig("", 0).ok().get().budget.memory, long.MaxValue)
+    assertEq(marshal.readConfig("", 4 * G).ok().get().budget.memory, 2 * G)
+
+@test("every setting is read")
+configSettings()
+    val c = marshal.readConfig("{\"units\": 3, \"memory\": \"10G\", \"deadline_floor\": \"7s\", \"learn_window\": 5, \"learn_min_runs\": 2}", 64 * G).ok().get()
+    assertEq(c.budget, Budget(3, 10 * G))
+    assertEq(c.learning, Learning(5, 2, 2, 7000))
+    assertEq(marshal.readConfig("{\"reserve\": \"16G\"}", 64 * G).ok().get().budget.memory, 48 * G)
+    assertEq(marshal.readConfig("{\"memory\": 1000}", 64 * G).ok().get().budget.memory, long(1000))
+
+@test("a bad settings file is refused naming the setting")
+configErrors()
+    val cases = [
+        ("{", "not JSON"),
+        ("[]", "holds an object"),
+        ("{\"unit\": 3}", "no setting `unit`"),
+        ("{\"units\": 0}", "`units` is at least 1"),
+        ("{\"units\": \"3\"}", "`units` is a whole number"),
+        ("{\"memory\": \"lots\"}", "`memory` is a size"),
+        ("{\"memory\": -1}", "`memory` is a size"),
+        ("{\"deadline_floor\": 5}", "`deadline_floor` is a deadline"),
+        ("{\"learn_window\": 0}", "at least 1")]
+    for (text, why) in cases
+        marshal.readConfig(text, 64 * G) match
+            Err(e) -> assert(e.contains(why), s"$text: $e")
+            Ok(c) -> fail(s"$text read as $c")
+
+@test("the result line says how each job ended")
+resultLines()
+    val done = (o: Outcome) -> marshal.resultLine(info(7, state = "done", outcome = Some(o), elapsed = 4200))
+    assertEq(done(Outcome.Exited(0)), "marshal: job 7 exited 0 after 4.2s; log /h/jobs/7.log")
+    assertEq(done(Outcome.Signalled(9)), "marshal: job 7 ended by signal 9 after 4.2s; log /h/jobs/7.log")
+    assertEq(done(Outcome.Cancelled), "marshal: job 7 cancelled before it started; log /h/jobs/7.log")
+    assert(done(Outcome.Lost).contains("job 7 lost"))
+    assertEq(done(Outcome.TimedOut), "marshal: job 7 timed out after 4.2s (deadline 1m00s); log /h/jobs/7.log")
+    val killed = JobInfo(7, "t", 1, 0, false, "/", ["x"], "done", Some(Outcome.Signalled(15)), true, 0, 10, 60000, "/l", None)
+    assertEq(marshal.resultLine(killed), "marshal: job 7 killed (signal 15) after 10ms; log /l")
+    val sampled = JobInfo(7, "t", 1, 0, false, "/", ["x"], "done", Some(Outcome.TimedOut), false, 0, 10, 60000, "/l", Some("/s.txt"))
+    assert(marshal.resultLine(sampled).contains("stack sample in /s.txt"))
+
+@test("a listing lines its columns up, marks landing jobs and shows no memory as -")
+listings()
+    val rows = marshal.listing([info(1, state = "running"), info(12, "build", true)]).lines().toVector()
+    assertEq(rows.length(), 3)
+    assertEq(rows(0), "ID  STATE    KIND    UNITS  MEM  ELAPSED  COMMAND")
+    assertEq(rows(1), "1   running  test    4      -    0ms      make it")
+    assertEq(rows(2), "12  queued   build*  4      -    0ms      make it")
+    assertEq(marshal.listing([]), "ID  STATE  KIND  UNITS  MEM  ELAPSED  COMMAND")
+
+@test("the status line shows units, memory, counts and the landing lane")
+usageLines()
+    assertEq(marshal.usageLine(Usage(8, 12, 2 * G, 56 * G, 3, 2, Some(5))), "units 8/12, memory 2G/56G, 3 running, 2 queued, landing lane job 5")
+    assertEq(marshal.usageLine(Usage(0, 12, 0, long.MaxValue, 0, 0, None)), "units 0/12, memory 0, 0 running, 0 queued, landing lane free")
+
+@test("the command line's options are read, with kind and units defaulted")
+submissions()
+    val env = [("A", "1")]
+    assertEq(cli.parseSubmission(["--", "sysl", "test", "x"], "/w", env), Ok(marshal.JobSpec("test", 4, 0, false, "/w", None, ["sysl", "test", "x"], env)))
+    assertEq(cli.parseSubmission(["make"], "/w", env), Ok(marshal.JobSpec("build", 1, 0, false, "/w", None, ["make"], env)))
+    assertEq(cli.parseSubmission(["--kind", "docs", "--units", "2", "--mem", "1G", "--landing", "--dir", "sub", "--deadline", "90s", "--", "--x"], "/w", env), Ok(marshal.JobSpec("docs", 2, G, true, "/w/sub", Some(long(90000)), ["--x"], env)))
+    assertEq(cli.parseSubmission(["--dir", "/abs", "--", "a"], "/w", env).map(s -> s.dir), Ok("/abs"))
+    for bad in [[], ["--"], ["--units"], ["--units", "x", "a"], ["--mem", "1.5G", "a"], ["--deadline", "0", "a"], ["--kind", "", "a"], ["--frob", "1", "a"]]
+        assert(cli.parseSubmission(bad, "/w", env).isErr(), s"$bad")

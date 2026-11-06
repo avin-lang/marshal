@@ -1,0 +1,3 @@
+import marshal.cli
+
+main(args: Vector[string]) -> int = cli.main(args)

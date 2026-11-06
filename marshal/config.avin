@@ -1,0 +1,54 @@
+module marshal
+
+// The daemon's settings, from `config.json` in marshal's home directory. Every key is optional:
+//
+//   units           the development unit budget (12)
+//   memory          the memory budget, a size such as "56G" or a number of bytes; by default the
+//                   machine's memory less `reserve`
+//   reserve         what the default memory budget leaves the rest of the machine ("8G")
+//   deadline_floor  the shortest deadline learning may give, as `--deadline` writes one ("5m")
+//   learn_window    how many recent runs of a kind learning reads (20)
+//   learn_min_runs  how many runs a kind needs before its deadline is learned (3)
+import json
+import json.Json
+
+data Config(budget: Budget, learning: Learning)
+
+private val DefaultReserve: long = 8 * 1024 * 1024 * 1024
+
+// The settings in `text` (empty text is every default), for a machine with `machineMemory` bytes
+// (0 where it is not known: the memory budget is then unlimited unless the file gives one).
+readConfig(text: string, machineMemory: long) -> Result[Config, string]
+    val j = if text.trim().isEmpty() then Json.obj() else json.parse(text) match
+        Ok(v) -> v
+        Err(e) -> return Err(s"config.json is not JSON: $e")
+    if j.asMembers().isEmpty() then return Err("config.json holds an object")
+    for key in j.keys()
+        if !["units", "memory", "reserve", "deadline_floor", "learn_window", "learn_min_runs"].contains(key)
+            return Err(s"config.json: no setting `$key`")
+    val units = whole(j, "units", 12)?
+    if units < 1 then return Err("config.json: `units` is at least 1")
+    val reserve = size(j, "reserve", DefaultReserve)?
+    val fallback = if machineMemory <= 0 then long.MaxValue elif machineMemory > reserve then machineMemory - reserve else machineMemory / 2
+    val memory = size(j, "memory", fallback)?
+    val floor = j.get("deadline_floor") match
+        None -> defaultLearning.floorMs
+        Some(v) -> v.asString().flatMap(parseDeadline) match
+            Some(ms) -> ms
+            None -> return Err("config.json: `deadline_floor` is a deadline such as \"5m\" or \"90s\"")
+    val window = whole(j, "learn_window", defaultLearning.window)?
+    val minRuns = whole(j, "learn_min_runs", defaultLearning.minRuns)?
+    if window < 1 || minRuns < 1 then return Err("config.json: `learn_window` and `learn_min_runs` are at least 1")
+    Ok(Config(Budget(units, memory), Learning(window, minRuns, defaultLearning.factor, floor)))
+
+private whole(j: Json, key: string, absent: int) -> Result[int, string] = j.get(key) match
+    None -> Ok(absent)
+    Some(v) -> v.asInt() match
+        Some(n) -> Ok(n)
+        None -> Err(s"config.json: `$key` is a whole number")
+
+private size(j: Json, key: string, absent: long) -> Result[long, string] = j.get(key) match
+    None -> Ok(absent)
+    Some(v) -> v.asString().flatMap(parseSize).orElse(v.asLong().filter(n -> n >= 0)) match
+        Some(n) -> Ok(n)
+        None -> Err(s"config.json: `$key` is a size such as \"56G\" or a number of bytes")

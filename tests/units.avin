@@ -1,0 +1,84 @@
+module tests
+
+// Sizes, deadlines and processor times as they are written on a command line or printed by `ps`.
+import marshal
+
+val G: long = 1024 * 1024 * 1024
+
+@test("a size is bytes when bare and a power of 1024 per suffix, in either case")
+sizes()
+    assertEq(marshal.parseSize("0"), Some(long(0)))
+    assertEq(marshal.parseSize("100"), Some(long(100)))
+    assertEq(marshal.parseSize("1K"), Some(long(1024)))
+    assertEq(marshal.parseSize("1k"), Some(long(1024)))
+    assertEq(marshal.parseSize("3M"), Some(long(3 * 1024 * 1024)))
+    assertEq(marshal.parseSize("29G"), Some(29 * G))
+    assertEq(marshal.parseSize("29g"), Some(29 * G))
+    assertEq(marshal.parseSize("2T"), Some(2048 * G))
+
+@test("a size that is not whole digits and one suffix is refused")
+badSizes()
+    for t in ["", "G", "-1G", "+1", "1.5G", "1GB", "1 G", " 1G", "1X", "G1", "١G"]
+        assertEq(marshal.parseSize(t), None)
+
+@test("a size too large for a long is refused rather than wrapped")
+hugeSizes()
+    assertEq(marshal.parseSize("9223372036854775807"), Some(long.MaxValue))
+    assertEq(marshal.parseSize("9223372036854775808"), None)
+    assertEq(marshal.parseSize("8388608T"), None)
+    assertEq(marshal.parseSize("8388607T"), Some(long(8388607) * 1024 * G))
+
+@test("a size is shown in the largest unit that divides it")
+formattedSizes()
+    assertEq(marshal.formatSize(0), "0")
+    assertEq(marshal.formatSize(100), "100")
+    assertEq(marshal.formatSize(1024), "1K")
+    assertEq(marshal.formatSize(1536 * 1024 * 1024), "1536M")
+    assertEq(marshal.formatSize(29 * G), "29G")
+    assertEq(marshal.formatSize(4096 * G), "4T")
+    assertEq(marshal.formatSize(1025), "1025")
+
+@test("a size shown reads back as itself")
+sizeRoundTrip()
+    for n in [long(0), long(1), long(1023), long(1024), 29 * G, long(3) * 1024 * G + 1, long.MaxValue]
+        assertEq(marshal.parseSize(marshal.formatSize(n)), Some(n))
+
+@test("a deadline is minutes when bare, and seconds, minutes or hours by suffix")
+deadlines()
+    assertEq(marshal.parseDeadline("45"), Some(long(45 * 60000)))
+    assertEq(marshal.parseDeadline("2s"), Some(long(2000)))
+    assertEq(marshal.parseDeadline("90m"), Some(long(90 * 60000)))
+    assertEq(marshal.parseDeadline("2h"), Some(long(2 * 3600000)))
+
+@test("a deadline of zero, a negative, a fraction or another suffix is refused")
+badDeadlines()
+    for t in ["", "0", "0s", "-1", "1.5", "s", "3d", "1S", "99999999999999999999", "153722867280913m"]
+        assertEq(marshal.parseDeadline(t), None)
+
+@test("a length of time is shown at the precision a person reads")
+formattedMillis()
+    assertEq(marshal.formatMillis(0), "0ms")
+    assertEq(marshal.formatMillis(999), "999ms")
+    assertEq(marshal.formatMillis(1000), "1.0s")
+    assertEq(marshal.formatMillis(4250), "4.2s")
+    assertEq(marshal.formatMillis(59999), "59.9s")
+    assertEq(marshal.formatMillis(60000), "1m00s")
+    assertEq(marshal.formatMillis(185000), "3m05s")
+    assertEq(marshal.formatMillis(3599999), "59m59s")
+    assertEq(marshal.formatMillis(3600000), "1h00m")
+    assertEq(marshal.formatMillis(3720000), "1h02m")
+    assertEq(marshal.formatMillis(100 * 3600000), "100h00m")
+
+@test("processor time reads in every shape ps prints it")
+cpuTimes()
+    assertEq(marshal.parseCpuTime("0:00.01"), Some(long(1)))
+    assertEq(marshal.parseCpuTime("  1:02.50 "), Some(long(6250)))
+    assertEq(marshal.parseCpuTime("125:00.00"), Some(long(750000)))
+    assertEq(marshal.parseCpuTime("1:00:00"), Some(long(360000)))
+    assertEq(marshal.parseCpuTime("7"), Some(long(700)))
+    assertEq(marshal.parseCpuTime("0:01.5"), Some(long(150)))
+
+@test("processor time of another shape is None")
+badCpuTimes()
+    for t in ["", "  ", "a:b", "1:2:3:4", "1::2", "1:00.x", ":"]
+        assertEq(marshal.parseCpuTime(t), None)

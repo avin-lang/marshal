@@ -1,0 +1,5 @@
+package { name = "marshal", version = "0.1.0", description = "A job manager for building, testing and releasing: a unit and memory budget, a landing lane, learned deadlines" }
+
+dependencies {
+  json { path = "../avin/packages/json" }
+}

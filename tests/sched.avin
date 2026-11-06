@@ -1,0 +1,125 @@
+module tests
+
+// The scheduler: the unit and memory budgets, first come first served, the landing lane and the
+// backfill rule, each pinned by what `schedule` answers.
+import marshal
+import marshal.{Budget, Started, Waiting}
+
+val budget: Budget = Budget(12, 64 * 1024)
+val hour: long = 3600000
+
+ids(xs: long*) -> Vector[long] = xs.toVector()
+
+dev(id: long, units: int, expected: long = hour, memory: long = 0) -> Waiting = Waiting(id, units, memory, false, expected)
+land(id: long, expected: long = hour, memory: long = 0) -> Waiting = Waiting(id, 4, memory, true, expected)
+running(id: long, units: int, started: long = 0, expected: long = hour, memory: long = 0) -> Started = Started(id, units, memory, false, started, expected)
+landing(id: long, started: long = 0, expected: long = hour, memory: long = 0) -> Started = Started(id, 4, memory, true, started, expected)
+
+@test("nothing waiting starts nothing, with or without running jobs")
+empty()
+    assertEq(marshal.schedule(budget, [], [], 0), [])
+    assertEq(marshal.schedule(budget, [running(1, 12)], [], 0), [])
+
+@test("jobs start in queue order while they fit the units")
+fifoWithinBudget()
+    assertEq(marshal.schedule(budget, [], [dev(1, 4), dev(2, 4), dev(3, 4)], 0), ids(1, 2, 3))
+    assertEq(marshal.schedule(budget, [], [dev(1, 4), dev(2, 4), dev(3, 4), dev(4, 1)], 0), ids(1, 2, 3))
+
+@test("a job that fits exactly starts, and one unit more waits")
+exactFit()
+    assertEq(marshal.schedule(budget, [running(1, 8)], [dev(2, 4)], 0), ids(2))
+    assertEq(marshal.schedule(budget, [running(1, 9)], [dev(2, 4)], 0), [])
+    assertEq(marshal.schedule(budget, [], [dev(1, 12)], 0), ids(1))
+
+@test("memory is a budget of its own: a job fitting the units but not the memory waits")
+memoryBudget()
+    val b = Budget(12, 100)
+    assertEq(marshal.schedule(b, [running(1, 1, memory = 60)], [dev(2, 1, memory = 40)], 0), ids(2))
+    assertEq(marshal.schedule(b, [running(1, 1, memory = 60)], [dev(2, 1, memory = 41)], 0), [])
+    assertEq(marshal.schedule(b, [], [dev(1, 1, memory = 60), dev(2, 1, memory = 60)], 0), ids(1))
+
+@test("a later small job does not overtake a blocked head when it would outlast the head's wait")
+noOvertakingThatDelaysTheHead()
+    // 10 units busy until t = 1h; the head needs 4, so it starts at 1h; job 3 would run 2h.
+    val r = [running(1, 10, expected = hour)]
+    assertEq(marshal.schedule(budget, r, [dev(2, 4), dev(3, 1, expected = 2 * hour)], 0), [])
+
+@test("a later job backfills when it fits now and ends before the head could start")
+backfill()
+    val r = [running(1, 10, expected = hour)]
+    assertEq(marshal.schedule(budget, r, [dev(2, 4), dev(3, 1, expected = hour / 2)], 0), ids(3))
+    // ending exactly when the head starts is soon enough
+    assertEq(marshal.schedule(budget, r, [dev(2, 4), dev(3, 2, expected = hour)], 0), ids(3))
+    // but it must fit now as well
+    assertEq(marshal.schedule(budget, r, [dev(2, 4), dev(3, 3, expected = 1)], 0), [])
+
+@test("backfilled jobs together never push past the units free now")
+backfillShares()
+    val r = [running(1, 10, expected = hour)]
+    assertEq(marshal.schedule(budget, r, [dev(2, 4), dev(3, 1, expected = 10), dev(4, 1, expected = 10), dev(5, 1, expected = 10)], 0), ids(3, 4))
+
+@test("the head's start is when enough running jobs end, in the order they are expected to")
+headStartAccumulates()
+    // 4 + 4 + 3 busy, ending at 1h, 2h and 3h; a head of 6 needs two of them gone: 2h.
+    val r = [running(1, 4, expected = hour), running(2, 4, expected = 2 * hour), running(3, 3, expected = 3 * hour)]
+    assertEq(marshal.schedule(budget, r, [dev(4, 6), dev(5, 1, expected = 2 * hour)], 0), ids(5))
+    assertEq(marshal.schedule(budget, r, [dev(4, 6), dev(5, 1, expected = 2 * hour + 1)], 0), [])
+
+@test("a running job past its expected end is expected to end now, so nothing backfills behind it")
+overdueRunning()
+    val r = [running(1, 10, started = 0, expected = hour)]
+    assertEq(marshal.schedule(budget, r, [dev(2, 4), dev(3, 1, expected = 1)], 2 * hour), ids())
+
+@test("time counts from when a running job started")
+startedEarlier()
+    val r = [running(1, 10, started = 0, expected = hour)]
+    // at 30 min the head can start in 30 min: a 20-minute job backfills, a 40-minute one does not
+    assertEq(marshal.schedule(budget, r, [dev(2, 4), dev(3, 1, expected = hour / 3)], hour / 2), ids(3))
+    assertEq(marshal.schedule(budget, r, [dev(2, 4), dev(3, 1, expected = 2 * hour / 3)], hour / 2), [])
+
+@test("a landing job starts at once, outside the unit budget, ahead of the queue")
+landingJumpsTheQueue()
+    val r = [running(1, 12)]
+    assertEq(marshal.schedule(budget, r, [dev(2, 1), land(3)], 0), ids(3))
+    assertEq(marshal.schedule(budget, [], [dev(2, 1), land(3)], 0), ids(3, 2))
+
+@test("the landing lane holds one landing job at a time, in arrival order")
+oneLandingAtATime()
+    assertEq(marshal.schedule(budget, [], [land(1), land(2)], 0), ids(1))
+    assertEq(marshal.schedule(budget, [landing(1)], [land(2), dev(3, 4)], 0), ids(3))
+
+@test("a running landing job takes no units from development jobs")
+landingTakesNoUnits()
+    assertEq(marshal.schedule(budget, [landing(1)], [dev(2, 12)], 0), ids(2))
+
+@test("a landing job starts whatever memory development jobs hold, and its memory then counts")
+landingMemory()
+    val b = Budget(12, 100)
+    assertEq(marshal.schedule(b, [running(1, 1, memory = 90)], [land(2, memory = 50)], 0), ids(2))
+    assertEq(marshal.schedule(b, [landing(1, memory = 50)], [dev(2, 1, memory = 51)], 0), [])
+    assertEq(marshal.schedule(b, [landing(1, memory = 50)], [dev(2, 1, memory = 50)], 0), ids(2))
+
+@test("a landing job ending frees its memory for the head's start time")
+landingEndFreesMemory()
+    val b = Budget(12, 100)
+    val r = [landing(1, expected = hour, memory = 80)]
+    assertEq(marshal.schedule(b, r, [dev(2, 1, memory = 50), dev(3, 1, expected = hour, memory = 10)], 0), ids(3))
+    assertEq(marshal.schedule(b, r, [dev(2, 1, memory = 50), dev(3, 1, expected = hour + 1, memory = 10)], 0), [])
+
+@test("a job can never fit when it outweighs the budget; a landing job is held to neither budget")
+neverFits()
+    assertEq(marshal.neverFits(budget, 4, 0, false), None)
+    assertEq(marshal.neverFits(budget, 12, 64 * 1024, false), None)
+    assert(marshal.neverFits(budget, 13, 0, false).isDefined())
+    assert(marshal.neverFits(budget, 1, 64 * 1024 + 1, false).isDefined())
+    assert(marshal.neverFits(budget, 0, 0, false).isDefined())
+    assert(marshal.neverFits(budget, 0, 0, true).isDefined())
+    assert(marshal.neverFits(budget, 1, -1, false).isDefined())
+    assertEq(marshal.neverFits(budget, 13, 1024 * 1024, true), None)
+
+@test("a test weighs 4 units by default and anything else 1")
+defaultUnits()
+    assertEq(marshal.defaultUnits("test"), 4)
+    assertEq(marshal.defaultUnits("build"), 1)
+    assertEq(marshal.defaultUnits("release"), 1)
+    assertEq(marshal.defaultUnits(""), 1)

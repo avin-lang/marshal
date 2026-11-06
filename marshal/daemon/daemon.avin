@@ -1,0 +1,405 @@
+module marshal.daemon
+
+// The daemon: it listens on `<home>/sock`, keeps the queue, starts jobs when the scheduler says they
+// fit, ends them at their deadlines, and records every step in `<home>/events.jsonl`.
+//
+// One thread, the daemon's own, owns every job and makes every decision; it reads one channel of
+// messages. Each client connection has a thread of its own that turns a request line into a message
+// and waits on a channel of its own for the reply; each running job has a thread that waits for its
+// process and one that sleeps until its deadline, and both report back by message. So no state is
+// shared, and nothing polls: a `wait` is answered the moment the job's process ends.
+import avin.collections.mutable.{Map as MutableMap}
+import avin.fs
+import avin.io.IoError
+import avin.net.{UnixListener, UnixStream}
+import avin.process
+import avin.process.{Command, ExitStatus}
+import avin.signal
+import avin.threads
+import avin.threads.{Channel, spawn}
+import avin.time
+import avin.time.{millis, seconds}
+import json
+import json.Json
+import marshal
+import marshal.{Config, JobInfo, JobSpec, Outcome, Reply, Request, Started, Usage, Waiting}
+import marshal.{Submit, Wait, Kill, Status, Stop}
+import marshal.{Submitted, Ended, Jobs, Using, Done, Failed}
+import marshal.{Cancelled, TimedOut}
+
+data Message
+    FromClient(request: Request, reply: Channel[Reply])
+    Exit(id: long, status: Result[ExitStatus, IoError])
+    Due(id: long)
+    Written
+    Terminate
+
+// How long a job's processes have between TERM and KILL.
+val Grace: long = 5000
+
+// How many ended jobs `ls` shows.
+val Recent: int = 10
+
+class Job(val id: long, val spec: JobSpec, val submittedMs: long, val deadlineMs: long, val expectedMs: long, val log: string)
+    var state = "queued"
+    var startedMs: long = 0
+    var endedMs: long = 0
+    var pgid: long = 0
+    var outcome: Option[Outcome] = None
+    var killed = false
+    var timedOut = false
+    var sample: Option[string] = None
+    val waiters = Buffer[Channel[Reply]]()
+
+    info(now: long) -> JobInfo =
+        val elapsed = state match
+            "queued" -> now - submittedMs
+            "running" -> now - startedMs
+            _ -> endedMs - startedMs
+        val queued = if state == "queued" then now - submittedMs else startedMs - submittedMs
+        JobInfo(id, spec.kind, spec.units, spec.memory, spec.landing, spec.dir, spec.cmd, state, outcome, killed, queued, elapsed, deadlineMs, log, sample)
+
+// The daemon's state, owned by its own thread.
+class Daemon(val home: string, val config: Config, val events: Channel[Message], var nextId: long, val histories: MutableMap[string, Buffer[long]])
+    val jobs = MutableMap[long, Job]()
+    val queue = Buffer[Job]()
+    val running = Buffer[Job]()
+    val ended = Buffer[Job]()
+    var stopping = false
+    var draining = false
+    val stopReplies = Buffer[Channel[Reply]]()
+
+    now() -> long = time.monotonic().toMillis()
+
+    record(event: string, job: Job, extra: Vector[(string, Json)] = [])
+        fs.appendText(home + "/events.jsonl", marshal.eventLine(time.now().epochMillis(), event, job.info(now()), extra) + "\n")
+
+    history(spec: JobSpec) -> Vector[long] =
+        histories.get(marshal.historyKey(spec.kind, spec.landing)).map(b -> b.toVector()).getOrElse([])
+
+    // Serves messages until the daemon has stopped.
+    serve()
+        loop
+            val message = events.receive() match
+                Some(m) -> m
+                None -> break
+            message match
+                FromClient(request, reply) -> answer(request, reply)
+                Exit(id, status) -> exited(id, status)
+                Due(id) -> due(id)
+                Written -> ()
+                Terminate ->
+                    eprintln("marshal: TERM received: stopping, killing what runs")
+                    stop(true, false, None)
+            if draining && running.isEmpty() && queue.isEmpty() then stopping = true
+            if stopping && running.isEmpty() && queue.isEmpty() then break
+        finish()
+
+    // Answers a request at once, or keeps its reply channel for when the answer is known.
+    answer(request: Request, reply: Channel[Reply])
+        request match
+            Submit(spec) -> reply.send(submit(spec))
+            Wait(id) -> jobs.get(id) match
+                Some(job) if job.state == "done" -> reply.send(Ended(job.info(now())))
+                Some(job) -> job.waiters += reply
+                None -> reply.send(endedEarlier(id))
+            Kill(id) -> reply.send(kill(id))
+            Request.List -> reply.send(Jobs(listing()))
+            Status -> reply.send(Using(usage()))
+            Stop(force, drain) -> stop(force, drain, Some(reply))
+
+    submit(spec: JobSpec) -> Reply
+        if stopping || draining then return Failed("the daemon is stopping and takes no new jobs")
+        marshal.neverFits(config.budget, spec.units, spec.memory, spec.landing) match
+            Some(why) -> return Failed(why)
+            None -> ()
+        if !fs.isDir(spec.dir) then return Failed(s"no directory ${spec.dir}")
+        val past = history(spec)
+        val deadline = spec.deadlineMs.getOrElse(marshal.deadlineMs(config.learning, spec.kind, spec.landing, past))
+        val learned = marshal.expectedMs(config.learning, spec.kind, spec.landing, past)
+        val expected = if learned < deadline then learned else deadline
+        val id = nextId
+        nextId += 1
+        val job = Job(id, spec, now(), deadline, expected, s"$home/jobs/$id.log")
+        jobs(id) = job
+        queue += job
+        record("submitted", job)
+        schedule()
+        Submitted(id, job.log)
+
+    // A job this daemon never held: one an earlier daemon ran, answered from the log.
+    endedEarlier(id: long) -> Reply
+        if id < 1 || id >= nextId then return Failed(s"no job $id")
+        val text = fs.readText(home + "/events.jsonl").getOrElse("")
+        marshal.endOf(text.lines(), id) match
+            Some(ev) -> marshal.decodeJob(ev) match
+                Ok(info) -> Ended(info)
+                Err(e) -> Failed(s"job $id's last event is unreadable: $e")
+            None -> Failed(s"job $id has no ending in the log")
+
+    kill(id: long) -> Reply
+        val job = jobs.get(id) match
+            Some(j) -> j
+            None -> return Failed(if 1 <= id < nextId then s"job $id has already ended" else s"no job $id")
+        job.state match
+            "queued" ->
+                job.killed = true
+                queue.remove(queue.indexOf(job))
+                conclude(job, Cancelled, "killed")
+                Done
+            "running" ->
+                if !job.killed && !job.timedOut
+                    job.killed = true
+                    terminate(job.pgid, None)
+                Done
+            _ -> Failed(s"job $id has already ended")
+
+    // Starts what the scheduler says fits.
+    schedule()
+        if stopping then return
+        val t = now()
+        val started = running.map(j -> Started(j.id, j.spec.units, j.spec.memory, j.spec.landing, j.startedMs, j.expectedMs)).toVector()
+        val waiting = queue.map(j -> Waiting(j.id, j.spec.units, j.spec.memory, j.spec.landing, j.expectedMs)).toVector()
+        for id in marshal.schedule(config.budget, started, waiting, t)
+            val job = jobs(id)
+            queue.remove(queue.indexOf(job))
+            start(job)
+
+    start(job: Job)
+        val spec = job.spec
+        val program = if spec.landing then Command(spec.cmd(0), spec.cmd.drop(1)*) else Command("nice", (["-n", "15"] ++ spec.cmd)*)
+        var command = program.inDir(spec.dir).toFile(job.log).errorsToOutput().inNewGroup()
+        for (name, value) in spec.env do command = command.withEnv(name, value)
+        job.state = "running"
+        job.startedMs = now()
+        running += job
+        command.start() match
+            Ok(child) ->
+                job.pgid = child.group().getOrElse(child.pid())
+                record("started", job, [("pgid", Json.num(job.pgid))])
+                val events = self.events
+                val id = job.id
+                val deadline = job.deadlineMs
+                spawn(() -> events.send(Exit(id, child.waitFor())))
+                spawn(() ->
+                    threads.sleep(millis(deadline))
+                    events.send(Due(id)))
+            Err(e) ->
+                fs.writeText(job.log, s"marshal: could not start `${spec.cmd(0)}` in ${spec.dir}: ${e.message()}\n")
+                record("started", job, [("pgid", Json.num(0))])
+                conclude(job, Outcome.Exited(127), "finished")
+
+    exited(id: long, status: Result[ExitStatus, IoError])
+        val job = jobs(id)
+        if job.state != "running" then return
+        // Whatever the job left running in its group goes with it.
+        process.signal(-job.pgid, signal.Terminate)
+        if job.timedOut
+            conclude(job, TimedOut, "timeout")
+            return
+        val outcome = status match
+            Ok(ExitStatus.Exited(code)) -> Outcome.Exited(code)
+            Ok(ExitStatus.Signalled(sig)) -> Outcome.Signalled(sig)
+            Ok(ExitStatus.TimedOut) -> Outcome.TimedOut
+            Err(e) ->
+                eprintln(s"marshal: job $id could not be waited for: ${e.message()}")
+                Outcome.Lost
+        conclude(job, outcome, if job.killed then "killed" else "finished")
+
+    due(id: long)
+        val job = jobs(id)
+        if job.state != "running" || job.killed || job.timedOut then return
+        job.timedOut = true
+        val sample = s"$home/jobs/$id.sample.txt"
+        job.sample = Some(sample)
+        eprintln(s"marshal: job $id passed its deadline of ${marshal.formatMillis(job.deadlineMs)}: sampling and stopping it")
+        terminate(job.pgid, Some(sample))
+
+    // Ends a job: records it, answers its waiters and lets the scheduler use what it held.
+    conclude(job: Job, outcome: Outcome, event: string)
+        val t = now()
+        // A job cancelled while queued ran for no time: it "starts" and ends as it is cancelled.
+        if job.state == "running" then running.remove(running.indexOf(job)) else job.startedMs = t
+        job.state = "done"
+        job.endedMs = t
+        job.outcome = Some(outcome)
+        ended += job
+        val info = job.info(now())
+        record(event, job, [("run_ms", Json.num(info.elapsedMs)), ("exit", Json.num(marshal.exitCode(outcome)))])
+        if event == "finished" && outcome == Outcome.Exited(0)
+            val key = marshal.historyKey(job.spec.kind, job.spec.landing)
+            histories.get(key) match
+                Some(b) -> b += info.elapsedMs
+                None ->
+                    val b = Buffer[long]()
+                    b += info.elapsedMs
+                    histories(key) = b
+        for w in job.waiters do w.send(Ended(info))
+        job.waiters.clear()
+        schedule()
+
+    listing() -> Vector[JobInfo]
+        val t = now()
+        (running.toVector() ++ queue.toVector() ++ ended.takeRight(Recent)).map(j -> j.info(t))
+
+    usage() -> Usage
+        val dev = running.filter(j -> !j.spec.landing)
+        Usage(
+            dev.map(j -> j.spec.units).sum(),
+            config.budget.units,
+            running.map(j -> j.spec.memory).sum(),
+            config.budget.memory,
+            running.length(),
+            queue.length(),
+            running.find(j -> j.spec.landing).map(j -> j.id))
+
+    // A stop asks for the daemon to end: at once when nothing is queued or running; with `force`,
+    // after killing what runs and cancelling what waits; with `drain`, once what is queued and
+    // running has ended. Otherwise it is refused.
+    stop(force: bool, drain: bool, reply: Option[Channel[Reply]])
+        val busy = running.length() + queue.length()
+        if busy > 0 && !force && !drain
+            reply.foreach(r -> r.send(Failed(s"${running.length()} running and ${queue.length()} queued: `marshal stop --wait` waits for them and `--force` kills them")))
+            return
+        reply.foreach(r -> stopReplies += r)
+        if force
+            stopping = true
+            for job in queue.toVector()
+                job.killed = true
+                queue.remove(queue.indexOf(job))
+                conclude(job, Cancelled, "killed")
+            for job in running
+                if !job.killed && !job.timedOut
+                    job.killed = true
+                    terminate(job.pgid, None)
+        else
+            draining = true
+            if busy == 0 then stopping = true
+
+    // The daemon's last steps: the socket goes first, so a new daemon can start at once, then each
+    // `stop` is answered and the daemon waits for those answers to be written.
+    finish()
+        fs.remove(home + "/sock")
+        fs.remove(home + "/daemon.pid")
+        for r in stopReplies do r.send(Done)
+        var written = 0
+        while written < stopReplies.length()
+            events.receive() match
+                Some(Written) -> written += 1
+                Some(FromClient(_, r)) -> r.send(Failed("the daemon is stopping"))
+                Some(_) -> ()
+                None -> break
+        eprintln(s"marshal: daemon ${process.pid()} stopped")
+
+// Stops a job's process group: samples its busiest process first when `sample` names a file, then
+// TERM, and KILL after the grace period. Runs on a thread of its own, so the daemon goes on.
+terminate(pgid: long, sample: Option[string])
+    spawn(() ->
+        sample.foreach(file -> busiest(pgid).foreach(pid -> Command("sample", pid.toString(), "5", "1", "-file", file).output()))
+        process.signal(-pgid, signal.Terminate)
+        threads.sleep(millis(Grace))
+        process.signal(-pgid, signal.Kill)
+        ())
+
+// The process of the group that has used the most processor time.
+busiest(pgid: long) -> Option[long]
+    val pids = Command("pgrep", "-g", pgid.toString()).output() match
+        Ok(text) -> text.lines().map(l -> l.trim()).filter(l -> l.nonEmpty()).toVector()
+        Err(_) -> return None
+    if pids.isEmpty() then return None
+    val table = Command("ps", "-o", "pid=,time=", "-p", pids.mkString(",")).output().getOrElse("")
+    var best: Option[(long, long)] = None
+    for line in table.lines()
+        val words = line.trim().split(" ").filter(w -> w.nonEmpty())
+        if words.length() < 2 then continue
+        (words(0).toLongOption(), marshal.parseCpuTime(words(1))) match
+            (Some(pid), Some(cpu)) if best.forall(b -> cpu > b.1) -> best = Some((pid, cpu))
+            _ -> ()
+    best.map(b -> b.0).orElse(pids(0).toLongOption())
+
+// Serves one client: each request line is handed to the daemon's thread and its reply written back.
+connection(conn: UnixStream, events: Channel[Message])
+    loop
+        val line = conn.readLine() match
+            Ok(Some(l)) -> l
+            _ -> break
+        val request = marshal.decodeRequest(line)
+        val reply = request match
+            Ok(r) ->
+                val back = Channel[Reply]()
+                events.send(FromClient(r, back))
+                back.receive().getOrElse(Failed("the daemon has stopped"))
+            Err(e) -> Failed(e)
+        val wrote = conn.writeText(marshal.encodeReply(reply).render() + "\n")
+        val stopped = request match
+            Ok(Stop(_, _)) -> reply == Reply.Done
+            _ -> false
+        if stopped
+            conn.close()
+            events.send(Written)
+            break
+        if wrote.isErr() then break
+    conn.close()
+
+// The machine's memory in bytes, or 0 where it cannot be asked.
+machineMemory() -> long = Command("sysctl", "-n", "hw.memsize").output() match
+    Ok(text) -> text.trim().toLongOption().getOrElse(0)
+    Err(_) -> 0
+
+// Runs the daemon for marshal's home directory `home` until it is stopped; answers the exit status.
+run(home: string) -> int
+    fs.createDirAll(home + "/jobs") match
+        Err(e) ->
+            eprintln(s"marshal: cannot make $home/jobs: ${e.message()}")
+            return 1
+        Ok(_) -> ()
+    process.newSession()
+    val listener = UnixListener.bindReplacing(home + "/sock") match
+        Ok(l) -> l
+        Err(IoError.AlreadyExists) ->
+            eprintln("marshal: another daemon is listening; this one exits")
+            return 0
+        Err(e) ->
+            eprintln(s"marshal: cannot listen at $home/sock: ${e.message()}")
+            fs.removeDirAll(home + "/starting")
+            return 1
+    fs.removeDirAll(home + "/starting")
+    val configText = if fs.exists(home + "/config.json") then fs.readText(home + "/config.json").getOrElse("") else ""
+    val config = marshal.readConfig(configText, machineMemory()) match
+        Ok(c) -> c
+        Err(e) ->
+            eprintln(s"marshal: $e")
+            listener.close()
+            fs.remove(home + "/sock")
+            return 1
+    fs.writeText(home + "/daemon.pid", process.pid().toString())
+    val log = home + "/events.jsonl"
+    val recovered = marshal.recover(if fs.exists(log) then fs.readText(log).getOrElse("").lines() else [])
+    for ev in recovered.open
+        val pgid = ev.get("pgid").flatMap(v -> v.asLong()).getOrElse(0)
+        val alive = pgid > 0 && process.signal(-pgid, 0).isOk()
+        marshal.lostLine(time.now().epochMillis(), ev, alive) match
+            Some(line) ->
+                fs.appendText(log, line + "\n")
+                eprintln(s"marshal: job ${ev("id")} was lost with the last daemon" + (if alive then s"; its process group $pgid is still running" else ""))
+            None -> eprintln(s"marshal: an open job's event is unreadable: $ev")
+    if recovered.unreadable > 0 then eprintln(s"marshal: ${recovered.unreadable} lines of $log are not events")
+    val histories = MutableMap[string, Buffer[long]]()
+    for (key, runs) in recovered.histories do histories(key) = runs.toBuffer()
+    val events = Channel[Message]()
+    spawn(() ->
+        loop
+            listener.accept() match
+                Ok(conn) -> spawn(() -> connection(conn, events))
+                Err(e) ->
+                    eprintln(s"marshal: accept failed: ${e.message()}")
+                    break
+        ())
+    signal.watch(signal.Terminate) match
+        Ok(term) -> spawn(() ->
+            term.wait()
+            events.send(Terminate))
+        Err(e) -> eprintln(s"marshal: cannot watch TERM: ${e.message()}")
+    eprintln(s"marshal: daemon ${process.pid()} listening at $home/sock; units ${config.budget.units}, memory ${marshal.formatSize(config.budget.memory)}, ${recovered.open.length()} jobs lost")
+    Daemon(home, config, events, recovered.nextId, histories).serve()
+    0

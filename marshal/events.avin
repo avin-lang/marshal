@@ -1,0 +1,87 @@
+module marshal
+
+// The event log, `events.jsonl`: one JSON object per line, appended as jobs move. Each event holds
+// the whole job as a listing shows it (the fields of `encodeJob`) and, before them, `ts` (the wall
+// clock in milliseconds since 1970) and `event`, one of `submitted`, `started`, `finished`,
+// `timeout`, `killed` and `lost`; the last four end a job. An ending event adds `run_ms` and `exit`
+// (the status `wait` exits with), and `started` adds `pgid`, the job's process group.
+import avin.collections.mutable.{Map as MutableMap}
+import json
+import json.Json
+
+val endings: Set[string] = {"finished", "timeout", "killed", "lost"}
+
+// One event line, without its line feed.
+eventLine(ts: long, event: string, job: JobInfo, extra: Vector[(string, Json)]) -> string =
+    val head = [("ts", Json.num(ts)), ("event", Json.str(event))]
+    Json.Obj(head ++ encodeJob(job).asMembers().get() ++ extra).render()
+
+// What a daemon learns from the log when it starts.
+// - `nextId`: one past the highest job id the log has seen, or 1.
+// - `open`: each job the log saw begin and never end, as its last event: a daemon that died while
+//   the job waited or ran. The new daemon records them as lost.
+// - `histories`: the run time of each job that exited 0, by `historyKey`, oldest first.
+// - `unreadable`: how many lines were not events.
+data Recovered(nextId: long, open: Vector[Json], histories: Map[string, Vector[long]], unreadable: int)
+
+recover(lines: Iterable[string]) -> Recovered
+    var maxId: long = 0
+    var unreadable = 0
+    val last = Buffer[(long, Json)]()
+    val position = MutableMap[long, int]()
+    val histories = MutableMap[string, Buffer[long]]()
+    for line in lines
+        if line.trim().isEmpty() then continue
+        val ev = json.parse(line) match
+            Ok(j) -> j
+            Err(_) ->
+                unreadable += 1
+                continue
+        val fields = (ev.get("id").flatMap(v -> v.asLong()), ev.get("event").flatMap(v -> v.asString()))
+        val (id, kind) = fields match
+            (Some(i), Some(k)) -> (i, k)
+            _ ->
+                unreadable += 1
+                continue
+        if id > maxId then maxId = id
+        position.get(id) match
+            Some(p) -> last(p) = (id, ev)
+            None ->
+                position(id) = last.length()
+                last += (id, ev)
+        if kind == "finished" && ev.get("exit").flatMap(v -> v.asLong()) == Some(long(0)) && !(ev.get("killed").flatMap(v -> v.asBool()) == Some(true))
+            val run = ev.get("run_ms").flatMap(v -> v.asLong())
+            val key = historyKey(ev.get("kind").flatMap(v -> v.asString()).getOrElse(""), ev.get("landing").flatMap(v -> v.asBool()).getOrElse(false))
+            run match
+                Some(ms) ->
+                    histories.get(key) match
+                        Some(b) -> b += ms
+                        None ->
+                            val b = Buffer[long]()
+                            b += ms
+                            histories(key) = b
+                None -> ()
+    val open = last.filter(e -> !endings.contains(e.1.get("event").flatMap(v -> v.asString()).getOrElse(""))).map(e -> e.1)
+    val learned = histories.keys().map(k -> (k, histories(k).toVector())).toMap()
+    Recovered(maxId + 1, open.toVector(), learned, unreadable)
+
+// The `lost` event for a job whose last event is `ev`: done, its outcome `Lost`, and `group_alive`
+// saying whether its process group still had processes when the new daemon looked. None when `ev`
+// is not a job's event.
+lostLine(ts: long, ev: Json, groupAlive: bool) -> Option[string] = decodeJob(ev) match
+    Ok(j) ->
+        val lost = JobInfo(j.id, j.kind, j.units, j.memory, j.landing, j.dir, j.cmd, "done", Some(Lost), j.killed, j.queuedMs, j.elapsedMs, j.deadlineMs, j.log, j.sample)
+        val pgid = ev.get("pgid").getOrElse(Json.num(0))
+        Some(eventLine(ts, "lost", lost, [("run_ms", Json.num(j.elapsedMs)), ("exit", Json.num(exitCode(Lost))), ("pgid", pgid), ("group_alive", Json.Bool(groupAlive))]))
+    Err(_) -> None
+
+// The last event that ended job `id`, or None while the log has none.
+endOf(lines: Iterable[string], id: long) -> Option[Json]
+    var found: Option[Json] = None
+    for line in lines
+        if !line.contains("\"id\":" + id.toString()) then continue
+        json.parse(line) match
+            Ok(ev) if ev.get("id").flatMap(v -> v.asLong()) == Some(id) && endings.contains(ev.get("event").flatMap(v -> v.asString()).getOrElse("")) ->
+                found = Some(ev)
+            _ -> ()
+    found
