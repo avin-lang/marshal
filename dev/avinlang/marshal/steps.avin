@@ -155,12 +155,13 @@ culprits(values: Vector[string], red: (Vector[string]) -> bool) -> (Vector[strin
     val fromB = if rb then culprits(b, red) else (Vector[string](), false)
     (fromA.0 ++ fromB.0, fromA.1 || fromB.1)
 
-// What a pass that ran and whose gate passed comes to: green, with `values` landed where the land
-// steps ran and passed, red at the land step that failed.
-private afterGreen(p: PassResult, values: Vector[string]) -> RunReport = p.landing match
+// What a pass whose gate passed comes to: green, with `values` landed, where the land steps ran and
+// passed; red at the land step that failed. The first land step (`landing`) is the one that lands:
+// where a later one fails, as a teardown may, `values` landed all the same.
+private afterGreen(p: PassResult, values: Vector[string], landing: string) -> RunReport = p.landing match
     None -> RunReport("green", "", [], p.head, [], false, p.fails)
     Some(e) if isGreen(e) -> RunReport("green", "", values, p.head, [], false, p.fails)
-    Some(e) -> RunReport("red", stepOf(e), [], p.head, [], false, p.fails)
+    Some(e) -> RunReport("red", stepOf(e), if stepOf(e) == landing then [] else values, p.head, [], false, p.fails)
 
 // The step steps that came to `outcome` ended at; none for steps that went to their end.
 stepOf(outcome: PassEnd) -> string = outcome match
@@ -170,13 +171,13 @@ stepOf(outcome: PassEnd) -> string = outcome match
 
 // The run of a type over `values`, the values of its bisected parameter (empty where it has none).
 // `pass(vs, land)` runs one pass with the parameter's values `vs`, going on to the land steps where
-// `land` and the gate asks. A gate that is red and asks for a bisection where the type has one
-// (`bisectable`) blames the values the failures name, where every failure names one of them;
-// otherwise it bisects them, and then runs a last pass over the values not blamed, which lands them
-// where it is green. The run is then red, since not everything landed.
-runType(bisectable: bool, values: Vector[string], pass: (Vector[string], bool) -> PassResult) -> RunReport
+// `land` and the gate asks; `landing` names the first land step. A gate that is red and asks for a
+// bisection where the type has one (`bisectable`) blames the values the failures name, where every
+// failure names one of them; otherwise it bisects them, and then runs a last pass over the values
+// not blamed, which lands them where it is green. The run is then red, since not everything landed.
+runType(bisectable: bool, landing: string, values: Vector[string], pass: (Vector[string], bool) -> PassResult) -> RunReport
     val first = pass(values, true)
-    if isGreen(first.gate) then return afterGreen(first, values)
+    if isGreen(first.gate) then return afterGreen(first, values, landing)
     val step = stepOf(first.gate)
     val named = blamed(first.fails, values)
     val bisecting = first.gate match
@@ -189,7 +190,7 @@ runType(bisectable: bool, values: Vector[string], pass: (Vector[string], bool) -
     if rest.isEmpty() then return RunReport("red", step, [], first.head, bad, together, first.fails)
     val last = pass(rest, true)
     if !isGreen(last.gate) then return RunReport("red", stepOf(last.gate), [], last.head, bad, together, first.fails ++ last.fails)
-    val r = afterGreen(last, rest)
+    val r = afterGreen(last, rest, landing)
     RunReport("red", if r.result == "red" then r.step else step, r.landed, r.head, bad, together, first.fails ++ last.fails)
 
 // The report as `report.json` in the run's directory holds it.

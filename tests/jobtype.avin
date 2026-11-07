@@ -19,7 +19,7 @@ withSteps(steps: string, rest: string = "") -> string = s"{\"steps\": [$steps]${
 // A type with the parameters `params` (a JSON object's members) and one step.
 withParams(params: string, rest: string = "") -> string = withSteps("{\"name\": \"a\", \"run\": [\"true\"]}", s"\"params\": {$params}${if rest.isEmpty() then "" else ", " + rest}")
 
-val train: string = """
+val sampleType: string = """
 // a comment line, as is the next
    // indented
 {
@@ -51,7 +51,7 @@ val train: string = """
 
 @test("a type reads with every field it gives, comment lines and all")
 typeFields()
-    val t = parsed(train)
+    val t = parsed(sampleType)
     assertEq(t.name, "t")
     assertEq(t.file, "/types/t.job")
     assertEq(t.about, "Gate and land")
@@ -259,7 +259,7 @@ unbound(t: JobType, why: string, args: string*) = marshal.bindParams(t, args.toV
 
 @test("a command line binds options, flags, words and defaults to the parameters")
 binding()
-    val t = parsed(train)
+    val t = parsed(sampleType)
     val v = bound(t, "--branch", "a", "b", "--remote=up", "--verbose", "c", "--jobs", "8")
     assertEq(v("branch"), ["a", "b", "c"])
     assertEq(v("remote"), ["up"])
@@ -279,7 +279,7 @@ binding()
 
 @test("a command line that does not fit the parameters is refused, saying how")
 bindingErrors()
-    val t = parsed(train)
+    val t = parsed(sampleType)
     unbound(t, "`--branch` is required: a branch")
     unbound(t, "`--branch` is required", "--remote", "x")
     unbound(t, "t has no parameter `--nope`", "a", "--nope", "1")
@@ -294,7 +294,7 @@ bindingErrors()
 
 @test("transitions and deadlines written as references are checked once bound")
 boundChecks()
-    val t = parsed(train)
+    val t = parsed(sampleType)
     assertEq(marshal.checkBound(t, bound(t, "a")), Ok(()))
     assertEq(marshal.checkBound(t, bound(t, "a", "--on-red", "bisect")), Ok(()))
     val open = parsed(withParams("\"then\": {\"default\": \"next\"}, \"limit\": {\"default\": \"5m\"}", "\"cleanup\": [{\"name\": \"c\", \"run\": [\"x\"], \"on_success\": \"${then}\", \"deadline\": \"${limit}\"}]"))
@@ -312,7 +312,7 @@ paramVariables()
 
 @test("a type's help names its file, its lane and every parameter")
 typeHelpText()
-    val h = marshal.typeHelp(parsed(train))
+    val h = marshal.typeHelp(parsed(sampleType))
     assert(h.startsWith("usage: marshal run-type t [options] [<branch>...]"), h)
     assert(h.contains("Gate and land"), h)
     assert(h.contains("From /types/t.job"), h)

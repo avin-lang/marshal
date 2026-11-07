@@ -25,6 +25,9 @@ import dev.avinlang.marshal.{StepSkipped, StepPassed, StepFailed, HeadSaid, Step
 // How long a step's processes have between TERM and KILL when it is stopped.
 val Grace: long = 5000
 
+// Set once the runner has been told to stop: no step's end is followed after that.
+val stopping: Atomic[bool] = Atomic(false)
+
 // The directory of `file`.
 parentOf(file: string) -> string
     val slash = file.lastIndexOf("/")
@@ -255,6 +258,8 @@ class Run(val t: JobType, val params: Map[string, Vector[string]], val jobDir: s
         println(s"marshal: step ${s.name}: ${argv.mkString(" ")}" + (if dir == jobDir then "" else s" (in $dir)"))
         val started = time.monotonic()
         val ran = execStep([program] ++ argv.drop(1), dir, env.toVector(), log, deadline, current)
+        // a step ended by the runner's own stop is not followed: the run ends as stopped
+        if stopping.load() then process.exit(143)
         val took = (time.monotonic() - started).micros / 1000
         for said in ran.said
             said match
@@ -313,6 +318,7 @@ main(file: string, args: Vector[string]) -> int
     signal.watch(signal.Terminate) match
         Ok(term) -> spawn(() ->
             term.wait()
+            stopping.store(true)
             val g = current.load()
             if g > 0
                 process.signal(-g, signal.Terminate)
@@ -323,7 +329,7 @@ main(file: string, args: Vector[string]) -> int
     println(s"marshal: ${t.name} from ${t.file}, run directory $runDir")
     val run = Run(t, params, jobDir, runDir, home, current)
     val values = t.bisect.map(b -> params.getOrElse(b, [])).getOrElse([])
-    val report = marshal.runType(t.bisect.isDefined(), values, (vs, land) -> run.pass(vs, land))
+    val report = marshal.runType(t.bisect.isDefined(), t.land.headOption().map(s -> s.name).getOrElse(""), values,(vs, land) -> run.pass(vs, land))
     val rendered = marshal.renderReport(t.name, report) + "\n"
     fs.writeText(runDir + "/report.json", marshal.encodeReport(t.name, report).render() + "\n")
     fs.writeText(runDir + "/report.txt", rendered)

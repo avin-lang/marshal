@@ -1,4 +1,9 @@
-# The protocol
+# The protocols
+
+Two protocols: the one between the command line and the daemon, and [the step
+protocol](#the-step-protocol), between a job type's steps and marshal.
+
+## The daemon's protocol
 
 The command line talks to the daemon over the Unix socket `sock` in marshal's home. Each message is
 one JSON object on one line, ended by a line feed. A client writes a request and reads its reply; it
@@ -76,3 +81,27 @@ null). Each job holds `id`, `spec` (the fields of a `submit` request but `op`), 
 `expected_ms`, `log`, `pid`, `pgid`, `outcome`, `killed`, `timed_out` and `sample`. Times are
 milliseconds since 1970, and a time that has not come yet is 0. A file written by another process
 than the one reading it is not taken over.
+
+## The step protocol
+
+A step of a [job type](jobs.md) is any program. Besides its exit status, it tells marshal things by
+printing lines on its standard output, each a line of its own that begins `=== `, then a kind in
+capitals and its words, separated by spaces:
+
+| Line | Meaning |
+| --- | --- |
+| `=== STEP <part>` | The step has reached a part of its work (any words). Only for the log. |
+| `=== EXIT <code>` | The code the step's success test reads in place of its process's exit code; the last one counts. For a wrapper whose own status means nothing. |
+| `=== HEAD <sha>` | The commit this pass built: 4 to 64 lowercase hexadecimal digits. Later steps of the pass see it as `${head}` and `$MARSHAL_HEAD`; the last one counts. |
+| `=== FAIL <test> [<branch>]` | A test failed (one word: a name, a path), and where the step knows, the value of the bisected parameter, a branch, to blame. Later steps of the pass see the failing tests in `$MARSHAL_FAILS`. |
+| `=== RESULT green` / `=== RESULT red` | The step's verdict. `red` fails the step whatever its code; a step whose `result` is set needs a last `green` to pass. |
+
+A line that does not begin `=== ` followed by one of these kinds is the step's own output and is
+left alone, so `=== RUN TestThing` and `==========` mean nothing to marshal. A line of one of these
+kinds written wrong (`=== HEAD xyz`, `=== RESULT maybe`, `=== EXIT many`) is not read, and the run's
+log says so. A `\r` before the line's end is ignored, and so are spaces around the words.
+
+A program reporting through these lines need not know it runs under marshal: a test runner that
+prints `=== FAIL <file>` for each failing file, say, lets a train blame branches by its failures. A
+`fail_map` step turns failures that name no branch into ones that do: it runs after a red gate with
+the failing tests in `$MARSHAL_FAILS` and prints `=== FAIL <test> <branch>` for those it can place.
