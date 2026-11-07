@@ -306,3 +306,17 @@ Known gap in Avin, left for it to fix rather than worked around here:
   thread while another writes it, so a daemon cannot be told promptly that a streaming client has
   gone, nor can it sleep until either an event or that. `Channel` has no receive with a timeout and
   `UnixStream` no poll; a `select` over both would remove the 50 ms wakeups.
+
+## A job's start time across a restart (branch `started-at-restart`)
+
+**Settled on the user's delegation 2026-11-07.**
+
+- **A job's wall-clock start (`started_at`) is stored once, when it starts, and saved and restored
+  as that exact number.** The daemon used to save `wall(startedMs)`, re-deriving the wall time from
+  its monotonic clock and an offset sampled at save time, so the value read back could differ by a
+  millisecond from the one reported before the restart. Now the saved value is the stored one, and
+  the monotonic `startedMs` (used only for elapsed time and the scheduler) is derived from it on
+  restore. A job cancelled while queued has no start time (0), and restores its `startedMs` from its
+  end. Why: a reported timestamp must not change because the daemon restarted. Alternatives: round
+  the derived value to the second (hides the drift, still wrong); keep only the monotonic clock and
+  report offsets (a restart loses the wall time).
