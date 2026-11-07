@@ -135,7 +135,8 @@ sysl's scripts move to marshal.
 
 ## marshal top (branch `marshal-top`)
 
-**Proposed**; each says what else was weighed.
+**Settled on the user's delegation 2026-11-06**; each says what else was weighed. Review with the
+user: tui pinned by commit until it has a tag, and `top` never starting a daemon by itself.
 
 - **One `snapshot` request** answers everything the view draws: the budget, uptime, running,
   queued and recent jobs, and each queued job's place and reason. Why: one reply is one consistent
