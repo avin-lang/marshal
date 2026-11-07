@@ -1,0 +1,151 @@
+module tests
+
+// The state a restarting daemon hands to its next image: every field of every job, in the queue,
+// running and ended, reads back as itself, and text that is not a saved state is refused with a
+// reason.
+import dev.avinlang.marshal
+import dev.avinlang.marshal.{JobSpec, Outcome, SavedJob, SavedState}
+
+val savedSpec: JobSpec = JobSpec("test", 4, 29 * 1024 * 1024 * 1024, false, "/work/dir", Some(90000), ["sysl", "test", "compiler"], [("PATH", "/bin"), ("LANG", "")])
+
+// A saved job, queued unless the arguments say otherwise.
+savedJob(
+    id: long = 9,
+    spec: JobSpec = savedSpec,
+    state: string = "queued",
+    submittedAt: long = 1_762_000_000_000,
+    arrived: long = 1_762_000_000_000_123,
+    startedAt: long = 0,
+    endedAt: long = 0,
+    deadlineMs: long = 1_800_000,
+    expectedMs: long = 600_000,
+    log: string = "/h/jobs/9.log",
+    pid: long = 0,
+    pgid: long = 0,
+    outcome: Option[Outcome] = None,
+    killed: bool = false,
+    timedOut: bool = false,
+    sample: Option[string] = None,
+    rss: long = 0,
+    peakRss: long = 0) -> SavedJob =
+    SavedJob(id, spec, state, submittedAt, arrived, startedAt, endedAt, deadlineMs, expectedMs, log, pid, pgid, outcome, killed, timedOut, sample, rss, peakRss)
+
+val savedQueued: SavedJob = savedJob()
+
+savedRunningJob(id: long = 8, pid: long = 4242, killed: bool = false, timedOut: bool = false, sample: Option[string] = None) -> SavedJob =
+    savedJob(id = id, spec = JobSpec("build", 1, 0, true, "/", None, ["make"], []), state = "running", startedAt = 1_762_000_000_002, deadlineMs = 30_000, expectedMs = 0, log = "/h/jobs/8.log", pid = pid, pgid = pid, killed = killed, timedOut = timedOut, sample = sample)
+
+val savedRunning: SavedJob = savedRunningJob()
+
+savedEndedJob(id: long = 7, outcome: Outcome = Outcome.Exited(3), killed: bool = false, timedOut: bool = false, sample: Option[string] = None) -> SavedJob =
+    SavedJob(id, savedSpec, "done", 1, 2, 3, 4, 5, 6, "/h/jobs/7.log", 70, 71, Some(outcome), killed, timedOut, sample, 0, 912_000_000)
+
+val savedEnded: SavedJob = savedEndedJob()
+
+stateOf(queue: Vector[SavedJob], run: Vector[SavedJob], ended: Vector[SavedJob], ticket: Option[string] = None) -> SavedState =
+    SavedState("0.1.0", 501, 1_762_000_000_500, 1_761_999_000_000, 10, queue, run, ended, ticket)
+
+stateRoundTrip(s: SavedState) = assertEq(marshal.decodeState(marshal.encodeState(s).render()), Ok(s))
+
+stateRefused(text: string, why: string) = marshal.decodeState(text) match
+    Err(e) -> assert(e.contains(why), s"$text: $e")
+    Ok(s) -> fail(s"$text read as $s")
+
+@test("a state with no jobs and no ticket reads back as itself")
+savedEmpty()
+    stateRoundTrip(stateOf([], [], []))
+    stateRoundTrip(SavedState("", 0, 0, 0, 1, [], [], [], None))
+
+@test("queued, running and ended jobs each read back as themselves, in their order")
+savedEveryState()
+    stateRoundTrip(stateOf([savedQueued], [savedRunning], [savedEnded], Some("1762000000000123.marshal.501")))
+    stateRoundTrip(stateOf([savedQueued, savedJob(id = 10), savedJob(id = 11)], [savedRunning, savedRunningJob(id = 12, pid = 5)], [savedEnded, savedEndedJob(id = 2)]))
+
+@test("every way a job can have ended reads back, killed and timed out among them")
+savedEveryOutcome()
+    for o in [Outcome.Exited(0), Outcome.Exited(255), Outcome.Signalled(9), Outcome.TimedOut, Outcome.Cancelled, Outcome.Lost]
+        stateRoundTrip(stateOf([], [], [savedEndedJob(outcome = o)]))
+    stateRoundTrip(stateOf([], [], [savedEndedJob(outcome = Outcome.Signalled(15), killed = true)]))
+    stateRoundTrip(stateOf([], [], [savedEndedJob(outcome = Outcome.TimedOut, timedOut = true, sample = Some("/h/jobs/7.sample.txt"))]))
+
+@test("a running job being stopped keeps its killed and timed-out marks and its sample")
+savedBeingStopped()
+    stateRoundTrip(stateOf([], [savedRunningJob(killed = true)], []))
+    stateRoundTrip(stateOf([], [savedRunningJob(timedOut = true, sample = Some("/h/jobs/8.sample.txt"))], []))
+
+@test("every number a job holds keeps its value, the largest and negative ones included")
+savedNumbers()
+    val big = SavedJob(long.MaxValue, savedSpec, "running", long.MaxValue, long.MaxValue, long.MaxValue, long.MaxValue, long.MaxValue, long.MaxValue, "l", long.MaxValue, long.MaxValue, None, false, false, None, long.MaxValue, long.MaxValue)
+    stateRoundTrip(SavedState("v", long.MaxValue, long.MaxValue, long.MaxValue, long.MaxValue, [], [big], [], None))
+    stateRoundTrip(stateOf([], [savedJob(id = 1, state = "running", startedAt = -5, deadlineMs = -1, pid = -1)], []))
+
+@test("a running job's memory, now and at its peak, and its start time read back")
+savedMemory()
+    stateRoundTrip(stateOf([], [savedRunningJob(), savedJob(id = 3, state = "running", startedAt = 1_762_000_000_002, pid = 9, pgid = 9, rss = 123_456_789, peakRss = 987_654_321)], []))
+    stateRoundTrip(stateOf([], [savedJob(id = 4, state = "running", startedAt = 1, rss = 0, peakRss = 5)], [savedEnded]))
+    val read = marshal.decodeState(marshal.encodeState(stateOf([], [savedJob(id = 3, state = "running", startedAt = 77, rss = 5, peakRss = 9)], [])).render())
+    assertEq(read.ok().map(s -> (s.running(0).startedAt, s.running(0).rss, s.running(0).peakRss)), Some((long(77), long(5), long(9))))
+
+@test("state saved before memory was measured, with no rss or peak_rss, reads with both 0")
+savedWithoutMemory()
+    val full = marshal.encodeSavedJob(savedRunningJob()).render()
+    assert(full.contains("\"rss\":0"), full)
+    val old = full.replace(",\"rss\":0,\"peak_rss\":0", "")
+    assert(!old.contains("rss"), old)
+    val text = s"{\"version\": \"0.1.0\", \"pid\": 1, \"saved_at\": 2, \"began_at\": 3, \"next_id\": 4, \"queue\": [], \"running\": [$old], \"ended\": []}"
+    assertEq(marshal.decodeState(text), Ok(SavedState("0.1.0", 1, 2, 3, 4, [], [savedRunning], [], None)))
+    val nulls = full.replace("\"rss\":0,\"peak_rss\":0", "\"rss\":null,\"peak_rss\":null")
+    assertEq(marshal.decodeState(text.replace(old, nulls)), Ok(SavedState("0.1.0", 1, 2, 3, 4, [], [savedRunning], [], None)))
+
+@test("a memory figure that is not a whole number is refused naming the field")
+savedBadMemory()
+    val head = "\"version\": \"0.1.0\", \"pid\": 1, \"saved_at\": 2, \"began_at\": 3, \"next_id\": 4"
+    val good = marshal.encodeSavedJob(savedEnded).render()
+    val withJob = (j: string) -> s"{$head, \"queue\": [], \"running\": [], \"ended\": [$j]}"
+    stateRefused(withJob(good.replace("\"peak_rss\":912000000", "\"peak_rss\":\"big\"")), "`peak_rss` is not a whole number")
+    stateRefused(withJob(good.replace("\"rss\":0", "\"rss\":1.5")), "`rss` is not a whole number")
+
+@test("a job's words, environment, log and the ticket keep quotes, new lines, empty text and characters beyond ASCII")
+savedAwkwardText()
+    val odd = JobSpec("é", 1, 0, false, "/tmp/ü dir", None, ["sh", "-c", "echo \"a\\b\"\n\t", "", "日本 😀"], [("X", "a=b"), ("", "")])
+    stateRoundTrip(stateOf([savedJob(spec = odd, log = "/h/ü jobs/9.log\n")], [], [], Some("")))
+    stateRoundTrip(stateOf([], [], [savedEndedJob(sample = Some(""))], Some("日本")))
+
+@test("a saved state is one line")
+savedOneLine()
+    val text = marshal.encodeState(stateOf([savedJob(spec = JobSpec("k", 1, 0, false, "/", None, ["a\nb"], [("V", "x\ny")]))], [], [])).render()
+    assert(!text.contains("\n"))
+
+@test("absent or null optional fields of a saved state read as absent")
+savedNulls()
+    val text = "{\"version\": \"0.1.0\", \"pid\": 1, \"saved_at\": 2, \"began_at\": 3, \"next_id\": 4, \"queue\": [], \"running\": [], \"ended\": [], \"ticket\": null}"
+    assertEq(marshal.decodeState(text), Ok(SavedState("0.1.0", 1, 2, 3, 4, [], [], [], None)))
+    val noTicket = "{\"version\": \"0.1.0\", \"pid\": 1, \"saved_at\": 2, \"began_at\": 3, \"next_id\": 4, \"queue\": [], \"running\": [], \"ended\": []}"
+    assertEq(marshal.decodeState(noTicket), Ok(SavedState("0.1.0", 1, 2, 3, 4, [], [], [], None)))
+
+@test("text that is not a saved state is refused with a reason")
+savedBadStates()
+    stateRefused("", "not JSON")
+    stateRefused("{", "not JSON")
+    stateRefused("[1]", "the state is not a JSON object")
+    stateRefused("7", "the state is not a JSON object")
+    stateRefused("{}", "`version` is not a string")
+    val head = "\"version\": \"0.1.0\", \"pid\": 1, \"saved_at\": 2, \"began_at\": 3, \"next_id\": 4"
+    stateRefused("{\"version\": 1}", "`version` is not a string")
+    stateRefused("{\"version\": \"0.1.0\", \"pid\": \"1\"}", "`pid` is not a whole number")
+    stateRefused(s"{$head, \"queue\": {}, \"running\": [], \"ended\": []}", "`queue` is not an array")
+    stateRefused(s"{$head, \"queue\": [], \"ended\": []}", "`running` is not an array")
+    stateRefused(s"{$head, \"queue\": [], \"running\": [], \"ended\": [], \"ticket\": 5}", "`ticket` is not a string")
+
+@test("a job that is not a saved job is refused, naming the job and the field")
+savedBadJobs()
+    val head = "\"version\": \"0.1.0\", \"pid\": 1, \"saved_at\": 2, \"began_at\": 3, \"next_id\": 4"
+    val good = marshal.encodeSavedJob(savedEnded).render()
+    val withJob = (j: string) -> s"{$head, \"queue\": [], \"running\": [], \"ended\": [$j]}"
+    stateRefused(withJob(good.replace("\"killed\":false", "\"killed\":\"no\"")), "`killed` is not a bool")
+    stateRefused(withJob(good.replace("\"pid\":70", "\"pid\":7.5")), "`pid` is not a whole number")
+    stateRefused(withJob(good.replace("\"state\":\"done\"", "\"state\":null")), "`state` is not a string")
+    stateRefused(withJob(good.replace("\"outcome\":{\"how\":\"exit\",\"code\":3}", "\"outcome\":{\"how\":\"melted\"}")), "job 7:")
+    stateRefused(withJob(good.replace("\"cmd\":[\"sysl\",\"test\",\"compiler\"]", "\"cmd\":[]")), "job 7: `cmd` is empty")
+    stateRefused(withJob("{\"id\": \"7\"}"), "`id` is not a whole number")
+    stateRefused(withJob("[]"), "`id` is not a whole number")

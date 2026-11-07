@@ -6,13 +6,18 @@ module dev.avinlang.marshal.daemon
 // One thread, the daemon's own, owns every job and makes every decision; it reads one channel of
 // messages. Each client connection has a thread of its own that turns a request line into a message
 // and waits on a channel of its own for the reply; each running job has a thread that waits for its
-// process and one that sleeps until its deadline, and both report back by message. So no state is
-// shared, and nothing polls: a `wait` is answered the moment the job's process ends.
+// process by pid and one that sleeps until its deadline, and both report back by message. So no
+// state is shared, and nothing polls: a `wait` is answered the moment the job's process ends.
 //
 // Two things are looked at on a timer, since nothing tells the daemon when they change. Take-slot's
 // runs come and go without telling marshal, so where a take-slot directory is shared, while jobs
 // wait a ticker reads its files every few seconds (`Tick`). And what the running jobs hold in RAM is
 // measured every second (`Sample`), on a thread of its own, which reports back (`Measured`).
+//
+// A restart replaces the daemon's program in place (`process.exec`), keeping its process and so its
+// jobs, which stay its children: the old image writes its state to `<home>/state.json`, and the new
+// one, started as `daemon --resume <file>`, reads it and waits for the same pids. Jobs are detached
+// as they start, so the daemon only ever waits for them by pid, in either image.
 import avin.collections.mutable.{Map as MutableMap}
 import avin.fs
 import avin.io.IoError
@@ -29,11 +34,12 @@ import json.Json
 import dev.avinlang.marshal
 import dev.avinlang.marshal.{Config,JobInfo, JobSpec, Outcome, Outside, Reply, Request, Started, TakeSlot, TakeSlotUse, Usage, Waiting}
 import dev.avinlang.marshal.{Submit, Wait, Kill, Status, Stop}
-import dev.avinlang.marshal.{Submitted, Ended, Jobs, Using, Viewed, Done, Failed}
-import dev.avinlang.marshal.{Overview, QueuedJob}
+import dev.avinlang.marshal.{Submitted, Ended, Jobs, Using, Viewed, Hi, Done, Failed}
+import dev.avinlang.marshal.{Overview, QueuedJob, SavedJob, SavedState}
 import dev.avinlang.marshal.{Cancelled, TimedOut}
 import dev.avinlang.marshal.Resident
 
+// `Written` follows each reply the daemon gave, once its connection has written it.
 data Message
     FromClient(request: Request, reply: Channel[Reply])
     Exit(id: long, status: Result[ExitStatus, IoError])
@@ -97,9 +103,19 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
     var ticket: Option[string] = None
     // Whether a measurement of the running jobs' memory is under way.
     var measuring = false
-    val began: long = time.monotonic().toMillis()
+    var began: long = time.monotonic().toMillis()
+    // Replies given and not yet written by their connections.
+    var unwritten = 0
+    // While a restart hands over, nothing starts and requests wait for its outcome.
+    var restarting = false
+    var termed = false
 
     now() -> long = time.monotonic().toMillis()
+
+    // Answers a request; its connection says when the answer is written.
+    give(reply: Channel[Reply], answer: Reply)
+        unwritten += 1
+        reply.send(answer)
 
     record(event: string, job: Job, extra: Vector[(string, Json)] = [])
         fs.appendText(home + "/events.jsonl", marshal.eventLine(time.now().epochMillis(), event, job.info(now()), extra) + "\n")
@@ -117,7 +133,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
                 FromClient(request, reply) -> answer(request, reply)
                 Exit(id, status) -> exited(id, status)
                 Due(id) -> due(id)
-                Written -> ()
+                Written -> unwritten -= 1
                 Tick -> if queue.nonEmpty() then schedule()
                 Sample -> measure()
                 Measured(sizes) -> measured(sizes)
@@ -131,16 +147,18 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
     // Answers a request at once, or keeps its reply channel for when the answer is known.
     answer(request: Request, reply: Channel[Reply])
         request match
-            Submit(spec) -> reply.send(submit(spec))
+            Submit(spec) -> give(reply, submit(spec))
             Wait(id) -> jobs.get(id) match
-                Some(job) if job.state == "done" -> reply.send(Ended(job.info(now())))
+                Some(job) if job.state == "done" -> give(reply, Ended(job.info(now())))
                 Some(job) -> job.waiters += reply
-                None -> reply.send(endedEarlier(id))
-            Kill(id) -> reply.send(kill(id))
-            Request.List -> reply.send(Jobs(listing()))
-            Status -> reply.send(Using(usage()))
-            Request.Snapshot -> reply.send(Viewed(overview()))
+                None -> give(reply, endedEarlier(id))
+            Kill(id) -> give(reply, kill(id))
+            Request.List -> give(reply, Jobs(listing()))
+            Status -> give(reply, Using(usage()))
+            Request.Snapshot -> give(reply, Viewed(overview()))
             Stop(force, drain) -> stop(force, drain, Some(reply))
+            Request.Hello -> give(reply, Hi(reportedVersion(), process.pid()))
+            Request.Restart -> restart(reply)
 
     submit(spec: JobSpec) -> Reply
         if stopping || draining then return Failed("the daemon is stopping and takes no new jobs")
@@ -192,7 +210,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
     // registration of what starts are made under take-slot's mutex, as take-slot makes its own, and
     // the daemon's ticket there is brought up to date.
     schedule()
-        if stopping then return
+        if stopping || restarting then return
         slots match
             None -> plan(marshal.NoOutside)
             Some(ts) ->
@@ -238,21 +256,30 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             Ok(child) ->
                 job.pid = child.pid()
                 job.pgid = child.group().getOrElse(job.pid)
+                // Waited for by pid from here on, so the daemon can hand it to its next image.
+                child.detach()
                 val pid = job.pid
                 slots.foreach(ts -> if spec.landing then ts.landed(pid) else ts.register(pid, spec.units))
                 record("started", job, [("pgid", Json.num(job.pgid)), ("pid", Json.num(job.pid))])
-                val events = self.events
-                val id = job.id
-                val deadline = job.deadlineMs
-                spawn(() -> events.send(Exit(id, child.waitFor())))
-                spawn(() ->
-                    threads.sleep(millis(deadline))
-                    events.send(Due(id)))
+                watch(job)
             Err(e) ->
                 if spec.landing then slots.foreach(ts -> ts.releaseLanding(0))
                 fs.writeText(job.log, s"marshal: could not start `${spec.cmd(0)}` in ${spec.dir}: ${e.message()}\n")
                 record("started", job, [("pgid", Json.num(0))])
                 conclude(job, Outcome.Exited(127), "finished")
+
+    // A thread that waits for the running job's process by pid, and one that sleeps until what is
+    // left of its deadline; a job already being stopped needs no deadline.
+    watch(job: Job)
+        val events = self.events
+        val id = job.id
+        val pid = job.pid
+        spawn(() -> events.send(Exit(id, process.waitPid(pid))))
+        if job.killed || job.timedOut then return
+        val left = job.deadlineMs - (now() - job.startedMs)
+        spawn(() ->
+            if left > 0 then threads.sleep(millis(left))
+            events.send(Due(id)))
 
     exited(id: long, status: Result[ExitStatus, IoError])
         val job = jobs(id)
@@ -266,10 +293,14 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             Ok(ExitStatus.Exited(code)) -> Outcome.Exited(code)
             Ok(ExitStatus.Signalled(sig)) -> Outcome.Signalled(sig)
             Ok(ExitStatus.TimedOut) -> Outcome.TimedOut
+            Err(IoError.NotFound) ->
+                eprintln(s"marshal: job $id ended while the daemon restarted, and how it ended was lost with the old image")
+                Outcome.Lost
             Err(e) ->
                 eprintln(s"marshal: job $id could not be waited for: ${e.message()}")
                 Outcome.Lost
-        conclude(job, outcome, if job.killed then "killed" else "finished")
+        val event = if outcome == Outcome.Lost then "lost" elif job.killed then "killed" else "finished"
+        conclude(job, outcome, event)
 
     due(id: long)
         val job = jobs(id)
@@ -304,7 +335,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
                     val b = Buffer[long]()
                     b += info.elapsedMs
                     histories(key) = b
-        for w in job.waiters do w.send(Ended(info))
+        for w in job.waiters do give(w, Ended(info))
         job.waiters.clear()
         schedule()
 
@@ -368,7 +399,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
     stop(force: bool, drain: bool, reply: Option[Channel[Reply]])
         val busy = running.length() + queue.length()
         if busy > 0 && !force && !drain
-            reply.foreach(r -> r.send(Failed(s"${running.length()} running and ${queue.length()} queued: `marshal stop --wait` waits for them and `--force` kills them")))
+            reply.foreach(r -> give(r, Failed(s"${running.length()} running and ${queue.length()} queued: `marshal stop --wait` waits for them and `--force` kills them")))
             return
         reply.foreach(r -> stopReplies += r)
         if force
@@ -392,15 +423,133 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         fs.remove(home + "/daemon.pid")
         for ts in slots
             ticket.foreach(name -> ts.removeTicket(name))
-        for r in stopReplies do r.send(Done)
-        var written = 0
-        while written < stopReplies.length()
+        for r in stopReplies do give(r, Done)
+        while unwritten > 0
             events.receive() match
-                Some(Written) -> written += 1
-                Some(FromClient(_, r)) -> r.send(Failed("the daemon is stopping"))
+                Some(Written) -> unwritten -= 1
+                Some(FromClient(_, r)) -> give(r, Failed("the daemon is stopping"))
                 Some(_) -> ()
                 None -> break
         eprintln(s"marshal: daemon ${process.pid()} stopped")
+
+    // Replaces the daemon with the program at its own path, which takes the jobs over. Before it
+    // goes, every running job is known to run or has ended and been recorded, every reply given is
+    // written, and the state is in `<home>/state.json`; requests that arrive meanwhile are not
+    // carried out, so their connections close unanswered and their clients ask the new image. When
+    // the program cannot be run, the daemon goes on as it was and says why.
+    restart(reply: Channel[Reply])
+        if stopping || draining
+            give(reply, Failed("the daemon is stopping"))
+            return
+        val program = process.env("MARSHAL_RESTART_PROGRAM").orElse(process.executable()) match
+            Some(p) -> p
+            None ->
+                give(reply, Failed("the daemon cannot tell where its program is"))
+                return
+        restarting = true
+        val held = Buffer[(Request, Channel[Reply])]()
+        val file = home + "/state.json"
+        var saved: Result[unit, IoError] = Ok(())
+        loop
+            while settle(held) do ()
+            while unwritten > 0 do during(held)
+            saved = fs.writeText(file, marshal.encodeState(state()).render() + "\n")
+            if saved.isErr() || !settle(held) then break
+        val failure = if termed then "a TERM arrived" else saved match
+            Err(e) -> s"cannot write $file: ${e.message()}"
+            Ok(_) ->
+                // No command line starts another daemon while the socket is down: this one is starting.
+                fs.createDirAll(home + "/starting")
+                fs.writeText(home + "/starting/pid", process.pid().toString())
+                eprintln(s"marshal: daemon ${process.pid()} restarting as $program with ${running.length()} running and ${queue.length()} queued")
+                val e = process.exec(program, ["daemon", "--resume", file]).err().get()
+                fs.removeDirAll(home + "/starting")
+                s"cannot run $program: ${e.message()}"
+        fs.remove(file)
+        restarting = false
+        eprintln(s"marshal: restart failed: $failure; this daemon goes on")
+        give(reply, Failed(s"the daemon did not restart: $failure"))
+        for (r, c) in held do answer(r, c)
+        if termed
+            eprintln("marshal: TERM received: stopping, killing what runs")
+            stop(true, false, None)
+        schedule()
+
+    // Settles each running job: one that has ended is reaped and recorded here; one whose waiting
+    // thread has reaped it is recorded from that thread's message. Answers whether any had ended.
+    settle(held: Buffer[(Request, Channel[Reply])]) -> bool
+        var any = false
+        for job in running.toVector()
+            process.tryWaitPid(job.pid) match
+                Ok(None) -> ()
+                Ok(Some(status)) ->
+                    exited(job.id, Ok(status))
+                    any = true
+                Err(_) ->
+                    while job.state == "running" do during(held)
+                    any = true
+        any
+
+    // One message while a restart hands over: a request waits for its outcome, the rest as usual.
+    during(held: Buffer[(Request, Channel[Reply])])
+        events.receive() match
+            Some(FromClient(r, c)) -> held += (r, c)
+            Some(Exit(id, status)) -> exited(id, status)
+            Some(Due(id)) -> due(id)
+            Some(Written) -> unwritten -= 1
+            Some(Terminate) -> termed = true
+            Some(Tick) -> ()
+            Some(Sample) -> ()
+            Some(Measured(sizes)) -> measured(sizes)
+            None -> ()
+
+    // The daemon's state, as the next image reads it.
+    state() -> SavedState
+        val wallNow = time.now().epochMillis()
+        val t = now()
+        val wall = (at: long) -> wallNow - (t - at)
+        val saved = (j: Job) -> SavedJob(
+            j.id, j.spec, j.state, wall(j.submittedMs), j.arrived,
+            if j.state == "queued" then 0 else wall(j.startedMs),
+            if j.state == "done" then wall(j.endedMs) else 0,
+            j.deadlineMs, j.expectedMs, j.log, j.pid, j.pgid, j.outcome, j.killed, j.timedOut, j.sample,
+            j.resident.now, j.resident.peak)
+        SavedState(reportedVersion(), process.pid(), wallNow, wall(began), nextId,
+            queue.map(saved).toVector(), running.map(saved).toVector(), ended.takeRight(Recent).map(saved).toVector(), ticket)
+
+    // Takes over what an earlier image of this daemon saved: its jobs, queue and ticket. The
+    // running jobs are still this process's children, so they are waited for by pid; one that was
+    // being stopped is stopped again, since the thread stopping it went with the old image.
+    restore(s: SavedState)
+        val wallNow = time.now().epochMillis()
+        val t = now()
+        val mono = (at: long) -> t - (wallNow - at)
+        began = mono(s.beganAt)
+        if s.nextId > nextId then nextId = s.nextId
+        ticket = s.ticket
+        val rebuilt = (sj: SavedJob) ->
+            val job = Job(sj.id, sj.spec, mono(sj.submittedAt), sj.arrived, sj.deadlineMs, sj.expectedMs, sj.log)
+            job.state = sj.state
+            job.startedMs = mono(sj.startedAt)
+            job.startedAt = sj.startedAt
+            job.resident = Resident(sj.rss, sj.peakRss)
+            job.endedMs = mono(sj.endedAt)
+            job.pid = sj.pid
+            job.pgid = sj.pgid
+            job.outcome = sj.outcome
+            job.killed = sj.killed
+            job.timedOut = sj.timedOut
+            job.sample = sj.sample
+            jobs(job.id) = job
+            job
+        for sj in s.ended do ended += rebuilt(sj)
+        for sj in s.queue do queue += rebuilt(sj)
+        for sj in s.running
+            val job = rebuilt(sj)
+            running += job
+            watch(job)
+            if job.killed || job.timedOut then terminate(job.pgid, None)
+        schedule()
 
 // Stops a job's process group: samples its busiest process first when `sample` names a file, then
 // TERM, and KILL after the grace period. Runs on a thread of its own, so the daemon goes on.
@@ -443,24 +592,44 @@ connection(conn: UnixStream, events: Channel[Message])
         val stopped = request match
             Ok(Stop(_, _)) -> reply == Reply.Done
             _ -> false
-        if stopped
-            conn.close()
-            events.send(Written)
-            break
-        if wrote.isErr() then break
+        if stopped then conn.close()
+        if request.isOk() then events.send(Written)
+        if stopped || wrote.isErr() then break
     conn.close()
 
 // The machine's memory in bytes, or 0 where it cannot be asked.
 machineMemory() -> long = process.totalMemory().getOrElse(0)
 
+// The version this daemon reports and saves: marshal's own, unless `$MARSHAL_TEST_VERSION` names
+// another, which is how the tests stand in for a newer marshal without building a second one.
+reportedVersion() -> string = process.env("MARSHAL_TEST_VERSION").getOrElse(marshal.Version)
+
+// The state an earlier image of this daemon saved in `file` before it became this one, which is
+// removed once read; None, with the reason on standard error, when it cannot be read.
+resumed(file: string) -> Option[SavedState]
+    val text = fs.readText(file)
+    fs.remove(file)
+    val saved = text.mapErr(e -> e.message()).flatMap(t -> marshal.decodeState(t))
+    saved match
+        Ok(s) if s.pid == process.pid() -> Some(s)
+        Ok(s) ->
+            eprintln(s"marshal: $file was saved by process ${s.pid}, not this one: its jobs are not this daemon's")
+            None
+        Err(e) ->
+            eprintln(s"marshal: cannot take over from $file: $e")
+            None
+
 // Runs the daemon for marshal's home directory `home` until it is stopped; answers the exit status.
-run(home: string) -> int
+// `resume` names the state an earlier image of this process saved as it restarted.
+run(home: string, resume: Option[string] = None) -> int
     fs.createDirAll(home + "/jobs") match
         Err(e) ->
             eprintln(s"marshal: cannot make $home/jobs: ${e.message()}")
             return 1
         Ok(_) -> ()
-    process.newSession()
+    val saved = resume.flatMap(resumed)
+    // A restarted daemon already leads its session.
+    if resume.isEmpty() then process.newSession()
     val listener = UnixListener.bindReplacing(home + "/sock") match
         Ok(l) -> l
         Err(IoError.AlreadyExists) ->
@@ -493,7 +662,10 @@ run(home: string) -> int
     fs.writeText(home + "/daemon.pid", process.pid().toString())
     val log = home + "/events.jsonl"
     val recovered = marshal.recover(if fs.exists(log) then fs.readText(log).getOrElse("").lines() else [])
-    for ev in recovered.open
+    // the jobs the log left open that a restart did not hand over were lost with the daemon that held them
+    val kept = saved.map(s -> (s.queue ++ s.running).map(j -> j.id)).getOrElse([])
+    val orphans = recovered.open.filter(ev -> !kept.contains(ev.get("id").flatMap(v -> v.asLong()).getOrElse(0)))
+    for ev in orphans
         val pgid = ev.get("pgid").flatMap(v -> v.asLong()).getOrElse(0)
         val alive = pgid > 0 && process.signal(-pgid, 0).isOk()
         marshal.lostLine(time.now().epochMillis(), ev, alive) match
@@ -503,7 +675,8 @@ run(home: string) -> int
             None -> eprintln(s"marshal: an open job's event is unreadable: $ev")
     for ts in slots
         ts.lock()
-        ts.forget(previous, recovered.open.map(ev -> ev.get("pid").orElse(ev.get("pgid")).flatMap(v -> v.asLong()).getOrElse(0)).filter(p -> p > 0))
+        // a restarted daemon's own files are its jobs' and its ticket
+        ts.forget(if saved.isDefined() then 0 else previous, orphans.map(ev -> ev.get("pid").orElse(ev.get("pgid")).flatMap(v -> v.asLong()).getOrElse(0)).filter(p -> p > 0))
         ts.unlock()
     if recovered.unreadable > 0 then eprintln(s"marshal: ${recovered.unreadable} lines of $log are not events")
     val histories = MutableMap[string, Buffer[long]]()
@@ -534,8 +707,15 @@ run(home: string) -> int
             events.send(Sample)
         ())
     val sharing = takeSlot.map(dir -> s", sharing take-slot's $dir").getOrElse("")
-    eprintln(s"marshal: daemon ${process.pid()} listening at $home/sock; units ${config.budget.units}, memory ${marshal.formatSize(config.budget.memory)}$sharing, ${recovered.open.length()} jobs lost")
-    // the jobs earlier daemons ended, the ones just recorded as lost among them
-    val earlier = (recovered.ended ++ recovered.open.map(ev -> marshal.decodeJob(ev)).filter(r -> r.isOk()).map(r -> marshal.asLost(r.ok().get()))).sortBy(j -> j.id).takeRight(Recent)
-    Daemon(home, config, events, recovered.nextId, histories, slots, earlier, machine).serve()
+    eprintln(s"marshal: daemon ${process.pid()} listening at $home/sock; units ${config.budget.units}, memory ${marshal.formatSize(config.budget.memory)}$sharing, ${orphans.length()} jobs lost")
+    // the jobs earlier daemons ended, the ones just recorded as lost among them; a restarted
+    // daemon holds its own recent ones
+    val own = saved.map(s -> s.ended.map(j -> j.id)).getOrElse([])
+    val earlier = (recovered.ended.filter(j -> !own.contains(j.id)) ++ orphans.map(ev -> marshal.decodeJob(ev)).filter(r -> r.isOk()).map(r -> marshal.asLost(r.ok().get()))).sortBy(j -> j.id).takeRight(Recent)
+    val daemon = Daemon(home, config, events, recovered.nextId, histories, slots, earlier, machine)
+    for s in saved
+        daemon.restore(s)
+        val upgrade = if s.version == reportedVersion() then s"version ${s.version}" else s"version ${s.version} to ${reportedVersion()}"
+        eprintln(s"marshal: daemon ${process.pid()} restarted ($upgrade), taking over ${s.running.length()} running and ${s.queue.length()} queued jobs")
+    daemon.serve()
     0
