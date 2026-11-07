@@ -1,1 +1,2 @@
-github.com/avin-lang/tui r6cb517e2d767cc1568bc9a63514aa4191f2bfe9a sha256:9582de278378322f85ebbad2758ceb883e4b9fb8520c657083256323d1e42e7c
+github.com/avin-lang/avin//packages/json v0.0.11 sha256:34a086bdf5873182d8adf9f553f92403dd4fb84870effe91e0a83a6d7d052f14
+github.com/avin-lang/tui v0.1.0 sha256:9582de278378322f85ebbad2758ceb883e4b9fb8520c657083256323d1e42e7c
