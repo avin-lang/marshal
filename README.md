@@ -16,6 +16,7 @@ marshal ls                                 jobs queued, running and recently end
 marshal kill <id>                          stops the job's whole process tree (a queued job is cancelled)
 marshal tail <id> [-f] [-n <lines>]        the job's log; -f follows it until the job ends
 marshal status [--json]                    the budget in use; --json: one JSON object with the running and queued jobs
+marshal top                                a live view of the budget, the jobs and their logs; h lists its keys
 marshal stop [--wait | --force]            stops the daemon; refused while jobs run unless it may wait for them or kill them
 marshal daemon                             runs the daemon in the foreground
 ```
@@ -106,6 +107,31 @@ none); by default it is `/Users/ed/dev/sysl-lang/sysl/.git` when that exists. Ke
 `SLOT_BUDGET` and marshal's `units` equal (12 both by default): each side measures the other's use
 against its own budget. `marshal status` shows what take-slot holds.
 
+## marshal top
+
+`marshal top` is a live view of the daemon for people, drawn in the terminal with
+[tui](https://github.com/avin-lang/tui) and asked of the daemon once a second over its socket (the
+`snapshot` request).
+
+- **Header**: the daemon's uptime, how many jobs run and wait, who holds the landing lane (a job,
+  take-slot, or free) and the filter; a bar of the unit budget, marshal's development units in green
+  and take-slot's share after them in magenta, with take-slot's waiting runs; a bar of the memory
+  budget.
+- **Jobs**: running jobs, then queued ones, then the last ten that ended, the latest first. ELAPSED
+  counts on between snapshots; DEADLINE is a running job's time left, yellow under a quarter of its
+  deadline or five minutes and red under a tenth or one minute, and a queued job's deadline to come.
+  A queued job's STATE is its place in its lane's queue and why it waits: `no units`, `no memory`,
+  `lane busy` (another landing job holds the lane), `take-slot` (what take-slot.zsh holds or a
+  take-slot run ahead of it), or `behind N`, when it would fit but would delay job N at the head of
+  the queue. An ended job shows `exit N` (green for 0, red otherwise), `killed`, `timeout`, `lost`,
+  `cancelled` or `signal N`.
+- **Keys**: Up, Down, PgUp, PgDn, Home, End select a job; Enter or `l` opens its log in a pane under
+  the table, following the end as it grows (PgUp, PgDn, Home, End scroll it while it is open, Esc
+  closes it); `k` kills the selected job after `y`; `f` shows all jobs, the running, the queued or
+  the ended ones; `h` the keys; `q` quits.
+- **No daemon**: top does not start one by itself. It says there is none, looks again every second,
+  and `s` starts one. A daemon older than the `snapshot` request is named as such.
+
 The protocol between the command line and the daemon is in [docs/protocol.md](docs/protocol.md),
 and the choices behind the design in [docs/decisions.md](docs/decisions.md).
 
@@ -116,7 +142,10 @@ avin build . -o marshal
 scripts/test.sh
 ```
 
+marshal depends on [tui](https://github.com/avin-lang/tui), fetched at the commit `avin.hocon` pins.
+
 `scripts/test.sh` builds marshal and runs the unit tests (scheduler, deadlines, protocol, event log,
-settings, take-slot's format) and the end-to-end tests, which start real daemons in temporary homes,
+settings, take-slot's format, top's screen and keys) and the end-to-end tests, among them `top`
+under `script` in a pseudo-terminal, which start real daemons in temporary homes,
 each with a take-slot directory of its own, and run the real `take-slot.zsh` against it (`$TAKE_SLOT`
 names the script). `$AVIN` names the compiler.

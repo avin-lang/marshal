@@ -27,7 +27,8 @@ import json.Json
 import dev.avinlang.marshal
 import dev.avinlang.marshal.{Config,JobInfo, JobSpec, Outcome, Outside, Reply, Request, Started, TakeSlot, TakeSlotUse, Usage, Waiting}
 import dev.avinlang.marshal.{Submit, Wait, Kill, Status, Stop}
-import dev.avinlang.marshal.{Submitted, Ended, Jobs, Using, Done, Failed}
+import dev.avinlang.marshal.{Submitted, Ended, Jobs, Using, Viewed, Done, Failed}
+import dev.avinlang.marshal.{Overview, QueuedJob}
 import dev.avinlang.marshal.{Cancelled, TimedOut}
 
 data Message
@@ -70,7 +71,8 @@ class Job(val id: long, val spec: JobSpec, val submittedMs: long, val arrived: l
 
 // The daemon's state, owned by its own thread.
 // `slots` is the take-slot directory it shares, if any; `ticket` the name of its waiting ticket there.
-class Daemon(val home: string, val config: Config, val events: Channel[Message], var nextId: long, val histories: MutableMap[string, Buffer[long]], val slots: Option[TakeSlot])
+// `earlier` holds the last jobs earlier daemons ended, as the event log describes them, by id.
+class Daemon(val home: string, val config: Config, val events: Channel[Message], var nextId: long, val histories: MutableMap[string, Buffer[long]], val slots: Option[TakeSlot], val earlier: Vector[JobInfo])
     val jobs = MutableMap[long, Job]()
     val queue = Buffer[Job]()
     val running = Buffer[Job]()
@@ -79,6 +81,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
     var draining = false
     val stopReplies = Buffer[Channel[Reply]]()
     var ticket: Option[string] = None
+    val began: long = time.monotonic().toMillis()
 
     now() -> long = time.monotonic().toMillis()
 
@@ -118,6 +121,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             Kill(id) -> reply.send(kill(id))
             Request.List -> reply.send(Jobs(listing()))
             Status -> reply.send(Using(usage()))
+            Request.Snapshot -> reply.send(Viewed(overview()))
             Stop(force, drain) -> stop(force, drain, Some(reply))
 
     submit(spec: JobSpec) -> Reply
@@ -289,7 +293,29 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         val t = now()
         (running.toVector() ++ queue.toVector() ++ ended.takeRight(Recent)).map(j -> j.info(t))
 
-    usage() -> Usage
+    usage() -> Usage = usageWith(slots.map(ts ->
+        ts.lock()
+        val o = ts.scan(ours(), config.budget.units)
+        ts.unlock()
+        o))
+
+    // Everything `marshal top` shows, with what take-slot holds read once for both the budget and
+    // the reasons the queued jobs wait.
+    overview() -> Overview
+        val outside = slots.map(ts ->
+            ts.lock()
+            val o = ts.scan(ours(), config.budget.units)
+            ts.unlock()
+            o)
+        val t = now()
+        val started = running.map(j -> Started(j.id, j.spec.units, j.spec.memory, j.spec.landing, j.startedMs, j.expectedMs)).toVector()
+        val waiting = queue.map(j -> Waiting(j.id, j.spec.units, j.spec.memory, j.spec.landing, j.expectedMs, j.arrived)).toVector()
+        val queued = marshal.waits(config.budget, started, waiting, t, outside.getOrElse(marshal.NoOutside)).map(w ->
+            QueuedJob(jobs(w.0).info(t), w.1, w.2))
+        val recent = (earlier ++ ended.takeRight(Recent).map(j -> j.info(t))).takeRight(Recent).reverse()
+        Overview(usageWith(outside), t - began, running.map(j -> j.info(t)).toVector(), queued, recent)
+
+    private usageWith(outside: Option[Outside]) -> Usage
         val dev = running.filter(j -> !j.spec.landing)
         Usage(
             dev.map(j -> j.spec.units).sum(),
@@ -299,11 +325,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             running.length(),
             queue.length(),
             running.find(j -> j.spec.landing).map(j -> j.id),
-            slots.map(ts ->
-                ts.lock()
-                val o = ts.scan(ours(), config.budget.units)
-                ts.unlock()
-                TakeSlotUse(ts.dir, o.units, o.waiting.length(), o.landing)))
+            slots.flatMap(ts -> outside.map(o -> TakeSlotUse(ts.dir, o.units, o.waiting.length(), o.landing))))
 
     // A stop asks for the daemon to end: at once when nothing is queued or running; with `force`,
     // after killing what runs and cancelling what waits; with `drain`, once what is queued and
@@ -476,5 +498,7 @@ run(home: string) -> int
             ())
     val sharing = takeSlot.map(dir -> s", sharing take-slot's $dir").getOrElse("")
     eprintln(s"marshal: daemon ${process.pid()} listening at $home/sock; units ${config.budget.units}, memory ${marshal.formatSize(config.budget.memory)}$sharing, ${recovered.open.length()} jobs lost")
-    Daemon(home, config, events, recovered.nextId, histories, slots).serve()
+    // the jobs earlier daemons ended, the ones just recorded as lost among them
+    val earlier = (recovered.ended ++ recovered.open.map(ev -> marshal.decodeJob(ev)).filter(r -> r.isOk()).map(r -> marshal.asLost(r.ok().get()))).sortBy(j -> j.id).takeRight(Recent)
+    Daemon(home, config, events, recovered.nextId, histories, slots, earlier).serve()
     0

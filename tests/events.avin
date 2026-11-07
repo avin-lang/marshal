@@ -45,6 +45,27 @@ openJobs()
     assertEq(r.open.map(e -> e("id").asLong().get()), [long(2), long(3)])
     assertEq(r.open.map(e -> e("event").asString().get()), ["started", "submitted"])
 
+@test("the jobs the log saw end are recovered as their endings describe them, by id, the last `keep` of them")
+endedJobs()
+    val lines = [
+        line("submitted", info(1)), line("started", info(1, state = "running")), ended(1, 100, 0),
+        line("submitted", info(2)), line("started", info(2, state = "running")),
+        line("submitted", info(3)), line("killed", info(3, state = "done", outcome = Some(Outcome.Cancelled))),
+        line("submitted", info(4)), line("lost", info(4, state = "done", outcome = Some(Outcome.Lost))),
+        ended(5, 50, 2), "not json", line("timeout", info(6, state = "done", outcome = Some(Outcome.TimedOut)))]
+    val r = marshal.recover(lines)
+    assertEq(r.ended.map(j -> j.id), [long(1), long(3), long(4), long(5), long(6)])
+    assertEq(r.ended.map(j -> j.outcome), [Some(Outcome.Exited(0)), Some(Outcome.Cancelled), Some(Outcome.Lost), Some(Outcome.Exited(2)), Some(Outcome.TimedOut)])
+    assertEq(r.ended(0).elapsedMs, 100)
+    assertEq(marshal.recover(lines, 2).ended.map(j -> j.id), [long(5), long(6)])
+    assertEq(marshal.recover(lines, 0).ended, [])
+    assertEq(marshal.recover([]).ended, [])
+    // a job ended twice, as a lost job a later daemon recorded, is listed once, as its last ending
+    val twice = marshal.recover([ended(7, 10, 0), line("lost", info(7, state = "done", outcome = Some(Outcome.Lost)))])
+    assertEq(twice.ended.map(j -> j.outcome), [Some(Outcome.Lost)])
+    assertEq(marshal.asLost(info(8, state = "running")).outcome, Some(Outcome.Lost))
+    assertEq(marshal.asLost(info(8, state = "running")).state, "done")
+
 @test("histories hold the run times of runs that exited 0, by kind and lane, oldest first")
 histories()
     val lines = [ended(1, 100, 0), ended(2, 200, 1), ended(3, 300, 0), ended(4, 400, 0, "build"), ended(5, 500, 0, "test", true)]

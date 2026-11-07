@@ -26,6 +26,7 @@ val Commands: Vector[(string, string)] = [
     ("kill <id>", "stops the job's whole process tree (a queued job is cancelled)"),
     ("tail <id> [-f] [-n <lines>]", "the job's log; -f follows it until the job ends"),
     ("status [--json]", "the budget in use; --json: one JSON object with the running and queued jobs"),
+    ("top", "a live view of the budget, the jobs and their logs; h lists its keys"),
     ("stop [--wait | --force]", "stops the daemon; refused while jobs run unless it may wait for them or kill them"),
     ("daemon", "runs the daemon in the foreground")]
 
@@ -97,6 +98,7 @@ main(args: Vector[string]) -> int
             ["--json"] -> statusJson()
             _ -> complain("marshal: status takes --json or nothing")
         "tail" -> tail(rest)
+        "top" -> top(rest)
         "stop" -> stop(rest)
         "daemon" -> daemon.run(home())
         "--help" | "-h" ->

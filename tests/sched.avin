@@ -3,7 +3,8 @@ module tests
 // The scheduler: the unit and memory budgets, first come first served, the landing lane and the
 // backfill rule, each pinned by what `schedule` answers.
 import dev.avinlang.marshal
-import dev.avinlang.marshal.{Budget, Outside, Started, Ticket, Waiting}
+import dev.avinlang.marshal.{Budget, Outside, Started, Ticket, Waiting, Why}
+import dev.avinlang.marshal.{NoUnits, NoMemory, LaneBusy, ForTakeSlot, Behind, Starting}
 
 val budget: Budget = Budget(12, 64 * 1024)
 val hour: long = 3600000
@@ -182,3 +183,66 @@ outsideLanding()
 @test("landing jobs are not ordered against take-slot's waiters")
 outsideLandingIgnoresWaiters()
     assertEq(marshal.schedule(budget, [], [land(1)], 0, outside(0, [Ticket(1, 12)])), ids(1))
+
+// Why each waiting job waits, by id, as `waits` answers: (id, position, why).
+why(running: Vector[Started], queue: Vector[Waiting], o: Outside = marshal.NoOutside, b: Budget = budget) -> Vector[(long, int, Why)] =
+    marshal.waits(b, running, queue, 0, o)
+
+@test("nothing waiting has no reasons")
+whyEmpty()
+    assertEq(why([], []), [])
+    assertEq(why([running(1, 12)], []), [])
+
+@test("a head short of units waits for units, short of memory for memory, short of both for units")
+whyUnitsAndMemory()
+    val b = Budget(12, 100)
+    assertEq(why([running(1, 10)], [dev(2, 4)], b = b), [(long(2), 1, NoUnits)])
+    assertEq(why([running(1, 1, memory = 60)], [dev(2, 1, memory = 41)], b = b), [(long(2), 1, NoMemory)])
+    assertEq(why([running(1, 10, memory = 60)], [dev(2, 4, memory = 41)], b = b), [(long(2), 1, NoUnits)])
+    // exactly full still fits
+    assertEq(why([running(1, 8, memory = 60)], [dev(2, 4, memory = 40)], b = b), [(long(2), 1, Starting)])
+
+@test("a job that fits but would delay the blocked head waits behind it; one that delays nobody starts")
+whyBehind()
+    val r = [running(1, 10)]
+    assertEq(why(r, [dev(2, 4), dev(3, 1, expected = 2 * hour)]), [(long(2), 1, NoUnits), (long(3), 2, Behind(2))])
+    assertEq(why(r, [dev(2, 4), dev(3, 1, expected = 1)]), [(long(2), 1, NoUnits), (long(3), 2, Starting)])
+    // a later job that does not fit either waits for units, not behind the head
+    assertEq(why(r, [dev(2, 4), dev(3, 3, expected = 1)]), [(long(2), 1, NoUnits), (long(3), 2, NoUnits)])
+
+@test("a job short of units only because of take-slot waits for take-slot")
+whyTakeSlot()
+    assertEq(why([], [dev(1, 5)], outside(8)), [(long(1), 1, ForTakeSlot)])
+    assertEq(why([running(1, 8)], [dev(2, 5)], outside(2)), [(long(2), 1, NoUnits)])
+    assertEq(why([running(1, 4)], [dev(2, 5)], outside(4)), [(long(2), 1, ForTakeSlot)])
+    // a take-slot waiter that arrived first and fits holds its units
+    assertEq(why([running(1, 6)], [dev(2, 4)], outside(0, [Ticket(5, 4)])), [(long(2), 1, ForTakeSlot)])
+    // a job that fits behind a blocked take-slot waiter waits for take-slot
+    assertEq(why([running(1, 10)], [dev(2, 1, expected = 2 * hour)], outside(0, [Ticket(5, 4)])), [(long(2), 1, ForTakeSlot)])
+    // ... and behind take-slot's holders, which may end at once
+    assertEq(why([], [dev(1, 4), dev(2, 1, expected = 1)], outside(10)), [(long(1), 1, ForTakeSlot), (long(2), 2, Behind(1))])
+
+@test("a landing job waits for the lane: held by marshal it is busy, held by take-slot it is take-slot's")
+whyLanding()
+    assertEq(why([landing(1)], [land(2)]), [(long(2), 1, LaneBusy)])
+    assertEq(why([], [land(1)], outside(0, [], true)), [(long(1), 1, ForTakeSlot)])
+    assertEq(why([], [land(1), land(2)]), [(long(1), 1, Starting), (long(2), 2, LaneBusy)])
+    // the units budget never holds a landing job back
+    assertEq(why([running(1, 12)], [land(2)]), [(long(2), 1, Starting)])
+
+@test("positions count each lane's queue on its own, in queue order")
+whyPositions()
+    val r = [running(1, 12), landing(2)]
+    assertEq(why(r, [land(3), dev(4, 1), land(5), dev(6, 1)]).map(w -> (w.0, w.1)), [(long(3), 1), (long(4), 1), (long(5), 2), (long(6), 2)])
+
+@test("the jobs said to be starting are exactly the jobs schedule starts")
+whyAgreesWithSchedule()
+    val cases: Vector[(Vector[Started], Vector[Waiting], Outside)] = [
+        ([], [dev(1, 4), dev(2, 4), dev(3, 4), dev(4, 1)], marshal.NoOutside),
+        ([running(1, 10)], [dev(2, 4), dev(3, 1, expected = 1), dev(4, 1, expected = 1), land(5)], marshal.NoOutside),
+        ([running(1, 6)], [dev(2, 2), dev(3, 4)], outside(0, [Ticket(5, 4)])),
+        ([landing(1)], [land(2), dev(3, 12)], outside(0, [], true)),
+        ([], [dev(1, 8)], outside(0, [Ticket(11, 8)]))]
+    for (r, q, o) in cases
+        val starting = why(r, q, o).filter(w -> w.2 == Starting).map(w -> w.0).sorted()
+        assertEq(starting, marshal.schedule(budget, r, q, 0, o).sorted())

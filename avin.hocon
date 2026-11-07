@@ -2,4 +2,5 @@ package { name = "marshal", version = "0.1.0", description = "A job manager for 
 
 dependencies {
   json { path = "../avin/packages/json" }
+  tui { git = "github.com/avin-lang/tui", rev = "6cb517e2d767cc1568bc9a63514aa4191f2bfe9a" }
 }

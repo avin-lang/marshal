@@ -1,0 +1,89 @@
+module dev.avinlang.marshal.cli
+
+// `marshal top`: the live view. Once a second, and after every key, it asks the daemon for a
+// snapshot over the socket and draws it; a job's log is read from its file, as `tail` reads it.
+// It never starts a daemon by itself: with none listening it says so, looks again every second, and
+// starts one when `s` is pressed.
+import avin.fs
+import avin.net.UnixStream
+import avin.time
+import avin.time.millis
+import dev.avinlang.marshal
+import dev.avinlang.marshal.Request
+import dev.avinlang.marshal.{Viewed, Failed, Done}
+import dev.avinlang.marshal.top.{App, KillJob, Quit, StartDaemon, Stay}
+import dev.avinlang.tui
+import dev.avinlang.tui.Terminal
+
+// How often the view asks for a snapshot.
+val Every: time.Duration = millis(1000)
+
+top(args: Vector[string]) -> int
+    if args.nonEmpty() then return complain("marshal: top takes no arguments")
+    Terminal.use(tui.Options(), watch) match
+        Ok(()) -> 0
+        Err(e) -> complain(s"marshal: top: ${e.message()}")
+
+// Asks, draws, and waits for a key or the next second, until q.
+watch(term: Terminal)
+    val sock = home() + "/sock"
+    val app = App(sock)
+    var conn: Option[UnixStream] = None
+    var fetched = time.monotonic()
+    var due = time.monotonic()
+    loop
+        if time.monotonic() >= due
+            conn = look(app, conn, sock)
+            fetched = time.monotonic()
+            due = fetched + Every
+        readLog(app)
+        val g = term.frame()
+        app.draw(g, (time.monotonic() - fetched).toMillis())
+        term.present(g)
+        val wait = due - time.monotonic()
+        term.poll(if wait > millis(0) then wait else millis(0)) match
+            Some(e) -> app.handle(e) match
+                Quit -> return
+                KillJob(id) ->
+                    app.message = conn.map(c -> ask(c, Request.Kill(id))) match
+                        Some(Ok(Done)) -> s"job $id is being stopped"
+                        Some(Ok(Failed(why))) -> why
+                        Some(Ok(other)) -> s"unexpected reply $other"
+                        Some(Err(why)) -> why
+                        None -> "no daemon"
+                    due = time.monotonic()
+                StartDaemon ->
+                    app.message = launch(home()) match
+                        Ok(()) -> "starting a daemon"
+                        Err(why) -> why
+                    due = time.monotonic() + millis(300)
+                Stay -> ()
+            None -> ()
+
+// One snapshot into `app`, over `conn` or a new connection; the connection to keep.
+look(app: App, conn: Option[UnixStream], sock: string) -> Option[UnixStream]
+    val c = conn match
+        Some(c) -> c
+        None -> UnixStream.connect(sock) match
+            Ok(c) -> c
+            Err(e) ->
+                app.lost(s"no daemon at $sock (${e.message()})", true)
+                return None
+    ask(c, Request.Snapshot) match
+        Ok(Viewed(o)) ->
+            app.update(o)
+            Some(c)
+        Ok(Failed(why)) ->
+            app.lost(s"the daemon cannot give a snapshot ($why): it is older than this marshal; `marshal stop --wait` and run top again", false)
+            Some(c)
+        Ok(other) ->
+            app.lost(s"the daemon's reply is not a snapshot: $other", false)
+            None
+        Err(why) ->
+            app.lost(why, true)
+            None
+
+// The lines of the log the pane shows, read again.
+readLog(app: App)
+    for (log, count) in app.logWanted()
+        app.logLines = fs.readTailLines(log, count).getOrElse([]).toVector()

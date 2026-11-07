@@ -40,41 +40,84 @@ val NoOutside: Outside = Outside(0, [], false)
 
 // The ids of the jobs to start now, in the order to start them: a landing job first, then
 // development jobs in queue order.
-schedule(budget: Budget, running: Vector[Started], queue: Vector[Waiting], now: long, outside: Outside = NoOutside) -> Vector[long]
-    val starts = Buffer[long]()
+schedule(budget: Budget, running: Vector[Started], queue: Vector[Waiting], now: long, outside: Outside = NoOutside) -> Vector[long] =
+    decide(budget, running, queue, now, outside).filter(d -> d.why.isEmpty()).map(d -> d.id)
+
+// Each waiting job's place in its lane's queue (from 1) and why it waits, in the order of `queue`:
+// what `schedule` would say of it, with `Starting` for a job it would start now.
+waits(budget: Budget, running: Vector[Started], queue: Vector[Waiting], now: long, outside: Outside = NoOutside) -> Vector[(long, int, Why)]
+    val decided = decide(budget, running, queue, now, outside)
+    var landings = 0
+    var others = 0
+    val out = Buffer[(long, int, Why)]()
+    for w in queue
+        val position = if w.landing
+            landings += 1
+            landings
+        else
+            others += 1
+            others
+        val why = decided.find(d -> d.id == w.id).flatMap(d -> d.why).getOrElse(Starting)
+        out += (w.id, position, why)
+    out.toVector()
+
+// What the scheduler makes of one waiting job: start it now (no `why`), or why it waits.
+private data Decision(id: long, why: Option[Why])
+
+// The decision for every waiting job: the landing jobs first, then the development jobs in arrival
+// order.
+private decide(budget: Budget, running: Vector[Started], queue: Vector[Waiting], now: long, outside: Outside) -> Vector[Decision]
+    val out = Buffer[Decision]()
     // When each running or starting job is expected to end, with the units and memory it frees.
     val ends = Buffer[(long, int, long)]()
     var memory: long = 0
     var laneBusy = outside.landing
     var units = outside.units
+    // the units take-slot's runs hold, and its waiters that fit are to hold
+    var theirs = outside.units
     if outside.units > 0 then ends += (now, outside.units, 0)
     for r in running
         if r.landing then laneBusy = true else units += r.units
         memory += r.memory
         ends += (expectedEnd(r.startedMs, r.expectedMs, now), if r.landing then 0 else r.units, r.memory)
-    if !laneBusy
-        queue.find(w -> w.landing) match
-            Some(w) ->
-                starts += w.id
-                memory += w.memory
-                ends += (now + w.expectedMs, 0, w.memory)
-            None -> ()
-    // When the blocked head of the queue can start; None while the head has not been met.
-    var headStart: Option[long] = None
+    for w in queue.filter(w -> w.landing)
+        if laneBusy
+            out += Decision(w.id, Some(if outside.landing then ForTakeSlot else LaneBusy))
+        else
+            out += Decision(w.id, None)
+            laneBusy = true
+            memory += w.memory
+            ends += (now + w.expectedMs, 0, w.memory)
+    // When the blocked head of the queue can start, and which job it is (None for a take-slot
+    // waiter); None while the head has not been met.
+    var head: Option[(long, Option[long])] = None
     for e in arrivalOrder(queue, outside.waiting)
         val fits = units + e.units <= budget.units && memory + e.memory <= budget.memory
-        val go = headStart match
+        val go = head match
             None ->
-                if !fits then headStart = Some(whenFits(budget, units, memory, e.units, e.memory, ends))
+                if !fits then head = Some((whenFits(budget, units, memory, e.units, e.memory, ends), e.job.map(w -> w.id)))
                 fits
             // take-slot never lets a waiter overtake; a marshal job may, when it delays nobody
-            Some(at) -> e.job.isDefined() && fits && now + e.expectedMs <= at
+            Some((at, _)) -> e.job.isDefined() && fits && now + e.expectedMs <= at
         if go
-            e.job.foreach(w -> starts += w.id)
             units += e.units
             memory += e.memory
             ends += (now + e.expectedMs, e.units, e.memory)
-    starts.toVector()
+            if e.job.isEmpty() then theirs += e.units
+        for w in e.job
+            out += Decision(w.id, if go then None else Some(waitsFor(budget, units, memory, theirs, e, fits, head)))
+    out.toVector()
+
+// Why `e` waits. One that does not fit beside `used` units and `memory` waits for units, unless they
+// would fit but for what take-slot's runs and admitted waiters hold (`theirs`), or else for memory. One that fits waits
+// behind the blocked head, a job or a take-slot waiter.
+private waitsFor(budget: Budget, used: int, memory: long, theirs: int, e: Entry, fits: bool, head: Option[(long, Option[long])]) -> Why
+    if fits then return head match
+        Some((_, Some(id))) -> Behind(id)
+        _ -> ForTakeSlot
+    if used + e.units > budget.units
+        return if used - theirs + e.units <= budget.units then ForTakeSlot else NoUnits
+    NoMemory
 
 // A running job past its expected end may end at any moment: it is expected now.
 private expectedEnd(startedMs: long, expectedMs: long, now: long) -> long =

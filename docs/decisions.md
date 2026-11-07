@@ -132,3 +132,36 @@ sysl's scripts move to marshal.
   `-h` anywhere before a `--`.
 - **The modules are `dev.avinlang.marshal`, `.cli` and `.daemon`**, laid out under
   `dev/avinlang/marshal/` as the package's directories require; the package is still named `marshal`.
+
+## marshal top (branch `marshal-top`)
+
+**Proposed**; each says what else was weighed.
+
+- **One `snapshot` request** answers everything the view draws: the budget, uptime, running,
+  queued and recent jobs, and each queued job's place and reason. Why: one reply is one consistent
+  moment, where `status` then `ls` could disagree; `status` and `ls` keep their replies, so older
+  clients are untouched. Alternatives: adding the fields to `status --json` (it is a script's
+  interface, and the reasons are not a script's business) or to `ls`.
+- **The reasons are computed by the scheduler's own walk** (`waits`, beside `schedule`, over one
+  shared `decide`), so a reason can never contradict what the scheduler does; a test holds the
+  jobs said to be `starting` equal to the jobs `schedule` starts. A job short of units only because
+  of take-slot's runs or its admitted waiters is `take-slot`, not `units`.
+- **`recent` includes jobs earlier daemons ended**, the lost ones among them, read from the event log
+  at start; that is the only way `lost` ever shows. `ls` still lists only this daemon's.
+- **top never starts a daemon by itself.** It shows "no daemon", looks again every second, and `s`
+  starts one. Why: a viewer opened to see whether marshal is up should not change the answer, and
+  a wrong `MARSHAL_HOME` would otherwise start a stray daemon silently. Alternative: starting one as
+  every other command does.
+- **The log pane reads the job's log file**, as `marshal tail` does, once a second and after each
+  key: the log is a file the daemon does not hold open for clients, and routing it through the
+  daemon's one thread would make a busy log slow everyone's requests. Everything else comes from
+  the socket; nothing reads `events.jsonl` or take-slot's directory.
+- **Keys with the log open**: Up and Down still select (the pane follows the selection); PgUp, PgDn,
+  Home and End scroll the log, and End follows its end again. Alternative: a focused pane taking
+  the arrows (one more mode to know).
+- **tui is a git dependency pinned to a commit** (`rev`), since tui has no release yet; a path
+  dependency cannot build from the brew formula's checkout. Review: pin to tui's first tag once it
+  has one.
+- **Colours**: running green, queued yellow, exit 0 green, a failure red, a timeout red reversed,
+  killed magenta, lost magenta reversed, cancelled grey; time left yellow under a quarter or five
+  minutes, red under a tenth or one minute.

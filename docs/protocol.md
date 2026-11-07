@@ -14,6 +14,7 @@ thread of its own, so a client blocked in `wait` holds up nobody else.
 | `kill` | `id` | `{"ok":true}`; the job's end is what `wait` answers |
 | `ls` | | `{"ok":true,"jobs":[JOB...]}`: running, then queued, then the last ten ended |
 | `status` | | `{"ok":true,"units":U,"unit_budget":B,"mem":M,"mem_budget":MB,"running":R,"queued":Q,"landing":id or null,"take_slot":{"dir":D,"units":TU,"waiting":TW,"landing":bool} or null}` |
+| `snapshot` | | `{"ok":true,"snapshot":{...}}`: the fields of the `status` reply but `running` and `queued`, then `uptime_ms` (how long the daemon has run), `running` (jobs), `queued` (jobs in queue order, each with `position` and `waits`, below) and `recent` (the last ten jobs that ended, earlier daemons' included, the latest first) |
 | `stop` | `force` (bool), `wait` (bool) | `{"ok":true}` once the daemon has removed its socket; refused while jobs run unless one of the two is true |
 
 Any request may be refused: `{"ok":false,"error":"<a sentence>"}`, for a request that is not JSON,
@@ -32,6 +33,22 @@ lacks a field or has one of the wrong type, names no job, or asks for a job that
 and `{"how":"lost"}`. `elapsed_ms` is the time queued for a queued job and the time run otherwise;
 `killed` says `marshal kill` or a forced stop ended it; `sample` names the stack sample of a job
 stopped at its deadline.
+
+A queued job in a snapshot is the job object with two fields more, and a third for one behind
+another job: `position`, its place in its lane's queue counted from 1 (landing jobs and development
+jobs queue apart), and `waits`, why it has not started:
+
+| `waits` | |
+| --- | --- |
+| `units` | its units do not fit beside what runs |
+| `memory` | its units fit and its memory does not |
+| `lane` | a landing job, and another landing job holds the lane |
+| `take-slot` | it waits for what take-slot holds: its runs' units or landing lock, or a take-slot run that arrived before it |
+| `behind` | it fits, but starting it would delay the job at the head of the queue, whose id is `behind` |
+| `starting` | it starts at the daemon's next look |
+
+A client asks for a snapshot without knowing the daemon's age: a daemon older than the request
+refuses it with `no such request: `snapshot``.
 
 ## The event log
 

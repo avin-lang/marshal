@@ -22,6 +22,9 @@ data Request
     Kill(id: long)
     List
     Status
+    // Everything a live view shows: the budget, the running, queued and recent jobs, and why each
+    // queued job waits.
+    Snapshot
     Stop(force: bool, drain: bool)
 
 // How a job ended.
@@ -75,11 +78,32 @@ data Usage(
 // of its runs wait, and whether one of them holds the landing lane.
 data TakeSlotUse(dir: string, units: int, waiting: int, landing: bool)
 
+// Why a queued job has not started: its units do not fit beside what runs, its memory does not, it
+// is a landing job and the lane is held, it waits for what take-slot holds or for a take-slot run
+// ahead of it, it fits but starting it would delay job `id` at the head of the queue, or it starts
+// at the daemon's next look.
+data Why
+    NoUnits
+    NoMemory
+    LaneBusy
+    ForTakeSlot
+    Behind(id: long)
+    Starting
+
+// A queued job, its place in its lane's queue (from 1; landing jobs and development jobs each have a
+// queue), and why it waits.
+data QueuedJob(job: JobInfo, position: int, why: Why)
+
+// What `marshal top` draws: the budget in use, how long the daemon has run, the running jobs, the
+// queued ones, and the jobs that ended last, the latest first.
+data Overview(usage: Usage, uptimeMs: long, running: Vector[JobInfo], queued: Vector[QueuedJob], recent: Vector[JobInfo])
+
 data Reply
     Submitted(id: long, log: string)
     Ended(job: JobInfo)
     Jobs(jobs: Vector[JobInfo])
     Using(usage: Usage)
+    Viewed(overview: Overview)
     Done
     Failed(message: string)
 
@@ -102,6 +126,7 @@ encodeRequest(Wait(id)) = Json.obj(("op", Json.str("wait")), ("id", Json.num(id)
 encodeRequest(Kill(id)) = Json.obj(("op", Json.str("kill")), ("id", Json.num(id)))
 encodeRequest(List) = Json.obj(("op", Json.str("ls")))
 encodeRequest(Status) = Json.obj(("op", Json.str("status")))
+encodeRequest(Snapshot) = Json.obj(("op", Json.str("snapshot")))
 encodeRequest(Stop(force, drain)) = Json.obj(("op", Json.str("stop")), ("force", Json.Bool(force)), ("wait", Json.Bool(drain)))
 
 private field[T](j: Json, key: string, read: (Json) -> Option[T], what: string) -> Result[T, string] =
@@ -152,6 +177,7 @@ decodeRequest(text: string) -> Result[Request, string]
         "kill" -> Ok(Kill(field(j, "id", v -> v.asLong(), "a whole number")?))
         "ls" -> Ok(List)
         "status" -> Ok(Status)
+        "snapshot" -> Ok(Snapshot)
         "stop" -> Ok(Stop(optional(j, "force", v -> v.asBool(), "a bool", false)?, optional(j, "wait", v -> v.asBool(), "a bool", false)?))
         other -> Err(s"no such request: `$other`")
 
@@ -254,6 +280,7 @@ encodeReply(Using(u)) = Json.obj(
     ("queued", Json.num(u.queued)),
     ("landing", u.landing.map(id -> Json.num(id)).getOrElse(Json.Null)),
     ("take_slot", u.takeSlot.map(encodeTakeSlot).getOrElse(Json.Null)))
+encodeReply(Viewed(o)) = Json.obj(("ok", Json.Bool(true)), ("snapshot", encodeOverview(o)))
 encodeReply(Done) = Json.obj(("ok", Json.Bool(true)))
 encodeReply(Failed(message)) = Json.obj(("ok", Json.Bool(false)), ("error", Json.str(message)))
 
@@ -263,6 +290,7 @@ decodeReply(text: string) -> Result[Reply, string]
         Err(e) -> return Err(s"not JSON: $e")
     if !field(j, "ok", v -> v.asBool(), "a bool")?
         return Ok(Failed(field(j, "error", v -> v.asString(), "a string")?))
+    if j.has("snapshot") then return Ok(Viewed(decodeOverview(j("snapshot"))?))
     if j.has("job") then return Ok(Ended(decodeJob(j("job"))?))
     if j.has("jobs")
         val items = field(j, "jobs", v -> v.asVector(), "an array")?
@@ -281,3 +309,69 @@ decodeReply(text: string) -> Result[Reply, string]
             decodeTakeSlot(j.get("take_slot").getOrElse(Json.Null))?)))
     if j.has("id") then return Ok(Submitted(field(j, "id", v -> v.asLong(), "a whole number")?, field(j, "log", v -> v.asString(), "a string")?))
     Ok(Done)
+
+// Snapshots.
+
+// The word a queued job's `waits` field holds.
+whyWord(w: Why) -> string
+whyWord(NoUnits) = "units"
+whyWord(NoMemory) = "memory"
+whyWord(LaneBusy) = "lane"
+whyWord(ForTakeSlot) = "take-slot"
+whyWord(Behind(_)) = "behind"
+whyWord(Starting) = "starting"
+
+private encodeQueued(q: QueuedJob) -> Json
+    val extra = q.why match
+        Behind(id) -> [("behind", Json.num(id))]
+        _ -> Vector[(string, Json)]()
+    Json.Obj(encodeJob(q.job).asMembers().get() ++ [("position", Json.num(q.position)), ("waits", Json.str(whyWord(q.why)))] ++ extra)
+
+private decodeWhy(j: Json) -> Result[Why, string]
+    field(j, "waits", v -> v.asString(), "a string")? match
+        "units" -> Ok(NoUnits)
+        "memory" -> Ok(NoMemory)
+        "lane" -> Ok(LaneBusy)
+        "take-slot" -> Ok(ForTakeSlot)
+        "behind" -> Ok(Behind(field(j, "behind", v -> v.asLong(), "a whole number")?))
+        "starting" -> Ok(Starting)
+        other -> Err(s"no such reason to wait: `$other`")
+
+private decodeQueued(j: Json) -> Result[QueuedJob, string] =
+    Ok(QueuedJob(decodeJob(j)?, field(j, "position", v -> v.asInt(), "an int")?, decodeWhy(j)?))
+
+encodeOverview(o: Overview) -> Json = Json.obj(
+    ("units", Json.num(o.usage.units)),
+    ("unit_budget", Json.num(o.usage.unitBudget)),
+    ("mem", Json.num(o.usage.memory)),
+    ("mem_budget", Json.num(o.usage.memoryBudget)),
+    ("landing", o.usage.landing.map(id -> Json.num(id)).getOrElse(Json.Null)),
+    ("take_slot", o.usage.takeSlot.map(encodeTakeSlot).getOrElse(Json.Null)),
+    ("uptime_ms", Json.num(o.uptimeMs)),
+    ("running", Json.Arr(o.running.map(encodeJob))),
+    ("queued", Json.Arr(o.queued.map(encodeQueued))),
+    ("recent", Json.Arr(o.recent.map(encodeJob))))
+
+private each[T](j: Json, key: string, read: (Json) -> Result[T, string]) -> Result[Vector[T], string]
+    val items = field(j, key, v -> v.asVector(), "an array")?
+    val out = Buffer[T]()
+    for item in items do out += read(item)?
+    Ok(out.toVector())
+
+decodeOverview(j: Json) -> Result[Overview, string]
+    val running = each(j, "running", decodeJob)?
+    val queued = each(j, "queued", decodeQueued)?
+    Ok(Overview(
+        Usage(
+            field(j, "units", v -> v.asInt(), "an int")?,
+            field(j, "unit_budget", v -> v.asInt(), "an int")?,
+            field(j, "mem", v -> v.asLong(), "a whole number")?,
+            field(j, "mem_budget", v -> v.asLong(), "a whole number")?,
+            running.length(),
+            queued.length(),
+            optional(j, "landing", someLong, "a whole number", None)?,
+            decodeTakeSlot(j.get("take_slot").getOrElse(Json.Null))?),
+        field(j, "uptime_ms", v -> v.asLong(), "a whole number")?,
+        running,
+        queued,
+        each(j, "recent", decodeJob)?))

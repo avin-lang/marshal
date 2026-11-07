@@ -22,9 +22,10 @@ eventLine(ts: long, event: string, job: JobInfo, extra: Vector[(string, Json)]) 
 //   the job waited or ran. The new daemon records them as lost.
 // - `histories`: the run time of each job that exited 0, by `historyKey`, oldest first.
 // - `unreadable`: how many lines were not events.
-data Recovered(nextId: long, open: Vector[Json], histories: Map[string, Vector[long]], unreadable: int)
+// - `ended`: the last `keep` jobs the log saw end, as their ending events describe them, by id.
+data Recovered(nextId: long, open: Vector[Json], histories: Map[string, Vector[long]], unreadable: int, ended: Vector[JobInfo])
 
-recover(lines: Iterable[string]) -> Recovered
+recover(lines: Iterable[string], keep: int = 10) -> Recovered
     var maxId: long = 0
     var unreadable = 0
     val last = Buffer[(long, Json)]()
@@ -63,17 +64,21 @@ recover(lines: Iterable[string]) -> Recovered
                 None -> ()
     val open = last.filter(e -> !endings.contains(e.1.get("event").flatMap(v -> v.asString()).getOrElse(""))).map(e -> e.1)
     val learned = histories.keys().map(k -> (k, histories(k).toVector())).toMap()
-    Recovered(maxId + 1, open.toVector(), learned, unreadable)
+    val ended = last.filter(e -> endings.contains(e.1.get("event").flatMap(v -> v.asString()).getOrElse(""))).map(e -> decodeJob(e.1)).filter(r -> r.isOk()).map(r -> r.ok().get())
+    Recovered(maxId + 1, open.toVector(), learned, unreadable, ended.takeRight(keep).toVector())
 
 // The `lost` event for a job whose last event is `ev`: done, its outcome `Lost`, and `group_alive`
 // saying whether its process group still had processes when the new daemon looked. None when `ev`
 // is not a job's event.
 lostLine(ts: long, ev: Json, groupAlive: bool) -> Option[string] = decodeJob(ev) match
     Ok(j) ->
-        val lost = JobInfo(j.id, j.kind, j.units, j.memory, j.landing, j.dir, j.cmd, "done", Some(Lost), j.killed, j.queuedMs, j.elapsedMs, j.deadlineMs, j.log, j.sample)
+        val lost = asLost(j)
         val pgid = ev.get("pgid").getOrElse(Json.num(0))
         Some(eventLine(ts, "lost", lost, [("run_ms", Json.num(j.elapsedMs)), ("exit", Json.num(exitCode(Lost))), ("pgid", pgid), ("group_alive", Json.Bool(groupAlive))]))
     Err(_) -> None
+
+// Job `j` as its `lost` event describes it.
+asLost(j: JobInfo) -> JobInfo = JobInfo(j.id, j.kind, j.units, j.memory, j.landing, j.dir, j.cmd, "done", Some(Lost), j.killed, j.queuedMs, j.elapsedMs, j.deadlineMs, j.log, j.sample)
 
 // The last event that ended job `id`, or None while the log has none.
 endOf(lines: Iterable[string], id: long) -> Option[Json]
