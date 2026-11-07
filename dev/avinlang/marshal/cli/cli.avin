@@ -13,7 +13,7 @@ import avin.time
 import avin.time.millis
 import dev.avinlang.marshal
 import dev.avinlang.marshal.{JobInfo, JobSpec, Reply, Request}
-import dev.avinlang.marshal.{Submitted, Ended, Jobs, Using, Done, Failed}
+import dev.avinlang.marshal.{Submitted, Ended, Jobs, Using, Hi, Done, Failed}
 import dev.avinlang.marshal.daemon
 
 // Each command: how it is written after `marshal`, and what it does. The README's command list
@@ -28,6 +28,8 @@ val Commands: Vector[(string, string)] = [
     ("status [--json]", "the budget in use; --json: one JSON object with the running and queued jobs"),
     ("top", "a live view of the budget, the jobs and their logs; h lists its keys"),
     ("stop [--wait | --force]", "stops the daemon; refused while jobs run unless it may wait for them or kill them"),
+    ("restart", "the daemon becomes the marshal installed now, keeping its jobs running and queued"),
+    ("version", "marshal's version, and the running daemon's"),
     ("daemon", "runs the daemon in the foreground")]
 
 // The options of `submit` and `run`.
@@ -100,7 +102,12 @@ main(args: Vector[string]) -> int
         "tail" -> tail(rest)
         "top" -> top(rest)
         "stop" -> stop(rest)
-        "daemon" -> daemon.run(home())
+        "restart" -> if rest.isEmpty() then restart() else complain("marshal: restart takes no arguments")
+        "version" -> if rest.isEmpty() then version() else complain("marshal: version takes no arguments")
+        "daemon" -> rest match
+            [] -> daemon.run(home())
+            ["--resume", file] -> daemon.run(home(), Some(file))
+            _ -> complain("marshal: daemon takes no arguments")
         "--help" | "-h" ->
             println(usage)
             0
@@ -175,10 +182,7 @@ submit(args: Vector[string], andWait: bool) -> int
     val spec = parseSubmission(args, dir, env) match
         Ok(s) -> s
         Err(e) -> return complain(s"marshal: $e")
-    val conn = connect(true) match
-        Ok(c) -> c
-        Err(e) -> return complain(e)
-    val (id, log) = ask(conn, Request.Submit(spec)) match
+    val (id, log) = askDaemon(Request.Submit(spec)) match
         Ok(Submitted(id, log)) -> (id, log)
         Ok(Failed(e)) -> return complain(s"marshal: $e")
         Ok(other) -> return complain(s"marshal: unexpected reply $other")
@@ -187,13 +191,9 @@ submit(args: Vector[string], andWait: bool) -> int
         println(id)
         return 0
     println(s"marshal: job $id: log $log")
-    awaitJob(conn, id)
+    waitFor(id)
 
-waitFor(id: long) -> int = connect(true) match
-    Ok(conn) -> awaitJob(conn, id)
-    Err(e) -> complain(e)
-
-awaitJob(conn: UnixStream, id: long) -> int = ask(conn, Request.Wait(id)) match
+waitFor(id: long) -> int = askDaemon(Request.Wait(id)) match
     Ok(Ended(job)) ->
         println(marshal.resultLine(job))
         job.outcome.map(marshal.exitCode).getOrElse(Trouble)
@@ -201,23 +201,16 @@ awaitJob(conn: UnixStream, id: long) -> int = ask(conn, Request.Wait(id)) match
     Ok(other) -> complain(s"marshal: unexpected reply $other")
     Err(e) -> complain(e)
 
-simple(request: Request, said: string) -> int
-    val conn = connect(true) match
-        Ok(c) -> c
-        Err(e) -> return complain(e)
-    ask(conn, request) match
-        Ok(Done) ->
-            println(said)
-            0
-        Ok(Failed(e)) -> complain(s"marshal: $e")
-        Ok(other) -> complain(s"marshal: unexpected reply $other")
-        Err(e) -> complain(e)
+simple(request: Request, said: string) -> int = askDaemon(request) match
+    Ok(Done) ->
+        println(said)
+        0
+    Ok(Failed(e)) -> complain(s"marshal: $e")
+    Ok(other) -> complain(s"marshal: unexpected reply $other")
+    Err(e) -> complain(e)
 
 list() -> int
-    val conn = connect(true) match
-        Ok(c) -> c
-        Err(e) -> return complain(e)
-    ask(conn, Request.List) match
+    askDaemon(Request.List) match
         Ok(Jobs(jobs)) ->
             println(marshal.listing(jobs))
             0
@@ -226,10 +219,7 @@ list() -> int
         Err(e) -> complain(e)
 
 status() -> int
-    val conn = connect(true) match
-        Ok(c) -> c
-        Err(e) -> return complain(e)
-    ask(conn, Request.Status) match
+    askDaemon(Request.Status) match
         Ok(Using(u)) ->
             println(marshal.usageLine(u))
             0
@@ -239,15 +229,12 @@ status() -> int
 
 // The budget in use and the running and queued jobs, as one JSON object on one line.
 statusJson() -> int
-    val conn = connect(true) match
-        Ok(c) -> c
-        Err(e) -> return complain(e)
-    val usage = ask(conn, Request.Status) match
+    val usage = askDaemon(Request.Status) match
         Ok(Using(u)) -> u
         Ok(Failed(e)) -> return complain(s"marshal: $e")
         Ok(other) -> return complain(s"marshal: unexpected reply $other")
         Err(e) -> return complain(e)
-    ask(conn, Request.List) match
+    askDaemon(Request.List) match
         Ok(Jobs(jobs)) ->
             println(marshal.statusJson(usage, jobs).render())
             0
@@ -273,6 +260,51 @@ stop(args: Vector[string]) -> int
         Ok(Failed(e)) -> complain(s"marshal: $e")
         Ok(other) -> complain(s"marshal: unexpected reply $other")
         Err(e) -> complain(e)
+
+// The daemon's version and process id, over `conn`.
+hello(conn: UnixStream) -> Result[(string, long), string] = ask(conn, Request.Hello) match
+    Ok(Hi(v, pid)) -> Ok((v, pid))
+    Ok(Failed(e)) -> Err(s"marshal: the daemon does not say its version ($e): it is older than this marshal; `marshal stop --wait` and start it again")
+    Ok(other) -> Err(s"marshal: unexpected reply $other")
+    Err(e) -> Err(e)
+
+// `restart`: the daemon becomes the marshal installed at its own path and keeps its jobs. It
+// answers only when it could not; otherwise its connection closes as it goes, and the new image is
+// asked who it is once it listens.
+restart() -> int
+    val conn = connect(false) match
+        Ok(c) -> c
+        Err(_) ->
+            println("marshal: no daemon is running")
+            return 0
+    val (old, pid) = hello(conn) match
+        Ok(h) -> h
+        Err(e) -> return complain(e)
+    exchange(conn, Request.Restart) match
+        Ok(Some(Failed(e))) -> return complain(s"marshal: $e")
+        Ok(Some(other)) -> return complain(s"marshal: unexpected reply $other")
+        Ok(None) -> ()
+        Err(e) -> return complain(e)
+    conn.close()
+    val again = reconnect(time.monotonic() + Reconnecting) match
+        Ok(c) -> c
+        Err(e) -> return complain(e)
+    hello(again) match
+        Ok((now, p)) if p == pid ->
+            println(s"marshal: daemon $pid restarted: version $old, now $now")
+            0
+        Ok((_, p)) -> complain(s"marshal: daemon $pid ended instead of restarting; daemon $p took its place, and its jobs were lost; see ${home()}/daemon.log")
+        Err(e) -> complain(e)
+
+// `version`: this marshal's version, and the daemon's when one is running.
+version() -> int
+    println(s"marshal ${marshal.Version}")
+    UnixStream.connect(home() + "/sock") match
+        Ok(conn) -> hello(conn) match
+            Ok((v, pid)) -> println(s"daemon $pid: marshal $v")
+            Err(e) -> return complain(e)
+        Err(_) -> println("no daemon is running")
+    0
 
 // `tail <id> [-f] [-n N]`: the last lines of a job's log, and with -f what it writes after them
 // until the job ends.
@@ -306,12 +338,9 @@ tail(args: Vector[string]) -> int
             Err(IoError.NotFound) -> complain(s"marshal: job $job has no log yet")
             Err(e) -> complain(s"marshal: $log: ${e.message()}")
     // Following: a second connection waits for the job, so the follower knows when to stop.
-    val conn = connect(true) match
-        Ok(c) -> c
-        Err(e) -> return complain(e)
     val code = Atomic(-1)
     val waiter = spawn(() ->
-        val result = ask(conn, Request.Wait(job))
+        val result = askDaemon(Request.Wait(job))
         val status = result match
             Ok(Ended(j)) -> j.outcome.map(marshal.exitCode).getOrElse(Trouble)
             _ -> Trouble
@@ -348,14 +377,45 @@ reportEnd(Ok(other)) = complain(s"marshal: unexpected reply $other")
 reportEnd(Err(e)) = complain(e)
 
 // One request and its reply.
-ask(conn: UnixStream, request: Request) -> Result[Reply, string]
-    conn.writeText(marshal.encodeRequest(request).render() + "\n") match
-        Err(e) -> return Err(s"marshal: the daemon is gone: ${e.message()}")
-        Ok(_) -> ()
+ask(conn: UnixStream, request: Request) -> Result[Reply, string] = exchange(conn, request)? match
+    Some(reply) -> Ok(reply)
+    None -> Err("marshal: the daemon closed the connection without a reply")
+
+// One request and its reply, or None when the connection closed before a reply came.
+exchange(conn: UnixStream, request: Request) -> Result[Option[Reply], string]
+    if conn.writeText(marshal.encodeRequest(request).render() + "\n").isErr() then return Ok(None)
     conn.readLine() match
-        Ok(Some(line)) -> marshal.decodeReply(line).mapErr(e -> s"marshal: the daemon's reply is not one: $e")
-        Ok(None) -> Err("marshal: the daemon closed the connection without a reply")
-        Err(e) -> Err(s"marshal: the daemon is gone: ${e.message()}")
+        Ok(Some(line)) -> marshal.decodeReply(line).map(r -> Some(r)).mapErr(e -> s"marshal: the daemon's reply is not one: $e")
+        _ -> Ok(None)
+
+// How long a command goes on trying to reach a daemon whose connection closed: long enough for it
+// to restart.
+val Reconnecting: time.Duration = millis(30000)
+
+// One request of the daemon, starting one when none listens. A connection that closes before the
+// reply comes is opened again and the request asked again, for up to `Reconnecting`: a daemon
+// writes every reply it gives before it restarts, so a request left unanswered was not carried
+// out, and a `wait` goes on waiting across a restart.
+askDaemon(request: Request) -> Result[Reply, string]
+    var conn = connect(true)?
+    loop
+        exchange(conn, request)? match
+            Some(reply) ->
+                conn.close()
+                return Ok(reply)
+            None -> conn.close()
+        conn = reconnect(time.monotonic() + Reconnecting)?
+
+// A new connection to the daemon, looking with a growing pause until `limit`; a daemon is started
+// when none is starting.
+reconnect(limit: time.Duration) -> Result[UnixStream, string]
+    var pause: long = 25
+    loop
+        threads.sleep(millis(pause))
+        if pause < 1000 then pause *= 2
+        connect(true) match
+            Ok(c) -> return Ok(c)
+            Err(e) -> if time.monotonic() >= limit then return Err(s"marshal: the daemon went away and did not come back within ${Reconnecting.toMillis() / 1000}s: $e")
 
 // A connection to the daemon, starting one when none listens and `start` allows it.
 connect(start: bool) -> Result[UnixStream, string]

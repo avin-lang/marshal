@@ -5,6 +5,9 @@ module dev.avinlang.marshal
 import json
 import json.Json
 
+// marshal's version, as `avin.hocon` gives it: what `marshal version` and `marshal restart` print.
+val Version: string = "0.1.0"
+
 // What a job is to run and how much of the machine it takes.
 data JobSpec(
     kind: string,
@@ -26,6 +29,10 @@ data Request
     // queued job waits.
     Snapshot
     Stop(force: bool, drain: bool)
+    // Which marshal the daemon is and its process.
+    Hello
+    // The daemon replaces itself with the program installed at its own path, keeping its jobs.
+    Restart
 
 // How a job ended.
 data Outcome
@@ -104,6 +111,8 @@ data Reply
     Jobs(jobs: Vector[JobInfo])
     Using(usage: Usage)
     Viewed(overview: Overview)
+    // The daemon's version and process id.
+    Hi(version: string, pid: long)
     Done
     Failed(message: string)
 
@@ -112,8 +121,18 @@ data Reply
 private strings(xs: Vector[string]) -> Json = Json.Arr(xs.map(x -> Json.str(x)))
 
 encodeRequest(r: Request) -> Json
-encodeRequest(Submit(s)) = Json.obj(
-    ("op", Json.str("submit")),
+encodeRequest(Submit(s)) = Json.Obj([("op", Json.str("submit"))] ++ encodeSpec(s).asMembers().get())
+encodeRequest(Wait(id)) = Json.obj(("op", Json.str("wait")), ("id", Json.num(id)))
+encodeRequest(Kill(id)) = Json.obj(("op", Json.str("kill")), ("id", Json.num(id)))
+encodeRequest(List) = Json.obj(("op", Json.str("ls")))
+encodeRequest(Status) = Json.obj(("op", Json.str("status")))
+encodeRequest(Snapshot) = Json.obj(("op", Json.str("snapshot")))
+encodeRequest(Stop(force, drain)) = Json.obj(("op", Json.str("stop")), ("force", Json.Bool(force)), ("wait", Json.Bool(drain)))
+encodeRequest(Hello) = Json.obj(("op", Json.str("version")))
+encodeRequest(Restart) = Json.obj(("op", Json.str("restart")))
+
+// A job's specification, as a submit request carries it after its `op`.
+encodeSpec(s: JobSpec) -> Json = Json.obj(
     ("kind", Json.str(s.kind)),
     ("units", Json.num(s.units)),
     ("mem", Json.num(s.memory)),
@@ -122,12 +141,19 @@ encodeRequest(Submit(s)) = Json.obj(
     ("deadline_ms", s.deadlineMs.map(d -> Json.num(d)).getOrElse(Json.Null)),
     ("cmd", strings(s.cmd)),
     ("env", Json.Obj(s.env.map(e -> (e.0, Json.str(e.1))))))
-encodeRequest(Wait(id)) = Json.obj(("op", Json.str("wait")), ("id", Json.num(id)))
-encodeRequest(Kill(id)) = Json.obj(("op", Json.str("kill")), ("id", Json.num(id)))
-encodeRequest(List) = Json.obj(("op", Json.str("ls")))
-encodeRequest(Status) = Json.obj(("op", Json.str("status")))
-encodeRequest(Snapshot) = Json.obj(("op", Json.str("snapshot")))
-encodeRequest(Stop(force, drain)) = Json.obj(("op", Json.str("stop")), ("force", Json.Bool(force)), ("wait", Json.Bool(drain)))
+
+decodeSpec(j: Json) -> Result[JobSpec, string]
+    val cmd = field(j, "cmd", stringVector, "an array of strings")?
+    if cmd.isEmpty() then return Err("`cmd` is empty: a job runs a command")
+    Ok(JobSpec(
+        field(j, "kind", v -> v.asString(), "a string")?,
+        field(j, "units", v -> v.asInt(), "an int")?,
+        field(j, "mem", v -> v.asLong(), "a whole number")?,
+        optional(j, "landing", v -> v.asBool(), "a bool", false)?,
+        field(j, "dir", v -> v.asString(), "a string")?,
+        optional(j, "deadline_ms", someLong, "a whole number", None)?,
+        cmd,
+        optional(j, "env", stringPairs, "an object of strings", Vector[(string, string)]())?))
 
 private field[T](j: Json, key: string, read: (Json) -> Option[T], what: string) -> Result[T, string] =
     j.get(key) match
@@ -161,24 +187,15 @@ decodeRequest(text: string) -> Result[Request, string]
     if j.asMembers().isEmpty() then return Err("a request is a JSON object")
     val op = field(j, "op", v -> v.asString(), "a string")?
     op match
-        "submit" ->
-            val cmd = field(j, "cmd", stringVector, "an array of strings")?
-            if cmd.isEmpty() then return Err("`cmd` is empty: a job runs a command")
-            Ok(Submit(JobSpec(
-                field(j, "kind", v -> v.asString(), "a string")?,
-                field(j, "units", v -> v.asInt(), "an int")?,
-                field(j, "mem", v -> v.asLong(), "a whole number")?,
-                optional(j, "landing", v -> v.asBool(), "a bool", false)?,
-                field(j, "dir", v -> v.asString(), "a string")?,
-                optional(j, "deadline_ms", someLong, "a whole number", None)?,
-                cmd,
-                optional(j, "env", stringPairs, "an object of strings", Vector[(string, string)]())?)))
+        "submit" -> Ok(Submit(decodeSpec(j)?))
         "wait" -> Ok(Wait(field(j, "id", v -> v.asLong(), "a whole number")?))
         "kill" -> Ok(Kill(field(j, "id", v -> v.asLong(), "a whole number")?))
         "ls" -> Ok(List)
         "status" -> Ok(Status)
         "snapshot" -> Ok(Snapshot)
         "stop" -> Ok(Stop(optional(j, "force", v -> v.asBool(), "a bool", false)?, optional(j, "wait", v -> v.asBool(), "a bool", false)?))
+        "version" -> Ok(Hello)
+        "restart" -> Ok(Restart)
         other -> Err(s"no such request: `$other`")
 
 // Outcomes.
@@ -281,6 +298,7 @@ encodeReply(Using(u)) = Json.obj(
     ("landing", u.landing.map(id -> Json.num(id)).getOrElse(Json.Null)),
     ("take_slot", u.takeSlot.map(encodeTakeSlot).getOrElse(Json.Null)))
 encodeReply(Viewed(o)) = Json.obj(("ok", Json.Bool(true)), ("snapshot", encodeOverview(o)))
+encodeReply(Hi(version, pid)) = Json.obj(("ok", Json.Bool(true)), ("version", Json.str(version)), ("pid", Json.num(pid)))
 encodeReply(Done) = Json.obj(("ok", Json.Bool(true)))
 encodeReply(Failed(message)) = Json.obj(("ok", Json.Bool(false)), ("error", Json.str(message)))
 
@@ -307,6 +325,7 @@ decodeReply(text: string) -> Result[Reply, string]
             field(j, "queued", v -> v.asInt(), "an int")?,
             optional(j, "landing", someLong, "a whole number", None)?,
             decodeTakeSlot(j.get("take_slot").getOrElse(Json.Null))?)))
+    if j.has("version") then return Ok(Hi(field(j, "version", v -> v.asString(), "a string")?, field(j, "pid", v -> v.asLong(), "a whole number")?))
     if j.has("id") then return Ok(Submitted(field(j, "id", v -> v.asLong(), "a whole number")?, field(j, "log", v -> v.asString(), "a string")?))
     Ok(Done)
 

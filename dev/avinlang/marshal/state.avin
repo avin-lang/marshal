@@ -1,0 +1,140 @@
+module dev.avinlang.marshal
+
+// What a daemon hands to the program it becomes when it restarts: `<home>/state.json`, written just
+// before the daemon replaces itself and read by the new image, which takes its jobs over. Times are
+// on the wall clock, in milliseconds since 1970, so they mean the same to both images; a time that
+// has not come yet (a queued job's start, a running job's end) is 0.
+import json
+import json.Json
+
+// One job as the daemon holds it. `arrived` is its arrival on the wall clock in microseconds, which
+// orders it against take-slot's waiters; `pid` and `pgid` are 0 until it starts.
+data SavedJob(
+    id: long,
+    spec: JobSpec,
+    state: string,
+    submittedAt: long,
+    arrived: long,
+    startedAt: long,
+    endedAt: long,
+    deadlineMs: long,
+    expectedMs: long,
+    log: string,
+    pid: long,
+    pgid: long,
+    outcome: Option[Outcome],
+    killed: bool,
+    timedOut: bool,
+    sample: Option[string])
+
+// The whole daemon: the version and process that saved it, when, when the daemon first began, the
+// next job id, the queue in order, the running jobs, the jobs that ended last (oldest first) and the
+// name of its waiting ticket in take-slot's directory.
+data SavedState(
+    version: string,
+    pid: long,
+    savedAt: long,
+    beganAt: long,
+    nextId: long,
+    queue: Vector[SavedJob],
+    running: Vector[SavedJob],
+    ended: Vector[SavedJob],
+    ticket: Option[string])
+
+private orNull[T](o: Option[T], f: (T) -> Json) -> Json = o.map(f).getOrElse(Json.Null)
+
+encodeSavedJob(j: SavedJob) -> Json = Json.obj(
+    ("id", Json.num(j.id)),
+    ("spec", encodeSpec(j.spec)),
+    ("state", Json.str(j.state)),
+    ("submitted_at", Json.num(j.submittedAt)),
+    ("arrived", Json.num(j.arrived)),
+    ("started_at", Json.num(j.startedAt)),
+    ("ended_at", Json.num(j.endedAt)),
+    ("deadline_ms", Json.num(j.deadlineMs)),
+    ("expected_ms", Json.num(j.expectedMs)),
+    ("log", Json.str(j.log)),
+    ("pid", Json.num(j.pid)),
+    ("pgid", Json.num(j.pgid)),
+    ("outcome", orNull(j.outcome, encodeOutcome)),
+    ("killed", Json.Bool(j.killed)),
+    ("timed_out", Json.Bool(j.timedOut)),
+    ("sample", orNull(j.sample, s -> Json.str(s))))
+
+private whole(j: Json, key: string) -> Result[long, string] = j.get(key).flatMap(v -> v.asLong()) match
+    Some(n) -> Ok(n)
+    None -> Err(s"`$key` is not a whole number")
+
+private text(j: Json, key: string) -> Result[string, string] = j.get(key).flatMap(v -> v.asString()) match
+    Some(s) -> Ok(s)
+    None -> Err(s"`$key` is not a string")
+
+private truth(j: Json, key: string) -> Result[bool, string] = j.get(key).flatMap(v -> v.asBool()) match
+    Some(b) -> Ok(b)
+    None -> Err(s"`$key` is not a bool")
+
+private maybeText(j: Json, key: string) -> Result[Option[string], string] = j.get(key) match
+    None | Some(Json.Null) -> Ok(None)
+    Some(v) -> v.asString() match
+        Some(s) -> Ok(Some(s))
+        None -> Err(s"`$key` is not a string")
+
+decodeSavedJob(j: Json) -> Result[SavedJob, string]
+    val id = whole(j, "id")?
+    val spec = decodeSpec(j.get("spec").getOrElse(Json.Null)).mapErr(e -> s"job $id: $e")?
+    val outcome = j.get("outcome") match
+        None | Some(Json.Null) -> None
+        Some(o) -> Some(decodeOutcome(o).mapErr(e -> s"job $id: $e")?)
+    Ok(SavedJob(
+        id,
+        spec,
+        text(j, "state")?,
+        whole(j, "submitted_at")?,
+        whole(j, "arrived")?,
+        whole(j, "started_at")?,
+        whole(j, "ended_at")?,
+        whole(j, "deadline_ms")?,
+        whole(j, "expected_ms")?,
+        text(j, "log")?,
+        whole(j, "pid")?,
+        whole(j, "pgid")?,
+        outcome,
+        truth(j, "killed")?,
+        truth(j, "timed_out")?,
+        maybeText(j, "sample")?))
+
+encodeState(s: SavedState) -> Json = Json.obj(
+    ("version", Json.str(s.version)),
+    ("pid", Json.num(s.pid)),
+    ("saved_at", Json.num(s.savedAt)),
+    ("began_at", Json.num(s.beganAt)),
+    ("next_id", Json.num(s.nextId)),
+    ("queue", Json.Arr(s.queue.map(encodeSavedJob))),
+    ("running", Json.Arr(s.running.map(encodeSavedJob))),
+    ("ended", Json.Arr(s.ended.map(encodeSavedJob))),
+    ("ticket", orNull(s.ticket, t -> Json.str(t))))
+
+private savedJobs(j: Json, key: string) -> Result[Vector[SavedJob], string]
+    val items = j.get(key).flatMap(v -> v.asVector()) match
+        Some(xs) -> xs
+        None -> return Err(s"`$key` is not an array")
+    val out = Buffer[SavedJob]()
+    for item in items do out += decodeSavedJob(item)?
+    Ok(out.toVector())
+
+// The state in `saved`, or why it cannot be read.
+decodeState(saved: string) -> Result[SavedState, string]
+    val j = json.parse(saved) match
+        Ok(v) -> v
+        Err(e) -> return Err(s"not JSON: $e")
+    if j.asMembers().isEmpty() then return Err("the state is a JSON object")
+    Ok(SavedState(
+        text(j, "version")?,
+        whole(j, "pid")?,
+        whole(j, "saved_at")?,
+        whole(j, "began_at")?,
+        whole(j, "next_id")?,
+        savedJobs(j, "queue")?,
+        savedJobs(j, "running")?,
+        savedJobs(j, "ended")?,
+        maybeText(j, "ticket")?))
