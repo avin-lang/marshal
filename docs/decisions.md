@@ -665,7 +665,7 @@ with the user: hold applying to waiting jobs, and priority staying for queued jo
 
 ## Atomic writes and the step-cache digest (branch `step-cache-sha`)
 
-All **Proposed**.
+**Settled on the user's delegation 2026-11-07.** Review with the user: the cache key's length (32 hex digits).
 
 - **A file another process reads is written to a temporary name beside it and renamed into place**
   (`writeAtomic`, `atomic.avin`), so a reader sees the old file or the new one, never half. The
