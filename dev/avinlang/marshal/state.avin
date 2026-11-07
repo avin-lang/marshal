@@ -10,7 +10,9 @@ import json.Json
 // One job as the daemon holds it. `arrived` is its arrival on the wall clock in microseconds, which
 // orders it against take-slot's waiters; `pid` and `pgid` are 0 until it starts. `held`,
 // `priority` and `urgentAt` (when it joined the urgent band, wall-clock microseconds, 0 outside
-// it) are a queued job's, and a state saved without them reads as false, 0 and 0.
+// it) are a queued job's, and a state saved without them reads as false, 0 and 0. `pausedMs` is how
+// long a running job's earlier pauses lasted and `pausedAt` when its current pause began (wall
+// clock, milliseconds; 0 while it is not paused), 0 when absent.
 data SavedJob(
     id: long,
     spec: JobSpec,
@@ -32,7 +34,9 @@ data SavedJob(
     peakRss: long,
     held: bool = false,
     priority: int = 0,
-    urgentAt: long = 0)
+    urgentAt: long = 0,
+    pausedMs: long = 0,
+    pausedAt: long = 0)
 
 // The whole daemon: the version and process that saved it, when, when the daemon first began, the
 // next job id, the queue in order, the running jobs, the jobs that ended last (oldest first), the
@@ -73,7 +77,9 @@ encodeSavedJob(j: SavedJob) -> Json = Json.obj(
     ("peak_rss", Json.num(j.peakRss)),
     ("held", Json.Bool(j.held)),
     ("priority", Json.num(j.priority)),
-    ("urgent_at", Json.num(j.urgentAt)))
+    ("urgent_at", Json.num(j.urgentAt)),
+    ("paused_ms", Json.num(j.pausedMs)),
+    ("paused_at", Json.num(j.pausedAt)))
 
 private whole(j: Json, key: string) -> Result[long, string] = j.get(key).flatMap(v -> v.asLong()) match
     Some(n) -> Ok(n)
@@ -136,7 +142,9 @@ decodeSavedJob(j: Json) -> Result[SavedJob, string]
         wholeOrZero(j, "peak_rss")?,
         truthOr(j, "held", false)?,
         intOr(j, "priority", 0)?,
-        wholeOrZero(j, "urgent_at")?))
+        wholeOrZero(j, "urgent_at")?,
+        wholeOrZero(j, "paused_ms")?,
+        wholeOrZero(j, "paused_at")?))
 
 encodeState(s: SavedState) -> Json = Json.obj(
     ("version", Json.str(s.version)),

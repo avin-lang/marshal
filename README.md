@@ -17,8 +17,8 @@ marshal kill <id>                          stops the job's whole process tree (a
 marshal hold <id>                          keeps a queued job from starting; it keeps its place
 marshal release <id>                       lets a held job start again
 marshal priority <id> <n> | --urgent       places a queued job in its lane: higher first; --urgent: the back of the urgent band
-marshal pause                              holds the queue: running jobs go on, nothing new starts in either lane
-marshal resume                             releases the queue
+marshal pause [<id>]                       stops a running job's processes, keeping its units, its deadline's clock stopped; with no id, holds the queue
+marshal resume [<id>]                      continues a paused job; with no id, releases the queue
 marshal tail <id> [-f] [-n <lines>]        the job's log; -f follows it until the job ends
 marshal status [--json]                    the budget in use; --json: one JSON object with the running and queued jobs
 marshal top                                a live view of the budget, the jobs and their logs; h lists its keys
@@ -75,9 +75,15 @@ ends: nothing polls.
   120 for a landing job. A job past its deadline has its busiest process sampled (`sample`, 5
   seconds, to `jobs/<id>.sample.txt`), then its group gets TERM and, 5 seconds later, KILL.
 - **Events.** `events.jsonl` records every job's `submitted`, `held`, `released`, `prioritized`,
-  `started` and ending (`finished`, `timeout`, `killed`, `lost`), each with the time, the job, and its durations and exit status.
+  `started`, `paused`, `resumed` and ending (`finished`, `timeout`, `killed`, `lost`), each with the time, the job, and its durations and exit status.
   Deadlines are learned from it, and a daemon that starts after one died records the jobs that
   were left open as `lost`.
+- **Pausing a job.** `marshal pause <id>` sends STOP to a running job's whole process group and
+  `marshal resume <id>` sends CONT. A paused job keeps its units and memory, since its processes
+  still hold their memory, and its deadline's clock stops: its ELAPSED and the time left before its
+  deadline count only the time it ran. `ls` and `top` show it as `paused`, and it stays paused, its
+  clock stopped, across `marshal restart`. `kill` of a paused job, and `stop --force`, continue it
+  before the TERM, so it can act on it; `stop --wait` is refused while a job is paused.
 - **Holding and ordering the queue.** `marshal pause` holds the whole queue: running jobs go on,
   and nothing new starts in either lane, landing jobs included, until `marshal resume`. `marshal
   hold <id>` keeps one queued job from starting; it keeps its place and the jobs behind it start as

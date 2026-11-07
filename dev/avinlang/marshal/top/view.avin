@@ -70,8 +70,9 @@ clock(ms < 0) = "0:00"
 clock(ms < 3600000) = f"${ms / 60000}%d:${ms / 1000 % 60}%02d"
 clock(ms) = f"${ms / 3600000}%d:${ms / 60000 % 60}%02d:${ms / 1000 % 60}%02d"
 
-// A running job's time left before its deadline, `since` milliseconds after the snapshot was taken.
-timeLeft(j: JobInfo, since: long) -> long = j.deadlineMs - j.elapsedMs - since
+// A running job's time left before its deadline, `since` milliseconds after the snapshot was taken;
+// a paused job's clock stands still.
+timeLeft(j: JobInfo, since: long) -> long = j.deadlineMs - j.elapsedMs - (if j.paused then 0 else since)
 
 // The style of a running job's time left out of `deadline`: red under a tenth of it or a minute,
 // yellow under a quarter or five minutes, plain otherwise.
@@ -87,7 +88,9 @@ stateOf(l: Line) -> (string, Style)
     l.queued match
         Some((position, why)) -> (s"#$position ${whyText(why)}", Style.fg(Yellow))
         None -> j.outcome match
-            None -> (if j.landing then "landing" else "running", Style.fg(Green).with(Bold))
+            None ->
+                if j.paused then ("paused", Style.fg(Yellow).with(Bold | Reverse))
+                else (if j.landing then "landing" else "running", Style.fg(Green).with(Bold))
             Some(Exited(0)) -> ("exit 0", Style.fg(Green))
             Some(Exited(code)) -> (s"exit $code", Style.fg(Red).with(Bold))
             Some(Signalled(sig)) -> if j.killed then ("killed", Style.fg(Magenta).with(Bold)) else (s"signal $sig", Style.fg(Red).with(Bold))
@@ -104,8 +107,9 @@ deadlineOf(l: Line, since: long) -> (string, Style)
     val left = timeLeft(j, since)
     (if left <= 0 then "over" else clock(left), leftStyle(left, j.deadlineMs))
 
-// The time a line has been queued or running, `since` milliseconds after the snapshot.
-elapsedOf(l: Line, since: long) -> long = if l.job.outcome.isDefined() then l.job.elapsedMs else l.job.elapsedMs + since
+// The time a line has been queued or running, `since` milliseconds after the snapshot; a paused
+// job's run time stands still.
+elapsedOf(l: Line, since: long) -> long = if l.job.outcome.isDefined() || l.job.paused then l.job.elapsedMs else l.job.elapsedMs + since
 
 val columns: Vector[Column] = [
     Column("ID", 5, 1),

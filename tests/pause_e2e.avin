@@ -1,0 +1,172 @@
+module tests
+
+// Pausing one running job, end to end: `pause <id>` stops its whole process group and `resume
+// <id>` continues it; it keeps its units; its deadline's clock stops while it is paused, across a
+// restart too; and a paused job killed, or stopped with the daemon, still ends.
+import avin.process.Command
+import avin.threads
+import avin.time
+import avin.time.millis
+import json.Json
+
+// The processes of the group, by pid.
+groupPids(pgid: long) -> Vector[string] = Command("pgrep", "-g", pgid.toString()).output() match
+    Ok(text) -> text.lines().map(l -> l.trim()).filter(l -> l.nonEmpty()).toVector()
+    Err(_) -> []
+
+// Each process's state letters, as `ps` gives them: `T` for a stopped one.
+states(pids: Vector[string]) -> Vector[string] =
+    pids.map(p -> Command("ps", "-o", "stat=", "-p", p).output().getOrElse("").trim()).filter(s -> s.nonEmpty())
+
+// Waits up to five seconds for the group to have `count` processes, and answers its pids.
+waitForGroup(pgid: long, count: int) -> Vector[string]
+    val until = time.monotonic() + millis(5000)
+    while groupPids(pgid).length() < count && time.monotonic() < until do threads.sleep(millis(50))
+    groupPids(pgid)
+
+// Whether every process of the group is stopped, or (`stopped` false) none is.
+everyStopped(pgid: long, stopped: bool) -> bool
+    val s = states(groupPids(pgid))
+    s.nonEmpty() && s.forall(st -> st.startsWith("T") == stopped)
+
+// A started job's process group, once its start is in the log.
+startedGroup(home: string, id: long) -> long
+    val until = time.monotonic() + millis(5000)
+    while at(home, id, "started") < 0 && time.monotonic() < until do threads.sleep(millis(20))
+    pgidOf(home, id)
+
+// The running job `id` as `status --json` gives it.
+runningJson(home: string, id: long) -> Json =
+    statusJsonOf(home)("running").asVector().get().find(j -> j("id").asLong() == Some(id)).get()
+
+@test("pause stops a job's whole process group, children included, it keeps its units, and resume continues it")
+pauseWithChild()
+    val home = newHome("{\"units\": 1}")
+    val id = submitted(home, "--", "sh", "-c", "sleep 30 & sleep 30; wait")
+    val pgid = startedGroup(home, id)
+    assertEq(waitForGroup(pgid, 3).length(), 3)
+    val p = m(home, "pause", id.toString())
+    assertEq(p.code, 0)
+    assert(p.out.contains(s"job $id is paused"), p.out)
+    assert(everyStopped(pgid, true), states(groupPids(pgid)).mkString(","))
+    assertEq(runningJson(home, id)("paused").asBool(), Some(true))
+    assert(m(home, "ls").out.lines().exists(l -> l.startsWith(id.toString()) && l.contains("paused")))
+    // its unit is still held: a job behind it waits
+    assertEq(statusJsonOf(home)("units").asInt(), Some(1))
+    val behind = submitted(home, "--", "true")
+    threads.sleep(millis(300))
+    assertEq(eventsOf(home, behind), ["submitted"])
+    val r = m(home, "resume", id.toString())
+    assertEq(r.code, 0)
+    assert(r.out.contains(s"job $id is resumed"), r.out)
+    assert(everyStopped(pgid, false), states(groupPids(pgid)).mkString(","))
+    assertEq(runningJson(home, id)("paused").asBool(), Some(false))
+    assertEq(eventsOf(home, id), ["submitted", "started", "paused", "resumed"])
+    // paused and resumed again: still one job, still running
+    assertEq(m(home, "pause", id.toString()).code, 0)
+    assertEq(m(home, "resume", id.toString()).code, 0)
+    assertEq(m(home, "kill", id.toString()).code, 0)
+    assertEq(m(home, "wait", id.toString()).code, 143)
+    assertEq(m(home, "wait", behind.toString()).code, 0)
+    cleanUp(home)
+
+@test("a paused job's deadline does not count the time it was paused")
+pauseStopsDeadline()
+    val home = newHome()
+    val began = time.monotonic()
+    val id = submitted(home, "--deadline", "3s", "--", "sleep", "60")
+    startedGroup(home, id)
+    threads.sleep(millis(1000))
+    assertEq(m(home, "pause", id.toString()).code, 0)
+    threads.sleep(millis(4000))
+    // five seconds after it started, it has run for about one
+    assert(!daemonLog(home).contains(s"job $id passed its deadline"), daemonLog(home))
+    val left = runningJson(home, id)
+    assert(left("elapsed_ms").asLong().get() < 2000, left.render())
+    assertEq(m(home, "resume", id.toString()).code, 0)
+    val r = m(home, "wait", id.toString())
+    assertEq(r.code, 124)
+    val took = (time.monotonic() - began).toMillis()
+    assert(took >= 11000, s"timed out ${took}ms after it was submitted: its pause was counted")
+    // about 1 + 4 + 2 seconds, then 5 of sampling before the TERM
+    assert(took < 16000, s"timed out ${took}ms after it was submitted")
+    assertEq(eventsOf(home, id), ["submitted", "started", "paused", "resumed", "timeout"])
+    cleanUp(home)
+
+@test("a paused job killed is continued so it takes the TERM, and ends at once")
+pausedKilled()
+    val home = newHome()
+    val id = submitted(home, "--", "sh", "-c", "sleep 30 & sleep 30; wait")
+    val pgid = startedGroup(home, id)
+    waitForGroup(pgid, 3)
+    assertEq(m(home, "pause", id.toString()).code, 0)
+    val began = time.monotonic()
+    assertEq(m(home, "kill", id.toString()).code, 0)
+    val r = m(home, "wait", id.toString())
+    assertEq(r.code, 143)
+    assert((time.monotonic() - began).toMillis() < 4000, "a paused job waited for KILL instead of taking TERM")
+    threads.sleep(millis(200))
+    assert(!groupAlive(pgid))
+    assertEq(eventsOf(home, id), ["submitted", "started", "paused", "killed"])
+    cleanUp(home)
+
+@test("stop --wait is refused while a job is paused, and stop --force ends a paused job")
+pausedAndStop()
+    val home = newHome()
+    val id = submitted(home, "--", "sleep", "30")
+    val pgid = startedGroup(home, id)
+    assertEq(m(home, "pause", id.toString()).code, 0)
+    refusedWith(m(home, "stop", "--wait"), s"job $id is paused")
+    val began = time.monotonic()
+    assertEq(m(home, "stop", "--force").code, 0)
+    assert((time.monotonic() - began).toMillis() < 4000, "a paused job held the stop up")
+    threads.sleep(millis(200))
+    assert(!groupAlive(pgid))
+    assertEq(m(home, "wait", id.toString()).code, 143)
+    cleanUp(home)
+
+@test("a paused job stays paused across a restart, its deadline's clock stopped, and resumes after it")
+pausedAcrossRestart()
+    val home = newHome()
+    val began = time.monotonic()
+    val id = submitted(home, "--deadline", "3s", "--", "sh", "-c", "sleep 60 & wait")
+    val pgid = startedGroup(home, id)
+    waitForGroup(pgid, 2)
+    threads.sleep(millis(1000))
+    assertEq(m(home, "pause", id.toString()).code, 0)
+    assertEq(m(home, "restart").code, 0)
+    assert(everyStopped(pgid, true), states(groupPids(pgid)).mkString(","))
+    assertEq(runningJson(home, id)("paused").asBool(), Some(true))
+    threads.sleep(millis(3500))
+    assert(!daemonLog(home).contains(s"job $id passed its deadline"), daemonLog(home))
+    refusedWith(m(home, "pause", id.toString()), s"job $id is already paused")
+    assertEq(m(home, "resume", id.toString()).code, 0)
+    assert(everyStopped(pgid, false), states(groupPids(pgid)).mkString(","))
+    assertEq(m(home, "wait", id.toString()).code, 124)
+    val took = (time.monotonic() - began).toMillis()
+    // about 1 + 3.5 + 2 seconds, then 5 of sampling before the TERM
+    assert(took >= 10500, s"timed out ${took}ms after it was submitted: its pause was counted")
+    cleanUp(home)
+
+@test("pause and resume refuse an unknown, queued or ended job, a second pause, a resume of a job not paused, and a bad id")
+pauseErrors()
+    val home = newHome("{\"units\": 1}")
+    val running = submitted(home, "--", "sleep", "30")
+    val queued = submitted(home, "--", "true")
+    startedGroup(home, running)
+    refusedWith(m(home, "pause", "99"), "no job 99")
+    refusedWith(m(home, "resume", "99"), "no job 99")
+    refusedWith(m(home, "pause", queued.toString()), s"job $queued is queued: only a running job is paused")
+    refusedWith(m(home, "resume", queued.toString()), s"job $queued is queued: only a running job is resumed")
+    refusedWith(m(home, "resume", running.toString()), s"job $running is not paused")
+    assertEq(m(home, "pause", running.toString()).code, 0)
+    refusedWith(m(home, "pause", running.toString()), s"job $running is already paused")
+    refusedWith(m(home, "pause", "x"), "`x` is not a job id")
+    refusedWith(m(home, "resume", "1", "2"), "give one job id")
+    assertEq(m(home, "kill", running.toString()).code, 0)
+    // being stopped, then ended
+    m(home, "wait", running.toString())
+    refusedWith(m(home, "pause", running.toString()), s"job $running has already ended")
+    refusedWith(m(home, "resume", running.toString()), s"job $running has already ended")
+    assertEq(m(home, "wait", queued.toString()).code, 0)
+    cleanUp(home)

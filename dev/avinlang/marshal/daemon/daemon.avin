@@ -43,7 +43,8 @@ import dev.avinlang.marshal.Resident
 data Message
     FromClient(request: Request, reply: Channel[Reply])
     Exit(id: long, status: Result[ExitStatus, IoError])
-    Due(id: long)
+    // job `id`'s deadline, from the sleeper `gen` armed
+    Due(id: long, gen: int)
     Written
     Terminate
     Tick
@@ -82,16 +83,26 @@ class Job(val id: long, val spec: JobSpec, val submittedMs: long, val arrived: l
     var priority = 0
     // when it joined the urgent band (wall-clock microseconds), or 0 outside it
     var urgentAt: long = 0
+    // a running job stopped by `pause`: since `pausedAt` (the daemon's clock), after `pausedMs` of
+    // earlier pauses; paused time is not run time, and its deadline does not count it
+    var paused = false
+    var pausedAt: long = 0
+    var pausedMs: long = 0
+    // the deadline sleeper that is current; one armed before a pause is stale after it
+    var dueGen = 0
     val waiters = Buffer[Channel[Reply]]()
 
+    // How long it has run by `now`, its pauses left out.
+    ran(now: long) -> long
+        val until = if state == "done" then endedMs else now
+        val pausing = if paused then until - pausedAt else 0
+        until - startedMs - pausedMs - pausing
+
     info(now: long) -> JobInfo =
-        val elapsed = state match
-            "queued" -> now - submittedMs
-            "running" -> now - startedMs
-            _ -> endedMs - startedMs
+        val elapsed = if state == "queued" then now - submittedMs else ran(now)
         val queued = if state == "queued" then now - submittedMs else startedMs - submittedMs
         val rss = if state == "running" then resident.now else 0
-        JobInfo(id, spec.kind, spec.units, spec.memory, spec.landing, spec.dir, spec.cmd, state, outcome, killed, queued, elapsed, deadlineMs, log, sample, rss, resident.peak, startedAt, held, priority, urgentAt > 0)
+        JobInfo(id, spec.kind, spec.units, spec.memory, spec.landing, spec.dir, spec.cmd, state, outcome, killed, queued, elapsed, deadlineMs, log, sample, rss, resident.peak, startedAt, held, priority, urgentAt > 0, paused)
 
 // The daemon's state, owned by its own thread.
 // `slots` is the take-slot directory it shares, if any; `ticket` the name of its waiting ticket there.
@@ -139,7 +150,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             message match
                 FromClient(request, reply) -> answer(request, reply)
                 Exit(id, status) -> exited(id, status)
-                Due(id) -> due(id)
+                Due(id, gen) -> due(id, gen)
                 Written -> unwritten -= 1
                 Tick -> if queue.nonEmpty() then schedule()
                 Sample -> measure()
@@ -168,6 +179,8 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             Request.Restart -> restart(reply)
             Request.PauseQueue -> give(reply, holdQueue(true))
             Request.ResumeQueue -> give(reply, holdQueue(false))
+            Request.PauseJob(id) -> give(reply, pauseJob(id, true))
+            Request.ResumeJob(id) -> give(reply, pauseJob(id, false))
             Request.Hold(id) -> give(reply, hold(id, true))
             Request.Release(id) -> give(reply, hold(id, false))
             Request.Prioritize(id, p) -> give(reply, prioritize(id, p))
@@ -214,11 +227,51 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
                 conclude(job, Cancelled, "killed")
                 Done
             "running" ->
-                if !job.killed && !job.timedOut
-                    job.killed = true
-                    terminate(job.pgid, None)
+                if !job.killed && !job.timedOut then halt(job)
                 Done
             _ -> Failed(s"job $id has already ended")
+
+    // Kills a running job's group. A paused one is continued first, so it can act on the TERM: its
+    // pause ends here.
+    halt(job: Job)
+        job.killed = true
+        if job.paused
+            unpause(job)
+            process.signal(-job.pgid, signal.Continue)
+        terminate(job.pgid, None)
+
+    // Ends the job's pause on the daemon's books: the time paused is added up, and its clock runs.
+    unpause(job: Job)
+        job.pausedMs += now() - job.pausedAt
+        job.paused = false
+        job.pausedAt = 0
+
+    // The running job `id`, or why there is none, saying `what` only a running job may have done.
+    runningJob(id: long, what: string) -> Result[Job, string] = jobs.get(id) match
+        Some(j) if j.state == "running" && (j.killed || j.timedOut) -> Err(s"job $id is being stopped")
+        Some(j) if j.state == "running" -> Ok(j)
+        Some(j) if j.state == "queued" -> Err(s"job $id is queued: only a running job $what")
+        Some(_) -> Err(s"job $id has already ended")
+        None -> Err(if 1 <= id < nextId then s"job $id has already ended" else s"no job $id")
+
+    // Stops the running job `id`'s whole process group (`on`), keeping its units and stopping its
+    // deadline's clock, or continues it.
+    pauseJob(id: long, on: bool) -> Reply
+        val job = runningJob(id, if on then "is paused" else "is resumed") match
+            Ok(j) -> j
+            Err(e) -> return Failed(e)
+        if job.paused == on then return Failed(if on then s"job $id is already paused" else s"job $id is not paused")
+        process.signal(-job.pgid, if on then signal.Stop else signal.Continue) match
+            Err(e) -> return Failed(s"job $id's processes could not be signalled: ${e.message()}")
+            Ok(_) -> ()
+        if on
+            job.paused = true
+            job.pausedAt = now()
+        else
+            unpause(job)
+        armDeadline(job)
+        record(if on then "paused" else "resumed", job)
+        Done
 
     // Holds the queue (`on`) or releases it. A release starts what fits at once.
     holdQueue(on: bool) -> Reply
@@ -349,17 +402,28 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         val id = job.id
         val pid = job.pid
         spawn(() -> events.send(Exit(id, process.waitPid(pid))))
-        if job.killed || job.timedOut then return
-        val left = job.deadlineMs - (now() - job.startedMs)
+        armDeadline(job)
+
+    // A thread that sleeps until what is left of the job's deadline, its run time without its
+    // pauses; none for a paused job or one being stopped. A sleeper armed earlier is made stale.
+    armDeadline(job: Job)
+        job.dueGen += 1
+        if job.killed || job.timedOut || job.paused then return
+        val events = self.events
+        val id = job.id
+        val gen = job.dueGen
+        val left = job.deadlineMs - job.ran(now())
         spawn(() ->
             if left > 0 then threads.sleep(millis(left))
-            events.send(Due(id)))
+            events.send(Due(id, gen)))
 
     exited(id: long, status: Result[ExitStatus, IoError])
         val job = jobs(id)
         if job.state != "running" then return
-        // Whatever the job left running in its group goes with it.
+        // Whatever the job left running in its group goes with it, and a paused group is continued
+        // so the TERM reaches it.
         process.signal(-job.pgid, signal.Terminate)
+        if job.paused then process.signal(-job.pgid, signal.Continue)
         if job.timedOut
             conclude(job, TimedOut, "timeout")
             return
@@ -376,9 +440,9 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         val event = if outcome == Outcome.Lost then "lost" elif job.killed then "killed" else "finished"
         conclude(job, outcome, event)
 
-    due(id: long)
+    due(id: long, gen: int)
         val job = jobs(id)
-        if job.state != "running" || job.killed || job.timedOut then return
+        if job.state != "running" || job.killed || job.timedOut || job.paused || gen != job.dueGen then return
         job.timedOut = true
         val sample = s"$home/jobs/$id.sample.txt"
         job.sample = Some(sample)
@@ -388,6 +452,11 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
     // Ends a job: records it, answers its waiters and lets the scheduler use what it held.
     conclude(job: Job, outcome: Outcome, event: string)
         val t = now()
+        // a pause ends with the job
+        if job.paused
+            job.pausedMs += t - job.pausedAt
+            job.paused = false
+            job.pausedAt = 0
         // A job cancelled while queued ran for no time: it "starts" and ends as it is cancelled.
         if job.state == "running"
             running.remove(running.indexOf(job))
@@ -482,6 +551,11 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             val what = if queueHeld then "the queue is held" else "a queued job is held"
             reply.foreach(r -> give(r, Failed(s"$what, so `--wait` would wait for ever: release it first, or `--force`")))
             return
+        // so would a paused one
+        if drain && !force
+            for job in running.find(j -> j.paused)
+                reply.foreach(r -> give(r, Failed(s"job ${job.id} is paused, so `--wait` would wait for ever: resume it first, or `--force`")))
+                return
         reply.foreach(r -> stopReplies += r)
         if force
             stopping = true
@@ -490,9 +564,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
                 queue.remove(queue.indexOf(job))
                 conclude(job, Cancelled, "killed")
             for job in running
-                if !job.killed && !job.timedOut
-                    job.killed = true
-                    terminate(job.pgid, None)
+                if !job.killed && !job.timedOut then halt(job)
         else
             draining = true
             if busy == 0 then stopping = true
@@ -576,7 +648,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         events.receive() match
             Some(FromClient(r, c)) -> held += (r, c)
             Some(Exit(id, status)) -> exited(id, status)
-            Some(Due(id)) -> due(id)
+            Some(Due(id, gen)) -> due(id, gen)
             Some(Written) -> unwritten -= 1
             Some(Terminate) -> termed = true
             Some(Tick) -> ()
@@ -594,7 +666,8 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             j.startedAt,
             if j.state == "done" then wall(j.endedMs) else 0,
             j.deadlineMs, j.expectedMs, j.log, j.pid, j.pgid, j.outcome, j.killed, j.timedOut, j.sample,
-            j.resident.now, j.resident.peak, j.held, j.priority, j.urgentAt)
+            j.resident.now, j.resident.peak, j.held, j.priority, j.urgentAt,
+            j.pausedMs, if j.paused then wall(j.pausedAt) else 0)
         SavedState(reportedVersion(), process.pid(), wallNow, wall(began), nextId,
             queue.map(saved).toVector(), running.map(saved).toVector(), ended.takeRight(Recent).map(saved).toVector(), ticket, queueHeld)
 
@@ -625,6 +698,10 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             job.held = sj.held
             job.priority = sj.priority
             job.urgentAt = sj.urgentAt
+            job.pausedMs = sj.pausedMs
+            // a paused job's processes stay stopped across the restart, and its clock with them
+            job.paused = sj.pausedAt > 0
+            job.pausedAt = if job.paused then mono(sj.pausedAt) else 0
             jobs(job.id) = job
             job
         for sj in s.ended do ended += rebuilt(sj)

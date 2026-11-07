@@ -39,6 +39,10 @@ data Request
     PauseQueue
     // Releases the queue PauseQueue held.
     ResumeQueue
+    // Stops a running job's whole process group, keeping its units and stopping its deadline's
+    // clock, and continues it.
+    PauseJob(id: long)
+    ResumeJob(id: long)
     // Keeps one queued job from starting, and lets it start again.
     Hold(id: long)
     Release(id: long)
@@ -76,7 +80,8 @@ exitCode(Lost) = 125
 // runs; `peakRss` the most any measurement found, kept once it has ended; `startedAt` when it
 // started on the wall clock, in milliseconds since 1970, 0 while it waits. `held` says a queued job
 // is kept from starting; `priority` places it in its lane's queue, and `urgent` puts it in the
-// lane's urgent band, ahead of every job not urgent whatever its priority.
+// lane's urgent band, ahead of every job not urgent whatever its priority. `paused` says a running
+// job's processes are stopped by `pause`; its `elapsedMs` leaves its pauses out.
 data JobInfo(
     id: long,
     kind: string,
@@ -98,7 +103,8 @@ data JobInfo(
     startedAt: long = 0,
     held: bool = false,
     priority: int = 0,
-    urgent: bool = false)
+    urgent: bool = false,
+    paused: bool = false)
 
 // The budget in use. `memory` is what the running jobs declared; `rss` what their process trees hold
 // in RAM, as last measured; `machineMemory` the memory the machine has, 0 where it is not known;
@@ -169,6 +175,8 @@ encodeRequest(Hello) = Json.obj(("op", Json.str("version")))
 encodeRequest(Restart) = Json.obj(("op", Json.str("restart")))
 encodeRequest(PauseQueue) = Json.obj(("op", Json.str("pause")))
 encodeRequest(ResumeQueue) = Json.obj(("op", Json.str("resume")))
+encodeRequest(PauseJob(id)) = Json.obj(("op", Json.str("pause")), ("id", Json.num(id)))
+encodeRequest(ResumeJob(id)) = Json.obj(("op", Json.str("resume")), ("id", Json.num(id)))
 encodeRequest(Hold(id)) = Json.obj(("op", Json.str("hold")), ("id", Json.num(id)))
 encodeRequest(Release(id)) = Json.obj(("op", Json.str("release")), ("id", Json.num(id)))
 encodeRequest(Prioritize(id, Level(n))) = Json.obj(("op", Json.str("priority")), ("id", Json.num(id)), ("priority", Json.num(n)))
@@ -242,8 +250,8 @@ decodeRequest(text: string) -> Result[Request, string]
         "stop" -> Ok(Stop(optional(j, "force", v -> v.asBool(), "a bool", false)?, optional(j, "wait", v -> v.asBool(), "a bool", false)?))
         "version" -> Ok(Hello)
         "restart" -> Ok(Restart)
-        "pause" -> if j.has("id") then Err("`pause` holds the whole queue and takes no `id`") else Ok(PauseQueue)
-        "resume" -> if j.has("id") then Err("`resume` releases the whole queue and takes no `id`") else Ok(ResumeQueue)
+        "pause" -> if j.has("id") then Ok(PauseJob(field(j, "id", v -> v.asLong(), "a whole number")?)) else Ok(PauseQueue)
+        "resume" -> if j.has("id") then Ok(ResumeJob(field(j, "id", v -> v.asLong(), "a whole number")?)) else Ok(ResumeQueue)
         "hold" -> Ok(Hold(field(j, "id", v -> v.asLong(), "a whole number")?))
         "release" -> Ok(Release(field(j, "id", v -> v.asLong(), "a whole number")?))
         "priority" -> Ok(Prioritize(field(j, "id", v -> v.asLong(), "a whole number")?, field(j, "priority", priorityOf, "a whole number or \"urgent\"")?))
@@ -295,7 +303,8 @@ encodeJob(i: JobInfo) -> Json = Json.obj(
     ("started_at", Json.num(i.startedAt)),
     ("held", Json.Bool(i.held)),
     ("priority", Json.num(i.priority)),
-    ("urgent", Json.Bool(i.urgent)))
+    ("urgent", Json.Bool(i.urgent)),
+    ("paused", Json.Bool(i.paused)))
 
 decodeJob(j: Json) -> Result[JobInfo, string]
     val outcome = j.get("outcome") match
@@ -324,7 +333,8 @@ decodeJob(j: Json) -> Result[JobInfo, string]
         optional(j, "started_at", wholeNumber, "a whole number", 0)?,
         optional(j, "held", v -> v.asBool(), "a bool", false)?,
         optional(j, "priority", v -> v.asInt(), "an int", 0)?,
-        optional(j, "urgent", v -> v.asBool(), "a bool", false)?))
+        optional(j, "urgent", v -> v.asBool(), "a bool", false)?,
+        optional(j, "paused", v -> v.asBool(), "a bool", false)?))
 
 encodeTakeSlot(t: TakeSlotUse) -> Json = Json.obj(
     ("dir", Json.str(t.dir)),

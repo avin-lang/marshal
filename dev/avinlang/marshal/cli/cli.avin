@@ -27,8 +27,8 @@ val Commands: Vector[(string, string)] = [
     ("hold <id>", "keeps a queued job from starting; it keeps its place"),
     ("release <id>", "lets a held job start again"),
     ("priority <id> <n> | --urgent", "places a queued job in its lane: higher first; --urgent: the back of the urgent band"),
-    ("pause", "holds the queue: running jobs go on, nothing new starts in either lane"),
-    ("resume", "releases the queue"),
+    ("pause [<id>]", "stops a running job's processes, keeping its units, its deadline's clock stopped; with no id, holds the queue"),
+    ("resume [<id>]", "continues a paused job; with no id, releases the queue"),
     ("tail <id> [-f] [-n <lines>]", "the job's log; -f follows it until the job ends"),
     ("status [--json]", "the budget in use; --json: one JSON object with the running and queued jobs"),
     ("top", "a live view of the budget, the jobs and their logs; h lists its keys"),
@@ -103,8 +103,12 @@ main(args: Vector[string]) -> int
         "hold" -> withId(rest, id -> simple(Request.Hold(id), s"marshal: job $id is held"))
         "release" -> withId(rest, id -> simple(Request.Release(id), s"marshal: job $id is released"))
         "priority" -> priority(rest)
-        "pause" -> if rest.isEmpty() then simple(Request.PauseQueue, "marshal: the queue is held: running jobs go on, nothing new starts") else complain("marshal: pause takes no arguments")
-        "resume" -> if rest.isEmpty() then simple(Request.ResumeQueue, "marshal: the queue is released") else complain("marshal: resume takes no arguments")
+        "pause" ->
+            if rest.isEmpty() then simple(Request.PauseQueue, "marshal: the queue is held: running jobs go on, nothing new starts")
+            else withId(rest, id -> simple(Request.PauseJob(id), s"marshal: job $id is paused"))
+        "resume" ->
+            if rest.isEmpty() then simple(Request.ResumeQueue, "marshal: the queue is released")
+            else withId(rest, id -> simple(Request.ResumeJob(id), s"marshal: job $id is resumed"))
         "ls" -> list()
         "status" -> rest match
             [] -> status()

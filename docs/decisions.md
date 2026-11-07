@@ -251,10 +251,35 @@ Known gaps in Avin, left for it to fix rather than worked around here:
   renamed. Only the program the daemon becomes reads it, after the write has finished, so this
   matters only to a daemon killed mid-write, which leaves a partial file that nothing reads.
 
-## Holding and ordering the queue (branch `pause-resume`)
+## Pausing jobs, holding and ordering the queue (branch `pause-resume`)
 
-**Proposed.** Pausing a running job (SIGSTOP/SIGCONT to its group) waits for `avin.signal` to
-have the stop and continue signals; it will add `marshal pause <id>` / `resume <id>` beside these.
+**Proposed**, except where an entry says it is settled.
+
+- **`marshal pause <id>` sends STOP to a running job's whole process group, and `resume <id>`
+  sends CONT** (`avin.signal.Stop` and `Continue`, numbered per platform). The group, not the main
+  process, so a test runner's workers stop with it. Alternatives: the main process only (its
+  children go on using the machine); TSTP (a program may catch it and refuse to stop).
+- **A paused job keeps its units and its memory.** Why: a stopped process still holds its memory,
+  so giving its share to another job could overcommit the machine, and it may be resumed at any
+  moment. Alternative: freeing its units while it is paused and making `resume` wait until they
+  fit again (lets other work use the processors, at the risk of memory pressure and of a resumed
+  job queued behind what started meanwhile); worth revisiting for jobs that declare no memory.
+- **A paused job's deadline clock stops**: the job keeps `pausedMs` (its earlier pauses) and
+  `pausedAt` (when its current one began), its run time is its wall time less those, and the
+  deadline counts run time. Its `elapsed_ms`, its run time in the event log and the history its
+  kind's deadline is learned from leave pauses out too. The deadline's sleeper is re-armed on each
+  resume, and one armed before a pause is made stale by a generation number rather than
+  cancelled. Alternative: wall time (a long pause would end the job at its resume).
+- **`kill` of a paused job, `stop --force` and a TERM to the daemon send CONT before TERM**, so
+  the job can act on the TERM instead of waiting for the KILL 5 seconds later; the pause ends there.
+  When a paused job's main process ends, whatever is left of its group gets TERM then CONT.
+- **A paused job stays paused across `marshal restart`**, its processes stopped and its clock with
+  them: `paused_ms` and `paused_at` (wall clock) are in `state.json`.
+- **`pause` of a job that is queued, ended, being stopped or already paused, and `resume` of one
+  not paused, are refused** (exit 2). `stop --wait` is refused while a job is paused, as while one
+  is held: it would wait for ever.
+- **`pause` and `resume` with an id act on that job, and without one on the queue.** Alternative:
+  separate commands for the queue (two words for two kinds of the same act).
 
 - **`marshal pause` and `resume` with no id hold and release the whole queue, both lanes.** Running
   jobs go on; nothing new starts, landing jobs included, until `resume`. Why: holding the machine

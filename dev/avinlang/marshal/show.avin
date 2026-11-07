@@ -23,7 +23,7 @@ stateColumn(j: JobInfo) -> string = j.outcome match
     Some(TimedOut) -> "timeout"
     Some(Cancelled) -> "cancelled"
     Some(Lost) -> "lost"
-    None -> if j.held then "held" else j.state
+    None -> if j.held then "held" elif j.paused then "paused" else j.state
 
 // The listing `ls` prints: a header, then one row per job.
 listing(jobs: Vector[JobInfo]) -> string
