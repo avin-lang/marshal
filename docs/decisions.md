@@ -253,7 +253,9 @@ Known gaps in Avin, left for it to fix rather than worked around here:
 
 ## Pausing jobs, holding and ordering the queue (branch `pause-resume`)
 
-**Proposed**, except where an entry says it is settled.
+**Settled on the user's delegation 2026-11-07.** Review with the user: a paused job keeping its
+units (freeing them is the alternative, for jobs that declare no memory). Pausing a job-types run
+stops only the runner's group until avin can list a process's descendants.
 
 - **`marshal pause <id>` sends STOP to a running job's whole process group, and `resume <id>`
   sends CONT** (`avin.signal.Stop` and `Continue`, numbered per platform). The group, not the main
