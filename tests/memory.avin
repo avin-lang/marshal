@@ -1,0 +1,84 @@
+module tests
+
+// What a job's process tree holds in RAM: the processes of its group summed, those that have ended
+// counting nothing, and the peak that only goes up.
+import avin.io
+import avin.io.IoError
+import avin.process
+import avin.process.Command
+import avin.signal
+import avin.threads
+import avin.time.millis
+import dev.avinlang.marshal
+import dev.avinlang.marshal.Resident
+
+// A process table made to order: pid to resident bytes; any other pid has ended.
+table(pid: long) -> Result[long, IoError] = pid match
+    1 -> Ok(1000)
+    2 -> Ok(long(3) * 1024 * 1024 * 1024)
+    3 -> Ok(0)
+    4 -> Err(io.PermissionDenied)
+    _ -> Err(io.NotFound)
+
+@test("a tree's memory is the sum of its processes', one that has ended or cannot be asked counting nothing")
+treeSums()
+    assertEq(marshal.residentOf([], table), 0)
+    assertEq(marshal.residentOf([1], table), 1000)
+    assertEq(marshal.residentOf([1, 2, 3], table), long(3) * 1024 * 1024 * 1024 + 1000)
+    // 9 has exited since it was listed; 4 may not be looked at
+    assertEq(marshal.residentOf([1, 9, 2], table), long(3) * 1024 * 1024 * 1024 + 1000)
+    assertEq(marshal.residentOf([9, 4], table), 0)
+    // a pid listed twice is counted twice: the listing names each process once
+    assertEq(marshal.residentOf([1, 1], table), 2000)
+
+@test("a child that has exited and been waited for answers NotFound and counts nothing beside a live one")
+exitedChild()
+    val child = Command("true").start().ok().get()
+    val gone = child.pid()
+    child.waitFor().ok().get()
+    assertEq(process.residentBytes(gone).err(), Some(io.NotFound))
+    val me = process.pid()
+    assertEq(marshal.residentOf([gone], pid -> process.residentBytes(pid)), 0)
+    assert(marshal.residentOf([me, gone], pid -> process.residentBytes(pid)) > 0)
+
+@test("a group's memory covers every process in it, grandchildren included, and nothing once it has ended")
+groupTree()
+    val child = Command("sh", "-c", "sh -c 'sleep 30 & wait' & sleep 31 & wait").inNewGroup().start().ok().get()
+    val pgid = child.group().getOrElse(child.pid())
+    var members: Vector[long] = []
+    for _ in 0 ..< 50
+        members = marshal.groupMembers(pgid)
+        if members.length() >= 4 then break
+        threads.sleep(millis(100))
+    // the outer shell, the inner one, and the two sleeps
+    assertEq(members.length(), 4)
+    assert(members.contains(child.pid()))
+    val whole = marshal.groupResident(pgid)
+    assert(whole > marshal.residentOf([child.pid()], pid -> process.residentBytes(pid)), s"$whole")
+    process.signal(-pgid, signal.Kill)
+    child.waitFor()
+    for _ in 0 ..< 50
+        if marshal.groupMembers(pgid).isEmpty() then break
+        threads.sleep(millis(100))
+    assertEq(marshal.groupMembers(pgid), [])
+    assertEq(marshal.groupResident(pgid), 0)
+
+@test("a group that is not there, or no group at all, has no members")
+noGroup()
+    assertEq(marshal.groupMembers(0), [])
+    assertEq(marshal.groupMembers(-1), [])
+    assertEq(marshal.groupResident(0), 0)
+
+@test("the peak is the most any measurement found and never goes down; the latest is the last one")
+peakMonotonic()
+    var r = Resident(0, 0)
+    val samples: Vector[long] = [5, 10, 3, 10, 0, 11, long.MaxValue, 1]
+    var most: long = 0
+    for s in samples
+        val before = r.peak
+        r = r.measured(s)
+        if s > most then most = s
+        assertEq(r.now, s)
+        assertEq(r.peak, most)
+        assert(r.peak >= before)
+    assertEq(r, Resident(1, long.MaxValue))

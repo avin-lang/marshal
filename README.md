@@ -117,7 +117,8 @@ ends: nothing polls.
 `config.json` in marshal's home changes the defaults: `units`, `memory` (`"56G"` or bytes),
 `reserve`, `deadline_floor` (`"5m"`), `learn_window`, `learn_min_runs` and `take_slot` (below).
 
-`marshal status --json` prints `units`, `unit_budget`, `mem`, `mem_budget`, `landing` (the landing
+`marshal status --json` prints `units`, `unit_budget`, `mem`, `mem_budget`, `rss` (what the
+running jobs hold in RAM, in bytes), `machine_mem` (the machine's memory, 0 if unknown), `landing` (the landing
 job's id or null), `take_slot` (`dir`, `units`, `waiting`, `landing`, or null when none is shared),
 and `running` and `queued`, arrays of jobs as [the protocol](docs/protocol.md) writes them.
 
@@ -157,7 +158,10 @@ against its own budget. `marshal status` shows what take-slot holds.
 - **Header**: the daemon's uptime, how many jobs run and wait, who holds the landing lane (a job,
   take-slot, or free) and the filter; a bar of the unit budget, marshal's development units in green
   and take-slot's share after them in magenta, with take-slot's waiting runs; a bar of the memory
-  budget.
+  budget the running jobs reserve, then what they hold in RAM (`rss`) and the machine's memory.
+- **Memory**: RESV is the memory a job declared with `--mem`. RSS is what a running job's whole
+  process tree holds in RAM, measured by the daemon every second, and PEAK the most it was measured
+  holding, kept once it ends; `-` where there is none.
 - **Jobs**: running jobs, then queued ones, then the last ten that ended, the latest first. ELAPSED
   counts on between snapshots; DEADLINE is a running job's time left, yellow under a quarter of its
   deadline or five minutes and red under a tenth or one minute, and a queued job's deadline to come.

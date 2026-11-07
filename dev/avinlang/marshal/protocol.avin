@@ -53,7 +53,10 @@ exitCode(Cancelled) = 143
 exitCode(Lost) = 125
 
 // One job as a listing shows it. `state` is `queued`, `running` or `done`; `elapsedMs` is the time
-// queued for a queued job and the time run for the others.
+// queued for a queued job and the time run for the others. `memory` is the memory it declared;
+// `rss` the bytes its whole process tree held in RAM when the daemon last measured it, 0 unless it
+// runs; `peakRss` the most any measurement found, kept once it has ended; `startedAt` when it
+// started on the wall clock, in milliseconds since 1970, 0 while it waits.
 data JobInfo(
     id: long,
     kind: string,
@@ -69,8 +72,13 @@ data JobInfo(
     elapsedMs: long,
     deadlineMs: long,
     log: string,
-    sample: Option[string])
+    sample: Option[string],
+    rss: long = 0,
+    peakRss: long = 0,
+    startedAt: long = 0)
 
+// The budget in use. `memory` is what the running jobs declared; `rss` what their process trees hold
+// in RAM, as last measured; `machineMemory` the memory the machine has, 0 where it is not known.
 data Usage(
     units: int,
     unitBudget: int,
@@ -79,7 +87,9 @@ data Usage(
     running: int,
     queued: int,
     landing: Option[long],
-    takeSlot: Option[TakeSlotUse])
+    takeSlot: Option[TakeSlotUse],
+    rss: long = 0,
+    machineMemory: long = 0)
 
 // What take-slot.zsh holds in the directory `dir` that marshal shares: units its runs hold, how many
 // of its runs wait, and whether one of them holds the landing lane.
@@ -179,6 +189,7 @@ private stringPairs(j: Json) -> Option[Vector[(string, string)]] = j.asMembers()
     _ -> None
 
 private someLong(j: Json) -> Option[Option[long]] = j.asLong().map(n -> Some(n))
+private wholeNumber(j: Json) -> Option[long] = j.asLong()
 
 decodeRequest(text: string) -> Result[Request, string]
     val j = json.parse(text) match
@@ -233,7 +244,10 @@ encodeJob(i: JobInfo) -> Json = Json.obj(
     ("elapsed_ms", Json.num(i.elapsedMs)),
     ("deadline_ms", Json.num(i.deadlineMs)),
     ("log", Json.str(i.log)),
-    ("sample", i.sample.map(s -> Json.str(s)).getOrElse(Json.Null)))
+    ("sample", i.sample.map(s -> Json.str(s)).getOrElse(Json.Null)),
+    ("rss", Json.num(i.rss)),
+    ("peak_rss", Json.num(i.peakRss)),
+    ("started_at", Json.num(i.startedAt)))
 
 decodeJob(j: Json) -> Result[JobInfo, string]
     val outcome = j.get("outcome") match
@@ -255,7 +269,11 @@ decodeJob(j: Json) -> Result[JobInfo, string]
         field(j, "elapsed_ms", v -> v.asLong(), "a whole number")?,
         field(j, "deadline_ms", v -> v.asLong(), "a whole number")?,
         field(j, "log", v -> v.asString(), "a string")?,
-        optional(j, "sample", v -> v.asString().map(s -> Some(s)), "a string", None)?))
+        optional(j, "sample", v -> v.asString().map(s -> Some(s)), "a string", None)?,
+        // absent from what marshal wrote before it measured memory
+        optional(j, "rss", wholeNumber, "a whole number", 0)?,
+        optional(j, "peak_rss", wholeNumber, "a whole number", 0)?,
+        optional(j, "started_at", wholeNumber, "a whole number", 0)?))
 
 encodeTakeSlot(t: TakeSlotUse) -> Json = Json.obj(
     ("dir", Json.str(t.dir)),
@@ -278,6 +296,8 @@ statusJson(u: Usage, jobs: Vector[JobInfo]) -> Json = Json.obj(
     ("unit_budget", Json.num(u.unitBudget)),
     ("mem", Json.num(u.memory)),
     ("mem_budget", Json.num(u.memoryBudget)),
+    ("rss", Json.num(u.rss)),
+    ("machine_mem", Json.num(u.machineMemory)),
     ("landing", u.landing.map(id -> Json.num(id)).getOrElse(Json.Null)),
     ("take_slot", u.takeSlot.map(encodeTakeSlot).getOrElse(Json.Null)),
     ("running", Json.Arr(jobs.filter(j -> j.state == "running").map(encodeJob))),
@@ -293,6 +313,8 @@ encodeReply(Using(u)) = Json.obj(
     ("unit_budget", Json.num(u.unitBudget)),
     ("mem", Json.num(u.memory)),
     ("mem_budget", Json.num(u.memoryBudget)),
+    ("rss", Json.num(u.rss)),
+    ("machine_mem", Json.num(u.machineMemory)),
     ("running", Json.num(u.running)),
     ("queued", Json.num(u.queued)),
     ("landing", u.landing.map(id -> Json.num(id)).getOrElse(Json.Null)),
@@ -324,7 +346,9 @@ decodeReply(text: string) -> Result[Reply, string]
             field(j, "running", v -> v.asInt(), "an int")?,
             field(j, "queued", v -> v.asInt(), "an int")?,
             optional(j, "landing", someLong, "a whole number", None)?,
-            decodeTakeSlot(j.get("take_slot").getOrElse(Json.Null))?)))
+            decodeTakeSlot(j.get("take_slot").getOrElse(Json.Null))?,
+            optional(j, "rss", wholeNumber, "a whole number", 0)?,
+            optional(j, "machine_mem", wholeNumber, "a whole number", 0)?)))
     if j.has("version") then return Ok(Hi(field(j, "version", v -> v.asString(), "a string")?, field(j, "pid", v -> v.asLong(), "a whole number")?))
     if j.has("id") then return Ok(Submitted(field(j, "id", v -> v.asLong(), "a whole number")?, field(j, "log", v -> v.asString(), "a string")?))
     Ok(Done)
@@ -364,6 +388,8 @@ encodeOverview(o: Overview) -> Json = Json.obj(
     ("unit_budget", Json.num(o.usage.unitBudget)),
     ("mem", Json.num(o.usage.memory)),
     ("mem_budget", Json.num(o.usage.memoryBudget)),
+    ("rss", Json.num(o.usage.rss)),
+    ("machine_mem", Json.num(o.usage.machineMemory)),
     ("landing", o.usage.landing.map(id -> Json.num(id)).getOrElse(Json.Null)),
     ("take_slot", o.usage.takeSlot.map(encodeTakeSlot).getOrElse(Json.Null)),
     ("uptime_ms", Json.num(o.uptimeMs)),
@@ -389,7 +415,9 @@ decodeOverview(j: Json) -> Result[Overview, string]
             running.length(),
             queued.length(),
             optional(j, "landing", someLong, "a whole number", None)?,
-            decodeTakeSlot(j.get("take_slot").getOrElse(Json.Null))?),
+            decodeTakeSlot(j.get("take_slot").getOrElse(Json.Null))?,
+            optional(j, "rss", wholeNumber, "a whole number", 0)?,
+            optional(j, "machine_mem", wholeNumber, "a whole number", 0)?),
         field(j, "uptime_ms", v -> v.asLong(), "a whole number")?,
         running,
         queued,
