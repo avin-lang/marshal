@@ -6,6 +6,7 @@ module dev.avinlang.marshal.cli
 // starts one when `s` is pressed.
 import avin.fs
 import avin.net.UnixStream
+import avin.process
 import avin.time
 import avin.time.millis
 import dev.avinlang.marshal
@@ -28,7 +29,10 @@ top(args: Vector[string]) -> int
 watch(term: Terminal)
     val sock = home() + "/sock"
     val app = App(sock)
+    for n in process.env("MARSHAL_TEST_TOP_IDLE_MS").flatMap(t -> t.toLongOption()).filter(n -> n >= 1)
+        app.hideAfter = n
     var conn: Option[UnixStream] = None
+    val epoch = time.monotonic()
     var fetched = time.monotonic()
     var due = time.monotonic()
     loop
@@ -38,11 +42,11 @@ watch(term: Terminal)
             due = fetched + Every
         readLog(app)
         val g = term.frame()
-        app.draw(g, (time.monotonic() - fetched).toMillis())
+        app.draw(g, (time.monotonic() - fetched).toMillis(), (time.monotonic() - epoch).toMillis())
         term.present(g)
         val wait = due - time.monotonic()
         term.poll(if wait > millis(0) then wait else millis(0)) match
-            Some(e) -> app.handle(e) match
+            Some(e) -> app.handle(e, (time.monotonic() - epoch).toMillis()) match
                 Quit -> return
                 KillJob(id) ->
                     app.message = conn.map(c -> ask(c, Request.Kill(id))) match

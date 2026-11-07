@@ -174,6 +174,21 @@ cells(l: Line, since: long, zone: time.Zone, today: string, width: int) -> Vecto
     ]
     if showsPeak(width) then all else all.slice(0, PeakColumn) ++ all.slice(PeakColumn + 1, all.length())
 
+// How long, in milliseconds, the selected row stays highlighted after the last key.
+val IdleHideMs: long = 5000
+
+// The keys that, pressed while the highlight is hidden, only show it again.
+private revealsOnly(k: Key) -> bool
+revealsOnly(Up) = true
+revealsOnly(Down) = true
+revealsOnly(PageUp) = true
+revealsOnly(PageDown) = true
+revealsOnly(Home) = true
+revealsOnly(End) = true
+revealsOnly(Enter) = true
+revealsOnly(Char('l')) = true
+revealsOnly(_) = false
+
 // The state of the screen: the latest snapshot and when it came, the filter, the selected job (kept
 // on its job from one snapshot to the next), the log pane and how far back it is scrolled, a kill
 // waiting for its yes, the help, and the last message. `problem` says why there is no snapshot: no
@@ -190,6 +205,10 @@ class App(val sock: string)
     val table: Table = Table(columns)
     var shown: Vector[Line] = []
     var selectedId: Option[long] = None
+    // When the last key came, on the clock `handle` and `draw` are given (milliseconds), and how long
+    // after it the selected row stops being highlighted. With no key yet, it is not highlighted.
+    var lastKeyAt: Option[long] = None
+    var hideAfter: long = IdleHideMs
     // The log pane: the job it shows, the lines read from its log, and how many lines back from the
     // end it is scrolled (0: it follows the end).
     var logOf: Option[JobInfo] = None
@@ -235,9 +254,23 @@ class App(val sock: string)
     // The log the pane wants and how many of its last lines: enough to fill the pane at its scroll.
     logWanted() -> Option[(string, int)] = logOf.map(j -> (j.log, logRows + logBack))
 
-    // Changes the state for `e` and says what to do next.
-    handle(e: Event) -> Action
-        if e is KeyPress(_, _) then message = ""
+    // Counts as a key at `now`, which highlights the selected row.
+    touch(now: long)
+        lastKeyAt = Some(now)
+
+    // Whether the selected row is highlighted at `now`: always while the log pane, the kill prompt
+    // or the help is showing, otherwise until `hideAfter` after the last key.
+    highlighted(now: long) -> bool =
+        logOf.isDefined() || confirming.isDefined() || help || lastKeyAt.exists(t -> now - t < hideAfter)
+
+    // Changes the state for `e`, which came at `now`, and says what to do next. A key that finds the
+    // highlight hidden and only moves or opens something shows it again and does nothing else.
+    handle(e: Event, now: long = 0) -> Action
+        if e is KeyPress(k, _)
+            val hidden = !highlighted(now)
+            lastKeyAt = Some(now)
+            message = ""
+            if hidden && revealsOnly(k) then return Stay
         if confirming is Some(j)
             confirming = None
             return e match
@@ -323,7 +356,7 @@ class App(val sock: string)
 
     // Draws the screen into `g`, `since` milliseconds after the snapshot came: the header, the table,
     // the log pane under it when open, the bottom line, and the help over everything when open.
-    draw(g: Grid, since: long)
+    draw(g: Grid, since: long, now: long = 0)
         if overview is Some(o)
             val top = drawHeader(g, o, since, filter)
             val bottom = g.height - 1
@@ -338,10 +371,12 @@ class App(val sock: string)
             val drawing = if showsPeak(area.w) then table else Table(columnsFor(area.w, startedWidth))
             drawing.selected = table.selected
             drawing.offset = table.offset
+            val lit = highlighted(now)
+            drawing.selectedStyle = if lit then Style.plain().with(Reverse) else drawing.rowStyle
             drawing.draw(g, area, rows)
             table.selected = drawing.selected
             table.offset = drawing.offset
-            paintCells(g, area, since, drawing)
+            paintCells(g, area, since, drawing, lit)
             remember()
             for j in logOf
                 drawLog(g, Rect(0, top + area.h, g.width, maxInt(bottom - top - area.h, 0)), j)
@@ -352,7 +387,7 @@ class App(val sock: string)
 
     // STATE and DEADLINE again over the table's text, in their colours; on the selected line the
     // colours are reversed as the table reverses it.
-    private paintCells(g: Grid, area: Rect, since: long, drawn: Table)
+    private paintCells(g: Grid, area: Rect, since: long, drawn: Table, lit: bool)
         if area.h < 2 then return
         val ws = drawn.widths(area.w)
         val deadlineColumn = deadlineColumnFor(area.w)
@@ -362,7 +397,7 @@ class App(val sock: string)
             val i = table.offset + k
             if i >= shown.length() then break
             val l = shown(i)
-            val mark = if i == table.selected then Reverse else 0
+            val mark = if lit && i == table.selected then Reverse else 0
             val (state, stateStyle) = stateOf(l)
             val (left, leftStyle) = deadlineOf(l, since)
             g.textIn(stateX, area.y + 1 + k, ws(StateColumn), state, stateStyle.with(mark), columns(StateColumn).align, area)
@@ -435,6 +470,8 @@ val footerKeys: Vector[(string, string)] = [
 // What the help shows.
 val helpLines: Vector[string] = [
     "Up, Down, PgUp, PgDn, Home, End   select a job",
+    "                (after 5 seconds without a key the highlight hides; the first",
+    "                such key or Enter only shows it again, on the same job)",
     "Enter  l        the selected job's log, following its end",
     "                (open: PgUp PgDn Home End scroll it, Esc closes)",
     "k               kill the selected job, after y",

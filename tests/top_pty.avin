@@ -21,6 +21,14 @@ topIn(home: string, keys: string, zone: string = "") -> string
     val out = (if zone.nonEmpty() then base.withEnv("TZ", zone) else base).output().getOrElse("")
     plainText(out)
 
+// Runs `marshal top` against `home` with the highlight hiding after `idleMs`, running the shell
+// commands `steps` (sleeps and `printf`s of keys) in front of it: everything it wrote, escape
+// sequences and all.
+topRaw(home: string, steps: string, idleMs: int) -> string
+    val script = "(" + steps + ") | script -q /dev/null sh -c 'stty cols 100 rows 30; \"$M\" top; echo STATUS=$?'"
+    val base = Command("sh", "-c", script).withEnv("M", bin()).withEnv("MARSHAL_HOME", home).withEnv("MARSHAL_TAKE_SLOT_DIR", slots(home))
+    base.withEnv("MARSHAL_TEST_TOP_IDLE_MS", idleMs.toString()).output().getOrElse("")
+
 // `text` with each escape sequence (ESC, `[`, parameters, a final letter) a space, and every run of
 // blanks one space.
 plainText(text: string) -> string
@@ -78,6 +86,27 @@ topShowsStartTime()
     val yorkText = time.epochMillis(startedAt).atZone(time.zone("America/New_York").ok().get()).format("MM-DD hh:mm")
     assert(york.contains(s"$id running build 1 - ") && york.contains(s" $yorkText 0:"), york)
     assert(utcText != yorkText)
+    cleanUp(home)
+
+@test("top in a pty starts with no row highlighted, shows it on a key, hides it when idle and shows it again on the next key without moving")
+topHidesHighlightWhenIdle()
+    if process.os() != MacOS then return
+    val home = newHome()
+    val id = submitted(home, "--", "sleep", "60")
+    assert(runningSoon(home, id))
+    // the selected row's first cell, reversed, as the terminal is told to draw it
+    val lit = "\u{1b}[7m    " + id.toString() + " "
+    val idle = topRaw(home, "sleep 3; printf q", 1000)
+    assert(idle.contains("STATUS=0"), plainText(idle))
+    assert(idle.contains(s"running"), plainText(idle))
+    assertEq(idle.split(lit).length(), 1)
+    // a key shows it; with no key after it the screen is not drawn lit again
+    val shown = topRaw(home, "sleep 3; printf x; sleep 1; printf q", 5000)
+    assertEq(shown.split(lit).length(), 2)
+    // key, idle past the delay (hidden), Down (only shows it again on the same job), q
+    val again = topRaw(home, "sleep 3; printf x; sleep 3; printf '\\033[B'; sleep 1; printf q", 1000)
+    assert(again.contains("STATUS=0"), plainText(again))
+    assertEq(again.split(lit).length(), 3)
     cleanUp(home)
 
 @test("top kills the selected job after k and y")

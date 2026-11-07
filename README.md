@@ -418,6 +418,12 @@ against its own budget. `marshal status` shows what take-slot holds.
   the table, following the end as it grows (PgUp, PgDn, Home, End scroll it while it is open, Esc
   closes it); `k` kills the selected job after `y`; `f` shows all jobs, the running, the queued or
   the ended ones; `h` the keys; `q` quits.
+- **Idle**: the selected row's highlight hides after 5 seconds without a key, so a glance at
+  progress is not a row to read around; `top` starts that way. The selected job is remembered while
+  it is hidden. The first Up, Down, PgUp, PgDn, Home, End, Enter or `l` after that only shows the
+  highlight again, on the same job; the next key does what it always did. Other keys act at once
+  and count as activity. The highlight never hides while a job's log is open, a kill is being
+  confirmed or the help is showing.
 - **No daemon**: top does not start one by itself. It says there is none, looks again every second,
   and `s` starts one. A daemon older than the `snapshot` request is named as such.
 

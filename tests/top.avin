@@ -6,7 +6,7 @@ import avin.time
 import dev.avinlang.marshal
 import dev.avinlang.marshal.{JobInfo, Outcome, Overview, QueuedJob, TakeSlotUse, Usage, Why}
 import dev.avinlang.marshal.top
-import dev.avinlang.marshal.top.{App, KillJob, Quit, StartDaemon, Stay, ShowAll, ShowRunning, ShowQueued, ShowFinished}
+import dev.avinlang.marshal.top.{App, IdleHideMs,KillJob, Quit, StartDaemon, Stay, ShowAll, ShowRunning, ShowQueued, ShowFinished}
 import dev.avinlang.tui.{BrightBlack, Char, Ctrl, Down, End, Enter, Escape, Event, Green, Grid, Home, Key, KeyPress, Magenta,
                          PageDown, PageUp, Red, Resize, Reverse, Stop, Up, Yellow}
 
@@ -41,6 +41,7 @@ drawn(app: App, w: int, h: int, since: long = 0) -> Grid
 viewing(o: Overview) -> App
     val app = App("/h/sock")
     app.update(o)
+    app.touch(0)
     app
 
 key(c: char) -> Event = KeyPress(Char(c), 0)
@@ -500,3 +501,174 @@ startedShortToday()
     // a wide screen always shows the date
     val wide = drawn(viewing(onlyToday), 100, 30)
     assert(wide.rowText(head + 1).contains(time.epochMillis(now).atZone(here).format("MM-DD hh:mm")), wide.rowText(head + 1))
+
+// The first table row (screen row 5 on) whose STATE cell is reversed, or -1 where none is: the
+// highlighted row.
+litRow(g: Grid) -> int
+    for y in 5 ..< 20
+        if g(1, y).style.has(Reverse) then return y
+    -1
+
+// `app` drawn at time `now`, and the highlighted row of that.
+drawnAt(app: App, now: long) -> Grid
+    val g = Grid(100, 30)
+    app.draw(g, 0, now)
+    g
+
+litAt(app: App, now: long) -> int = litRow(drawnAt(app, now))
+
+// An app that has a snapshot and has seen no key yet.
+fresh() -> App
+    val app = App("/h/sock")
+    app.update(full())
+    app
+
+@test("the highlight is hidden until the first key, shown for the delay after each key, and hidden after it")
+highlightHidesWhenIdle()
+    val app = fresh()
+    assertEq(litRow(drawn(app, 100, 30)), -1)
+    assertEq(app.handle(key('x'), 1000), Stay)
+    assertEq(litAt(app, 1000), 5)
+    assertEq(litAt(app, 1000 + IdleHideMs - 1), 5)
+    assertEq(litAt(app, 1000 + IdleHideMs), -1)
+    assertEq(litAt(app, 1000 + 100 * IdleHideMs), -1)
+    // another key starts the delay again
+    app.handle(key('x'), 1000 + IdleHideMs - 1)
+    assertEq(litAt(app, 1000 + 2 * IdleHideMs - 2), 5)
+    assertEq(litAt(app, 1000 + 2 * IdleHideMs - 1), -1)
+    assertEq(IdleHideMs, long(5000))
+
+@test("the delay is the app's to set")
+highlightDelayInjected()
+    val app = fresh()
+    app.hideAfter = 10
+    app.handle(key('x'), 0)
+    assertEq(litAt(app, 9), 5)
+    assertEq(litAt(app, 10), -1)
+
+@test("hiding the highlight changes nothing else on the screen but the reversed cells")
+highlightHidingKeepsTheLook()
+    val app = fresh()
+    app.handle(key('x'), 0)
+    val on = drawnAt(app, 0)
+    val off = drawnAt(app, IdleHideMs)
+    for y in 0 ..< 30
+        assertEq(off.rowText(y), on.rowText(y))
+        for x in 0 ..< 100
+            assertEq(off(x, y).style.fg, on(x, y).style.fg)
+            // the headings and the STATE of a timed-out or lost job are reversed in any case
+            assert(!off(x, y).style.has(Reverse) || y == 4 || x >= 6, s"reversed cell at $x,$y")
+            assert(y != 5 || !off(x, y).style.has(Reverse), s"row 5 is still highlighted at $x")
+            assert(y != 5 || on(x, y).style.has(Reverse), s"row 5 is not highlighted when shown at $x")
+
+@test("while hidden, the first selecting key only shows the highlight on the job that was selected, and the next moves")
+highlightFirstKeyOnlyReveals()
+    for k in [press(Up), press(Down), press(PageUp), press(PageDown), press(Home), press(End), press(Enter), key('l')]
+        val app = fresh()
+        app.handle(key('x'), 0)
+        app.handle(press(Down), 0)
+        app.handle(press(Down), 0)
+        val job = app.selected().map(j -> j.id)
+        assertEq(job, Some(long(10)))
+        val later = 10 * IdleHideMs
+        assertEq(litAt(app, later), -1)
+        assertEq(app.handle(k, later), Stay)
+        assertEq(app.selected().map(j -> j.id), job)
+        assert(app.logOf.isEmpty(), "no log opens blind")
+        assertEq(litAt(app, later), 7)
+    // and the next key moves as usual
+    val app = fresh()
+    app.handle(key('x'), 0)
+    app.handle(press(Down), 0)
+    val later = 10 * IdleHideMs
+    app.handle(press(Down), later)
+    assertEq(app.selected().map(j -> j.id), Some(long(4)))
+    app.handle(press(Down), later + 1)
+    assertEq(app.selected().map(j -> j.id), Some(long(10)))
+    assertEq(litAt(app, later + 1), 7)
+
+@test("Enter while hidden shows the highlight without opening the log; the next Enter opens it")
+highlightEnterOpensOnlyWhenShown()
+    val app = fresh()
+    app.handle(key('x'), 0)
+    assertEq(app.handle(press(Enter), 10 * IdleHideMs), Stay)
+    assert(app.logOf.isEmpty())
+    app.handle(press(Enter), 10 * IdleHideMs)
+    assertEq(app.logOf.map(j -> j.id), Some(long(1)))
+
+@test("other keys act as they do and count as activity while the highlight is hidden")
+highlightOtherKeysActAndCount()
+    val later = 10 * IdleHideMs
+    val filtered = fresh()
+    filtered.handle(key('x'), 0)
+    assertEq(filtered.handle(key('f'), later), Stay)
+    assertEq(filtered.filter, ShowRunning)
+    assertEq(litAt(filtered, later), 5)
+    val helped = fresh()
+    assertEq(helped.handle(key('h'), later), Stay)
+    assert(helped.help)
+    val quit = fresh()
+    assertEq(quit.handle(key('q'), later), Quit)
+    val killing = fresh()
+    assertEq(killing.handle(key('k'), later), Stay)
+    assertEq(killing.confirming.map(j -> j.id), Some(long(1)))
+    // a resize is not a key
+    val resized = fresh()
+    resized.handle(key('x'), 0)
+    resized.handle(Resize(100, 30), later - 1)
+    assertEq(litAt(resized, later), -1)
+
+@test("the selected job is kept while the highlight is hidden, as jobs come and go")
+highlightHiddenKeepsSelection()
+    val app = fresh()
+    app.handle(key('x'), 0)
+    app.handle(press(Down), 0)
+    assertEq(app.selected().map(j -> j.id), Some(long(4)))
+    assertEq(litAt(app, IdleHideMs), -1)
+    val without = Overview(Usage(5, 12, 1073741824, 4294967296, 1, 1, Some(4), None), 0, [snapJob(4, units = 4, landing = true)], [queued(13, 1, Why.NoUnits)], [])
+    app.update(without)
+    assertEq(app.selected().map(j -> j.id), Some(long(4)))
+    app.update(Overview(Usage(5, 12, 1073741824, 4294967296, 2, 0, None, None), 0, [snapJob(2), snapJob(3), snapJob(4, units = 4)], [], []))
+    assertEq(app.selected().map(j -> j.id), Some(long(4)))
+    assertEq(app.handle(press(Up), 2 * IdleHideMs), Stay)
+    assertEq(app.selected().map(j -> j.id), Some(long(4)))
+    assertEq(litAt(app, 2 * IdleHideMs), 7)
+
+@test("the highlight never hides while the log pane, the kill prompt or the help is showing")
+highlightStaysForPanesAndPrompts()
+    val later = 10 * IdleHideMs
+    val logging = fresh()
+    logging.handle(key('x'), 0)
+    logging.handle(press(Enter), 0)
+    assert(logging.logOf.isDefined())
+    assertEq(litAt(logging, later), 5)
+    // a key in the pane moves as usual, the highlight never having hidden
+    logging.handle(press(Down), later)
+    assertEq(logging.selected().map(j -> j.id), Some(long(4)))
+    // closing it at a time that is long past starts the delay from that key
+    logging.handle(press(Escape), 2 * later)
+    assertEq(litAt(logging, 2 * later), 6)
+    assertEq(litAt(logging, 2 * later + IdleHideMs), -1)
+    val asking = fresh()
+    asking.handle(key('k'), 0)
+    assert(asking.confirming.isDefined())
+    assertEq(litAt(asking, later), 5)
+    val helping = fresh()
+    helping.handle(key('h'), 0)
+    assertEq(litAt(helping, later), 5)
+    // the prompt answered or the help closed, the delay starts from that key
+    helping.handle(key('x'), later)
+    assertEq(litAt(helping, later + IdleHideMs), -1)
+
+@test("with no jobs, or no snapshot, a hidden highlight draws and keys do no harm")
+highlightWithNothingToSelect()
+    val empty = App("/h/sock")
+    empty.update(Overview(Usage(0, 12, 0, 4294967296, 0, 0, None, None), 0, [], [], []))
+    assertEq(empty.handle(press(Down), 100 * IdleHideMs), Stay)
+    assertEq(empty.handle(press(Down), 100 * IdleHideMs), Stay)
+    assertEq(empty.handle(press(Enter), 100 * IdleHideMs), Stay)
+    assert(empty.logOf.isEmpty())
+    val lost = App("/h/sock")
+    lost.lost("no daemon", true)
+    assertEq(lost.handle(press(Up), 5), Stay)
+    drawn(lost, 100, 30)
