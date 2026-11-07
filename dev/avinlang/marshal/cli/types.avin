@@ -1,0 +1,123 @@
+module dev.avinlang.marshal.cli
+
+// `marshal run-type` and `marshal train`: a type's run is one job, whose command is this marshal's
+// `run-steps` with the type's file and the parameters given; `run-type` checks the type and the
+// parameters first, submits the job with the type's lane, units, memory and deadline, waits for it,
+// and prints the run's report.
+import avin.fs
+import avin.process
+import dev.avinlang.marshal
+import dev.avinlang.marshal.{JobSpec, Request}
+import dev.avinlang.marshal.{Submitted, Ended, Failed}
+import dev.avinlang.marshal.runner
+
+// What run-type takes for itself out of a command line: the options before a `--`, and the rest.
+data TypeLine(
+    dir: Option[string],
+    deadline: Option[long],
+    units: Option[int],
+    memory: Option[long],
+    submitOnly: bool,
+    help: bool,
+    rest: Vector[string])
+
+// Takes run-type's own options out of `args` (they may stand anywhere before a `--`), leaving the
+// type's name and its parameters in order. A parameter's value that is spelt like one of these
+// options is written `--name=value`.
+typeLine(args: Vector[string]) -> Result[TypeLine, string]
+    var dir: Option[string] = None
+    var deadline: Option[long] = None
+    var units: Option[int] = None
+    var memory: Option[long] = None
+    var submitOnly = false
+    var help = false
+    val rest = Buffer[string]()
+    var i = 0
+    while i < args.length()
+        val word = args(i)
+        if word == "--"
+            rest ++= args.drop(i)
+            break
+        i += 1
+        if word == "--submit"
+            submitOnly = true
+            continue
+        if word == "--help" || word == "-h"
+            help = true
+            continue
+        if !["--dir", "--deadline", "--units", "--mem"].contains(word)
+            rest += word
+            continue
+        if i >= args.length() then return Err(s"`$word` needs a value")
+        val value = args(i)
+        i += 1
+        word match
+            "--dir" -> dir = Some(value)
+            "--deadline" -> marshal.parseDeadline(value) match
+                Some(ms) -> deadline = Some(ms)
+                None -> return Err(s"`--deadline $value`: a deadline is minutes, or a number with s, m or h, such as 90s")
+            "--units" -> value.toIntOption() match
+                Some(n) -> units = Some(n)
+                None -> return Err(s"`--units $value`: units are a whole number")
+            _ -> marshal.parseSize(value) match
+                Some(n) -> memory = Some(n)
+                None -> return Err(s"`--mem $value`: a size is a whole number with K, M, G or T, such as 29G")
+    Ok(TypeLine(dir, deadline, units, memory, submitOnly, help, rest.toVector()))
+
+// `marshal run-type <type> …`, or with `typeName` given, `marshal train …` and the like.
+runType(args: Vector[string], typeName: Option[string]) -> int
+    val line = typeLine(args) match
+        Ok(l) -> l
+        Err(e) -> return complain(s"marshal: $e")
+    val (name, params) = typeName match
+        Some(n) -> (n, line.rest)
+        None -> line.rest match
+            [] ->
+                if line.help
+                    println(commandHelp("run-type").get())
+                    return 0
+                return complain("marshal: give the type to run: marshal run-type <type> [parameters]")
+            words -> (words(0), words.drop(1))
+    val cwd = process.currentDir().getOrElse(".")
+    val dir = line.dir.map(d -> runner.absolute(d, cwd)).getOrElse(cwd)
+    if !fs.isDir(dir) then return complain(s"marshal: $dir is not a directory")
+    val file = runner.findType(name, dir, home(), runner.stockDir()) match
+        Ok(f) -> f
+        Err(e) -> return complain(s"marshal: $e")
+    val t = runner.loadType(file) match
+        Ok(t) -> t
+        Err(e) -> return complain(s"marshal: $e")
+    if line.help
+        println(marshal.typeHelp(t))
+        return 0
+    marshal.bindParams(t, params).flatMap(v -> marshal.checkBound(t, v)) match
+        Ok(_) -> ()
+        Err(e) -> return complain(s"marshal: ${t.name}: $e\n(`marshal run-type ${t.name} --help` lists its parameters)")
+    val own = process.executable() match
+        Some(p) -> p
+        None -> return complain("marshal: cannot find this program's own executable to run the steps with")
+    val env = process.environment().toVector().sortBy(e -> e.0)
+    val spec = JobSpec(t.kind, line.units.getOrElse(t.units), line.memory.getOrElse(t.memory), t.landing, dir,
+        line.deadline.orElse(t.deadlineMs), [own, "run-steps", file] ++ params, env)
+    val (id, log) = askDaemon(Request.Submit(spec)) match
+        Ok(Submitted(id, log)) -> (id, log)
+        Ok(Failed(e)) -> return complain(s"marshal: $e")
+        Ok(other) -> return complain(s"marshal: unexpected reply $other")
+        Err(e) -> return complain(e)
+    if line.submitOnly
+        println(id)
+        return 0
+    println(s"marshal: job $id: ${t.name}, log $log")
+    askDaemon(Request.Wait(id)) match
+        Ok(Ended(job)) ->
+            println(marshal.resultLine(job))
+            for text in fs.readText(s"${home()}/runs/$id/report.txt").ok() do print(text)
+            job.outcome.map(marshal.exitCode).getOrElse(Trouble)
+        Ok(Failed(e)) -> complain(s"marshal: $e")
+        Ok(other) -> complain(s"marshal: unexpected reply $other")
+        Err(e) -> complain(e)
+
+// `marshal run-steps <file> <parameters>`: what a type's job runs.
+runSteps(args: Vector[string]) -> int = args match
+    [] -> complain("marshal: run-steps takes a type's file and its parameters")
+    _ -> runner.main(args(0), args.drop(1))

@@ -1,0 +1,296 @@
+module tests
+
+// What a type's run decides, without running a program: the step protocol's lines, a step's success
+// test, every transition, the bisection, and what a run comes to.
+import avin.collections.mutable.{Set as MutableSet}
+import dev.avinlang.marshal
+import dev.avinlang.marshal.{AnyExit, Codes, Exits, Fail, PassEnd, PassResult, RunReport, Said, Step, StepEnd, StepOutcome}
+import dev.avinlang.marshal.{StepSaid, ExitSaid, HeadSaid, FailSaid, ResultSaid, StepSkipped, StepPassed, StepFailed, Green, Red, Stopped}
+
+said(line: string) -> Said = marshal.readSaid(line) match
+    Some(Ok(s)) -> s
+    other -> fail(s"$line read as $other")
+
+malformed(line: string, why: string) = marshal.readSaid(line) match
+    Some(Err(e)) -> assert(e.contains(why), s"$line: $e")
+    other -> fail(s"$line read as $other")
+
+@test("each kind of protocol line reads as what it says")
+protocolKinds()
+    assertEq(said("=== STEP fetch"), StepSaid("fetch"))
+    assertEq(said("=== STEP merge feature-x"), StepSaid("merge feature-x"))
+    assertEq(said("=== EXIT 0"), ExitSaid(0))
+    assertEq(said("=== EXIT 3"), ExitSaid(3))
+    assertEq(said("=== EXIT -1"), ExitSaid(-1))
+    assertEq(said("=== HEAD 0123abcd"), HeadSaid("0123abcd"))
+    assertEq(said("=== HEAD " + "f".repeat(40)), HeadSaid("f".repeat(40)))
+    assertEq(said("=== HEAD " + "a".repeat(64)), HeadSaid("a".repeat(64)))
+    assertEq(said("=== FAIL tests/run/x.avin"), FailSaid("tests/run/x.avin", None))
+    assertEq(said("=== FAIL tests/run/x.avin feature-x"), FailSaid("tests/run/x.avin", Some("feature-x")))
+    assertEq(said("=== RESULT green"), ResultSaid(true))
+    assertEq(said("=== RESULT red"), ResultSaid(false))
+    // spaces around and between the words do not matter
+    assertEq(said("===   RESULT   green  "), ResultSaid(true))
+    assertEq(said("=== FAIL  t  b "), FailSaid("t", Some("b")))
+
+@test("a protocol line of a kind marshal knows but written wrong is refused with the reason")
+protocolMalformed()
+    malformed("=== STEP", "names the part")
+    malformed("=== EXIT", "one exit code")
+    malformed("=== EXIT 1 2", "one exit code")
+    malformed("=== EXIT one", "an exit code is a whole number")
+    malformed("=== EXIT 99999999999", "an exit code is a whole number")
+    malformed("=== HEAD", "one commit")
+    malformed("=== HEAD abc", "4 to 64")
+    malformed("=== HEAD " + "a".repeat(65), "4 to 64")
+    malformed("=== HEAD ABCDEF12", "lowercase hexadecimal")
+    malformed("=== HEAD abcdefgh", "lowercase hexadecimal")
+    malformed("=== HEAD abcd ef01", "one commit")
+    malformed("=== FAIL", "gives a test")
+    malformed("=== FAIL a b c", "gives a test")
+    malformed("=== RESULT", "green or red")
+    malformed("=== RESULT GREEN", "green or red")
+    malformed("=== RESULT green red", "green or red")
+
+@test("a line that is not marshal's is passed over: other text, other kinds, other spellings")
+protocolOthers()
+    for line in ["", "hello", "==== STEP x", "===STEP x", " === STEP x", "=== ", "===", "=== RUN TestThing", "=== PAUSE x", "=== step x", "=== Result green", "== RESULT green"]
+        assert(marshal.readSaid(line).isEmpty(), line)
+
+step(exits: Exits = Codes([0]), result: bool = false, onSuccess: string = "next", onFailure: string = "stop", name: string = "s", when: Option[string] = None) -> Step =
+    Step(name, ["x"], None, [], when, exits, result, None, onSuccess, onFailure)
+
+@test("a step passes on an exit code its test allows, any code for `any`")
+successByExit()
+    assert(marshal.passed(step(), StepEnd(0, false, [])))
+    assert(!marshal.passed(step(), StepEnd(1, false, [])))
+    assert(marshal.passed(step(exits = Codes([0, 3])), StepEnd(3, false, [])))
+    assert(!marshal.passed(step(exits = Codes([0, 3])), StepEnd(2, false, [])))
+    assert(marshal.passed(step(exits = Codes([1])), StepEnd(1, false, [])))
+    assert(!marshal.passed(step(exits = Codes([1])), StepEnd(0, false, [])))
+    assert(marshal.passed(step(exits = AnyExit), StepEnd(137, false, [])))
+    assert(marshal.passed(step(exits = AnyExit), StepEnd(-1, false, [])))
+
+@test("an EXIT line is the code the test reads, the last one where there are several")
+successByExitLine()
+    assert(marshal.passed(step(), StepEnd(1, false, [ExitSaid(0)])))
+    assert(!marshal.passed(step(), StepEnd(0, false, [ExitSaid(4)])))
+    assert(marshal.passed(step(), StepEnd(0, false, [ExitSaid(4), ExitSaid(0)])))
+    assert(!marshal.passed(step(), StepEnd(0, false, [ExitSaid(0), ExitSaid(4)])))
+
+@test("a RESULT red fails a step whatever its code; a step that needs a result passes only on a last green")
+successByResult()
+    assert(!marshal.passed(step(), StepEnd(0, false, [ResultSaid(false)])))
+    assert(marshal.passed(step(), StepEnd(0, false, [ResultSaid(true)])))
+    assert(marshal.passed(step(), StepEnd(0, false, [ResultSaid(false), ResultSaid(true)])))
+    assert(!marshal.passed(step(result = true), StepEnd(0, false, [])))
+    assert(marshal.passed(step(result = true), StepEnd(0, false, [ResultSaid(true)])))
+    assert(!marshal.passed(step(result = true), StepEnd(0, false, [ResultSaid(true), ResultSaid(false)])))
+    // the code still counts where a result is needed, and `any` lets the result alone decide
+    assert(!marshal.passed(step(result = true), StepEnd(1, false, [ResultSaid(true)])))
+    assert(marshal.passed(step(exits = AnyExit, result = true), StepEnd(1, false, [ResultSaid(true)])))
+    // other lines do not change the verdict
+    assert(marshal.passed(step(), StepEnd(0, false, [StepSaid("x"), HeadSaid("abcd"), FailSaid("t", None)])))
+
+@test("a step stopped at its deadline fails, whatever it said")
+successTimedOut()
+    assert(!marshal.passed(step(), StepEnd(0, true, [])))
+    assert(!marshal.passed(step(exits = AnyExit), StepEnd(143, true, [ResultSaid(true), ExitSaid(0)])))
+
+// Runs `steps`, each passing or failing as `outcomes` says (by name; a name not there passes),
+// and answers how they ended and the names of the steps run, in order.
+runWith(steps: Vector[Step], outcomes: Vector[(string, StepOutcome)]) -> (PassEnd, Vector[string])
+    val ran = Buffer[string]()
+    val exec = (s: Step) ->
+        ran += s.name
+        outcomes.find(o -> o.0 == s.name).map(o -> o.1).getOrElse(StepPassed)
+    val outcome = marshal.runSteps(steps, exec, (w: string) -> w)
+    (outcome, ran.toVector())
+
+@test("next goes on, after a pass and after a failure, and past the last step the steps are green")
+transitionNext()
+    val steps = [step(name = "a", onFailure = "next"), step(name = "b"), step(name = "c")]
+    assertEq(runWith(steps, []), (Green(false), ["a", "b", "c"]))
+    assertEq(runWith(steps, [("a", StepFailed)]), (Green(false), ["a", "b", "c"]))
+    assertEq(runWith([], []), (Green(false), Vector[string]()))
+
+@test("land ends the steps green, asking to land, and the steps after it do not run")
+transitionLand()
+    assertEq(runWith([step(name = "a", onSuccess = "land"), step(name = "b")], []), (Green(true), ["a"]))
+
+@test("report ends the steps as the step came out")
+transitionReport()
+    val steps = [step(name = "a", onSuccess = "report", onFailure = "report"), step(name = "b")]
+    assertEq(runWith(steps, []), (Green(false), ["a"]))
+    assertEq(runWith(steps, [("a", StepFailed)]), (Red(false, "a"), ["a"]))
+
+@test("bisect ends a failed step's steps red, asking for a bisection")
+transitionBisect()
+    assertEq(runWith([step(name = "a", onFailure = "bisect"), step(name = "b")], [("a", StepFailed)]), (Red(true, "a"), ["a"]))
+
+@test("stop ends the steps where they are, passed or not; a failure stops by default")
+transitionStop()
+    assertEq(runWith([step(name = "a", onSuccess = "stop"), step(name = "b")], []), (Stopped(true, "a"), ["a"]))
+    assertEq(runWith([step(name = "a"), step(name = "b")], [("a", StepFailed)]), (Stopped(false, "a"), ["a"]))
+    assertEq(runWith([step(name = "a"), step(name = "b")], [("b", StepFailed)]), (Stopped(false, "b"), ["a", "b"]))
+
+@test("a skipped step follows no transition: the next step runs")
+transitionSkipped()
+    val steps = [step(name = "a", onSuccess = "land", onFailure = "report"), step(name = "b", onSuccess = "report")]
+    assertEq(runWith(steps, [("a", StepSkipped)]), (Green(false), ["a", "b"]))
+
+@test("a transition is the word its text expands to")
+transitionExpanded()
+    val steps = [step(name = "a", onFailure = "${on-red}")]
+    val words = [("${on-red}", "bisect")].toMap()
+    assertEq(marshal.runSteps(steps, s -> StepFailed, (w: string) -> words.getOrElse(w, w)), Red(true, "a"))
+
+@test("green: a green gate, and steps stopped where they passed")
+greenness()
+    assert(marshal.isGreen(Green(false)))
+    assert(marshal.isGreen(Green(true)))
+    assert(marshal.isGreen(Stopped(true, "a")))
+    assert(!marshal.isGreen(Stopped(false, "a")))
+    assert(!marshal.isGreen(Red(false, "a")))
+    assert(!marshal.isGreen(Red(true, "a")))
+
+@test("the failures of what steps said, in order, with the branches they blame")
+failures()
+    assertEq(marshal.failsOf([StepSaid("x"), FailSaid("t1", None), HeadSaid("abcd"), FailSaid("t2", Some("b"))]), [Fail("t1", None), Fail("t2", Some("b"))])
+    assertEq(marshal.failsOf([]), [])
+    assertEq(marshal.blamed([Fail("t", Some("b")), Fail("u", Some("z")), Fail("v", None)], ["a", "b", "c"]), ["b"])
+
+// A gate over branches that fails where any of `bad` is among them, and where all of `together`
+// are; counts the gates run in `runs`.
+redWhen(bad: Vector[string], together: Vector[string], runs: MutableSet[string]) -> (Vector[string]) -> bool = vs ->
+    runs += vs.mkString(",")
+    vs.exists(v -> bad.contains(v)) || (together.nonEmpty() && together.forall(t -> vs.contains(t)))
+
+@test("bisection finds the one bad branch of three, trying halves")
+bisectOneOfThree()
+    val runs = MutableSet[string]()
+    assertEq(marshal.culprits(["a", "b", "c"], redWhen(["b"], [], runs)), (["b"], false))
+    assertEq(runs.size(), 4)
+    for (bad, expected) in [("a", ["a"]), ("c", ["c"])]
+        assertEq(marshal.culprits(["a", "b", "c"], redWhen([bad], [], MutableSet[string]())), (expected, false))
+
+@test("bisection finds every bad branch, one alone, and branches that fail only together")
+bisectShapes()
+    assertEq(marshal.culprits(["a"], redWhen(["a"], [], MutableSet[string]())), (["a"], false))
+    assertEq(marshal.culprits([], redWhen([], [], MutableSet[string]())), (Vector[string](), false))
+    assertEq(marshal.culprits(["a", "b", "c", "d"], redWhen(["a", "d"], [], MutableSet[string]())), (["a", "d"], false))
+    assertEq(marshal.culprits(["a", "b", "c", "d", "e"], redWhen(["a", "b", "c", "d", "e"], [], MutableSet[string]())), (["a", "b", "c", "d", "e"], false))
+    // a and c each pass alone and fail together: the smallest red set the halves show is named
+    assertEq(marshal.culprits(["a", "b", "c", "d"], redWhen([], ["a", "c"], MutableSet[string]())), (["a", "b", "c", "d"], true))
+    assertEq(marshal.culprits(["a", "b"], redWhen([], ["a", "b"], MutableSet[string]())), (["a", "b"], true))
+    // within one half, the pair is found
+    assertEq(marshal.culprits(["a", "b", "c", "d"], redWhen([], ["c", "d"], MutableSet[string]())), (["c", "d"], true))
+
+// A pass that is red where any of `bad` is among its values (at the step `test`, asking for a
+// bisection where `bisect`), green and asking to land otherwise; the land steps end as `landing`
+// says. Each pass is recorded in `passes` with whether it might land.
+fakePass(bad: Vector[string], passes: Buffer[(Vector[string], bool)], bisect: bool = true, landing: PassEnd = Green(false), fails: Vector[Fail] = []) -> (Vector[string], bool) -> PassResult = (vs, land) ->
+    passes += (vs, land)
+    if vs.exists(v -> bad.contains(v))
+        PassResult(Red(bisect, "test"), None, fails, "1111")
+    else
+        PassResult(Green(true), if land then Some(landing) else None, [], "2222")
+
+@test("a green run lands everything given")
+runGreen()
+    val passes = Buffer[(Vector[string], bool)]()
+    assertEq(marshal.runType(true, "land", ["a", "b"], fakePass([], passes)), RunReport("green", "", ["a", "b"], "2222", [], false, []))
+    assertEq(passes.toVector(), [(["a", "b"], true)])
+
+@test("a red run that does not bisect names the branches its failures blame, and nothing lands")
+runRedReport()
+    val passes = Buffer[(Vector[string], bool)]()
+    val fails = [Fail("t1", Some("b")), Fail("t2", None), Fail("t3", Some("elsewhere"))]
+    assertEq(marshal.runType(true, "land", ["a", "b"], fakePass(["b"], passes, bisect = false, fails = fails)), RunReport("red", "test", [], "1111", ["b"], false, fails))
+    assertEq(passes.length(), 1)
+    // and where the type has no bisection, a request for one is a report
+    assertEq(marshal.runType(false, "land", ["a", "b"], fakePass(["b"], Buffer[(Vector[string], bool)]())).culprits, [])
+
+@test("a red run that bisects blames the bad branch of three and lands the other two")
+runBisect()
+    val passes = Buffer[(Vector[string], bool)]()
+    val r = marshal.runType(true, "land", ["a", "b", "c"], fakePass(["b"], passes))
+    assertEq(r, RunReport("red", "test", ["a", "c"], "2222", ["b"], false, []))
+    // the first pass, the bisection's four, which never land, and the last over what is left
+    assertEq(passes.toVector(), [(["a", "b", "c"], true), (["a"], false), (["b", "c"], false), (["b"], false), (["c"], false), (["a", "c"], true)])
+
+@test("failures that all name a branch blame it without a bisection")
+runNamedFailures()
+    val passes = Buffer[(Vector[string], bool)]()
+    val fails = [Fail("t1", Some("c")), Fail("t2", Some("c"))]
+    val r = marshal.runType(true, "land", ["a", "b", "c"], fakePass(["c"], passes, fails = fails))
+    assertEq(r.culprits, ["c"])
+    assertEq(r.landed, ["a", "b"])
+    assertEq(passes.toVector(), [(["a", "b", "c"], true), (["a", "b"], true)])
+    // one failure that names no branch, or one outside the batch, means a bisection after all
+    val again = Buffer[(Vector[string], bool)]()
+    marshal.runType(true, "land", ["a", "b", "c"], fakePass(["c"], again, fails = [Fail("t1", Some("c")), Fail("t2", None)]))
+    assert(again.length() > 2)
+
+@test("when every branch is to blame nothing is gated again, and when the rest fail too nothing lands")
+runAllBad()
+    val passes = Buffer[(Vector[string], bool)]()
+    val r = marshal.runType(true, "land", ["a", "b"], fakePass(["a", "b"], passes))
+    assertEq(r, RunReport("red", "test", [], "1111", ["a", "b"], false, []))
+    assert(passes.forall(p -> !p.1 || p.0 == ["a", "b"]))
+    // the rest red again (a failure that shows only with them all): reported, nothing landed
+    var calls = 0
+    val flaky = (vs: Vector[string], land: bool) ->
+        calls += 1
+        if calls == 1 || calls > 3 then PassResult(Red(true, "test"), None, [], "h") else if vs == ["a"] then PassResult(Red(true, "test"), None, [], "h") else PassResult(Green(true), None, [], "h")
+    val r2 = marshal.runType(true, "land", ["a", "b"], flaky)
+    assertEq(r2.result, "red")
+    assertEq(r2.landed, [])
+    assertEq(r2.culprits, ["a"])
+
+@test("land steps that fail make the run red at that step, with nothing landed")
+runLandFails()
+    val r = marshal.runType(true, "land", ["a"], fakePass([], Buffer[(Vector[string], bool)](), landing = Red(false, "land")))
+    assertEq(r, RunReport("red", "land", [], "2222", [], false, []))
+    // a later land step failing, as a teardown may, leaves what the first one landed landed
+    val s = marshal.runType(true, "land", ["a"], fakePass([], Buffer[(Vector[string], bool)](), landing = Stopped(false, "teardown")))
+    assertEq(s, RunReport("red", "teardown", ["a"], "2222", [], false, []))
+    val bisected = marshal.runType(true, "land", ["a", "b"], fakePass(["b"], Buffer[(Vector[string], bool)](), landing = Red(false, "teardown")))
+    assertEq((bisected.result, bisected.step, bisected.landed, bisected.culprits), ("red", "teardown", ["a"], ["b"]))
+    // a stop that passed lands
+    assertEq(marshal.runType(true, "land", ["a"], fakePass([], Buffer[(Vector[string], bool)](), landing = Stopped(true, "land"))).landed, ["a"])
+
+@test("a gate that is green without asking to land lands nothing, and is green")
+runGreenNoLand()
+    val r = marshal.runType(false, "land", [], (vs, land) -> PassResult(Green(false), None, [], ""))
+    assertEq(r, RunReport("green", "", [], "", [], false, []))
+
+@test("a stop ends the run: green where its step passed, red where it failed")
+runStopped()
+    assertEq(marshal.runType(true, "land", ["a"], (vs, land) -> PassResult(Stopped(true, "x"), None, [], "")).result, "green")
+    val r = marshal.runType(true, "land", ["a"], (vs, land) -> PassResult(Stopped(false, "x"), None, [Fail("t", Some("a"))], ""))
+    assertEq((r.result, r.step, r.culprits), ("red", "x", ["a"]))
+
+@test("the report says the result, what landed and what is to blame, for people and as JSON")
+reports()
+    val r = RunReport("red", "test", ["a", "c"], "abcd", ["b"], false, [Fail("t1", Some("b")), Fail("t2", None)])
+    assertEq(marshal.renderReport("train", r), "marshal: train red at step test\n  landed a c as abcd\n  to blame: b\n  failed: t1 (b)\n  failed: t2")
+    assertEq(marshal.renderReport("train", RunReport("green", "", [], "", [], false, [])), "marshal: train green")
+    assert(marshal.renderReport("t", RunReport("red", "x", [], "", ["a", "b"], true, [])).contains("fail together: a b"))
+    val j = marshal.encodeReport("train", r)
+    assertEq(j("type").asString(), Some("train"))
+    assertEq(j("result").asString(), Some("red"))
+    assertEq(j("step").asString(), Some("test"))
+    assertEq(j("landed").asVector().get().length(), 2)
+    assertEq(j("culprits")(0).asString(), Some("b"))
+    assertEq(j("together").asBool(), Some(false))
+    assertEq(j("fails")(1)("branch").isNull(), true)
+    assertEq(j("head").asString(), Some("abcd"))
+
+@test("the cache's hash is FNV-1a: its known values, and any change of the text changes it")
+hashes()
+    assertEq(marshal.fnv1a(""), "cbf29ce484222325")
+    assertEq(marshal.fnv1a("a"), "af63dc4c8601ec8c")
+    assertEq(marshal.fnv1a("foobar"), "85944171f73967e8")
+    assert(marshal.fnv1a("main.avin\nx") != marshal.fnv1a("main.avin\ny"))
+    assertEq(marshal.fnv1a("日本").byteLength(), 16)

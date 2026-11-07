@@ -1,0 +1,337 @@
+module dev.avinlang.marshal.runner
+
+// The runner: what a job of a type runs (`marshal run-steps <type file> <parameters>`). It runs the
+// type's steps one at a time, each in a process group of its own with its standard output and
+// error in a log of its own, copied line by line into the job's log as they come; it reads what
+// each step says to marshal, stops a step at its deadline, and follows the transitions. What it
+// decides is in `steps.avin`; this module starts the programs.
+//
+// Its files are in the run's directory, `<marshal home>/runs/<job id>`: a directory for each pass
+// (`pass-1`, …), which is the steps' `${work}`, holding each step's log, and `report.json`.
+import avin.fs
+import avin.io.IoError
+import avin.process
+import avin.process.{Command, ExitStatus}
+import avin.signal
+import avin.threads
+import avin.threads.{Atomic, Channel, spawn}
+import avin.time
+import avin.time.millis
+import json.Json
+import dev.avinlang.marshal
+import dev.avinlang.marshal.{Fail, JobType, PassEnd, PassResult, RunReport, Said, Step, StepEnd, StepOutcome}
+import dev.avinlang.marshal.{StepSkipped, StepPassed, StepFailed, HeadSaid, StepSaid}
+
+// How long a step's processes have between TERM and KILL when it is stopped.
+val Grace: long = 5000
+
+// Set once the runner has been told to stop: no step's end is followed after that.
+val stopping: Atomic[bool] = Atomic(false)
+
+// The directory of `file`.
+parentOf(file: string) -> string
+    val slash = file.lastIndexOf("/")
+    if slash <= 0 then "/" else file.slice(0, slash)
+
+// `file` made absolute against `dir`.
+absolute(file: string, dir: string) -> string = if file.startsWith("/") then file else dir + "/" + file
+
+// Where marshal's own steps and types are: `$MARSHAL_STOCK`, or `share/marshal` beside the directory
+// that holds the marshal executable, as an installation lays them out; None where neither is a
+// directory.
+stockDir() -> Option[string]
+    val installed = process.executable().map(exe -> parentOf(parentOf(exe)) + "/share/marshal")
+    process.env("MARSHAL_STOCK").filter(d -> d.nonEmpty()).orElse(installed).filter(d -> fs.isDir(d))
+
+// The places a type named `name` is looked for, in order: the project's `.marshal/types` in `dir`,
+// marshal's home, and marshal's own types.
+typePlaces(name: string, dir: string, home: string, stock: Option[string]) -> Vector[string] =
+    [s"$dir/.marshal/types/$name.job", s"$home/types/$name.job"] ++ stock.toVector().map(s -> s"$s/types/$name.job")
+
+// The file of the type `name`: a path where it holds a `/` or ends with `.job`, otherwise the first
+// of `typePlaces` that is a file.
+findType(name: string, dir: string, home: string, stock: Option[string]) -> Result[string, string]
+    if name.contains("/") || name.endsWith(".job")
+        val file = absolute(name, dir)
+        return if fs.isFile(file) then Ok(file) else Err(s"no type file $file")
+    val places = typePlaces(name, dir, home, stock)
+    places.find(p -> fs.isFile(p)) match
+        Some(file) -> Ok(file)
+        None -> Err(s"no type `$name`: looked for ${places.mkString(", ")}")
+
+// The type in `file`, named after the file.
+loadType(file: string) -> Result[JobType, string]
+    val base = file.drop(file.lastIndexOf("/") + 1)
+    val name = if base.endsWith(".job") then base.dropRight(4) else base
+    val text = fs.readText(file).mapErr(e -> s"cannot read $file: ${e.message()}")?
+    marshal.parseJobType(name, file, text).mapErr(e -> s"$file: $e")
+
+// The text a compiled program's cache name is the hash of: a file's text, or for a directory (a
+// package or a program's modules) each file under it, its path and then its text, in the order of
+// the paths. The `.avin` directories of build output are left out.
+sourceText(source: string) -> Result[string, string]
+    if !fs.isDir(source) then return fs.readText(source).mapErr(e -> s"cannot read $source: ${e.message()}")
+    val out = Buffer[string]()
+    val names = fs.listDir(source).mapErr(e -> s"cannot read $source: ${e.message()}")?
+    for name in names
+        if name == ".avin" then continue
+        val path = s"$source/$name"
+        out += name + "\n" + sourceText(path)?
+    Ok(out.mkString("\n"))
+
+// A step compiled from Avin source: the executable, and whether this call compiled it.
+data Compiled(program: string, fresh: bool)
+
+// The executable compiled from the Avin program `source`, cached in `<home>/steps` under the hash of
+// its text and of the compiler's version, so a change of either compiles it again. The compiler is
+// `$AVIN`, or `avin` on the PATH. Runs that want the same program at once compile it once: the one
+// that holds `<executable>.lock` compiles, and the others wait for it.
+stepBinary(source: string, home: string) -> Result[Compiled, string]
+    val text = sourceText(source)?
+    val compiler = process.env("AVIN").filter(a -> a.nonEmpty()).getOrElse("avin")
+    val version = Command(compiler, "--version").output() match
+        Ok(v) -> v.trim()
+        Err(e) -> return Err(s"cannot run the Avin compiler `$compiler` to build $source: ${e.message()}")
+    val base = source.drop(source.lastIndexOf("/") + 1).stripSuffix(".avin")
+    val dir = home + "/steps"
+    fs.createDirAll(dir).mapErr(e -> s"cannot make $dir: ${e.message()}")?
+    val program = s"$dir/$base-${marshal.fnv1a(version + "\n" + text)}"
+    val lock = program + ".lock"
+    loop
+        if fs.isFile(program) && !fs.isDir(lock) then return Ok(Compiled(program, false))
+        fs.createDir(lock) match
+            Ok(_) -> break
+            Err(_) ->
+                val holder = fs.readText(lock + "/pid").ok().flatMap(t -> t.trim().toLongOption()).getOrElse(0)
+                // a holder that died while compiling leaves its lock, and maybe half an executable
+                if holder > 0 && process.signal(holder, 0).isErr()
+                    fs.remove(program)
+                    fs.removeDirAll(lock)
+                else
+                    threads.sleep(millis(100))
+    fs.writeText(lock + "/pid", process.pid().toString())
+    val log = program + ".build.log"
+    val built = Command(compiler, "build", source, "-o", program).toFile(log).errorsToOutput().run()
+    val said = fs.readText(log).getOrElse("")
+    fs.remove(log)
+    val ok = built match
+        Ok(status) -> status.isSuccess() && fs.isFile(program)
+        Err(_) -> false
+    if !ok then fs.remove(program)
+    fs.removeDirAll(lock)
+    if ok then Ok(Compiled(program, true)) else Err(s"cannot build $source:\n$said")
+
+// The program a step's first word names: `stock:<name>` is marshal's own step, the Avin package
+// `<stock>/steps/<name>` (or the file `<name>.avin` there), and `avin:<path>` an Avin program, a
+// file or a directory, relative to the type's file; each is compiled once (`stepBinary`). Any other
+// word is the program itself.
+resolveProgram(word: string, typeFile: string, home: string) -> Result[string, string]
+    if word.startsWith("stock:")
+        val stock = stockDir() match
+            Some(s) -> s
+            None -> return Err(s"`$word`: marshal's own steps are not installed (set MARSHAL_STOCK to the directory that holds `steps` and `types`)")
+        val dir = s"$stock/steps/${word.drop(6)}"
+        return stepBinary(if fs.isDir(dir) then dir else dir + ".avin", home).map(c -> c.program)
+    if word.startsWith("avin:") then return stepBinary(absolute(word.drop(5), parentOf(typeFile)), home).map(c -> c.program)
+    Ok(word)
+
+// What a step's process tells the runner's loop.
+data StepEvent
+    StepExited(status: Result[ExitStatus, IoError])
+    StepDue
+
+private codeOf(status: Result[ExitStatus, IoError]) -> int = status match
+    Ok(ExitStatus.Exited(c)) -> c
+    Ok(ExitStatus.Signalled(s)) -> 128 + s
+    Ok(ExitStatus.TimedOut) -> 124
+    Err(_) -> 125
+
+// Stops the process group `pgid`: TERM, and KILL after the grace period, on a thread of its own.
+stopGroup(pgid: long)
+    process.signal(-pgid, signal.Terminate)
+    spawn(() ->
+        threads.sleep(millis(Grace))
+        process.signal(-pgid, signal.Kill)
+        ())
+
+// Copies the complete lines `reader` has now to standard output; at the `end`, the last line too.
+private copyLines(reader: fs.File, end: bool)
+    loop
+        val line = (if end then reader.readLine() else reader.readCompleteLine()) match
+            Ok(Some(l)) -> l
+            _ -> break
+        println(line)
+
+// Runs `argv` in `dir` with the variables `env` set, in a process group of its own, its output and
+// errors to `log` and from there to standard output, and stops its group after `deadlineMs`. The
+// group the step runs in is in `current` while it runs, for a stop of the runner to stop it too.
+// What is left in the group when the program ends is stopped with it.
+execStep(argv: Vector[string], dir: string, env: Vector[(string, string)], log: string, deadlineMs: Option[long], current: Atomic[long]) -> StepEnd
+    var command = Command(argv(0), argv.drop(1)*).inDir(dir).toFile(log).errorsToOutput().inNewGroup()
+    for (name, value) in env do command = command.withEnv(name, value)
+    val child = command.start() match
+        Ok(c) -> c
+        Err(e) ->
+            println(s"marshal: could not start `${argv(0)}` in $dir: ${e.message()}")
+            return StepEnd(127, false, [])
+    val pid = child.pid()
+    val pgid = child.group().getOrElse(pid)
+    child.detach()
+    current.store(pgid)
+    val events = Channel[StepEvent](4)
+    spawn(() -> events.send(StepExited(process.waitPid(pid))))
+    for ms in deadlineMs
+        spawn(() ->
+            threads.sleep(millis(ms))
+            events.send(StepDue))
+    val reader = fs.open(log).ok()
+    var timedOut = false
+    var status: Option[Result[ExitStatus, IoError]] = None
+    while status.isEmpty()
+        reader.foreach(r -> copyLines(r, false))
+        events.tryReceive() match
+            Some(StepExited(s)) -> status = Some(s)
+            Some(StepDue) ->
+                if !timedOut
+                    timedOut = true
+                    println(s"marshal: the step passed its deadline of ${marshal.formatMillis(deadlineMs.getOrElse(0))}: stopping it")
+                    stopGroup(pgid)
+            None -> threads.sleep(millis(50))
+    current.store(0)
+    // what the step left running in its group goes with it
+    process.signal(-pgid, signal.Terminate)
+    reader.foreach(r ->
+        copyLines(r, true)
+        r.close())
+    val said = Buffer[Said]()
+    for line in fs.readText(log).getOrElse("").lines()
+        marshal.readSaid(line.stripSuffix("\r")) match
+            Some(Ok(s)) -> said += s
+            Some(Err(why)) -> println(s"marshal: a line the step said is not read: $why")
+            None -> ()
+    StepEnd(codeOf(status.get()), timedOut, said.toVector())
+
+// One run of a type: its parameters' values, where it runs, and its passes so far.
+class Run(val t: JobType, val params: Map[string, Vector[string]], val jobDir: string, val runDir: string, val home: string, val current: Atomic[long])
+    var passes = 0
+    var index = 0
+    var work = ""
+    var head = ""
+    var values: Vector[string] = []
+    var fails: Buffer[Fail] = Buffer[Fail]()
+
+    // The values every reference of a step expands with now.
+    vars() -> Map[string, Vector[string]]
+        var v = params
+        for b in t.bisect do v = v.updated(b, values)
+        v.updated("dir", [jobDir]).updated("work", [work]).updated("run_dir", [runDir]).updated("head", [head]).updated("pass", [passes.toString()])
+
+    // Runs one step as the pass now stands, and answers how it came out.
+    step(s: Step) -> StepOutcome
+        val v = vars()
+        if !marshal.runs(s, v)
+            println(s"marshal: step ${s.name}: skipped")
+            return StepSkipped
+        val argv = s.run.flatMap(w -> marshal.expandWord(w, v))
+        if argv.isEmpty() || argv(0).isEmpty()
+            println(s"marshal: step ${s.name}: its command comes to nothing")
+            return StepFailed
+        val program = resolveProgram(argv(0), t.file, home) match
+            Ok(p) -> p
+            Err(e) ->
+                println(s"marshal: step ${s.name}: $e")
+                return StepFailed
+        val dir = s.dir.map(d -> absolute(marshal.expandText(d, v), jobDir)).getOrElse(jobDir)
+        val env = Buffer[(string, string)]()
+        env += ("MARSHAL_STEP", s.name)
+        env += ("MARSHAL_PASS", passes.toString())
+        env += ("MARSHAL_WORK", work)
+        env += ("MARSHAL_RUN_DIR", runDir)
+        env += ("MARSHAL_DIR", jobDir)
+        env += ("MARSHAL_HEAD", head)
+        env += ("MARSHAL_FAILS", fails.map(f -> f.test).mkString("\n"))
+        for p in t.params do env += (marshal.paramVariable(p.name), v.getOrElse(p.name, []).mkString("\n"))
+        for (name, value) in s.env do env += (name, marshal.expandText(value, v))
+        val deadline = s.deadline.flatMap(d -> marshal.parseDeadline(marshal.expandText(d, v)))
+        index += 1
+        val log = s"$work/$index-${s.name}.log"
+        println(s"marshal: step ${s.name}: ${argv.mkString(" ")}" + (if dir == jobDir then "" else s" (in $dir)"))
+        val started = time.monotonic()
+        val ran = execStep([program] ++ argv.drop(1), dir, env.toVector(), log, deadline, current)
+        // a step ended by the runner's own stop is not followed: the run ends as stopped
+        if stopping.load() then process.exit(143)
+        val took = (time.monotonic() - started).micros / 1000
+        for said in ran.said
+            said match
+                HeadSaid(sha) -> head = sha
+                _ -> ()
+        for f in marshal.failsOf(ran.said) do fails += f
+        val ok = marshal.passed(s, ran)
+        val how = if ran.timedOut then "timed out" else s"exited ${ran.code}"
+        println(s"marshal: step ${s.name}: ${if ok then "passed" else "failed"} ($how after ${marshal.formatMillis(took)})")
+        if ok then StepPassed else StepFailed
+
+    // One pass over `vs`, the values of the bisected parameter (all of them where there is none):
+    // the gate, the failure map where it is red, the land steps where `land` and the gate asks, and
+    // the cleanup.
+    pass(vs: Vector[string], land: bool) -> PassResult
+        passes += 1
+        work = s"$runDir/pass-$passes"
+        head = ""
+        values = vs
+        fails = Buffer[Fail]()
+        fs.createDirAll(work)
+        val over = t.bisect.map(b -> s" with $b ${vs.mkString(" ")}").getOrElse("")
+        println(s"marshal: pass $passes$over")
+        val word = (w: string) -> marshal.expandText(w, vars())
+        val gate = marshal.runSteps(t.steps, s -> step(s), word)
+        if !marshal.isGreen(gate) then t.failMap.foreach(s -> step(s))
+        val landing = if land && gate == PassEnd.Green(true) then Some(marshal.runSteps(t.land, s -> step(s), word)) else None
+        if t.cleanup.nonEmpty() then marshal.runSteps(t.cleanup, s -> step(s), word)
+        PassResult(gate, landing, fails.toVector(), head)
+
+// Runs the type in `file` with the parameters `args`, as the job `$MARSHAL_JOB` of the marshal home
+// `$MARSHAL_HOME`; answers 0 where the run is green, 1 where it is red, and 2 where the type or the
+// parameters are wrong.
+main(file: string, args: Vector[string]) -> int
+    val t = loadType(file) match
+        Ok(t) -> t
+        Err(e) ->
+            eprintln(s"marshal: $e")
+            return 2
+    val params = marshal.bindParams(t, args).flatMap(v -> marshal.checkBound(t, v).map(_ -> v)) match
+        Ok(v) -> v
+        Err(e) ->
+            eprintln(s"marshal: ${t.name}: $e")
+            return 2
+    val home = process.env("MARSHAL_HOME").getOrElse(process.homeDir().getOrElse("/") + "/.marshal")
+    val job = process.env("MARSHAL_JOB").getOrElse(s"direct-${process.pid()}")
+    val runDir = s"$home/runs/$job"
+    fs.createDirAll(runDir) match
+        Err(e) ->
+            eprintln(s"marshal: cannot make $runDir: ${e.message()}")
+            return 2
+        Ok(_) -> ()
+    val jobDir = process.currentDir().getOrElse(".")
+    val current = Atomic[long](0)
+    // a stop of the job stops the step that runs too, which is in a group of its own
+    signal.watch(signal.Terminate) match
+        Ok(term) -> spawn(() ->
+            term.wait()
+            stopping.store(true)
+            val g = current.load()
+            if g > 0
+                process.signal(-g, signal.Terminate)
+                threads.sleep(millis(Grace - 1000))
+                process.signal(-g, signal.Kill)
+            process.exit(143))
+        Err(e) -> eprintln(s"marshal: cannot watch TERM: ${e.message()}")
+    println(s"marshal: ${t.name} from ${t.file}, run directory $runDir")
+    val run = Run(t, params, jobDir, runDir, home, current)
+    val values = t.bisect.map(b -> params.getOrElse(b, [])).getOrElse([])
+    val report = marshal.runType(t.bisect.isDefined(), t.land.headOption().map(s -> s.name).getOrElse(""), values,(vs, land) -> run.pass(vs, land))
+    val rendered = marshal.renderReport(t.name, report) + "\n"
+    fs.writeText(runDir + "/report.json", marshal.encodeReport(t.name, report).render() + "\n")
+    fs.writeText(runDir + "/report.txt", rendered)
+    print(rendered)
+    if report.result == "green" then 0 else 1

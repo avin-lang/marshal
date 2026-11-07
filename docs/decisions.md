@@ -251,6 +251,118 @@ Known gaps in Avin, left for it to fix rather than worked around here:
   renamed. Only the program the daemon becomes reads it, after the write has finished, so this
   matters only to a daemon killed mid-write, which leaves a partial file that nothing reads.
 
+## Job types and the train (branch `job-types`)
+
+**Settled on the user's delegation 2026-11-07**; each says why and what else was weighed. Review
+with the user: take-slot sharing off unless configured; a type's run being one job; a diverged
+local target branch left with a warning. The FNV-1a step-cache digest is temporary, until avin's
+library has a content digest. The user approved the design (types as
+data, steps as any program, a line protocol, marshal core without git, stock steps in Avin) on
+2026-11-07; these are the choices it left open. Review with the user: the take-slot default
+(first), a type's run being one job, and the local target branch left behind as a warning.
+
+- **Sharing take-slot's directory is off unless configured.** The default was the sysl
+  repository's `.git` on this machine; marshal names no path of any machine now. A machine that
+  shares it sets `"take_slot": "<dir>"` in `config.json` (or `$MARSHAL_TAKE_SLOT_DIR`). Why: the
+  brief's "nothing names a path from this machine" and "off unless configured". Alternative: keep
+  the default where the directory exists (a stranger's machine never has it, but the code would
+  still name it).
+- **A `.job` file is JSON, with `//` comment lines.** Why: a step's `run` is an exact argument
+  list with no quoting rules to learn, marshal already reads and writes JSON, and a misspelt field
+  is refused by name. Alternatives: HOCON (Avin has no reader for it), a line format of our own
+  (quoting rules for arguments), TOML (no reader either). Comment lines read as empty lines so a
+  parse error's line number is still the file's.
+- **A type's run is one job, whose command is marshal's own `run-steps`**; the steps run inside it,
+  one at a time, each in a process group of its own. Why: the lane, units and deadline hold for the
+  whole run, so a train keeps the landing lane from merge to teardown; the daemon stays as it was,
+  with no step state, no git and nothing new in `state.json` (a restart does not touch a running
+  type: the runner is just a job's process). Alternatives: the daemon runs the steps itself (its
+  state, and `state.json`, would carry every run's place in its steps and bisection); the command
+  line submits each step as a job (the lane is let go between steps, and the run dies with the
+  command line). So no job field was added, and the restart state is unchanged.
+- **Every job gets `MARSHAL_JOB` and `MARSHAL_HOME`** in its environment, so a run keeps its files in
+  `<home>/runs/<id>`, where `run-type` finds its report.
+- **A step's group is its own, so the runner forwards a stop**: on TERM it sends TERM to the step's
+  group, KILL 4 seconds later, and exits 143, inside the daemon's 5-second grace. A runner killed
+  outright with KILL leaves the step's group running; `process.groupMembers`, coming in Avin, would
+  let the daemon stop a job's whole tree, groups of its own included.
+- **Fetching the base is the train's first step, not marshal's.** The brief lists "fetching the
+  base at job start" among marshal's machinery, but fetching is git, and marshal core knows none;
+  `stock:git merge` fetches as it starts. Alternative: a generic "run this before the job" hook (a
+  second way to say what a step says).
+- **Transitions:** `next` goes on (after a failure, the failure is let go); `land` is allowed only
+  on success and only in the gate; `bisect` only on failure and only in the gate; `report` ends the
+  steps as the step came out; `stop` ends the run. Defaults: `next` on success, `stop` on failure.
+  A transition written as a reference is checked once the parameters are bound, before anything
+  runs. Alternative: one more word for "fail but go on" (what `next` on failure already says).
+- **The success test:** the exit code `exit` allows (`0` by default, a list, or `"any"`), no
+  `RESULT red`, and a last `RESULT green` where `result` is set. `=== EXIT` overrides the process's
+  code, the last one counting, for wrappers whose own status means nothing.
+- **A malformed line of a kind marshal knows is not read, and the log says why; a kind it does not
+  know is the step's own output.** Why: `=== RUN TestX` (a common test runner's) or a ruler of
+  `=====` must not fail a step. Alternative: failing the step on a malformed line (stricter, but a
+  step's output is not marshal's to police).
+- **Bisection halves the values**, searches each half that fails alone, and blames a set whose
+  halves both pass alone as failing together. Failures that all name a value blame those without
+  bisecting; one that names none means a bisection. Then one last pass over the rest, which lands
+  them; the run is red, since not everything landed. The bisection's passes never land. Why: few
+  passes for the common case of one bad branch (four extra passes for three branches, one bad).
+  Alternatives: each branch alone (N passes, and misses failures that need two branches); leaving
+  each one out in turn (N passes of nearly the whole batch).
+- **The first `land` step is the one that lands**: where a later land step fails (a teardown that
+  keeps a branch), the run is red at that step but reports the values as landed. Alternative: a
+  protocol line saying "landed" (one more kind for something the order already says).
+- **`run-type`'s own options** (`--dir`, `--deadline`, `--units`, `--mem`, `--submit`, `--help`)
+  may stand anywhere before `--`, so `marshal train --dir x …` works; a type's parameters may not
+  take those names.
+- **Types are looked for in the project's `.marshal/types`, then `<home>/types`, then marshal's
+  own**, so a project overrides the stock train by copying it under the same name. marshal's own
+  are `$MARSHAL_STOCK`, or `share/marshal` beside the executable's directory, as an install lays
+  them out.
+- **A stock step is an Avin package** (`stock/steps/git`, with its own `avin.hocon`), not a file:
+  inside marshal's package, a lone `.avin` file is taken for one of marshal's modules. One program
+  holds `merge`, `land`, `teardown` and `cleanup`, so they share their git helpers and compile once.
+- **Compiled steps are cached at `<home>/steps/<name>-<hash>`**, the hash of the compiler's
+  `--version` and the source (every file of a package, by path), so a new compiler or a changed
+  source compiles again and old builds stay for runs that want them. Concurrent runs compile once:
+  the one that makes `<program>.lock` (holding its pid) compiles; a lock whose pid is dead is taken
+  over, with any half-written program. The hash is FNV-1a, 64 bits: a cache name, not a security
+  check. Avin's library has no content digest (a gap, below).
+- **The train merges the remote's copy of each branch**, as pushed, never the local one: what was
+  pushed is what lands, and a commit not pushed never lands. A branch that does not merge is
+  blamed by name (`=== FAIL merge <branch>`): the later of the two that conflict.
+- **The integration tree is a worktree in the pass's directory**, removed by `cleanup` by deleting
+  the directory and `git worktree prune`, not `git worktree remove --force`: it is the run's own
+  scratch, made by `merge`, and holds nobody's work; a user's worktree is never forced. Alternative:
+  a shared clone (no worktree record in the repository, but its branches would have to be fetched
+  across).
+- **`land`** fetches the target, refuses unless the merged commit contains the remote's target as it
+  is now (a fast-forward), pushes that very commit (`<sha>:refs/heads/<target>`), and checks with
+  `ls-remote` that the remote has it. It then moves the repository's own target branch on, a
+  fast-forward only (`merge --ff-only` in the worktree that has it checked out, `push .` where none
+  does). **A local target that has diverged is left where it is, with a warning, and the land step
+  passes**: the remote landed, and the teardown's checks do not depend on the local branch.
+  Alternative: failing the land step (the run would then not tear down branches that did land).
+- **`teardown`** fetches with `--prune` first, then for each branch: removes its worktree without
+  `--force` (one with changes keeps the branch, remote copy and all); deletes the remote's copy only
+  where the landed commit contains it (`merge-base --is-ancestor`), and that push must succeed;
+  deletes the branch with `-d`. What it keeps it names (`=== FAIL teardown <branch>`), and the step
+  fails. A branch pushed again between the fetch and the delete is the window this leaves;
+  `--force-with-lease` on the delete would close it, and was left out because the rule is "never
+  force" and a lease reads as one. Review with the user if that window matters.
+- **Portable calls**: the machine's memory comes from `process.totalMemory()` rather than `sysctl
+  hw.memsize`. What is left macOS-only is the stack sample of a job at its deadline (`sample`): where
+  the program is missing the job is stopped unsampled. `pgrep -g` and `ps -o pid=,time=` are POSIX.
+
+Gaps in Avin met here, left for Avin to close:
+
+- No content digest (SHA-256 or the like) in the library: the step cache hashes with FNV-1a,
+  written in marshal.
+- `avin.fs` has no rename (coming): a compiled step is written in place under its lock rather than
+  built aside and renamed, so a reader must wait for the lock to go.
+- A process's descendants in groups of their own cannot be listed (`process.groupMembers`, coming):
+  a runner killed outright leaves its step's group behind.
+
 ## Waiting on events (branch `wait-until`)
 
 All **settled on the user's delegation 2026-11-07**. Review with the user: `--since` on `wait`

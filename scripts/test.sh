@@ -8,5 +8,8 @@ avin=${AVIN:-avin}
 mkdir -p .avin/test
 # Never the real take-slot directory: each end-to-end test gives its daemon one of its own.
 export MARSHAL_TAKE_SLOT_DIR=
+# marshal's own steps and types are this tree's, and the stock steps are compiled with $AVIN.
+export MARSHAL_STOCK="$PWD/stock"
+export AVIN="$avin"
 "$avin" build . -o .avin/test/marshal
 MARSHAL_BIN="$PWD/.avin/test/marshal" "$avin" test . "$@"
