@@ -26,7 +26,7 @@ val Commands: Vector[(string, string)] = [
     ("kill <id>", "stops the job's whole process tree (a queued job is cancelled)"),
     ("hold <id>", "keeps a queued job from starting; it keeps its place"),
     ("release <id>", "lets a held job start again"),
-    ("priority <id> <n> | --urgent", "places a queued job in its lane: higher first; --urgent: the front"),
+    ("priority <id> <n> | --urgent", "places a queued job in its lane: higher first; --urgent: the back of the urgent band"),
     ("pause", "holds the queue: running jobs go on, nothing new starts in either lane"),
     ("resume", "releases the queue"),
     ("tail <id> [-f] [-n <lines>]", "the job's log; -f follows it until the job ends"),
@@ -44,6 +44,7 @@ Options of submit and run:
   --units <n>       its weight in units (default: 4 for a test, 1 otherwise)
   --mem <size>      the memory it needs, such as 29G or 512M (default: 0)
   --landing         run it in the landing lane: first, outside the unit budget, not niced
+  --urgent          queue it ahead of every job not urgent in its lane, behind the urgent ones already queued
   --dir <d>         the directory to run it in, relative to this one (default: this one)
   --deadline <t>    stop it after t: minutes, or 90s, 30m, 2h (default: learned for the kind)
   --                the command begins after this; nothing after it is an option\
@@ -77,7 +78,7 @@ optionsAskHelp(args, i) | i >= args.length() = false
 optionsAskHelp(args, i)
     | args(i) == "--" = false
     | isHelp(args(i)) = true
-    | args(i) == "--landing" = optionsAskHelp(args, i + 1)
+    | args(i) == "--landing" || args(i) == "--urgent" = optionsAskHelp(args, i + 1)
     | args(i).startsWith("--") = optionsAskHelp(args, i + 2)
     | _ = false
 
@@ -168,6 +169,7 @@ parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]
     var units: Option[int] = None
     var memory: long = 0
     var landing = false
+    var urgent = false
     var workDir = dir
     var deadline: Option[long] = None
     var i = 0
@@ -179,6 +181,10 @@ parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]
         if !word.startsWith("--") then break
         if word == "--landing"
             landing = true
+            i += 1
+            continue
+        if word == "--urgent"
+            urgent = true
             i += 1
             continue
         if i + 1 >= args.length() then return Err(s"`$word` needs a value")
@@ -202,7 +208,7 @@ parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]
     val cmd = args.drop(i)
     if cmd.isEmpty() then return Err("no command to run: give it after `--`")
     val k = kind.getOrElse(if cmd.exists(w -> w == "test") then "test" else "build")
-    Ok(JobSpec(k, units.getOrElse(marshal.defaultUnits(k)), memory, landing, workDir, deadline, cmd, env))
+    Ok(JobSpec(k, units.getOrElse(marshal.defaultUnits(k)), memory, landing, workDir, deadline, cmd, env, urgent))
 
 submit(args: Vector[string], andWait: bool) -> int
     val dir = process.currentDir().getOrElse(".")

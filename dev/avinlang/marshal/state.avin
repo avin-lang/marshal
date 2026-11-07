@@ -8,8 +8,9 @@ import json
 import json.Json
 
 // One job as the daemon holds it. `arrived` is its arrival on the wall clock in microseconds, which
-// orders it against take-slot's waiters; `pid` and `pgid` are 0 until it starts. `held` and
-// `priority` are a queued job's, and a state saved without them reads as false and 0.
+// orders it against take-slot's waiters; `pid` and `pgid` are 0 until it starts. `held`,
+// `priority` and `urgentAt` (when it joined the urgent band, wall-clock microseconds, 0 outside
+// it) are a queued job's, and a state saved without them reads as false, 0 and 0.
 data SavedJob(
     id: long,
     spec: JobSpec,
@@ -30,7 +31,8 @@ data SavedJob(
     rss: long,
     peakRss: long,
     held: bool = false,
-    priority: int = 0)
+    priority: int = 0,
+    urgentAt: long = 0)
 
 // The whole daemon: the version and process that saved it, when, when the daemon first began, the
 // next job id, the queue in order, the running jobs, the jobs that ended last (oldest first), the
@@ -70,7 +72,8 @@ encodeSavedJob(j: SavedJob) -> Json = Json.obj(
     ("rss", Json.num(j.rss)),
     ("peak_rss", Json.num(j.peakRss)),
     ("held", Json.Bool(j.held)),
-    ("priority", Json.num(j.priority)))
+    ("priority", Json.num(j.priority)),
+    ("urgent_at", Json.num(j.urgentAt)))
 
 private whole(j: Json, key: string) -> Result[long, string] = j.get(key).flatMap(v -> v.asLong()) match
     Some(n) -> Ok(n)
@@ -132,7 +135,8 @@ decodeSavedJob(j: Json) -> Result[SavedJob, string]
         wholeOrZero(j, "rss")?,
         wholeOrZero(j, "peak_rss")?,
         truthOr(j, "held", false)?,
-        intOr(j, "priority", 0)?))
+        intOr(j, "priority", 0)?,
+        wholeOrZero(j, "urgent_at")?))
 
 encodeState(s: SavedState) -> Json = Json.obj(
     ("version", Json.str(s.version)),

@@ -80,6 +80,8 @@ class Job(val id: long, val spec: JobSpec, val submittedMs: long, val arrived: l
     // a queued job kept from starting, and its place in the queue
     var held = false
     var priority = 0
+    // when it joined the urgent band (wall-clock microseconds), or 0 outside it
+    var urgentAt: long = 0
     val waiters = Buffer[Channel[Reply]]()
 
     info(now: long) -> JobInfo =
@@ -89,7 +91,7 @@ class Job(val id: long, val spec: JobSpec, val submittedMs: long, val arrived: l
             _ -> endedMs - startedMs
         val queued = if state == "queued" then now - submittedMs else startedMs - submittedMs
         val rss = if state == "running" then resident.now else 0
-        JobInfo(id, spec.kind, spec.units, spec.memory, spec.landing, spec.dir, spec.cmd, state, outcome, killed, queued, elapsed, deadlineMs, log, sample, rss, resident.peak, startedAt, held, priority)
+        JobInfo(id, spec.kind, spec.units, spec.memory, spec.landing, spec.dir, spec.cmd, state, outcome, killed, queued, elapsed, deadlineMs, log, sample, rss, resident.peak, startedAt, held, priority, urgentAt > 0)
 
 // The daemon's state, owned by its own thread.
 // `slots` is the take-slot directory it shares, if any; `ticket` the name of its waiting ticket there.
@@ -184,6 +186,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         nextId += 1
         val job = Job(id, spec, now(), time.now().epochMicros, deadline, expected, s"$home/jobs/$id.log")
         jobs(id) = job
+        if spec.urgent then job.urgentAt = urgentMark()
         queue += job
         order()
         record("submitted", job)
@@ -248,26 +251,30 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         schedule()
         Done
 
-    // Places the queued job `id` by priority, which may start it at once.
+    // Places the queued job `id`, which may start it at once: a number takes it out of the urgent
+    // band and places it by priority; `Urgent` moves it to the back of the band, even from within it.
     prioritize(id: long, p: marshal.Priority) -> Reply
         val job = queued(id, "is given a priority") match
             Ok(j) -> j
             Err(e) -> return Failed(e)
-        val level = p match
-            marshal.Level(n) -> n
+        p match
+            marshal.Level(n) ->
+                job.priority = n
+                job.urgentAt = 0
             marshal.Urgent ->
-                val others = queue.filter(j -> j.id != id && j.spec.landing == job.spec.landing).map(j -> j.priority).toVector()
-                marshal.urgentPriority(others) match
-                    Some(n) -> n
-                    None -> return Failed(s"a job ahead of job $id already has the highest priority there is")
-        job.priority = level
+                job.urgentAt = 0
+                job.urgentAt = urgentMark()
         order()
         record("prioritized", job)
         schedule()
         Done
 
-    // Orders the queue by priority, the highest first, keeping arrival order among equals.
-    order() = queue.sortInPlaceWith((a, b) -> marshal.priorityOrder(a.priority, b.priority))
+    // The mark of a job joining the urgent band now: behind every urgent job queued.
+    urgentMark() -> long = marshal.urgentMark(time.now().epochMicros, queue.map(j -> j.urgentAt).toVector())
+
+    // Orders the queue: the urgent band first, in the order its jobs joined it, then the rest by
+    // priority, the highest first, keeping arrival order among equals.
+    order() = queue.sortInPlaceWith((a, b) -> marshal.placeOrder(marshal.Place(a.urgentAt, a.priority, a.arrived), marshal.Place(b.urgentAt, b.priority, b.arrived)))
 
     // Starts what the scheduler says fits. With a take-slot directory, the decision and the
     // registration of what starts are made under take-slot's mutex, as take-slot makes its own, and
@@ -587,7 +594,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             if j.state == "queued" then 0 else wall(j.startedMs),
             if j.state == "done" then wall(j.endedMs) else 0,
             j.deadlineMs, j.expectedMs, j.log, j.pid, j.pgid, j.outcome, j.killed, j.timedOut, j.sample,
-            j.resident.now, j.resident.peak, j.held, j.priority)
+            j.resident.now, j.resident.peak, j.held, j.priority, j.urgentAt)
         SavedState(reportedVersion(), process.pid(), wallNow, wall(began), nextId,
             queue.map(saved).toVector(), running.map(saved).toVector(), ended.takeRight(Recent).map(saved).toVector(), ticket, queueHeld)
 
@@ -617,6 +624,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             job.sample = sj.sample
             job.held = sj.held
             job.priority = sj.priority
+            job.urgentAt = sj.urgentAt
             jobs(job.id) = job
             job
         for sj in s.ended do ended += rebuilt(sj)

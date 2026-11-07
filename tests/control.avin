@@ -82,15 +82,52 @@ priorityOrdering()
     queue.sortInPlaceWith((a, b) -> marshal.priorityOrder(a.1, b.1))
     assertEq(queue.map(e -> e.0).toVector(), [long(7), long(2), long(5), long(1), long(3), long(4), long(6)])
 
-@test("urgent is one above the highest priority queued, and above the default 0 when every other is lower or none is queued")
-urgentLevels()
-    assertEq(marshal.urgentPriority([]), Some(1))
-    assertEq(marshal.urgentPriority([0, 0]), Some(1))
-    assertEq(marshal.urgentPriority([-5, -1]), Some(1))
-    assertEq(marshal.urgentPriority([3, 9, 2]), Some(10))
-    assertEq(marshal.urgentPriority([int.MaxValue - 1]), Some(int.MaxValue))
-    assertEq(marshal.urgentPriority([int.MinValue]), Some(1))
-    assertEq(marshal.urgentPriority([1, int.MaxValue]), None)
+// The ids of jobs (id, urgent mark, priority, arrival) in the order the queue keeps them.
+private placed(jobs: Vector[(long, long, int, long)]) -> Vector[long]
+    val b = jobs.toBuffer()
+    b.sortInPlaceWith((x, y) -> marshal.placeOrder(marshal.Place(x.1, x.2, x.3), marshal.Place(y.1, y.2, y.3)))
+    b.map(e -> e.0).toVector()
+
+@test("the urgent band goes first, its jobs in the order they joined it, whatever their priorities")
+urgentBand()
+    // 3 joined the band before 1; 2 has the highest priority there is and is still behind both
+    assertEq(placed([(1, 50, 0, 10), (2, 0, int.MaxValue, 20), (3, 40, int.MinValue, 30), (4, 0, 0, 5)]), [long(3), long(1), long(2), long(4)])
+    // two urgent jobs keep the order they became urgent in, not their arrival or priority
+    assertEq(placed([(1, 200, 9, 1), (2, 100, -9, 2)]), [long(2), long(1)])
+    // outside the band: priority, then arrival
+    assertEq(placed([(1, 0, 0, 30), (2, 0, 0, 10), (3, 0, 1, 40), (4, 0, -1, 1)]), [long(3), long(2), long(1), long(4)])
+    assertEq(placed([]), Vector[long]())
+    assertEq(marshal.placeOrder(marshal.Place(7, 0, 1), marshal.Place(7, 0, 1)), 0)
+    assertEq(marshal.placeOrder(marshal.Place(0, 0, 1), marshal.Place(long.MaxValue, 0, 0)), 1)
+
+@test("submit and run take --urgent, the submit request carries it, and a request without it is not urgent")
+urgentOption()
+    val env = [("A", "b")]
+    assertEq(cli.parseSubmission(["--urgent", "--", "make"], "/w", env), Ok(marshal.JobSpec("build", 1, 0, false, "/w", None, ["make"], env, true)))
+    assertEq(cli.parseSubmission(["--landing", "--urgent", "make"], "/w", env).map(s -> (s.landing, s.urgent)), Ok((true, true)))
+    assertEq(cli.parseSubmission(["make", "--urgent"], "/w", env).map(s -> (s.urgent, s.cmd)), Ok((false, ["make", "--urgent"])))
+    assertEq(cli.parseSubmission(["--", "--urgent"], "/w", env).map(s -> (s.urgent, s.cmd)), Ok((false, ["--urgent"])))
+    assert(cli.asksHelp("submit", ["--urgent", "--help"]))
+    assert(!cli.asksHelp("run", ["--urgent", "prog", "--help"]))
+    assert(cli.usage.contains("--urgent"))
+    for u in [true, false]
+        roundTrip(Request.Submit(marshal.JobSpec("k", 1, 0, false, "/", None, ["a"], [], u)))
+    assertEq(marshal.decodeRequest("{\"op\": \"submit\", \"kind\": \"x\", \"units\": 1, \"mem\": 0, \"dir\": \"/\", \"cmd\": [\"a\"]}"), Ok(Request.Submit(marshal.JobSpec("x", 1, 0, false, "/", None, ["a"], [], false))))
+    refused("{\"op\": \"submit\", \"kind\": \"x\", \"units\": 1, \"mem\": 0, \"dir\": \"/\", \"cmd\": [\"a\"], \"urgent\": 1}", "`urgent` is not a bool")
+    val urgentJob = JobInfo(1, "b", 1, 0, false, "/", ["a"], "queued", None, false, 0, 0, 1, "/l", None, urgent = true)
+    assertEq(marshal.decodeJob(marshal.encodeJob(urgentJob)), Ok(urgentJob))
+    val sj = marshal.SavedJob(9, marshal.JobSpec("k", 1, 0, false, "/", None, ["a"], [], true), "queued", 1, 2, 0, 0, 5, 6, "/l", 0, 0, None, false, false, None, 0, 0, false, 0, 1_762_000_000_000_123)
+    assertEq(marshal.decodeSavedJob(marshal.encodeSavedJob(sj)), Ok(sj))
+    val old = marshal.encodeSavedJob(sj).render().replace(",\"urgent_at\":1762000000000123", "")
+    assertEq(marshal.decodeSavedJob(json.parse(old).ok().get()).map(j -> j.urgentAt), Ok(long(0)))
+
+@test("a job joining the urgent band goes behind every urgent job queued, even when the clock has stepped back")
+urgentMarks()
+    assertEq(marshal.urgentMark(1000, []), 1000)
+    assertEq(marshal.urgentMark(1000, [0, 0]), 1000)
+    assertEq(marshal.urgentMark(1000, [400, 999]), 1000)
+    assertEq(marshal.urgentMark(1000, [400, 1000]), 1001)
+    assertEq(marshal.urgentMark(1000, [5000, 0]), 5001)
 
 @test("a held job waits as held, keeps its place, and the jobs behind it start as if it were not there")
 heldJobWaits()

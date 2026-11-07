@@ -280,16 +280,22 @@ have the stop and continue signals; it will add `marshal pause <id>` / `resume <
   number covers "this one first" and "this one last" alike and is easy to script. Alternatives:
   moving a job to a position (positions shift as jobs start, so a script cannot name one reliably);
   a few named classes (no room between them).
-- **`--urgent` is an argument of `priority`, not of `submit`: one above the highest priority now
-  queued in the job's lane, and at least 1**, so later jobs at the default go behind it. It is the
-  front of the normal queue; landing jobs have a lane of their own, which always goes first, so an
-  urgent development job is still behind every landing job. A later `--urgent` goes in front of an
-  earlier one. It is refused when a job in the lane already holds the highest int. Review with the
-  user: whether `submit --urgent` is wanted too (a job submitted may start at once, so placing it
-  afterwards is the race-free order only while it waits), and whether urgent jobs should queue
-  first come first served among themselves. Alternatives: a fixed urgent level (two urgent jobs tie
-  and a third number is needed); max + 1 without the floor of 1 (an urgent job could sit behind
-  jobs submitted later).
+- **Urgent is a band, not a priority number.** Settled on the user's delegation 2026-11-07. Each
+  lane's queue begins with its urgent band, ahead of every job not urgent whatever its priority,
+  and the band is first come, first served: a job joins it at the back, behind every urgent job
+  already queued (held ones included), and is never in front of an earlier one. `submit --urgent`
+  and `run --urgent` (as take-slot's `-u`) queue a job there; `priority <id> --urgent` moves a
+  queued job to the back of the band, even from within it; `priority <id> <n>` takes a job out of
+  the band and places it by `n`. It is still the normal queue: landing jobs have a lane of their
+  own, which always goes first and has its own band. The band is kept as each job's mark of when
+  it joined (`urgent_at`, wall-clock microseconds, 0 outside it; a mark is always later than every
+  mark queued, so a clock stepping back cannot reorder the band), sorted before priority, and the
+  mark is in `state.json`, so the band keeps its order across a restart. Why the mark over a
+  reserved priority level: a level would need arrival order inside it, which arrival cannot give
+  for a job moved into the band later, and it would take a range of priorities away from users.
+  Alternatives: max + 1 over the priorities queued (the shape first built: a later urgent job went
+  in front of an earlier one, and it ran out at the highest int); a fixed urgent level (two urgent
+  jobs tie, and the tie falls back to arrival, not to when they became urgent).
 - **Priority orders marshal's own jobs; take-slot's waiters keep their places by arrival.** An
   urgent job does not pass a take-slot run that arrived before it, and marshal's ticket in
   take-slot's directory is its first eligible job's arrival. Why: take-slot orders its waiters by
@@ -300,6 +306,6 @@ have the stop and continue signals; it will add `marshal pause <id>` / `resume <
   refused for the same reason.
 - **The held queue, held jobs and priorities go into `state.json`** (`queue_held`, and `held` and
   `priority` on each job), so a restart keeps them; a state from before reads as nothing held,
-  every priority 0. Jobs carry `held` and `priority` in the protocol and the event log, and the
+  every priority 0. Jobs carry `held`, `priority` and `urgent` in the protocol and the event log, and the
   log records `held`, `released` and `prioritized`. Holding the queue is not a job's event, and
   goes to the daemon's log.

@@ -9,7 +9,7 @@ thread of its own, so a client blocked in `wait` holds up nobody else.
 
 | `op` | Fields | Reply |
 | --- | --- | --- |
-| `submit` | `kind` (string), `units` (int), `mem` (bytes), `landing` (bool, default false), `dir` (absolute path), `deadline_ms` (number or null: learned), `cmd` (array of strings, not empty), `env` (object of strings, default `{}`) | `{"ok":true,"id":N,"log":"<path>"}` |
+| `submit` | `kind` (string), `units` (int), `mem` (bytes), `landing` (bool, default false), `dir` (absolute path), `deadline_ms` (number or null: learned), `cmd` (array of strings, not empty), `env` (object of strings, default `{}`), `urgent` (bool, default false: the back of the lane's urgent band) | `{"ok":true,"id":N,"log":"<path>"}` |
 | `wait` | `id` | `{"ok":true,"job":JOB}` once the job has ended; at once for a job already ended, including one an earlier daemon ran |
 | `kill` | `id` | `{"ok":true}`; the job's end is what `wait` answers |
 | `ls` | | `{"ok":true,"jobs":[JOB...]}`: running, then queued, then the last ten ended |
@@ -21,7 +21,7 @@ thread of its own, so a client blocked in `wait` holds up nobody else.
 | `resume` | (no `id`) | `{"ok":true}`; the queue is released and what fits starts. Refused when it is not held |
 | `hold` | `id` | `{"ok":true}`; the queued job is kept from starting and keeps its place. Refused for a job that runs or has ended, or is already held, or while the daemon drains |
 | `release` | `id` | `{"ok":true}`; the held job may start again. Refused for a job that is not held |
-| `priority` | `id`, `priority` (an int, or `"urgent"`) | `{"ok":true}`; the queued job is placed in its lane: higher first, equal ones by arrival; `"urgent"` is one above the highest priority queued in its lane and above 0. Refused for a job that runs or has ended, and for `"urgent"` behind a job at the highest int |
+| `priority` | `id`, `priority` (an int, or `"urgent"`) | `{"ok":true}`; the queued job is placed in its lane. A number takes it out of the urgent band and places it among the jobs not urgent: higher first, equal ones by arrival. `"urgent"` moves it to the back of the lane's urgent band, which goes ahead of every job not urgent and keeps its jobs in the order they joined it. Refused for a job that runs or has ended |
 | `restart` | | no reply when the daemon restarts: the connection closes as it replaces its program, and the client connects again and asks `version`, whose `pid` is the same; `{"ok":false,"error":...}` when it could not, and it goes on as it was |
 
 Any request may be refused: `{"ok":false,"error":"<a sentence>"}`, for a request that is not JSON,
@@ -33,7 +33,7 @@ lacks a field or has one of the wrong type, names no job, or asks for a job that
 {"id":7,"kind":"test","units":4,"mem":0,"landing":false,"dir":"/work","cmd":["sysl","test","."],
  "state":"done","outcome":{"how":"exit","code":0},"killed":false,"queued_ms":12,
  "elapsed_ms":4200,"deadline_ms":2700000,"log":"/home/.marshal/jobs/7.log","sample":null,
- "rss":0,"peak_rss":1879048192,"started_at":1762521060000,"held":false,"priority":0}
+ "rss":0,"peak_rss":1879048192,"started_at":1762521060000,"held":false,"priority":0,"urgent":false}
 ```
 
 `state` is `queued`, `running` or `done`. `outcome` is null until the job ends, then one of
@@ -45,8 +45,9 @@ in RAM at the daemon's last measurement, made every second, and 0 unless it runs
 most any measurement found, kept once it ends; `started_at` when it started, in milliseconds since
 1970, 0 while it waits. The three are absent from what older daemons wrote and read as 0. In
 `status` and `snapshot`, `rss` is the running jobs' sum and `machine_mem` the machine's memory, 0
-where it is not known. `held` says a queued job is kept from starting, and `priority` places it in
-its lane's queue; a job without them (from an older daemon or log) is not held, at priority 0.
+where it is not known. `held` says a queued job is kept from starting, `priority` places it among
+its lane's jobs that are not urgent, and `urgent` says it is in the lane's urgent band, ahead of
+them all; a job without them (from an older daemon or log) is not held, at priority 0, not urgent.
 
 A queued job in a snapshot is the job object with two fields more, and a third for one behind
 another job: `position`, its place in its lane's queue counted from 1 (landing jobs and development
@@ -88,8 +89,9 @@ reads and removes it. It is one JSON object: `version` and `pid` of the daemon t
 null) and `queue_held` (false when absent). Each job holds `id`, `spec` (the fields of a `submit` request but `op`), `state`,
 `submitted_at`, `arrived` (microseconds, take-slot's order), `started_at`, `ended_at`, `deadline_ms`,
 `expected_ms`, `log`, `pid`, `pgid`, `outcome`, `killed`, `timed_out`, `sample`, `rss` (bytes the job's processes hold as last measured),
-`peak_rss` (the most it has held), `held` and `priority`; state written without `rss` or `peak_rss`
-reads them as 0, so the measured memory of a running job carries across a restart, and without
-`held` or `priority` as false and 0. Times are
+`peak_rss` (the most it has held), `held`, `priority` and `urgent_at` (when it joined the urgent
+band, in microseconds since 1970, which orders the band; 0 outside it); state written without `rss`
+or `peak_rss` reads them as 0, so the measured memory of a running job carries across a restart,
+and without `held`, `priority` or `urgent_at` as false, 0 and 0. Times are
 milliseconds since 1970, and a time that has not come yet is 0. A file written by another process
 than the one reading it is not taken over.

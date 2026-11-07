@@ -16,7 +16,7 @@ marshal ls                                 jobs queued, running and recently end
 marshal kill <id>                          stops the job's whole process tree (a queued job is cancelled)
 marshal hold <id>                          keeps a queued job from starting; it keeps its place
 marshal release <id>                       lets a held job start again
-marshal priority <id> <n> | --urgent       places a queued job in its lane: higher first; --urgent: the front
+marshal priority <id> <n> | --urgent       places a queued job in its lane: higher first; --urgent: the back of the urgent band
 marshal pause                              holds the queue: running jobs go on, nothing new starts in either lane
 marshal resume                             releases the queue
 marshal tail <id> [-f] [-n <lines>]        the job's log; -f follows it until the job ends
@@ -40,6 +40,7 @@ Options of `submit` and `run`:
 | `--units <n>` | Its weight. Default: 4 for a `test`, 1 for anything else. |
 | `--mem <size>` | Memory it needs: `29G`, `512M` (powers of 1024). Default 0. |
 | `--landing` | The landing lane: starts before every development job, outside the unit budget, at normal priority. One landing job runs at a time. |
+| `--urgent` | Queues it in its lane's urgent band: ahead of every job not urgent, behind the urgent jobs already queued. |
 | `--dir <d>` | Where it runs, relative to the current directory. Default: the current directory. |
 | `--deadline <t>` | Stops it after `t`: a number of minutes, or `90s`, `30m`, `2h`. Default: learned for its kind. |
 
@@ -82,12 +83,15 @@ ends: nothing polls.
   hold <id>` keeps one queued job from starting; it keeps its place and the jobs behind it start as
   if it were not there, until `marshal release <id>`. `marshal priority <id> <n>` places a queued
   job in its lane's queue: higher priorities first, every job starting at 0, equal ones by arrival.
-  `--urgent` puts it at the front of its lane: one above the highest priority queued there, and
-  above 0, so later jobs at the default go behind it. A development job never passes the landing
-  lane this way: landing jobs have a queue of their own, which always goes first. Priority orders
-  marshal's own jobs; take-slot's waiters keep their places by arrival. `ls` shows a held job as
-  `held`, and `status` and `top` say when the queue is held. A held queue, held jobs and priorities
-  survive `marshal restart`. `kill` cancels a held job like any queued one.
+  Each lane's queue begins with its **urgent band**: `submit --urgent` (or `run --urgent`) queues a
+  job there, and `priority <id> --urgent` moves a queued one there. The band goes ahead of every job
+  not urgent, whatever its priority, and is first come, first served: a job joins it at the back,
+  behind every urgent job already queued, held ones included. A number given to an urgent job takes
+  it out of the band. A development job never passes the landing lane this way: landing jobs have a
+  queue of their own, which always goes first, with its own urgent band. Priority orders marshal's
+  own jobs; take-slot's waiters keep their places by arrival. `ls` shows a held job as `held`, and
+  `status` and `top` say when the queue is held. A held queue, held jobs, priorities and the urgent
+  band survive `marshal restart`. `kill` cancels a held job like any queued one.
 - **Stopping.** `marshal stop` or a TERM signal ends the daemon. TERM, like `stop --force`, kills
   what runs and cancels what waits. `stop --wait` is refused while the queue or a queued job is
   held, since what waits would never end.
