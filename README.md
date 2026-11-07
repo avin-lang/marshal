@@ -134,6 +134,10 @@ against its own budget. `marshal status` shows what take-slot holds.
 - **Memory**: RESV is the memory a job declared with `--mem`. RSS is what a running job's whole
   process tree holds in RAM, measured by the daemon every second, and PEAK the most it was measured
   holding, kept once it ends; `-` where there is none.
+- **Started**: STARTED is when the job started, in the terminal's local time zone (`TZ`, else the
+  system's) to the minute, as `MM-DD hh:mm` (`11-07 08:31`); `-` for a job that has not started.
+  `marshal ls` has the same column. Under 90 columns `top` leaves it out so the table keeps room for
+  the command; `--json` carries `started_at` in milliseconds as before.
 - **Jobs**: running jobs, then queued ones, then the last ten that ended, the latest first. ELAPSED
   counts on between snapshots; DEADLINE is a running job's time left, yellow under a quarter of its
   deadline or five minutes and red under a tenth or one minute, and a queued job's deadline to come.

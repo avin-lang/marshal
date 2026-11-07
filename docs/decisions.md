@@ -264,3 +264,19 @@ Known gaps in Avin, left for it to fix rather than worked around here:
   end. Why: a reported timestamp must not change because the daemon restarted. Alternatives: round
   the derived value to the second (hides the drift, still wrong); keep only the monotonic clock and
   report offsets (a restart loses the wall time).
+
+## The STARTED column (branch `started-column`)
+
+**Proposed.**
+
+- **`top` and `ls` show a STARTED column, `MM-DD hh:mm` in the caller's local zone, between RESV (`ls`)
+  or PEAK (`top`) and ELAPSED.** The zone is read once per rendering (`TZ`, else the system's), and
+  the time comes from the job's recorded `started_at`; a job with none (queued, or cancelled before it
+  ran) shows `-`. The year is left out, so a job from a year ago reads like one from today; the
+  JSON has the full instant. Alternatives: an ISO date with the year (16 cells, too wide for top);
+  a relative age (`3h ago`, which ELAPSED already half says and which changes every frame).
+- **`top` leaves STARTED out under 90 columns.** The fixed columns with it take 85 cells, so at 80
+  the command would have no room. `top` dropped no column before, so STARTED is the one dropped:
+  it is the newest, and a running job's age is still in ELAPSED. Alternatives: drop RSS and PEAK
+  (they are what `top` is for); let the command column vanish (the line then says nothing of what
+  runs); shrink every column by a cell (the memory sizes need theirs).

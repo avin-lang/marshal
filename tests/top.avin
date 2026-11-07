@@ -2,6 +2,7 @@ module tests
 
 // `marshal top` without a terminal: snapshots made to order are drawn into tui grids of several
 // sizes and read back row by row, and keys are handed to the view as events.
+import avin.time
 import dev.avinlang.marshal
 import dev.avinlang.marshal.{JobInfo, Outcome, Overview, QueuedJob, TakeSlotUse, Usage, Why}
 import dev.avinlang.marshal.top
@@ -14,8 +15,8 @@ val minuteMs: long = 60000
 // A job as a snapshot gives it.
 snapJob(id: long, state: string = "running", outcome: Option[Outcome] = None, elapsed: long = minuteMs, deadline: long = 20 * minuteMs,
      units: int = 1, landing: bool = false, killed: bool = false, cmd: Vector[string] = ["sleep", "30"], memory: long = 0,
-     rss: long = 0, peak: long = 0) -> JobInfo =
-    JobInfo(id, if landing then "test" else "build", units, memory, landing, "/w", cmd, state, outcome, killed, 0, elapsed, deadline, s"/h/jobs/$id.log", None, rss, peak)
+     rss: long = 0, peak: long = 0, started: long = 0) -> JobInfo =
+    JobInfo(id, if landing then "test" else "build", units, memory, landing, "/w", cmd, state, outcome, killed, 0, elapsed, deadline, s"/h/jobs/$id.log", None, rss, peak, started)
 
 queued(id: long, position: int, why: Why) -> QueuedJob = QueuedJob(snapJob(id, "queued", deadline = 45 * minuteMs), position, why)
 
@@ -89,7 +90,7 @@ table()
     val g = drawn(viewing(full()), 100, 30)
     val head = rowOf(g, "ID STATE")
     assertEq(head, 4)
-    for word in ["ID", "STATE", "KIND", "UNITS", "RESV", "RSS", "PEAK", "ELAPSED", "DEADLINE", "COMMAND"]
+    for word in ["ID", "STATE", "KIND", "UNITS", "RESV", "RSS", "PEAK", "STARTED", "ELAPSED", "DEADLINE", "COMMAND"]
         assert(g.rowText(head).contains(word), word)
     assert(!g.rowText(head).contains("MEM"), g.rowText(head))
     val expected = [
@@ -107,8 +108,8 @@ table()
     // elapsed, and the time left: 20 minutes less one; a queued job shows the deadline it will have
     assert(first.contains("1:00") && first.contains("19:00"), first)
     assert(g.rowText(head + 3).contains("45:00"), g.rowText(head + 3))
-    assertEq(g.rowText(head + 6).slice(64, 72).trim(), "-")
-    assertEq(g.rowText(head + 1).slice(64, 72).trim(), "19:00")
+    assertEq(g.rowText(head + 6).slice(76, 84).trim(), "-")
+    assertEq(g.rowText(head + 1).slice(76, 84).trim(), "19:00")
 
 // The RESV, RSS and PEAK cells of row `y` of `g`, as the columns at 6, 5 and 5 cells place them.
 memoryCells(g: Grid, y: int) -> (string, string, string) =
@@ -143,7 +144,52 @@ memoryColumns()
     assertEq(memoryCells(g, head + 7), ("-", "-", "-"))
     // the cells are right-aligned and the columns either side keep their places
     assert(g.rowText(head + 1).slice(30, 35).trim() == "1", g.rowText(head + 1))
-    assertEq(g.rowText(head + 1).slice(55, 63).trim(), "1:00")
+    assertEq(g.rowText(head + 1).slice(67, 75).trim(), "1:00")
+
+@test("STARTED is the start in the host's zone to the minute, between PEAK and ELAPSED, and - for a queued job")
+startedCells()
+    val at: long = 1794058290000
+    val expected = time.epochMillis(at).atZone(time.localZone()).format("MM-DD hh:mm")
+    // another day, a year earlier
+    val before: long = at - 400 * 86400000
+    val earlier = time.epochMillis(before).atZone(time.localZone()).format("MM-DD hh:mm")
+    val o = Overview(Usage(2, 12, 0, long.MaxValue, 2, 1, None, None), 0,
+        [snapJob(1, started = at), snapJob(2, started = before)], [queued(10, 1, Why.NoUnits)],
+        [snapJob(9, "done", Some(Outcome.Exited(0)), started = at), snapJob(8, "done", Some(Outcome.Cancelled))])
+    val g = drawn(viewing(o), 100, 30)
+    val head = rowOf(g, "ID STATE")
+    assertEq(g.rowText(head).slice(55, 75), "STARTED      ELAPSED")
+    assertEq(g.rowText(head + 1).slice(55, 66).trim(), expected)
+    assertEq(g.rowText(head + 2).slice(55, 66).trim(), earlier)
+    assertEq(g.rowText(head + 3).slice(55, 66).trim(), "-")
+    assertEq(g.rowText(head + 4).slice(55, 66).trim(), expected)
+    assertEq(g.rowText(head + 5).slice(55, 66).trim(), "-")
+    // the cell is `MM-DD hh:mm` and nothing else
+    assertEq(expected.charCount(), 11)
+    assertEq((expected.slice(2, 3), expected.slice(5, 6), expected.slice(8, 9)), ("-", " ", ":"))
+    // ELAPSED and DEADLINE keep their columns after it
+    assertEq(g.rowText(head + 1).slice(67, 75).trim(), "1:00")
+    assertEq(g.rowText(head + 1).slice(76, 84).trim(), "19:00")
+
+@test("a screen under 90 cells draws no STARTED column and keeps every other column, the selection and the deadline's colour")
+startedLeftOutWhenNarrow()
+    val o = full()
+    val app = viewing(o)
+    for w in [80, 89]
+        val g = drawn(app, w, 30)
+        val head = rowOf(g, "ID STATE")
+        assert(!g.rowText(head).contains("STARTED"), g.rowText(head))
+        for word in ["ID", "STATE", "KIND", "UNITS", "RESV", "RSS", "PEAK", "ELAPSED", "DEADLINE", "COMMAND"]
+            assert(g.rowText(head).contains(word), s"$w: $word")
+        assert(g.rowText(head + 1).contains("1:00") && g.rowText(head + 1).contains("19:00"), g.rowText(head + 1))
+    assert(drawn(app, 90, 30).rowText(rowOf(drawn(app, 90, 30), "ID STATE")).contains("STARTED"))
+    // the colour of a deadline stays on it, on the first row and, after moving the selection, on the second
+    app.handle(press(Down))
+    val g = drawn(app, 80, 30)
+    val head = rowOf(g, "ID STATE")
+    val landing = g.rowText(head + 2)
+    assertEq(landing.slice(columnOf(g, head + 2, "19:00") + 6, columnOf(g, head + 2, "19:00") + 10), "1:00")
+    assertEq(g(columnOf(g, head + 2, "19:00") + 6, head + 2).style.fg, Red)
 
 @test("the header adds what the running jobs hold and the machine's memory, which is left out where unknown")
 headerMemory()
