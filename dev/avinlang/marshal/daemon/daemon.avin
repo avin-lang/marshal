@@ -510,7 +510,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         val wall = (at: long) -> wallNow - (t - at)
         val saved = (j: Job) -> SavedJob(
             j.id, j.spec, j.state, wall(j.submittedMs), j.arrived,
-            if j.state == "queued" then 0 else wall(j.startedMs),
+            j.startedAt,
             if j.state == "done" then wall(j.endedMs) else 0,
             j.deadlineMs, j.expectedMs, j.log, j.pid, j.pgid, j.outcome, j.killed, j.timedOut, j.sample,
             j.resident.now, j.resident.peak)
@@ -530,7 +530,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         val rebuilt = (sj: SavedJob) ->
             val job = Job(sj.id, sj.spec, mono(sj.submittedAt), sj.arrived, sj.deadlineMs, sj.expectedMs, sj.log)
             job.state = sj.state
-            job.startedMs = mono(sj.startedAt)
+            job.startedMs = mono(if sj.startedAt == 0 then sj.endedAt else sj.startedAt)
             job.startedAt = sj.startedAt
             job.resident = Resident(sj.rss, sj.peakRss)
             job.endedMs = mono(sj.endedAt)

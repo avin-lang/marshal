@@ -250,3 +250,17 @@ Known gaps in Avin, left for it to fix rather than worked around here:
 - `avin.fs` has no rename, so `state.json` is written in place rather than written aside and
   renamed. Only the program the daemon becomes reads it, after the write has finished, so this
   matters only to a daemon killed mid-write, which leaves a partial file that nothing reads.
+
+## A job's start time across a restart (branch `started-at-restart`)
+
+**Proposed.**
+
+- **A job's wall-clock start (`started_at`) is stored once, when it starts, and saved and restored
+  as that exact number.** The daemon used to save `wall(startedMs)`, re-deriving the wall time from
+  its monotonic clock and an offset sampled at save time, so the value read back could differ by a
+  millisecond from the one reported before the restart. Now the saved value is the stored one, and
+  the monotonic `startedMs` (used only for elapsed time and the scheduler) is derived from it on
+  restore. A job cancelled while queued has no start time (0), and restores its `startedMs` from its
+  end. Why: a reported timestamp must not change because the daemon restarted. Alternatives: round
+  the derived value to the second (hides the drift, still wrong); keep only the monotonic clock and
+  report offsets (a restart loses the wall time).
