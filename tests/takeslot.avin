@@ -1,6 +1,8 @@
 module tests
 
 // The take-slot format: which directory is shared, and the waiters' ticket names.
+import avin.fs
+import avin.process
 import dev.avinlang.marshal
 
 @test("the environment wins over config.json, empty text in either shares nothing, and neither shares nothing")
@@ -38,3 +40,30 @@ ticketShapes()
 notTickets()
     for name in ["", "-3", "17.5-", "17.5-x", "x-1", "17.-3", "17.12a-3", ".5-3", "17.5", "17.5--3", "1 7.5-3", "１７.5-3"]
         assert(marshal.parseTicket(name).isEmpty(), name)
+
+@test("take-slot's files are written whole and leave no temporary file: ticket, registration, mutex and landing pid")
+recordsLeaveNoTemporaries()
+    val dir = fs.createTempDir("marshal-slot-").ok().get()
+    val me = process.pid()
+    val slot = marshal.TakeSlot(dir, me)
+    slot.scan([], 4)
+    slot.lock()
+    assertEq(fs.readText(dir + "/slot-units.mutex/pid").ok().get(), me.toString())
+    slot.register(me, 3)
+    assertEq(fs.readText(dir + "/slot-units/" + me.toString()).ok().get(), "3\n")
+    slot.register(me, 2)
+    assertEq(fs.readText(dir + "/slot-units/" + me.toString()).ok().get(), "2\n")
+    val name = slot.putTicket(1762400000123456, 5)
+    assertEq(fs.readText(dir + "/slot-waiting/" + name).ok().get().lines().headOption(), Some("5"))
+    assertEq(fs.listDir(dir + "/slot-waiting").ok().get(), [name])
+    assertEq(fs.listDir(dir + "/slot-units").ok().get(), [me.toString()])
+    assert(slot.takeLanding())
+    slot.landed(me)
+    assertEq(fs.readText(dir + "/land.lock/pid").ok().get(), me.toString() + "\n")
+    assertEq(fs.listDir(dir + "/land.lock").ok().get(), ["pid"])
+    slot.releaseLanding(me)
+    slot.unregister(me)
+    slot.removeTicket(name)
+    slot.unlock()
+    assertEq(fs.listDir(dir).ok().get().sorted(), ["slot-units", "slot-waiting"])
+    fs.removeDirAll(dir)

@@ -724,7 +724,7 @@ launch(dir: string) -> Result[unit, string]
     fs.createDirAll(dir).mapErr(e -> s"marshal: cannot make $dir: ${e.message()}")?
     val lock = dir + "/starting"
     fs.createDir(lock) match
-        Ok(_) -> fs.writeText(lock + "/pid", process.pid().toString())
+        Ok(_) -> marshal.writeAtomic(lock + "/pid", process.pid().toString())
         Err(IoError.AlreadyExists) ->
             // No pid yet: the command that made it is about to write one.
             val owner = fs.readText(lock + "/pid").ok().flatMap(t -> t.trim().toLongOption())
@@ -732,7 +732,7 @@ launch(dir: string) -> Result[unit, string]
             if alive then return Ok(())
             fs.removeDirAll(lock)
             fs.createDir(lock) match
-                Ok(_) -> fs.writeText(lock + "/pid", process.pid().toString())
+                Ok(_) -> marshal.writeAtomic(lock + "/pid", process.pid().toString())
                 Err(IoError.AlreadyExists) -> return Ok(())
                 Err(e) -> return Err(s"marshal: cannot start a daemon: ${e.message()}")
         Err(e) -> return Err(s"marshal: cannot start a daemon: ${e.message()}")

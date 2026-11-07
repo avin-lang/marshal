@@ -79,7 +79,7 @@ class TakeSlot(val dir: string, val me: long)
                             continue
                         _ -> ()
                     threads.sleep(millis(200))
-        fs.writeText(mutex() + "/pid", me.toString())
+        writeAtomic(mutex() + "/pid", me.toString())
 
     unlock()
         depth -= 1
@@ -134,7 +134,7 @@ class TakeSlot(val dir: string, val me: long)
 
     // Counts the job `pid` against take-slot's budget. Call with the mutex held.
     register(pid: long, units: int)
-        fs.writeText(held() + "/" + pid.toString(), units.toString() + "\n")
+        writeAtomicVia(held() + "/" + pid.toString(), units.toString() + "\n", s"$dir/.units-$pid.tmp")
 
     unregister(pid: long)
         fs.remove(held() + "/" + pid.toString())
@@ -147,7 +147,7 @@ class TakeSlot(val dir: string, val me: long)
 
     // Names the landing job `pid` as the lock's holder.
     landed(pid: long)
-        fs.writeText(landLock() + "/pid", pid.toString() + "\n")
+        writeAtomic(landLock() + "/pid", pid.toString() + "\n")
 
     // Removes the landing lock when `pid` holds it, or when it has no holder (`pid` 0: a job that
     // could not be started).
@@ -162,7 +162,7 @@ class TakeSlot(val dir: string, val me: long)
     putTicket(arrived: long, units: int) -> string
         val name = ticketName(arrived, me)
         fs.createDirAll(waiting())
-        fs.writeText(waiting() + "/" + name, units.toString() + "\n" + TicketMark + "\n")
+        writeAtomicVia(waiting() + "/" + name, units.toString() + "\n" + TicketMark + "\n", s"$dir/.ticket-$me.tmp")
         name
 
     removeTicket(name: string)

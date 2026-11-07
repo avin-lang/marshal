@@ -95,7 +95,7 @@ stepBinary(source: string, home: string) -> Result[Compiled, string]
     val base = source.drop(source.lastIndexOf("/") + 1).stripSuffix(".avin")
     val dir = home + "/steps"
     fs.createDirAll(dir).mapErr(e -> s"cannot make $dir: ${e.message()}")?
-    val program = s"$dir/$base-${marshal.fnv1a(version + "\n" + text)}"
+    val program = s"$dir/$base-${marshal.stepKey(version, text)}"
     val lock = program + ".lock"
     loop
         if fs.isFile(program) && !fs.isDir(lock) then return Ok(Compiled(program, false))
@@ -103,21 +103,25 @@ stepBinary(source: string, home: string) -> Result[Compiled, string]
             Ok(_) -> break
             Err(_) ->
                 val holder = fs.readText(lock + "/pid").ok().flatMap(t -> t.trim().toLongOption()).getOrElse(0)
-                // a holder that died while compiling leaves its lock, and maybe half an executable
+                // a holder that died while compiling leaves its lock, and maybe a half-built file
+                // under the temporary name, never under the cache name
                 if holder > 0 && process.signal(holder, 0).isErr()
-                    fs.remove(program)
+                    fs.remove(program + ".building")
+                    fs.remove(program + ".build.log")
                     fs.removeDirAll(lock)
                 else
                     threads.sleep(millis(100))
-    fs.writeText(lock + "/pid", process.pid().toString())
+    marshal.writeAtomic(lock + "/pid", process.pid().toString())
     val log = program + ".build.log"
-    val built = Command(compiler, "build", source, "-o", program).toFile(log).errorsToOutput().run()
+    // built beside the target and renamed into place: a reader never sees half an executable
+    val building = program + ".building"
+    val built = Command(compiler, "build", source, "-o", building).toFile(log).errorsToOutput().run()
     val said = fs.readText(log).getOrElse("")
     fs.remove(log)
-    val ok = built match
-        Ok(status) -> status.isSuccess() && fs.isFile(program)
-        Err(_) -> false
-    if !ok then fs.remove(program)
+    val ok = (built match
+        Ok(status) -> status.isSuccess() && fs.isFile(building)
+        Err(_) -> false) && fs.rename(building, program).isOk()
+    fs.remove(building)
     fs.removeDirAll(lock)
     if ok then Ok(Compiled(program, true)) else Err(s"cannot build $source:\n$said")
 

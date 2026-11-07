@@ -934,7 +934,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         loop
             while settle(held) do ()
             while unwritten > 0 do during(held)
-            saved = fs.writeText(file, marshal.encodeState(state()).render() + "\n")
+            saved = marshal.writeAtomic(file, marshal.encodeState(state()).render() + "\n")
             if saved.isErr() || !settle(held) then break
         val failure = if termed then "a TERM arrived" else saved match
             Err(e) -> s"cannot write $file: ${e.message()}"
