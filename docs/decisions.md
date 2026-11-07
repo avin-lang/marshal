@@ -251,6 +251,126 @@ Known gaps in Avin, left for it to fix rather than worked around here:
   renamed. Only the program the daemon becomes reads it, after the write has finished, so this
   matters only to a daemon killed mid-write, which leaves a partial file that nothing reads.
 
+## Accounting: `history` and `stats` (branch `history`)
+
+**Settled on the user's delegation 2026-11-07.** Review with the user: `--since` dates and printed
+times in UTC (to become local time now that avin has zones), a bare number refused, and `--limit`
+defaulting to 20.
+
+- **both commands read `events.jsonl` in the client, streamed line by line, and never ask
+  the daemon.** Why: the log is the record, they work with no daemon (and after a crash), and a huge
+  log never goes through the socket or into memory whole; only one small record per ended job is
+  kept. Alternative: a daemon request (needs a running, new-enough daemon and a new reply shape).
+- **a job that has several ending events is listed once, as its last one**, as the
+  restart recovery does.
+- **outcomes are listed as `ok`, `failed`, `signal`, `killed`, `timeout`, `cancelled`,
+  `lost`; `--failed` means "did not exit 0", so a kill, a timeout, a cancel and a loss all count.**
+  Why: one rule with no judgement about whose fault an end was, and it matches what learning
+  counts as a success. Alternative: only `failed`, `signal` and `timeout`.
+- **percentiles are nearest-rank** (the value at rank ceil(p*n/100)). Why: it always
+  names a run that happened, and is defined for one sample (every percentile) and two (p50 is the
+  lesser, p90 the greater). Alternative: interpolation, which invents durations.
+- **durations in `stats` cover every job that started** (cancelled jobs have none);
+  the success rate is over all of a kind's jobs, and `stats` rows are per history key, so landing
+  runs are a separate `kind+landing` row. The deadline shown is the one the daemon would give the
+  next job, learned from the whole log whatever `--kind`/`--since` select.
+- **`--since` takes a length back from now (`s m h d w`) or a UTC date or date and
+  minute; times are listed in UTC.** Why: no time zone data in the library, and logs compare across
+  machines. A bare number is refused, as it is ambiguous (the `--deadline` option reads it as
+  minutes). Alternative: local time.
+- **`history` lists 20 jobs unless `--limit` says otherwise**; `--limit 0` is refused.
+  `--json` is one object on one line, like `status --json`, not a line per job.
+- **peak memory is read from `peak_rss` on ending events when it is present and above
+  zero; otherwise `-` (null in JSON).** `history` does not show it.
+- **lines that are not events (or ending events that do not describe a job) are
+  skipped, counted in `unreadable`, and reported on standard error; the exit status stays 0.**
+
+## Pausing jobs, holding and ordering the queue (branch `pause-resume`)
+
+**Settled on the user's delegation 2026-11-07.** Review with the user: a paused job keeping its
+units (freeing them is the alternative, for jobs that declare no memory). Pausing a job-types run
+stops only the runner's group until avin can list a process's descendants.
+
+- **`marshal pause <id>` sends STOP to a running job's whole process group, and `resume <id>`
+  sends CONT** (`avin.signal.Stop` and `Continue`, numbered per platform). The group, not the main
+  process, so a test runner's workers stop with it. Alternatives: the main process only (its
+  children go on using the machine); TSTP (a program may catch it and refuse to stop).
+- **A paused job keeps its units and its memory.** Why: a stopped process still holds its memory,
+  so giving its share to another job could overcommit the machine, and it may be resumed at any
+  moment. Alternative: freeing its units while it is paused and making `resume` wait until they
+  fit again (lets other work use the processors, at the risk of memory pressure and of a resumed
+  job queued behind what started meanwhile); worth revisiting for jobs that declare no memory.
+- **A paused job's deadline clock stops**: the job keeps `pausedMs` (its earlier pauses) and
+  `pausedAt` (when its current one began), its run time is its wall time less those, and the
+  deadline counts run time. Its `elapsed_ms`, its run time in the event log and the history its
+  kind's deadline is learned from leave pauses out too. The deadline's sleeper is re-armed on each
+  resume, and one armed before a pause is made stale by a generation number rather than
+  cancelled. Alternative: wall time (a long pause would end the job at its resume).
+- **`kill` of a paused job, `stop --force` and a TERM to the daemon send CONT before TERM**, so
+  the job can act on the TERM instead of waiting for the KILL 5 seconds later; the pause ends there.
+  When a paused job's main process ends, whatever is left of its group gets TERM then CONT.
+- **A paused job stays paused across `marshal restart`**, its processes stopped and its clock with
+  them: `paused_ms` and `paused_at` (wall clock) are in `state.json`.
+- **`pause` of a job that is queued, ended, being stopped or already paused, and `resume` of one
+  not paused, are refused** (exit 2). `stop --wait` is refused while a job is paused, as while one
+  is held: it would wait for ever.
+- **`pause` and `resume` with an id act on that job, and without one on the queue.** Alternative:
+  separate commands for the queue (two words for two kinds of the same act).
+
+- **`marshal pause` and `resume` with no id hold and release the whole queue, both lanes.** Running
+  jobs go on; nothing new starts, landing jobs included, until `resume`. Why: holding the machine
+  for a moment (a benchmark, a hand-run release step) means nothing new at all, and the landing
+  job is the heaviest. Alternatives: holding the development lane only (a landing job would still
+  start under someone who asked for quiet); a separate `hold-queue` command (the words `pause` and
+  `resume` are freed for one job by giving it an id).
+- **A held queue keeps no take-slot ticket**, so take-slot's runs are not kept waiting behind jobs
+  that cannot start. The queue's jobs keep their arrival times and take their places again on
+  `resume`. Alternative: keeping the ticket (take-slot would wait on marshal for as long as the
+  queue is held).
+- **`pause` of a held queue and `resume` of one not held are refused** (exit 2), as are `hold` of a
+  held job and `release` of one not held. Why: a script learns its view of the daemon was wrong.
+  Alternative: both idempotent and silent (two people holding the queue would not learn that the
+  first `resume` released it for both).
+- **A held job keeps its place in the queue and the scheduler does not see it**: the jobs behind it
+  start as if it were not there, and none waits behind it as the head. Alternative: a held job
+  stays the head and blocks its lane (that is `pause`).
+- **Holding and priority are for queued jobs only**; a running or ended job is refused, naming its
+  state. `kill` cancels a held job like any other queued one.
+- **Priority is an int, 0 by default; higher goes first in its lane, equal ones by arrival.** The
+  queue is kept in that order, so `ls`, `top` and `status --json` list it as it will run. Why: a
+  number covers "this one first" and "this one last" alike and is easy to script. Alternatives:
+  moving a job to a position (positions shift as jobs start, so a script cannot name one reliably);
+  a few named classes (no room between them).
+- **Urgent is a band, not a priority number.** Settled on the user's delegation 2026-11-07. Each
+  lane's queue begins with its urgent band, ahead of every job not urgent whatever its priority,
+  and the band is first come, first served: a job joins it at the back, behind every urgent job
+  already queued (held ones included), and is never in front of an earlier one. `submit --urgent`
+  and `run --urgent` (as take-slot's `-u`) queue a job there; `priority <id> --urgent` moves a
+  queued job to the back of the band, even from within it; `priority <id> <n>` takes a job out of
+  the band and places it by `n`. It is still the normal queue: landing jobs have a lane of their
+  own, which always goes first and has its own band. The band is kept as each job's mark of when
+  it joined (`urgent_at`, wall-clock microseconds, 0 outside it; a mark is always later than every
+  mark queued, so a clock stepping back cannot reorder the band), sorted before priority, and the
+  mark is in `state.json`, so the band keeps its order across a restart. Why the mark over a
+  reserved priority level: a level would need arrival order inside it, which arrival cannot give
+  for a job moved into the band later, and it would take a range of priorities away from users.
+  Alternatives: max + 1 over the priorities queued (the shape first built: a later urgent job went
+  in front of an earlier one, and it ran out at the highest int); a fixed urgent level (two urgent
+  jobs tie, and the tie falls back to arrival, not to when they became urgent).
+- **Priority orders marshal's own jobs; take-slot's waiters keep their places by arrival.** An
+  urgent job does not pass a take-slot run that arrived before it, and marshal's ticket in
+  take-slot's directory is its first eligible job's arrival. Why: take-slot orders its waiters by
+  arrival alone and cannot be told of a priority. Alternative: the ticket taking the earliest
+  arrival of any queued job (take-slot's later runs would wait behind a job that is not first).
+- **`stop --wait` is refused while the queue, or a queued job, is held** and anything is queued,
+  since it would wait for ever; `--force` still stops. Holding a job while the daemon drains is
+  refused for the same reason.
+- **The held queue, held jobs and priorities go into `state.json`** (`queue_held`, and `held` and
+  `priority` on each job), so a restart keeps them; a state from before reads as nothing held,
+  every priority 0. Jobs carry `held`, `priority` and `urgent` in the protocol and the event log, and the
+  log records `held`, `released` and `prioritized`. Holding the queue is not a job's event, and
+  goes to the daemon's log.
+
 ## Job types and the train (branch `job-types`)
 
 **Settled on the user's delegation 2026-11-07**; each says why and what else was weighed. Review

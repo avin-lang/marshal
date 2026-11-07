@@ -29,8 +29,15 @@ val Commands: Vector[(string, string)] = [
     ("events [--follow] [--since <t>] [<filter>]", "the logged events as JSON lines; --follow goes on streaming them until killed"),
     ("ls", "jobs queued, running and recently ended"),
     ("kill <id>", "stops the job's whole process tree (a queued job is cancelled)"),
+    ("hold <id>", "keeps a queued job from starting; it keeps its place"),
+    ("release <id>", "lets a held job start again"),
+    ("priority <id> <n> | --urgent", "places a queued job in its lane: higher first; --urgent: the back of the urgent band"),
+    ("pause [<id>]", "stops a running job's processes, keeping its units, its deadline's clock stopped; with no id, holds the queue"),
+    ("resume [<id>]", "continues a paused job; with no id, releases the queue"),
     ("tail <id> [-f] [-n <lines>]", "the job's log; -f follows it until the job ends"),
     ("status [--json]", "the budget in use; --json: one JSON object with the running and queued jobs"),
+    ("history [options]", "ended jobs from the event log, newest first: id, kind, outcome, exit code, duration, when"),
+    ("stats [options]", "per kind from the event log: count, success rate, p50/p90/max duration, timeouts, deadline, peak memory"),
     ("top", "a live view of the budget, the jobs and their logs; h lists its keys"),
     ("stop [--wait | --force]", "stops the daemon; refused while jobs run unless it may wait for them or kill them"),
     ("restart", "the daemon becomes the marshal installed now, keeping its jobs running and queued"),
@@ -44,9 +51,20 @@ Options of submit and run:
   --units <n>       its weight in units (default: 4 for a test, 1 otherwise)
   --mem <size>      the memory it needs, such as 29G or 512M (default: 0)
   --landing         run it in the landing lane: first, outside the unit budget, not niced
+  --urgent          queue it ahead of every job not urgent in its lane, behind the urgent ones already queued
   --dir <d>         the directory to run it in, relative to this one (default: this one)
   --deadline <t>    stop it after t: minutes, or 90s, 30m, 2h (default: learned for the kind)
   --                the command begins after this; nothing after it is an option\
+"""
+
+// The options of `history` and `stats`.
+val Queries: string = """
+Options of history and stats (both read events.jsonl; no daemon is needed):
+  --kind <k>        only jobs of this kind
+  --since <t>       only jobs that ended in the last t (90m, 2h, 3d, 1w) or since a date (2026-11-07 or 2026-11-07T14:30, UTC)
+  --json            one JSON object on one line
+  --failed          history only: jobs that did not exit 0 (failed, signal, killed, timeout, cancelled, lost)
+  --limit <n>       history only: at most n jobs (default 20)\
 """
 
 val Footer: string = "Marshal's files are in $MARSHAL_HOME, or ~/.marshal. `marshal <command> --help` describes one command."
@@ -57,13 +75,14 @@ commandLine(c: (string, string)) -> string
     if left.byteLength() >= 43 then left + "  " + c.1 else left.padEnd(43, ' ') + c.1
 
 // What `marshal --help` prints.
-val usage: string = "usage: marshal <command> [options]\n\n" + Commands.map(commandLine).mkString("\n") + "\n\n" + Options + "\n\n" + Footer
+val usage: string = "usage: marshal <command> [options]\n\n" + Commands.map(commandLine).mkString("\n") + "\n\n" + Options + "\n" + Queries + "\n\n" + Footer
 
 // What `marshal <command> --help` prints, or None for a word that is not a command.
 commandHelp(name: string) -> Option[string]
     Commands.find(c -> c.0.split(" ")(0) == name).map(c ->
         val head = s"usage: marshal ${c.0}\n\n${c.1}"
         if name == "submit" || name == "run" then head + "\n\n" + Options
+        elif name == "history" || name == "stats" then head + "\n\n" + Queries
         elif name == "wait" || name == "events" then head + "\n" + marshal.Grammar
         else head)
 
@@ -83,7 +102,7 @@ optionsAskHelp(args, i) | i >= args.length() = false
 optionsAskHelp(args, i)
     | args(i) == "--" = false
     | isHelp(args(i)) = true
-    | args(i) == "--landing" = optionsAskHelp(args, i + 1)
+    | args(i) == "--landing" || args(i) == "--urgent" = optionsAskHelp(args, i + 1)
     | args(i).startsWith("--") = optionsAskHelp(args, i + 2)
     | _ = false
 
@@ -109,11 +128,22 @@ main(args: Vector[string]) -> int
         "wait" -> if rest.contains("--until") then waitUntil(rest) else withId(rest, id -> waitFor(id))
         "events" -> events(rest)
         "kill" -> withId(rest, id -> simple(Request.Kill(id), s"marshal: job $id is being stopped"))
+        "hold" -> withId(rest, id -> simple(Request.Hold(id), s"marshal: job $id is held"))
+        "release" -> withId(rest, id -> simple(Request.Release(id), s"marshal: job $id is released"))
+        "priority" -> priority(rest)
+        "pause" ->
+            if rest.isEmpty() then simple(Request.PauseQueue, "marshal: the queue is held: running jobs go on, nothing new starts")
+            else withId(rest, id -> simple(Request.PauseJob(id), s"marshal: job $id is paused"))
+        "resume" ->
+            if rest.isEmpty() then simple(Request.ResumeQueue, "marshal: the queue is released")
+            else withId(rest, id -> simple(Request.ResumeJob(id), s"marshal: job $id is resumed"))
         "ls" -> list()
         "status" -> rest match
             [] -> status()
             ["--json"] -> statusJson()
             _ -> complain("marshal: status takes --json or nothing")
+        "history" -> history(rest)
+        "stats" -> stats(rest)
         "tail" -> tail(rest)
         "top" -> top(rest)
         "stop" -> stop(rest)
@@ -148,6 +178,24 @@ withId([word], body) = word.toLongOption() match
     None -> complain(s"marshal: `$word` is not a job id")
 withId(_, _) = complain("marshal: give one job id")
 
+// `priority <id> <n>` or `priority <id> --urgent`.
+priority(args: Vector[string]) -> int
+    val (word, level) = args match
+        [w, l] -> (w, l)
+        _ -> return complain("marshal: priority takes a job id and a whole number, or --urgent")
+    val id = word.toLongOption() match
+        Some(n) -> n
+        None -> return complain(s"marshal: `$word` is not a job id")
+    val p = parsePriority(level) match
+        Some(p) -> p
+        None -> return complain(s"marshal: `$level` is not a priority: a whole number, or --urgent")
+    simple(Request.Prioritize(id, p), s"marshal: job $id is placed")
+
+// A priority as the command line gives it: a whole number, or `--urgent`.
+parsePriority(word: string) -> Option[marshal.Priority]
+parsePriority("--urgent") = Some(marshal.Urgent)
+parsePriority(word) = word.toIntOption().map(n -> marshal.Level(n))
+
 // Reads the options of `submit` and `run`, `[options] [--] command...`. The command begins after `--`, or at the first word that is
 // not an option.
 parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]) -> Result[JobSpec, string]
@@ -155,6 +203,7 @@ parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]
     var units: Option[int] = None
     var memory: long = 0
     var landing = false
+    var urgent = false
     var workDir = dir
     var deadline: Option[long] = None
     var i = 0
@@ -166,6 +215,10 @@ parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]
         if !word.startsWith("--") then break
         if word == "--landing"
             landing = true
+            i += 1
+            continue
+        if word == "--urgent"
+            urgent = true
             i += 1
             continue
         if i + 1 >= args.length() then return Err(s"`$word` needs a value")
@@ -189,7 +242,7 @@ parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]
     val cmd = args.drop(i)
     if cmd.isEmpty() then return Err("no command to run: give it after `--`")
     val k = kind.getOrElse(if cmd.exists(w -> w == "test") then "test" else "build")
-    Ok(JobSpec(k, units.getOrElse(marshal.defaultUnits(k)), memory, landing, workDir, deadline, cmd, env))
+    Ok(JobSpec(k, units.getOrElse(marshal.defaultUnits(k)), memory, landing, workDir, deadline, cmd, env, urgent))
 
 submit(args: Vector[string], andWait: bool) -> int
     val dir = process.currentDir().getOrElse(".")
