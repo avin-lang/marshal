@@ -9,8 +9,10 @@ module dev.avinlang.marshal.daemon
 // process and one that sleeps until its deadline, and both report back by message. So no state is
 // shared, and nothing polls: a `wait` is answered the moment the job's process ends.
 //
-// Sharing a take-slot directory is the one exception: take-slot's runs come and go without telling
-// marshal, so while jobs wait a ticker reads its files every few seconds (`Tick`).
+// Two things are looked at on a timer, since nothing tells the daemon when they change. Take-slot's
+// runs come and go without telling marshal, so where a take-slot directory is shared, while jobs
+// wait a ticker reads its files every few seconds (`Tick`). And what the running jobs hold in RAM is
+// measured every second (`Sample`), on a thread of its own, which reports back (`Measured`).
 import avin.collections.mutable.{Map as MutableMap}
 import avin.fs
 import avin.io.IoError
@@ -30,6 +32,7 @@ import dev.avinlang.marshal.{Submit, Wait, Kill, Status, Stop}
 import dev.avinlang.marshal.{Submitted, Ended, Jobs, Using, Viewed, Done, Failed}
 import dev.avinlang.marshal.{Overview, QueuedJob}
 import dev.avinlang.marshal.{Cancelled, TimedOut}
+import dev.avinlang.marshal.Resident
 
 data Message
     FromClient(request: Request, reply: Channel[Reply])
@@ -38,6 +41,9 @@ data Message
     Written
     Terminate
     Tick
+    Sample
+    // The resident bytes of each job's process tree, by job id.
+    Measured(sizes: Vector[(long, long)])
 
 // How long a job's processes have between TERM and KILL.
 val Grace: long = 5000
@@ -48,11 +54,17 @@ val Recent: int = 10
 // How often waiting jobs look again at what take-slot holds, in milliseconds.
 val TickMs: long = 3000
 
-// `arrived` is when it was submitted on the wall clock, in microseconds; `pid` its main process.
+// How often the running jobs' memory is measured, in milliseconds.
+val SampleMs: long = 1000
+
+// `arrived` is when it was submitted on the wall clock, in microseconds; `pid` its main process;
+// `startedAt` when it started on the wall clock, in milliseconds; `resident` its memory as measured.
 class Job(val id: long, val spec: JobSpec, val submittedMs: long, val arrived: long, val deadlineMs: long, val expectedMs: long, val log: string)
     var state = "queued"
     var pid: long = 0
     var startedMs: long = 0
+    var startedAt: long = 0
+    var resident = Resident(0, 0)
     var endedMs: long = 0
     var pgid: long = 0
     var outcome: Option[Outcome] = None
@@ -67,12 +79,14 @@ class Job(val id: long, val spec: JobSpec, val submittedMs: long, val arrived: l
             "running" -> now - startedMs
             _ -> endedMs - startedMs
         val queued = if state == "queued" then now - submittedMs else startedMs - submittedMs
-        JobInfo(id, spec.kind, spec.units, spec.memory, spec.landing, spec.dir, spec.cmd, state, outcome, killed, queued, elapsed, deadlineMs, log, sample)
+        val rss = if state == "running" then resident.now else 0
+        JobInfo(id, spec.kind, spec.units, spec.memory, spec.landing, spec.dir, spec.cmd, state, outcome, killed, queued, elapsed, deadlineMs, log, sample, rss, resident.peak, startedAt)
 
 // The daemon's state, owned by its own thread.
 // `slots` is the take-slot directory it shares, if any; `ticket` the name of its waiting ticket there.
 // `earlier` holds the last jobs earlier daemons ended, as the event log describes them, by id.
-class Daemon(val home: string, val config: Config, val events: Channel[Message], var nextId: long, val histories: MutableMap[string, Buffer[long]], val slots: Option[TakeSlot], val earlier: Vector[JobInfo])
+// `machineMemory` is the memory the machine has, 0 where it is not known.
+class Daemon(val home: string, val config: Config, val events: Channel[Message], var nextId: long, val histories: MutableMap[string, Buffer[long]], val slots: Option[TakeSlot], val earlier: Vector[JobInfo], val machineMemory: long)
     val jobs = MutableMap[long, Job]()
     val queue = Buffer[Job]()
     val running = Buffer[Job]()
@@ -81,6 +95,8 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
     var draining = false
     val stopReplies = Buffer[Channel[Reply]]()
     var ticket: Option[string] = None
+    // Whether a measurement of the running jobs' memory is under way.
+    var measuring = false
     val began: long = time.monotonic().toMillis()
 
     now() -> long = time.monotonic().toMillis()
@@ -103,6 +119,8 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
                 Due(id) -> due(id)
                 Written -> ()
                 Tick -> if queue.nonEmpty() then schedule()
+                Sample -> measure()
+                Measured(sizes) -> measured(sizes)
                 Terminate ->
                     eprintln("marshal: TERM received: stopping, killing what runs")
                     stop(true, false, None)
@@ -214,6 +232,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         for (name, value) in spec.env do command = command.withEnv(name, value)
         job.state = "running"
         job.startedMs = now()
+        job.startedAt = time.now().epochMillis()
         running += job
         command.start() match
             Ok(child) ->
@@ -289,6 +308,20 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         job.waiters.clear()
         schedule()
 
+    // Measures the running jobs' process trees on a thread of its own, one measurement at a time.
+    measure()
+        if measuring || running.isEmpty() then return
+        measuring = true
+        val groups = running.map(j -> (j.id, j.pgid)).toVector()
+        val events = self.events
+        spawn(() -> events.send(Measured(groups.map(g -> (g.0, marshal.groupResident(g.1))))))
+
+    // What a measurement found, for the jobs still running.
+    measured(sizes: Vector[(long, long)])
+        measuring = false
+        for (id, bytes) in sizes
+            jobs.get(id).foreach(job -> if job.state == "running" then job.resident = job.resident.measured(bytes))
+
     listing() -> Vector[JobInfo]
         val t = now()
         (running.toVector() ++ queue.toVector() ++ ended.takeRight(Recent)).map(j -> j.info(t))
@@ -325,7 +358,9 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             running.length(),
             queue.length(),
             running.find(j -> j.spec.landing).map(j -> j.id),
-            slots.flatMap(ts -> outside.map(o -> TakeSlotUse(ts.dir, o.units, o.waiting.length(), o.landing))))
+            slots.flatMap(ts -> outside.map(o -> TakeSlotUse(ts.dir, o.units, o.waiting.length(), o.landing))),
+            running.map(j -> j.resident.now).sum(),
+            machineMemory)
 
     // A stop asks for the daemon to end: at once when nothing is queued or running; with `force`,
     // after killing what runs and cancelling what waits; with `drain`, once what is queued and
@@ -379,11 +414,9 @@ terminate(pgid: long, sample: Option[string])
 
 // The process of the group that has used the most processor time.
 busiest(pgid: long) -> Option[long]
-    val pids = Command("pgrep", "-g", pgid.toString()).output() match
-        Ok(text) -> text.lines().map(l -> l.trim()).filter(l -> l.nonEmpty()).toVector()
-        Err(_) -> return None
+    val pids = marshal.groupMembers(pgid)
     if pids.isEmpty() then return None
-    val table = Command("ps", "-o", "pid=,time=", "-p", pids.mkString(",")).output().getOrElse("")
+    val table = Command("ps", "-o", "pid=,time=", "-p", pids.map(p -> p.toString()).mkString(",")).output().getOrElse("")
     var best: Option[(long, long)] = None
     for line in table.lines()
         val words = line.trim().split(" ").filter(w -> w.nonEmpty())
@@ -391,7 +424,7 @@ busiest(pgid: long) -> Option[long]
         (words(0).toLongOption(), marshal.parseCpuTime(words(1))) match
             (Some(pid), Some(cpu)) if best.forall(b -> cpu > b.1) -> best = Some((pid, cpu))
             _ -> ()
-    best.map(b -> b.0).orElse(pids(0).toLongOption())
+    best.map(b -> b.0).orElse(Some(pids(0)))
 
 // Serves one client: each request line is handed to the daemon's thread and its reply written back.
 connection(conn: UnixStream, events: Channel[Message])
@@ -418,9 +451,7 @@ connection(conn: UnixStream, events: Channel[Message])
     conn.close()
 
 // The machine's memory in bytes, or 0 where it cannot be asked.
-machineMemory() -> long = Command("sysctl", "-n", "hw.memsize").output() match
-    Ok(text) -> text.trim().toLongOption().getOrElse(0)
-    Err(_) -> 0
+machineMemory() -> long = process.totalMemory().getOrElse(0)
 
 // Runs the daemon for marshal's home directory `home` until it is stopped; answers the exit status.
 run(home: string) -> int
@@ -441,7 +472,8 @@ run(home: string) -> int
             return 1
     fs.removeDirAll(home + "/starting")
     val configText = if fs.exists(home + "/config.json") then fs.readText(home + "/config.json").getOrElse("") else ""
-    val config = marshal.readConfig(configText, machineMemory()) match
+    val machine = machineMemory()
+    val config = marshal.readConfig(configText, machine) match
         Ok(c) -> c
         Err(e) ->
             eprintln(s"marshal: $e")
@@ -496,9 +528,14 @@ run(home: string) -> int
                 threads.sleep(millis(TickMs))
                 events.send(Tick)
             ())
+    spawn(() ->
+        loop
+            threads.sleep(millis(SampleMs))
+            events.send(Sample)
+        ())
     val sharing = takeSlot.map(dir -> s", sharing take-slot's $dir").getOrElse("")
     eprintln(s"marshal: daemon ${process.pid()} listening at $home/sock; units ${config.budget.units}, memory ${marshal.formatSize(config.budget.memory)}$sharing, ${recovered.open.length()} jobs lost")
     // the jobs earlier daemons ended, the ones just recorded as lost among them
     val earlier = (recovered.ended ++ recovered.open.map(ev -> marshal.decodeJob(ev)).filter(r -> r.isOk()).map(r -> marshal.asLost(r.ok().get()))).sortBy(j -> j.id).takeRight(Recent)
-    Daemon(home, config, events, recovered.nextId, histories, slots, earlier).serve()
+    Daemon(home, config, events, recovered.nextId, histories, slots, earlier, machine).serve()
     0
