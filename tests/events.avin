@@ -23,6 +23,35 @@ eventShape()
     assertEq(j("pgid").asLong(), Some(long(77)))
     assertEq(marshal.decodeJob(j), Ok(info(3)))
 
+// A job that ran and was measured: `peak` the most its tree held, started at `at`.
+measured(id: long, peak: long, at: long) -> JobInfo =
+    JobInfo(id, "test", 4, 0, false, "/d", ["make", "it"], "done", Some(Outcome.Exited(0)), false, 5, 9000, 60000, s"/h/jobs/$id.log", None, 0, peak, at)
+
+@test("an ending event records the job's peak memory and when it started, and reads back as the job")
+peakInEndingEvent()
+    for peak in [long(0), long(1), long(812) * 1024 * 1024, 3072 * G, long.MaxValue]
+        val j = measured(4, peak, 1762521060000)
+        val ev = json.parse(line("finished", j, [("run_ms", Json.num(9000)), ("exit", Json.num(0))])).ok().get()
+        assertEq(ev("peak_rss").asLong(), Some(peak))
+        assertEq(ev("rss").asLong(), Some(long(0)))
+        assertEq(ev("started_at").asLong(), Some(long(1762521060000)))
+        assertEq(marshal.decodeJob(ev), Ok(j))
+        // the jobs recovered from the log keep their peaks
+        assertEq(marshal.recover([line("submitted", info(4)), line("finished", j)]).ended, [j])
+
+@test("an event written before memory was measured reads back with no rss, peak or start")
+eventWithoutMemory()
+    val old = "{\"ts\":1,\"event\":\"finished\",\"id\":3,\"kind\":\"test\",\"units\":4,\"mem\":0,\"landing\":false,\"dir\":\"/d\",\"cmd\":[\"make\",\"it\"],\"state\":\"done\",\"outcome\":null,\"killed\":false,\"queued_ms\":5,\"elapsed_ms\":0,\"deadline_ms\":60000,\"log\":\"/h/jobs/3.log\",\"sample\":null}"
+    val j = marshal.decodeJob(json.parse(old).ok().get()).ok().get()
+    assertEq((j.rss, j.peakRss, j.startedAt), (long(0), long(0), long(0)))
+    assert(marshal.decodeJob(json.parse(old.replace("\"sample\":null", "\"sample\":null,\"peak_rss\":\"big\"")).ok().get()).err().exists(e -> e.contains("`peak_rss` is not a whole number")))
+
+@test("a job lost with the daemon keeps the peak it was measured at and holds nothing now")
+lostKeepsPeak()
+    val running = JobInfo(2, "test", 4, 0, false, "/d", ["make", "it"], "running", None, false, 5, 0, 60000, "/h/jobs/2.log", None, 700, 900, 1762521060000)
+    val lost = marshal.asLost(running)
+    assertEq((lost.rss, lost.peakRss, lost.startedAt), (long(0), long(900), long(1762521060000)))
+
 @test("an empty log recovers to nothing, and ids start at 1")
 emptyLog()
     val r = marshal.recover([])
@@ -155,10 +184,10 @@ resultLines()
 listings()
     val rows = marshal.listing([info(1, state = "running"), info(12, "build", true)]).lines().toVector()
     assertEq(rows.length(), 3)
-    assertEq(rows(0), "ID  STATE    KIND    UNITS  MEM  ELAPSED  COMMAND")
-    assertEq(rows(1), "1   running  test    4      -    0ms      make it")
-    assertEq(rows(2), "12  queued   build*  4      -    0ms      make it")
-    assertEq(marshal.listing([]), "ID  STATE  KIND  UNITS  MEM  ELAPSED  COMMAND")
+    assertEq(rows(0), "ID  STATE    KIND    UNITS  RESV  ELAPSED  COMMAND")
+    assertEq(rows(1), "1   running  test    4      -     0ms      make it")
+    assertEq(rows(2), "12  queued   build*  4      -     0ms      make it")
+    assertEq(marshal.listing([]), "ID  STATE  KIND  UNITS  RESV  ELAPSED  COMMAND")
 
 @test("the status line shows units, memory, counts and the landing lane")
 usageLines()

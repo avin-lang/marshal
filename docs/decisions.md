@@ -167,6 +167,33 @@ user: tui pinned by commit until it has a tag, and `top` never starting a daemon
   killed magenta, lost magenta reversed, cancelled grey; time left yellow under a quarter or five
   minutes, red under a tenth or one minute.
 
+## Measured memory (branch `top-columns`)
+
+**Settled on the user's delegation 2026-11-07**; each says what else was weighed. Listing a group's
+members with `pgrep -g` is temporary, until avin binds Sysl's `group_members`.
+
+- **A job's tree is its process group**, listed by `pgrep -g` (the same listing the deadline's
+  stack sampler already used) and each member's `residentBytes` summed; a member gone since it was
+  listed counts 0. Why: every job runs in a group of its own that its programs join, the group is
+  what `kill` stops, and avin has no call that lists a group's or a process's children. Review:
+  replace `groupMembers` with avin's own listing once it has one; a program that leaves the group
+  (`setsid`) is not counted, as it is not killed. Alternatives: the job's main process alone (a
+  `sysl test` holds little itself; its workers hold the memory); walking parent ids from `ps`.
+- **Measured every second on a thread of its own**, which sends the sizes back to the daemon's
+  thread; one measurement at a time, and nothing measured while nothing runs. Why: a `pgrep` and a
+  call per process cost little, a second is what top refreshes at, and the daemon's thread never
+  waits on a child. Alternatives: measuring on each `snapshot` or `status` (no peak between
+  requests, and the request waits); a configurable period (no one has needed one).
+- **RSS is shown only while a job runs, PEAK always**: an ended job holds nothing; its peak is what
+  a kind's memory can be learned from, so every event carries `peak_rss` and an ending event's is
+  final. Sizes there are rounded (`812M`, `9.4G`), where RESV keeps the exact form `--mem` takes.
+  Alternatives: one `RSS/PEAK` column (narrower, harder to read); keeping the last measurement of an
+  ended job as its RSS.
+- **`ls` calls the declared memory RESV too**, as top does, so one word means one thing.
+- **The header's memory line adds `rss` and `machine`** after the reservation and budget, the
+  machine's memory left out where it is unknown; its bar stays the reservation against the budget,
+  since that is what the scheduler decides by.
+
 ## Restart (branch `exec-upgrade`)
 
 **Settled on the user's delegation 2026-11-07**; each says why and what else was weighed. Review
@@ -332,3 +359,75 @@ Gaps in Avin met here, left for Avin to close:
   built aside and renamed, so a reader must wait for the lock to go.
 - A process's descendants in groups of their own cannot be listed (`process.groupMembers`, coming):
   a runner killed outright leaves its step's group behind.
+
+## Waiting on events (branch `wait-until`)
+
+All **settled on the user's delegation 2026-11-07**. Review with the user: `--since` on `wait`
+(added beyond the request), and `job=a,b` answering with one event rather than an aggregate. The
+50 ms connection poll is an avin gap (no wait on a channel and a socket together).
+
+- **the daemon subscribes, on its own thread; a client never tails the log.** A `watch`
+  request is handled in the daemon's message loop, which is also the only code that appends to
+  `events.jsonl`: it reads what the log holds (for `--since`) and registers the watcher with no
+  append between, so an event is neither missed nor seen twice. Alternatives: tailing the file from
+  the client (misses events written between a stat and the open; polls); an event id the client
+  resumes from (needs ids on every line and a ring buffer in the daemon).
+- **each watcher has a bounded stream (256 replies), and a reader that fills it is dropped.**
+  The daemon uses `trySend`, never `send`: it must not block on a client. The dropped watcher's oldest
+  reply is removed to make room for a last reply saying events were dropped, and its stream closes;
+  the command prints that on standard error and exits 1, and `--since` recovers what was missed.
+  Alternatives: an unbounded buffer (a stopped reader grows the daemon without limit); blocking the
+  daemon (one stopped `events --follow` would freeze every job). `$MARSHAL_TEST_WATCH_BUFFER` sets the
+  size so a test can make a reader fall behind with a handful of events.
+- **a wait for an event condition sees only events after it asks, unless `--since` looks
+  back.** `ended` means "the next job to end", while `job=<id>` and `idle` are about state and are met
+  at once when already true. Why: otherwise `wait --until ended` would return immediately whenever
+  anything had ever ended. Alternative: replaying the last event by default (answers a different
+  question each time, depending on history).
+- **`job=<id>,<id>` answers with the ending event of the job that ended last**, one line like
+  the others, rather than an aggregate object. For jobs all ended before the wait, that is the latest
+  of their ending events in the log. Unknown ids are refused (exit 2): a wait for a job that was never
+  numbered would otherwise never end.
+- **`idle` is answered with a synthetic event** `{"ts":...,"event":"idle","running":0,"queued":0}`,
+  since no logged event says it. The daemon looks again after each job ends, once the scheduler has
+  started whatever could start, so a job ending as the next starts does not answer it.
+- **the outcome words** are `ok` (finished with exit 0), `failed` (finished with any other
+  exit status, or by a signal that was not `kill`), `timeout`, `killed` and `lost`, as the event names
+  say; `failed` as a condition is every ending but `ok`. `outcome=ok` with `failed` is refused as a
+  contradiction, and an outcome filter on `started` or `submitted` is refused, since only an ending
+  has an outcome.
+- **a restart is survived by asking again with `since`.** The connection closes without a
+  final reply when the daemon execs; the client connects again (never starting a daemon, unlike
+  `wait <id>`: a watch has nothing to ask of a daemon that was stopped) and asks with `since` set to
+  when the wait began, or to the time of the last event printed for `events --follow`, where a line
+  already printed at that time is not printed twice. Alternatives: the daemon carrying watchers in
+  `state.json` (a socket cannot be handed to the next image; the client has to reconnect anyway).
+- **exit statuses of `wait --until`**: 0 met, 124 timeout, 2 for a bad condition or an
+  unknown job, 1 for no daemon, a daemon that stopped, or a dropped reader. 124 is take-slot's and the
+  job timeout's too, which reads the same for a caller: the wait gave up.
+- **the stream's end of life is noticed by polling the connection.** A connection belongs
+  to one thread, so the thread writing a watch's replies cannot also wait for the client to leave;
+  it reads with a 50 ms timeout between writes, and a read that finds the end ends the watch. An
+  event therefore reaches a client up to 50 ms after it is logged. Alternative: a second thread
+  reading the connection, which Avin does not allow (see below).
+
+Known gap in Avin, left for it to fix rather than worked around here:
+
+- A thread cannot wait for a channel and a socket at once, and a connection cannot be read on one
+  thread while another writes it, so a daemon cannot be told promptly that a streaming client has
+  gone, nor can it sleep until either an event or that. `Channel` has no receive with a timeout and
+  `UnixStream` no poll; a `select` over both would remove the 50 ms wakeups.
+
+## A job's start time across a restart (branch `started-at-restart`)
+
+**Settled on the user's delegation 2026-11-07.**
+
+- **A job's wall-clock start (`started_at`) is stored once, when it starts, and saved and restored
+  as that exact number.** The daemon used to save `wall(startedMs)`, re-deriving the wall time from
+  its monotonic clock and an offset sampled at save time, so the value read back could differ by a
+  millisecond from the one reported before the restart. Now the saved value is the stored one, and
+  the monotonic `startedMs` (used only for elapsed time and the scheduler) is derived from it on
+  restore. A job cancelled while queued has no start time (0), and restores its `startedMs` from its
+  end. Why: a reported timestamp must not change because the daemon restarted. Alternatives: round
+  the derived value to the second (hides the drift, still wrong); keep only the monotonic clock and
+  report offsets (a restart loses the wall time).

@@ -13,8 +13,9 @@ val minuteMs: long = 60000
 
 // A job as a snapshot gives it.
 snapJob(id: long, state: string = "running", outcome: Option[Outcome] = None, elapsed: long = minuteMs, deadline: long = 20 * minuteMs,
-     units: int = 1, landing: bool = false, killed: bool = false, cmd: Vector[string] = ["sleep", "30"], memory: long = 0) -> JobInfo =
-    JobInfo(id, if landing then "test" else "build", units, memory, landing, "/w", cmd, state, outcome, killed, 0, elapsed, deadline, s"/h/jobs/$id.log", None)
+     units: int = 1, landing: bool = false, killed: bool = false, cmd: Vector[string] = ["sleep", "30"], memory: long = 0,
+     rss: long = 0, peak: long = 0) -> JobInfo =
+    JobInfo(id, if landing then "test" else "build", units, memory, landing, "/w", cmd, state, outcome, killed, 0, elapsed, deadline, s"/h/jobs/$id.log", None, rss, peak)
 
 queued(id: long, position: int, why: Why) -> QueuedJob = QueuedJob(snapJob(id, "queued", deadline = 45 * minuteMs), position, why)
 
@@ -79,7 +80,7 @@ headerLane()
     assert(!g.rowText(1).contains("take-slot"))
     assertEq(g.rowText(1).count(c -> c == '█'), 0)
     // an unbounded memory budget shows what is used, and no bar
-    assert(g.rowText(2).trim().endsWith("] 0"), g.rowText(2))
+    assert(g.rowText(2).trim().endsWith("] 0   rss 0"), g.rowText(2))
     val theirs = Overview(Usage(0, 12, 0, 100, 0, 0, None, Some(TakeSlotUse("/s", 0, 0, true))), 0, [], [], [])
     assert(drawn(viewing(theirs), 80, 10).rowText(0).contains("landing: take-slot"))
 
@@ -88,8 +89,9 @@ table()
     val g = drawn(viewing(full()), 100, 30)
     val head = rowOf(g, "ID STATE")
     assertEq(head, 4)
-    for word in ["ID", "STATE", "KIND", "UNITS", "MEM", "ELAPSED", "DEADLINE", "COMMAND"]
+    for word in ["ID", "STATE", "KIND", "UNITS", "RESV", "RSS", "PEAK", "ELAPSED", "DEADLINE", "COMMAND"]
         assert(g.rowText(head).contains(word), word)
+    assert(!g.rowText(head).contains("MEM"), g.rowText(head))
     val expected = [
         ("1", "running"), ("4", "landing"), ("10", "#1 no units"), ("11", "#2 behind 10"), ("12", "#3 take-slot"),
         ("9", "exit 0"), ("8", "exit 3"), ("7", "timeout"), ("6", "killed"), ("5", "lost"), ("3", "cancelled")]
@@ -105,8 +107,53 @@ table()
     // elapsed, and the time left: 20 minutes less one; a queued job shows the deadline it will have
     assert(first.contains("1:00") && first.contains("19:00"), first)
     assert(g.rowText(head + 3).contains("45:00"), g.rowText(head + 3))
-    assertEq(g.rowText(head + 6).slice(52, 60).trim(), "-")
-    assertEq(g.rowText(head + 1).slice(52, 60).trim(), "19:00")
+    assertEq(g.rowText(head + 6).slice(64, 72).trim(), "-")
+    assertEq(g.rowText(head + 1).slice(64, 72).trim(), "19:00")
+
+// The RESV, RSS and PEAK cells of row `y` of `g`, as the columns at 6, 5 and 5 cells place them.
+memoryCells(g: Grid, y: int) -> (string, string, string) =
+    val row = g.rowText(y)
+    (row.slice(36, 42).trim(), row.slice(43, 48).trim(), row.slice(49, 54).trim())
+
+@test("RESV is what a job declared, RSS what a running job's tree holds and PEAK the most it held, each - where there is none")
+memoryColumns()
+    val M: long = 1024 * 1024
+    val running = [
+        snapJob(1, memory = 1073741824, rss = 812 * M + 300 * 1024, peak = M * 9 * 1024 + 400 * M),
+        snapJob(2, memory = M * 29 * 1024),
+        snapJob(3, rss = 1023 * M + 600 * 1024, peak = M * 3 * 1024 * 1024)]
+    val recent = [
+        snapJob(9, "done", Some(Outcome.Exited(0)), peak = 512),
+        // an ended job holds nothing now, whatever was last measured
+        snapJob(8, "done", Some(Outcome.Exited(1)), rss = 100 * M, peak = 100 * M),
+        snapJob(7, "done", Some(Outcome.Cancelled))]
+    val o = Overview(Usage(3, 12, M * 30 * 1024, long.MaxValue, 3, 1, None, None), 0, running, [queued(10, 1, Why.NoUnits)], recent)
+    val g = drawn(viewing(o), 100, 30)
+    val head = rowOf(g, "ID STATE")
+    assertEq(g.rowText(head).slice(36, 54), "  RESV   RSS  PEAK")
+    assertEq(memoryCells(g, head + 1), ("1G", "812M", "9.4G"))
+    // measured before the first sample: nothing yet
+    assertEq(memoryCells(g, head + 2), ("29G", "-", "-"))
+    // large values round into the next unit and stay inside their columns
+    assertEq(memoryCells(g, head + 3), ("-", "1.0G", "3.0T"))
+    // a queued job has neither
+    assertEq(memoryCells(g, head + 4), ("-", "-", "-"))
+    assertEq(memoryCells(g, head + 5), ("-", "-", "512"))
+    assertEq(memoryCells(g, head + 6), ("-", "-", "100M"))
+    assertEq(memoryCells(g, head + 7), ("-", "-", "-"))
+    // the cells are right-aligned and the columns either side keep their places
+    assert(g.rowText(head + 1).slice(30, 35).trim() == "1", g.rowText(head + 1))
+    assertEq(g.rowText(head + 1).slice(55, 63).trim(), "1:00")
+
+@test("the header adds what the running jobs hold and the machine's memory, which is left out where unknown")
+headerMemory()
+    val known = Overview(Usage(5, 12, G, 4 * G, 1, 0, None, None, 9 * G + 400 * 1024 * 1024, 64 * G), 0, [], [], [])
+    assert(drawn(viewing(known), 100, 10).rowText(2).trim().endsWith("] 1G / 4G   rss 9.4G   machine 64G"), drawn(viewing(known), 100, 10).rowText(2))
+    val unknown = Overview(Usage(5, 12, G, 4 * G, 1, 0, None, None, 1536, 0), 0, [], [], [])
+    assert(drawn(viewing(unknown), 100, 10).rowText(2).trim().endsWith("] 1G / 4G   rss 1.5K"), drawn(viewing(unknown), 100, 10).rowText(2))
+    // the memory line is cut at a narrow screen, not wrapped
+    val narrow = drawn(viewing(known), 40, 10)
+    assertEq(narrow.rowText(2).charCount(), 40)
 
 @test("states and deadlines are coloured, and the selected row keeps its colours reversed")
 colours()

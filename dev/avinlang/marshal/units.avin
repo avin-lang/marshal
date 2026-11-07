@@ -28,7 +28,28 @@ formatSize(bytes: long) -> string
     while unit < 4 && n % Kibi == 0
         n /= Kibi
         unit += 1
-    n.toString() + ["", "K", "M", "G", "T"](unit)
+    n.toString() + sizeUnit(unit)
+
+// A measured size, rounded to the nearest for a narrow column: one decimal under ten of its unit and
+// whole numbers from there, in the largest unit it reaches: `512`, `1.5K`, `812M`, `9.4G`, `12G`.
+// What rounds up to 1024 of a unit is `1.0` of the next; at most five characters below 10000T.
+roundSize(bytes: long) -> string
+    if bytes <= 0 then return "0"
+    var unit = 0
+    var div: long = 1
+    while unit < 4 && bytes / div >= Kibi
+        div *= Kibi
+        unit += 1
+    if unit == 0 then return bytes.toString()
+    val whole = bytes / div
+    val rem = bytes % div
+    val tenths = whole * 10 + (rem * 10 + div / 2) / div
+    if tenths < 100 then return s"${tenths / 10}.${tenths % 10}" + sizeUnit(unit)
+    val rounded = whole + (if rem >= div - rem then 1 else 0)
+    if rounded >= Kibi && unit < 4 then return "1.0" + sizeUnit(unit + 1)
+    rounded.toString() + sizeUnit(unit)
+
+private sizeUnit(i: int) -> string = ["", "K", "M", "G", "T"](i)
 
 // A deadline as `--deadline` takes it: a bare whole number is minutes, and a number followed by
 // `s`, `m` or `h` is seconds, minutes or hours. Answers milliseconds; zero and anything else is None.

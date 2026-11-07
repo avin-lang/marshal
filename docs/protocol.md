@@ -18,11 +18,13 @@ thread of its own, so a client blocked in `wait` holds up nobody else.
 | `wait` | `id` | `{"ok":true,"job":JOB}` once the job has ended; at once for a job already ended, including one an earlier daemon ran |
 | `kill` | `id` | `{"ok":true}`; the job's end is what `wait` answers |
 | `ls` | | `{"ok":true,"jobs":[JOB...]}`: running, then queued, then the last ten ended |
-| `status` | | `{"ok":true,"units":U,"unit_budget":B,"mem":M,"mem_budget":MB,"running":R,"queued":Q,"landing":id or null,"take_slot":{"dir":D,"units":TU,"waiting":TW,"landing":bool} or null}` |
+| `status` | | `{"ok":true,"units":U,"unit_budget":B,"mem":M,"mem_budget":MB,"rss":RSS,"machine_mem":MM,"running":R,"queued":Q,"landing":id or null,"take_slot":{"dir":D,"units":TU,"waiting":TW,"landing":bool} or null}` |
 | `snapshot` | | `{"ok":true,"snapshot":{...}}`: the fields of the `status` reply but `running` and `queued`, then `uptime_ms` (how long the daemon has run), `running` (jobs), `queued` (jobs in queue order, each with `position` and `waits`, below) and `recent` (the last ten jobs that ended, earlier daemons' included, the latest first) |
 | `stop` | `force` (bool), `wait` (bool) | `{"ok":true}` once the daemon has removed its socket; refused while jobs run unless one of the two is true |
 | `version` | | `{"ok":true,"version":"<marshal's version>","pid":P}`, the daemon's process |
 | `restart` | | no reply when the daemon restarts: the connection closes as it replaces its program, and the client connects again and asks `version`, whose `pid` is the same; `{"ok":false,"error":...}` when it could not, and it goes on as it was |
+
+| `watch` | `cond` (string, the grammar below), `mode` (`once`, `past` or `follow`), `since` (milliseconds since 1970 or null), `since_id` (job id or null) | a stream: see below |
 
 Any request may be refused: `{"ok":false,"error":"<a sentence>"}`, for a request that is not JSON,
 lacks a field or has one of the wrong type, names no job, or asks for a job that can never fit.
@@ -32,14 +34,20 @@ lacks a field or has one of the wrong type, names no job, or asks for a job that
 ```json
 {"id":7,"kind":"test","units":4,"mem":0,"landing":false,"dir":"/work","cmd":["sysl","test","."],
  "state":"done","outcome":{"how":"exit","code":0},"killed":false,"queued_ms":12,
- "elapsed_ms":4200,"deadline_ms":2700000,"log":"/home/.marshal/jobs/7.log","sample":null}
+ "elapsed_ms":4200,"deadline_ms":2700000,"log":"/home/.marshal/jobs/7.log","sample":null,
+ "rss":0,"peak_rss":1879048192,"started_at":1762521060000}
 ```
 
 `state` is `queued`, `running` or `done`. `outcome` is null until the job ends, then one of
 `{"how":"exit","code":C}`, `{"how":"signal","signal":S}`, `{"how":"timeout"}`, `{"how":"cancelled"}`
 and `{"how":"lost"}`. `elapsed_ms` is the time queued for a queued job and the time run otherwise;
 `killed` says `marshal kill` or a forced stop ended it; `sample` names the stack sample of a job
-stopped at its deadline.
+stopped at its deadline. `rss` is the bytes the job's whole process tree (its process group) held
+in RAM at the daemon's last measurement, made every second, and 0 unless it runs; `peak_rss` the
+most any measurement found, kept once it ends; `started_at` when it started, in milliseconds since
+1970, 0 while it waits. The three are absent from what older daemons wrote and read as 0. In
+`status` and `snapshot`, `rss` is the running jobs' sum and `machine_mem` the machine's memory, 0
+where it is not known.
 
 A queued job in a snapshot is the job object with two fields more, and a third for one behind
 another job: `position`, its place in its lane's queue counted from 1 (landing jobs and development
@@ -70,6 +78,49 @@ refuses it with `no such request: `snapshot``.
 `killed` or `lost`, which adds `run_ms` and `exit`, the status `wait` exits with. `lost` also adds
 `pgid` and `group_alive`, whether the job's processes were still running when the new daemon looked.
 
+## Watching events
+
+`watch` is the one request answered by a stream: the daemon writes lines until the watch ends and
+then closes the connection, which serves nothing else. A line is `{"ok":true,"event":EVENT}` (one
+event, as the log holds it), `{"ok":true,"events":[EVENT...]}` (the events already logged that the
+request asked for, together), or `{"ok":false,"error":"..."}`, the last line of a stream that ends
+badly. `mode` says how it goes:
+
+| `mode` | Answers |
+| --- | --- |
+| `once` | the first event the condition is met by, one `event` line, then the end; the end of a `since` that finds one at once |
+| `past` | one `events` line with every logged event the condition lets through (from `since` and `since_id` on), then the end |
+| `follow` | the same `events` line when `since` or `since_id` asks for one, then an `event` line for each matching event as it is logged, until the client leaves |
+
+`since` is inclusive; `since_id` keeps the events of jobs numbered from it on. Without either, `once`
+and `follow` see only events logged after the daemon registers them, and `past` all of them.
+
+A condition `cond` is one of
+
+```
+idle
+job=<id>[,<id>...]
+<name>[:<filter>[,<filter>...]]
+```
+
+where `<name>` is `ended` (any ending event: `finished`, `timeout`, `killed`, `lost`), `failed`
+(an ending whose outcome is not `ok`), `landing-done` (an ending of a landing job), `started`,
+`submitted` or `any`, and a `<filter>` is `kind=<k>` or `outcome=<o>`, each at most once. An event's
+outcome is `ok` for `finished` with `exit` 0, `failed` for `finished` with any other `exit`, and the
+event's name for `timeout`, `killed` and `lost`; other events have none. `idle` and `job=` are
+conditions of state and so only for `once`: `idle` is met when nothing runs and nothing is queued,
+at once when it already is, and answered with `{"ts":T,"event":"idle","running":0,"queued":0}`;
+`job=` when every job has ended, at once when all have, and answered with the ending event of the
+job that ended last. A job id the daemon has not numbered is refused (`no job N`), and so is a
+condition that does not parse (`bad condition: ...`).
+
+The daemon never waits for a reader. Each stream holds 256 replies; a reader that lets it fill is
+dropped: its oldest reply is removed, its last line is `{"ok":false,"error":"events were dropped:
+..."}` and the connection closes. A daemon that stops ends its streams with `"the daemon stopped"`;
+one that restarts closes them without a last line, and the client connects again and asks with `since`
+(the time the wait began, or of the last event it saw), which finds what happened while the daemon
+handed over.
+
 ## The restart state
 
 `state.json` in marshal's home is what a restarting daemon hands to the program it becomes, which
@@ -78,7 +129,9 @@ reads and removes it. It is one JSON object: `version` and `pid` of the daemon t
 `ended` (the last ten, oldest first) and `ticket` (its waiting ticket in take-slot's directory, or
 null). Each job holds `id`, `spec` (the fields of a `submit` request but `op`), `state`,
 `submitted_at`, `arrived` (microseconds, take-slot's order), `started_at`, `ended_at`, `deadline_ms`,
-`expected_ms`, `log`, `pid`, `pgid`, `outcome`, `killed`, `timed_out` and `sample`. Times are
+`expected_ms`, `log`, `pid`, `pgid`, `outcome`, `killed`, `timed_out`, `sample`, `rss` (bytes the job's processes hold as last measured) and
+`peak_rss` (the most it has held); state written without `rss` or `peak_rss` reads them as 0, so the
+measured memory of a running job carries across a restart. Times are
 milliseconds since 1970, and a time that has not come yet is 0. A file written by another process
 than the one reading it is not taken over.
 
