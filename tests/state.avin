@@ -79,6 +79,12 @@ savedNumbers()
     stateRoundTrip(SavedState("v", long.MaxValue, long.MaxValue, long.MaxValue, long.MaxValue, [], [big], [], None))
     stateRoundTrip(stateOf([], [savedJob(id = 1, state = "running", startedAt = -5, deadlineMs = -1, pid = -1)], []))
 
+@test("a start time is saved as it is for a running, an ended and a never-started job, odd millisecond values included")
+savedStartTimes()
+    for at in [long(1_762_521_060_404), 1_762_521_060_405, 1_762_521_060_999, 1_762_521_061_000, 9_007_199_254_740_993]
+        stateRoundTrip(stateOf([], [savedJob(id = 1, state = "running", startedAt = at, pid = 5, pgid = 5)], [savedJob(id = 2, state = "done", startedAt = at, endedAt = at + 1)]))
+    stateRoundTrip(stateOf([savedJob(id = 3, state = "queued", startedAt = 0)], [], [savedJob(id = 4, state = "done", startedAt = 0, endedAt = 1_762_521_060_404)]))
+
 @test("a running job's memory, now and at its peak, and its start time read back")
 savedMemory()
     stateRoundTrip(stateOf([], [savedRunningJob(), savedJob(id = 3, state = "running", startedAt = 1_762_000_000_002, pid = 9, pgid = 9, rss = 123_456_789, peakRss = 987_654_321)], []))
