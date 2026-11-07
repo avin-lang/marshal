@@ -1,0 +1,1 @@
+package { name = "marshal-git-step", version = "0.1.0", description = "marshal's own git steps: merge, land, teardown and cleanup" }

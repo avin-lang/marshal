@@ -230,6 +230,8 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         val program = if spec.landing then Command(spec.cmd(0), spec.cmd.drop(1)*) else Command("nice", (["-n", "15"] ++ spec.cmd)*)
         var command = program.inDir(spec.dir).toFile(job.log).errorsToOutput().inNewGroup()
         for (name, value) in spec.env do command = command.withEnv(name, value)
+        // every job knows its id and marshal's home: a type's run keeps its files under both
+        command = command.withEnv("MARSHAL_JOB", job.id.toString()).withEnv("MARSHAL_HOME", home)
         job.state = "running"
         job.startedMs = now()
         running += job

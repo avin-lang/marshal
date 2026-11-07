@@ -1,0 +1,232 @@
+module dev.avinlang.marshal
+
+// What a type's run does, apart from running programs: reading the lines a step says to marshal,
+// deciding whether a step passed, following the transitions through the gate, bisecting a red batch,
+// and what the run comes to. The runner (`runner/runner.avin`) runs the programs and hands this
+// module what they did, so every decision here is tested without starting one.
+import json
+import json.Json
+
+// A line a step says to marshal on its standard output (docs/protocol.md, "The step protocol").
+data Said
+    // The step has reached a part of its work, for the log.
+    StepSaid(name: string)
+    // The code the step's success test reads in place of its process's own.
+    ExitSaid(code: int)
+    // The commit the pass built.
+    HeadSaid(sha: string)
+    // A failing test, and the branch to blame where the step knows it.
+    FailSaid(test: string, branch: Option[string])
+    // The step's verdict.
+    ResultSaid(green: bool)
+
+private isHex(s: string) -> bool = s.chars().forall(c -> '0' <= c <= '9' || 'a' <= c <= 'f')
+
+// What `line` says to marshal: None where it is not a protocol line (it does not start `=== ` and a
+// kind marshal knows), an `Err` with the reason where it is one of marshal's kinds written wrong.
+readSaid(line: string) -> Option[Result[Said, string]]
+    if !line.startsWith("=== ") then return None
+    val words = line.drop(4).trim().split(" ").filter(w -> w.nonEmpty())
+    if words.isEmpty() then return None
+    val rest = words.drop(1)
+    val said = words(0) match
+        "STEP" -> rest match
+            [] -> Err("`=== STEP` names the part the step has reached")
+            _ -> Ok(StepSaid(rest.mkString(" ")))
+        "EXIT" -> rest match
+            [n] -> n.toIntOption() match
+                Some(code) -> Ok(ExitSaid(code))
+                None -> Err(s"`=== EXIT $n`: an exit code is a whole number")
+            _ -> Err("`=== EXIT` gives one exit code")
+        "HEAD" -> rest match
+            [sha] if 4 <= sha.byteLength() <= 64 && isHex(sha) -> Ok(HeadSaid(sha))
+            _ -> Err("`=== HEAD` gives one commit, 4 to 64 lowercase hexadecimal digits")
+        "FAIL" -> rest match
+            [test] -> Ok(FailSaid(test, None))
+            [test, branch] -> Ok(FailSaid(test, Some(branch)))
+            _ -> Err("`=== FAIL` gives a test and, where it is known, the branch to blame")
+        "RESULT" -> rest match
+            ["green"] -> Ok(ResultSaid(true))
+            ["red"] -> Ok(ResultSaid(false))
+            _ -> Err("`=== RESULT` is green or red")
+        _ -> return None
+    Some(said)
+
+// How a step's process ended: its exit code (128 + the signal for one ended by a signal), whether
+// marshal stopped it at its deadline, and what it said.
+data StepEnd(code: int, timedOut: bool, said: Vector[Said])
+
+// Whether the step passed its success test. A step stopped at its deadline fails. The code read
+// is the last `=== EXIT` the step said, or its process's; it passes where the step's `exit`
+// allows it. A `=== RESULT red` fails the step whatever its code, and a step whose `result` is
+// set passes only where the last result it said is green.
+passed(s: Step, ran: StepEnd) -> bool
+    if ran.timedOut then return false
+    var code = ran.code
+    var result: Option[bool] = None
+    for said in ran.said
+        said match
+            ExitSaid(c) -> code = c
+            ResultSaid(g) -> result = Some(g)
+            _ -> ()
+    val exitOk = s.exits match
+        AnyExit -> true
+        Codes(cs) -> cs.contains(code)
+    exitOk && result != Some(false) && (!s.result || result == Some(true))
+
+// How a step came out.
+data StepOutcome
+    StepSkipped
+    StepPassed
+    StepFailed
+
+// What a run of steps came to: green, and whether a step asked to land; red at a step, and
+// whether it asked for a bisection; or stopped at a step that said `stop`, which passed or not.
+data PassEnd
+    Green(land: bool)
+    Red(bisect: bool, step: string)
+    Stopped(ok: bool, step: string)
+
+// Runs `steps` in order with `exec`, following each one's transition as `word` expands it:
+// `next` goes on (past the last step the steps are green), `land` ends them green asking to land,
+// `report` ends them as the step came out, `bisect` ends them red asking for a bisection, and `stop`
+// ends them where they are. A skipped step goes on.
+runSteps(steps: Vector[Step], exec: (Step) -> StepOutcome, word: (string) -> string) -> PassEnd
+    for s in steps
+        val outcome = exec(s)
+        if outcome == StepSkipped then continue
+        val ok = outcome == StepPassed
+        word(if ok then s.onSuccess else s.onFailure) match
+            "next" -> ()
+            "land" -> return Green(true)
+            "report" -> return if ok then Green(false) else Red(false, s.name)
+            "bisect" -> return Red(true, s.name)
+            _ -> return Stopped(ok, s.name)
+    Green(false)
+
+// Whether steps that came to `outcome` count as passing.
+isGreen(outcome: PassEnd) -> bool = outcome match
+    Green(_) -> true
+    Stopped(ok, _) -> ok
+    Red(_, _) -> false
+
+// A failing test a step reported, and the branch it blamed, if any.
+data Fail(test: string, branch: Option[string])
+
+// The failures among what steps said.
+failsOf(said: Vector[Said]) -> Vector[Fail] = said.flatMap(s -> s match
+    FailSaid(t, b) -> [Fail(t, b)]
+    _ -> Vector[Fail]())
+
+// One pass as the runner ran it: how the gate ended; how the land steps ended, where they ran;
+// the failures its steps reported; and the last commit a step reported.
+data PassResult(gate: PassEnd, landing: Option[PassEnd], fails: Vector[Fail], head: string)
+
+// What a whole run came to. `result` is `green` when everything the run was given passed and, where
+// the gate asked, landed; otherwise `red`, and `step` is where it ended. `landed` are the values of
+// the bisected parameter that landed; `culprits` the values blamed, which fail only `together`
+// where a bisection found no smaller set; `fails` every failure reported.
+data RunReport(
+    result: string,
+    step: string,
+    landed: Vector[string],
+    head: string,
+    culprits: Vector[string],
+    together: bool,
+    fails: Vector[Fail])
+
+// The values among `values` that the failures blame by name.
+blamed(fails: Vector[Fail], values: Vector[string]) -> Vector[string] =
+    values.filter(v -> fails.exists(f -> f.branch == Some(v)))
+
+// The values among `values`, which fail together, that make them fail, and whether they fail only
+// together. The two halves are tried apart with `red`, which runs the gate over the values it is
+// given and says whether it failed; a half that fails is searched in turn, and where neither half
+// fails alone, all of `values` are to blame together.
+culprits(values: Vector[string], red: (Vector[string]) -> bool) -> (Vector[string], bool)
+    if values.length() <= 1 then return (values, false)
+    val half = values.length() / 2
+    val a = values.take(half)
+    val b = values.drop(half)
+    val ra = red(a)
+    val rb = red(b)
+    if !ra && !rb then return (values, true)
+    val fromA = if ra then culprits(a, red) else (Vector[string](), false)
+    val fromB = if rb then culprits(b, red) else (Vector[string](), false)
+    (fromA.0 ++ fromB.0, fromA.1 || fromB.1)
+
+// What a pass that ran and whose gate passed comes to: green, with `values` landed where the land
+// steps ran and passed, red at the land step that failed.
+private afterGreen(p: PassResult, values: Vector[string]) -> RunReport = p.landing match
+    None -> RunReport("green", "", [], p.head, [], false, p.fails)
+    Some(e) if isGreen(e) -> RunReport("green", "", values, p.head, [], false, p.fails)
+    Some(e) -> RunReport("red", stepOf(e), [], p.head, [], false, p.fails)
+
+// The step steps that came to `outcome` ended at; none for steps that went to their end.
+stepOf(outcome: PassEnd) -> string = outcome match
+    Red(_, s) -> s
+    Stopped(_, s) -> s
+    Green(_) -> ""
+
+// The run of a type over `values`, the values of its bisected parameter (empty where it has none).
+// `pass(vs, land)` runs one pass with the parameter's values `vs`, going on to the land steps where
+// `land` and the gate asks. A gate that is red and asks for a bisection where the type has one
+// (`bisectable`) blames the values the failures name, where every failure names one of them;
+// otherwise it bisects them, and then runs a last pass over the values not blamed, which lands them
+// where it is green. The run is then red, since not everything landed.
+runType(bisectable: bool, values: Vector[string], pass: (Vector[string], bool) -> PassResult) -> RunReport
+    val first = pass(values, true)
+    if isGreen(first.gate) then return afterGreen(first, values)
+    val step = stepOf(first.gate)
+    val named = blamed(first.fails, values)
+    val bisecting = first.gate match
+        Red(b, _) -> b && bisectable
+        _ -> false
+    if !bisecting then return RunReport("red", step, [], first.head, named, false, first.fails)
+    val allNamed = first.fails.nonEmpty() && first.fails.forall(f -> f.branch.exists(b -> values.contains(b)))
+    val (bad, together) = if allNamed then (named, false) else culprits(values, vs -> !isGreen(pass(vs, false).gate))
+    val rest = values.filter(v -> !bad.contains(v))
+    if rest.isEmpty() then return RunReport("red", step, [], first.head, bad, together, first.fails)
+    val last = pass(rest, true)
+    if !isGreen(last.gate) then return RunReport("red", stepOf(last.gate), [], last.head, bad, together, first.fails ++ last.fails)
+    val r = afterGreen(last, rest)
+    RunReport("red", if r.result == "red" then r.step else step, r.landed, r.head, bad, together, first.fails ++ last.fails)
+
+// The report as `report.json` in the run's directory holds it.
+encodeReport(typeName: string, r: RunReport) -> Json = Json.obj(
+    ("type", Json.str(typeName)),
+    ("result", Json.str(r.result)),
+    ("step", Json.str(r.step)),
+    ("landed", Json.Arr(r.landed.map(v -> Json.str(v)))),
+    ("head", Json.str(r.head)),
+    ("culprits", Json.Arr(r.culprits.map(v -> Json.str(v)))),
+    ("together", Json.Bool(r.together)),
+    ("fails", Json.Arr(r.fails.map(f -> Json.obj(("test", Json.str(f.test)), ("branch", f.branch.map(b -> Json.str(b)).getOrElse(Json.Null)))))))
+
+// The report for people: the first line says how the run came out, the rest what landed and what
+// is to blame.
+renderReport(typeName: string, r: RunReport) -> string
+    val lines = Buffer[string]()
+    val at = if r.step.isEmpty() then "" else s" at step ${r.step}"
+    lines += s"marshal: $typeName ${r.result}$at"
+    if r.landed.nonEmpty() then lines += s"  landed ${r.landed.mkString(" ")}" + (if r.head.isEmpty() then "" else s" as ${r.head}")
+    if r.culprits.nonEmpty()
+        lines += (if r.together then s"  fail together: ${r.culprits.mkString(" ")}" else s"  to blame: ${r.culprits.mkString(" ")}")
+    for f in r.fails
+        lines += s"  failed: ${f.test}" + f.branch.map(b -> s" ($b)").getOrElse("")
+    lines.mkString("\n")
+
+// The 64-bit FNV-1a hash of the UTF-8 bytes of `text`, as 16 hexadecimal digits: part of the name
+// of a compiled step in the cache, which a change of its source changes.
+fnv1a(text: string) -> string
+    var h: long = -3750763034362895579
+    for b in text.bytes()
+        h = (h ^ long(b)) *% 1099511628211
+    val digits = "0123456789abcdef"
+    val out = Buffer[string]()
+    var shift: long = 60
+    while shift >= 0
+        val d = int((h >> shift) & 15)
+        out += digits.slice(d, d + 1)
+        shift -= 4
+    out.mkString("")
