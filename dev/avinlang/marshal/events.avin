@@ -5,9 +5,11 @@ module dev.avinlang.marshal
 // clock in milliseconds since 1970) and `event`, one of `submitted`, `released`, `started`,
 // `retry`, `finished`, `timeout`, `killed`, `cancelled` and `lost`; the last five end a job.
 // An ending event adds `run_ms` and `exit` (the status `wait` exits with), and `started` adds
-// `pgid`, the job's process group. `submitted` adds `spec`, the job's whole specification, which
-// `rerun` submits again. A job that is retried ends each attempt with an ending event and then
-// records `retry`, so its last event is an ending only once its last attempt has ended.
+// `pgid`, the job's process group. An ending event's `peak_rss` is the most memory the job's
+// process tree was measured holding, in bytes: what a kind's memory can be learned from.
+// `submitted` adds `spec`, the job's whole specification, which `rerun` submits again. A job that
+// is retried ends each attempt with an ending event and then records `retry`, so its last event is
+// an ending only once its last attempt has ended.
 import avin.collections.mutable.{Map as MutableMap}
 import json
 import json.Json
@@ -81,7 +83,7 @@ lostLine(ts: long, ev: Json, groupAlive: bool) -> Option[string] = decodeJob(ev)
     Err(_) -> None
 
 // Job `j` as its `lost` event describes it.
-asLost(j: JobInfo) -> JobInfo = JobInfo(j.id, j.kind, j.units, j.memory, j.landing, j.dir, j.cmd, "done", Some(Lost), j.killed, j.queuedMs, j.elapsedMs, j.deadlineMs, j.log, j.sample, [], j.attempt)
+asLost(j: JobInfo) -> JobInfo = JobInfo(j.id, j.kind, j.units, j.memory, j.landing, j.dir, j.cmd, "done", Some(Lost), j.killed, j.queuedMs, j.elapsedMs, j.deadlineMs, j.log, j.sample, 0, j.peakRss, j.startedAt, [], j.attempt)
 
 // The specification job `id` was submitted with, as its `submitted` event records it; None when the
 // log has no such event or it records none.

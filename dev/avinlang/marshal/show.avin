@@ -34,7 +34,7 @@ stateColumn(j: JobInfo) -> string = j.outcome match
 
 // The listing `ls` prints: a header, then one row per job.
 listing(jobs: Vector[JobInfo]) -> string
-    val rows = [["ID", "STATE", "KIND", "UNITS", "MEM", "ELAPSED", "COMMAND"]] ++ jobs.map(j -> [
+    val rows = [["ID", "STATE", "KIND", "UNITS", "RESV", "ELAPSED", "COMMAND"]] ++ jobs.map(j -> [
         j.id.toString(),
         stateColumn(j),
         if j.landing then j.kind + "*" else j.kind,

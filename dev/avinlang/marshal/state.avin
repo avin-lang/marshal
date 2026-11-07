@@ -26,6 +26,8 @@ data SavedJob(
     killed: bool,
     timedOut: bool,
     sample: Option[string],
+    rss: long,
+    peakRss: long,
     attempt: int = 1,
     retryAt: long = 0)
 
@@ -64,12 +66,19 @@ encodeSavedJob(j: SavedJob) -> Json = Json.obj(
     ("killed", Json.Bool(j.killed)),
     ("timed_out", Json.Bool(j.timedOut)),
     ("sample", orNull(j.sample, s -> Json.str(s))),
+    ("rss", Json.num(j.rss)),
+    ("peak_rss", Json.num(j.peakRss)),
     ("attempt", Json.num(j.attempt)),
     ("retry_at", Json.num(j.retryAt)))
 
 private whole(j: Json, key: string) -> Result[long, string] = j.get(key).flatMap(v -> v.asLong()) match
     Some(n) -> Ok(n)
     None -> Err(s"`$key` is not a whole number")
+
+// A whole number that state written before it was recorded does not have: 0.
+private wholeOrZero(j: Json, key: string) -> Result[long, string] = j.get(key) match
+    None | Some(Json.Null) -> Ok(0)
+    Some(_) -> whole(j, key)
 
 private text(j: Json, key: string) -> Result[string, string] = j.get(key).flatMap(v -> v.asString()) match
     Some(s) -> Ok(s)
@@ -108,8 +117,10 @@ decodeSavedJob(j: Json) -> Result[SavedJob, string]
         truth(j, "killed")?,
         truth(j, "timed_out")?,
         maybeText(j, "sample")?,
+        wholeOrZero(j, "rss")?,
+        wholeOrZero(j, "peak_rss")?,
         if j.has("attempt") then int(whole(j, "attempt")?) else 1,
-        if j.has("retry_at") then whole(j, "retry_at")? else 0))
+        wholeOrZero(j, "retry_at")?))
 
 encodeState(s: SavedState) -> Json = Json.obj(
     ("version", Json.str(s.version)),

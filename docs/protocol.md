@@ -14,7 +14,7 @@ thread of its own, so a client blocked in `wait` holds up nobody else.
 | `wait` | `id` | `{"ok":true,"job":JOB}` once the job has ended; at once for a job already ended, including one an earlier daemon ran |
 | `kill` | `id` | `{"ok":true}`; the job's end is what `wait` answers |
 | `ls` | | `{"ok":true,"jobs":[JOB...]}`: running, then queued, then held, then the last ten ended |
-| `status` | | `{"ok":true,"units":U,"unit_budget":B,"mem":M,"mem_budget":MB,"running":R,"queued":Q,"landing":id or null,"take_slot":{"dir":D,"units":TU,"waiting":TW,"landing":bool} or null}` |
+| `status` | | `{"ok":true,"units":U,"unit_budget":B,"mem":M,"mem_budget":MB,"rss":RSS,"machine_mem":MM,"running":R,"queued":Q,"landing":id or null,"take_slot":{"dir":D,"units":TU,"waiting":TW,"landing":bool} or null}` |
 | `snapshot` | | `{"ok":true,"snapshot":{...}}`: the fields of the `status` reply but `running` and `queued`, then `uptime_ms` (how long the daemon has run), `running` (jobs), `queued` (jobs in queue order, each with `position` and `waits`, below), `recent` (the last ten jobs that ended, earlier daemons' included, the latest first) and `held` (jobs held for others or waiting to retry, oldest first; a reader takes a missing one as `[]`) |
 | `stop` | `force` (bool), `wait` (bool) | `{"ok":true}` once the daemon has removed its socket; refused while jobs run unless one of the two is true |
 | `version` | | `{"ok":true,"version":"<marshal's version>","pid":P}`, the daemon's process |
@@ -29,7 +29,7 @@ lacks a field or has one of the wrong type, names no job, or asks for a job that
 {"id":7,"kind":"test","units":4,"mem":0,"landing":false,"dir":"/work","cmd":["sysl","test","."],
  "state":"done","outcome":{"how":"exit","code":0},"killed":false,"queued_ms":12,
  "elapsed_ms":4200,"deadline_ms":2700000,"log":"/home/.marshal/jobs/7.log","sample":null,
- "holds":[],"attempt":1}
+ "rss":0,"peak_rss":1879048192,"started_at":1762521060000,"holds":[],"attempt":1}
 ```
 
 `state` is `held` (waiting for the jobs in `holds` to end), `queued`, `running`, `retrying`
@@ -37,9 +37,15 @@ lacks a field or has one of the wrong type, names no job, or asks for a job that
 the job ends, then one of `{"how":"exit","code":C}`, `{"how":"signal","signal":S}`,
 `{"how":"timeout"}`, `{"how":"cancelled"}`, `{"how":"lost"}` and
 `{"how":"dependency-failed","after":D}`, a job cancelled because job `D`, which it was held for, did
-not exit 0. A reader takes a missing `holds` as `[]` and a missing `attempt` as 1. `elapsed_ms` is the time queued for a queued job and the time run otherwise;
+not exit 0. A reader takes a missing `holds` as `[]` and a missing `attempt` as 1. `elapsed_ms` is
+the time queued for a queued job and the time run otherwise;
 `killed` says `marshal kill` or a forced stop ended it; `sample` names the stack sample of a job
-stopped at its deadline.
+stopped at its deadline. `rss` is the bytes the job's whole process tree (its process group) held
+in RAM at the daemon's last measurement, made every second, and 0 unless it runs; `peak_rss` the
+most any measurement found, kept once it ends; `started_at` when it started, in milliseconds since
+1970, 0 while it waits. The three are absent from what older daemons wrote and read as 0. In
+`status` and `snapshot`, `rss` is the running jobs' sum and `machine_mem` the machine's memory, 0
+where it is not known.
 
 A queued job in a snapshot is the job object with two fields more, and a third for one behind
 another job: `position`, its place in its lane's queue counted from 1 (landing jobs and development
@@ -84,8 +90,10 @@ reads and removes it. It is one JSON object: `version` and `pid` of the daemon t
 null) and `held` (jobs held for others or waiting to retry; missing reads as `[]`). Each job holds
 `id`, `spec` (the fields of a `submit` request but `op`), `state`, `submitted_at`, `arrived`
 (microseconds, take-slot's order), `started_at`, `ended_at`, `deadline_ms`, `expected_ms`, `log`,
-`pid`, `pgid`, `outcome`, `killed`, `timed_out`, `sample`, `attempt` (missing reads as 1) and
-`retry_at` (when a job waiting to retry queues again; missing reads as 0). A held job's `holds` are
-not saved: the new program looks again at each job in its `after`. Times are
+`pid`, `pgid`, `outcome`, `killed`, `timed_out`, `sample`, `rss` (bytes the job's processes hold as
+last measured), `peak_rss` (the most it has held), `attempt` and `retry_at` (when a job waiting to
+retry queues again). State written without `rss`, `peak_rss` or `retry_at` reads them as 0, and
+without `attempt` as 1, so the measured memory of a running job carries across a restart. A held
+job's `holds` are not saved: the new program looks again at each job in its `after`. Times are
 milliseconds since 1970, and a time that has not come yet is 0. A file written by another process
 than the one reading it is not taken over.

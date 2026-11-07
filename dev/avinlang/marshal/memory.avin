@@ -1,0 +1,35 @@
+module dev.avinlang.marshal
+
+// What a running job holds in RAM, as the daemon measures it: every so often the processes of the
+// job's process group are listed, and their resident bytes summed.
+import avin.io.IoError
+import avin.process
+import avin.process.Command
+
+// The resident bytes of the processes `pids`, summed by asking `resident` of each. A process that has
+// ended since it was listed answers NotFound and counts nothing; so does one that cannot be asked.
+residentOf(pids: Vector[long], resident: (long) -> Result[long, IoError]) -> long
+    var total: long = 0
+    for pid in pids
+        resident(pid) match
+            Ok(n) -> total += n
+            Err(_) -> ()
+    total
+
+// The resident bytes of a job's whole process tree: every process of its group `pgid`, the group it
+// was started in and every program it starts joins.
+groupResident(pgid: long) -> long = residentOf(groupMembers(pgid), pid -> process.residentBytes(pid))
+
+// The processes of the process group `pgid`, as `pgrep` lists them; none where it cannot be asked.
+groupMembers(pgid: long) -> Vector[long]
+    if pgid <= 0 then return []
+    Command("pgrep", "-g", pgid.toString()).output() match
+        Ok(text) -> text.lines().map(l -> l.trim().toLongOption()).filter(o -> o.isDefined()).map(o -> o.get()).toVector()
+        Err(_) -> []
+
+// A job's memory as measured: the latest measurement, and the most any has found.
+data Resident(now: long, peak: long)
+
+impl Resident
+    // After a measurement of `bytes`: the peak never goes down.
+    measured(bytes: long) -> Resident = Resident(bytes, if bytes > peak then bytes else peak)
