@@ -223,3 +223,56 @@ Known gaps in Avin, left for it to fix rather than worked around here:
 - `avin.fs` has no rename, so `state.json` is written in place rather than written aside and
   renamed. Only the program the daemon becomes reads it, after the write has finished, so this
   matters only to a daemon killed mid-write, which leaves a partial file that nothing reads.
+
+## Holding and ordering the queue (branch `pause-resume`)
+
+**Proposed.** Pausing a running job (SIGSTOP/SIGCONT to its group) waits for `avin.signal` to
+have the stop and continue signals; it will add `marshal pause <id>` / `resume <id>` beside these.
+
+- **`marshal pause` and `resume` with no id hold and release the whole queue, both lanes.** Running
+  jobs go on; nothing new starts, landing jobs included, until `resume`. Why: holding the machine
+  for a moment (a benchmark, a hand-run release step) means nothing new at all, and the landing
+  job is the heaviest. Alternatives: holding the development lane only (a landing job would still
+  start under someone who asked for quiet); a separate `hold-queue` command (the words `pause` and
+  `resume` are freed for one job by giving it an id).
+- **A held queue keeps no take-slot ticket**, so take-slot's runs are not kept waiting behind jobs
+  that cannot start. The queue's jobs keep their arrival times and take their places again on
+  `resume`. Alternative: keeping the ticket (take-slot would wait on marshal for as long as the
+  queue is held).
+- **`pause` of a held queue and `resume` of one not held are refused** (exit 2), as are `hold` of a
+  held job and `release` of one not held. Why: a script learns its view of the daemon was wrong.
+  Alternative: both idempotent and silent (two people holding the queue would not learn that the
+  first `resume` released it for both).
+- **A held job keeps its place in the queue and the scheduler does not see it**: the jobs behind it
+  start as if it were not there, and none waits behind it as the head. Alternative: a held job
+  stays the head and blocks its lane (that is `pause`).
+- **Holding and priority are for queued jobs only**; a running or ended job is refused, naming its
+  state. `kill` cancels a held job like any other queued one.
+- **Priority is an int, 0 by default; higher goes first in its lane, equal ones by arrival.** The
+  queue is kept in that order, so `ls`, `top` and `status --json` list it as it will run. Why: a
+  number covers "this one first" and "this one last" alike and is easy to script. Alternatives:
+  moving a job to a position (positions shift as jobs start, so a script cannot name one reliably);
+  a few named classes (no room between them).
+- **`--urgent` is an argument of `priority`, not of `submit`: one above the highest priority now
+  queued in the job's lane, and at least 1**, so later jobs at the default go behind it. It is the
+  front of the normal queue; landing jobs have a lane of their own, which always goes first, so an
+  urgent development job is still behind every landing job. A later `--urgent` goes in front of an
+  earlier one. It is refused when a job in the lane already holds the highest int. Review with the
+  user: whether `submit --urgent` is wanted too (a job submitted may start at once, so placing it
+  afterwards is the race-free order only while it waits), and whether urgent jobs should queue
+  first come first served among themselves. Alternatives: a fixed urgent level (two urgent jobs tie
+  and a third number is needed); max + 1 without the floor of 1 (an urgent job could sit behind
+  jobs submitted later).
+- **Priority orders marshal's own jobs; take-slot's waiters keep their places by arrival.** An
+  urgent job does not pass a take-slot run that arrived before it, and marshal's ticket in
+  take-slot's directory is its first eligible job's arrival. Why: take-slot orders its waiters by
+  arrival alone and cannot be told of a priority. Alternative: the ticket taking the earliest
+  arrival of any queued job (take-slot's later runs would wait behind a job that is not first).
+- **`stop --wait` is refused while the queue, or a queued job, is held** and anything is queued,
+  since it would wait for ever; `--force` still stops. Holding a job while the daemon drains is
+  refused for the same reason.
+- **The held queue, held jobs and priorities go into `state.json`** (`queue_held`, and `held` and
+  `priority` on each job), so a restart keeps them; a state from before reads as nothing held,
+  every priority 0. Jobs carry `held` and `priority` in the protocol and the event log, and the
+  log records `held`, `released` and `prioritized`. Holding the queue is not a job's event, and
+  goes to the daemon's log.

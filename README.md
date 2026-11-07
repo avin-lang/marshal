@@ -14,6 +14,11 @@ marshal run [options] -- <command...>      submit and wait: prints the log's pat
 marshal wait <id>                          waits for the job; prints one result line; exits with the job's status
 marshal ls                                 jobs queued, running and recently ended
 marshal kill <id>                          stops the job's whole process tree (a queued job is cancelled)
+marshal hold <id>                          keeps a queued job from starting; it keeps its place
+marshal release <id>                       lets a held job start again
+marshal priority <id> <n> | --urgent       places a queued job in its lane: higher first; --urgent: the front
+marshal pause                              holds the queue: running jobs go on, nothing new starts in either lane
+marshal resume                             releases the queue
 marshal tail <id> [-f] [-n <lines>]        the job's log; -f follows it until the job ends
 marshal status [--json]                    the budget in use; --json: one JSON object with the running and queued jobs
 marshal top                                a live view of the budget, the jobs and their logs; h lists its keys
@@ -68,12 +73,24 @@ ends: nothing polls.
   minutes; until it has 3 runs it is 20 minutes for a build, 45 for a test, 30 for anything else and
   120 for a landing job. A job past its deadline has its busiest process sampled (`sample`, 5
   seconds, to `jobs/<id>.sample.txt`), then its group gets TERM and, 5 seconds later, KILL.
-- **Events.** `events.jsonl` records every job's `submitted`, `started` and ending (`finished`,
-  `timeout`, `killed`, `lost`), each with the time, the job, and its durations and exit status.
+- **Events.** `events.jsonl` records every job's `submitted`, `held`, `released`, `prioritized`,
+  `started` and ending (`finished`, `timeout`, `killed`, `lost`), each with the time, the job, and its durations and exit status.
   Deadlines are learned from it, and a daemon that starts after one died records the jobs that
   were left open as `lost`.
+- **Holding and ordering the queue.** `marshal pause` holds the whole queue: running jobs go on,
+  and nothing new starts in either lane, landing jobs included, until `marshal resume`. `marshal
+  hold <id>` keeps one queued job from starting; it keeps its place and the jobs behind it start as
+  if it were not there, until `marshal release <id>`. `marshal priority <id> <n>` places a queued
+  job in its lane's queue: higher priorities first, every job starting at 0, equal ones by arrival.
+  `--urgent` puts it at the front of its lane: one above the highest priority queued there, and
+  above 0, so later jobs at the default go behind it. A development job never passes the landing
+  lane this way: landing jobs have a queue of their own, which always goes first. Priority orders
+  marshal's own jobs; take-slot's waiters keep their places by arrival. `ls` shows a held job as
+  `held`, and `status` and `top` say when the queue is held. A held queue, held jobs and priorities
+  survive `marshal restart`. `kill` cancels a held job like any queued one.
 - **Stopping.** `marshal stop` or a TERM signal ends the daemon. TERM, like `stop --force`, kills
-  what runs and cancels what waits.
+  what runs and cancels what waits. `stop --wait` is refused while the queue or a queued job is
+  held, since what waits would never end.
 - **Restarting.** `marshal restart` upgrades the daemon without stopping anything: after `brew
   upgrade marshal`, it makes the running daemon the program now installed at its own path. The
   daemon writes its jobs, queue and take-slot ticket to `state.json` in marshal's home and replaces
@@ -91,7 +108,8 @@ ends: nothing polls.
 
 `marshal status --json` prints `units`, `unit_budget`, `mem`, `mem_budget`, `landing` (the landing
 job's id or null), `take_slot` (`dir`, `units`, `waiting`, `landing`, or null when none is shared),
-and `running` and `queued`, arrays of jobs as [the protocol](docs/protocol.md) writes them.
+`queue_held`, and `running` and `queued`, arrays of jobs as [the protocol](docs/protocol.md) writes
+them.
 
 ## Sharing the machine with take-slot.zsh
 
@@ -127,7 +145,8 @@ against its own budget. `marshal status` shows what take-slot holds.
 `snapshot` request).
 
 - **Header**: the daemon's uptime, how many jobs run and wait, who holds the landing lane (a job,
-  take-slot, or free) and the filter; a bar of the unit budget, marshal's development units in green
+  take-slot, or free), `(held)` in red beside the queued count while the queue is held, and the
+  filter; a bar of the unit budget, marshal's development units in green
   and take-slot's share after them in magenta, with take-slot's waiting runs; a bar of the memory
   budget.
 - **Jobs**: running jobs, then queued ones, then the last ten that ended, the latest first. ELAPSED
@@ -135,8 +154,8 @@ against its own budget. `marshal status` shows what take-slot holds.
   deadline or five minutes and red under a tenth or one minute, and a queued job's deadline to come.
   A queued job's STATE is its place in its lane's queue and why it waits: `no units`, `no memory`,
   `lane busy` (another landing job holds the lane), `take-slot` (what take-slot.zsh holds or a
-  take-slot run ahead of it), or `behind N`, when it would fit but would delay job N at the head of
-  the queue. An ended job shows `exit N` (green for 0, red otherwise), `killed`, `timeout`, `lost`,
+  take-slot run ahead of it), `behind N`, when it would fit but would delay job N at the head of
+  the queue, `held` (`marshal hold`) or `queue held` (`marshal pause`). An ended job shows `exit N` (green for 0, red otherwise), `killed`, `timeout`, `lost`,
   `cancelled` or `signal N`.
 - **Keys**: Up, Down, PgUp, PgDn, Home, End select a job; Enter or `l` opens its log in a pane under
   the table, following the end as it grows (PgUp, PgDn, Home, End scroll it while it is open, Esc

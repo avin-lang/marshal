@@ -1,0 +1,145 @@
+module tests
+
+// Holding and ordering the queue, below the daemon: the requests on the wire, how priorities order
+// jobs, what `--urgent` gives, why a held or queue-held job waits, and how the command line and
+// `ls`, `status` and `top` say it.
+import json
+import dev.avinlang.marshal
+import dev.avinlang.marshal.{JobInfo, Overview, QueuedJob, Reply, Request, Started, Usage, Waiting, Why}
+import dev.avinlang.marshal.{Held, QueueHeld, NoUnits, Behind, Starting, LaneBusy}
+import dev.avinlang.marshal.cli
+import dev.avinlang.marshal.top
+
+// `budget`, `hour`, `dev`, `land` and `roundTrip` are the scheduler's and the protocol's tests'.
+
+private infoOf(id: long, held: bool = false, priority: int = 0) -> JobInfo =
+    JobInfo(id, "build", 1, 0, false, "/d", ["make"], "queued", None, false, 0, 0, 60000, s"/h/jobs/$id.log", None, held, priority)
+
+private refused(text: string, why: string) = marshal.decodeRequest(text) match
+    Err(e) -> assert(e.contains(why), s"$text: $e")
+    Ok(r) -> fail(s"$text read as $r")
+
+@test("pause, resume, hold, release and priority read back as themselves")
+controlRequests()
+    roundTrip(Request.PauseQueue)
+    roundTrip(Request.ResumeQueue)
+    for id in [long(1), long.MaxValue]
+        roundTrip(Request.Hold(id))
+        roundTrip(Request.Release(id))
+    for n in [0, 1, -1, int.MaxValue, int.MinValue]
+        roundTrip(Request.Prioritize(3, marshal.Level(n)))
+    roundTrip(Request.Prioritize(3, marshal.Urgent))
+
+@test("the control requests' wire text: op alone for the queue, id for a job, a number or \"urgent\" for a priority")
+controlWire()
+    assertEq(marshal.encodeRequest(Request.PauseQueue).render(), "{\"op\":\"pause\"}")
+    assertEq(marshal.encodeRequest(Request.ResumeQueue).render(), "{\"op\":\"resume\"}")
+    assertEq(marshal.encodeRequest(Request.Hold(4)).render(), "{\"op\":\"hold\",\"id\":4}")
+    assertEq(marshal.encodeRequest(Request.Release(4)).render(), "{\"op\":\"release\",\"id\":4}")
+    assertEq(marshal.encodeRequest(Request.Prioritize(4, marshal.Level(-2))).render(), "{\"op\":\"priority\",\"id\":4,\"priority\":-2}")
+    assertEq(marshal.encodeRequest(Request.Prioritize(4, marshal.Urgent)).render(), "{\"op\":\"priority\",\"id\":4,\"priority\":\"urgent\"}")
+
+@test("a control request that is not one is refused with a reason")
+badControlRequests()
+    refused("{\"op\": \"hold\"}", "`id` is missing")
+    refused("{\"op\": \"release\", \"id\": \"2\"}", "`id` is not a whole number")
+    refused("{\"op\": \"priority\", \"id\": 2}", "`priority` is missing")
+    refused("{\"op\": \"priority\", \"priority\": 2}", "`id` is missing")
+    refused("{\"op\": \"priority\", \"id\": 2, \"priority\": \"high\"}", "`priority` is not a whole number or \"urgent\"")
+    refused("{\"op\": \"priority\", \"id\": 2, \"priority\": 1.5}", "`priority` is not a whole number")
+    refused("{\"op\": \"priority\", \"id\": 2, \"priority\": 3000000000}", "`priority` is not a whole number")
+    refused("{\"op\": \"priority\", \"id\": 2, \"priority\": null}", "`priority` is not a whole number")
+    refused("{\"op\": \"pause\", \"id\": 2}", "`pause` holds the whole queue and takes no `id`")
+    refused("{\"op\": \"resume\", \"id\": 2}", "`resume` releases the whole queue and takes no `id`")
+
+@test("a job's held mark and priority travel with it, and a job without them reads as not held, priority 0")
+jobFields()
+    for j in [infoOf(1), infoOf(2, true, 5), infoOf(3, false, int.MinValue), infoOf(4, true, int.MaxValue)]
+        assertEq(marshal.decodeJob(marshal.encodeJob(j)), Ok(j))
+    val old = marshal.encodeJob(infoOf(1, true, 9)).render().replace(",\"held\":true,\"priority\":9", "")
+    assertEq(marshal.decodeJob(json.parse(old).ok().get()), Ok(infoOf(1)))
+    assert(marshal.decodeJob(json.parse(old.replace("}", ",\"held\":\"yes\"}")).ok().get()).isErr())
+
+@test("status and snapshot replies say whether the queue is held, and an older reply reads as not held")
+usageQueueHeld()
+    for held in [true, false]
+        val u = Usage(1, 12, 0, 64, 1, 2, None, None, held)
+        assertEq(marshal.decodeReply(marshal.encodeReply(Reply.Using(u)).render()), Ok(Reply.Using(u)))
+        val o = Overview(Usage(1, 12, 0, 64, 0, 1, None, None, held), 5, [], [QueuedJob(infoOf(1), 1, if held then QueueHeld else Starting)], [])
+        assertEq(marshal.decodeReply(marshal.encodeReply(Reply.Viewed(o)).render()), Ok(Reply.Viewed(o)))
+        assertEq(marshal.statusJson(u, [])("queue_held").asBool(), Some(held))
+    assertEq(marshal.decodeReply("{\"ok\":true,\"units\":0,\"unit_budget\":12,\"mem\":0,\"mem_budget\":0,\"running\":0,\"queued\":0,\"landing\":null,\"take_slot\":null}"),
+        Ok(Reply.Using(Usage(0, 12, 0, 0, 0, 0, None, None, false))))
+
+@test("higher priorities go first, equal ones keep their order, the extremes included")
+priorityOrdering()
+    assertEq(marshal.priorityOrder(1, 0), -1)
+    assertEq(marshal.priorityOrder(0, 1), 1)
+    assertEq(marshal.priorityOrder(3, 3), 0)
+    assertEq(marshal.priorityOrder(int.MaxValue, int.MinValue), -1)
+    assertEq(marshal.priorityOrder(int.MinValue, int.MaxValue), 1)
+    val queue = [(long(1), 0), (long(2), 5), (long(3), 0), (long(4), -1), (long(5), 5), (long(6), int.MinValue), (long(7), int.MaxValue)].toBuffer()
+    queue.sortInPlaceWith((a, b) -> marshal.priorityOrder(a.1, b.1))
+    assertEq(queue.map(e -> e.0).toVector(), [long(7), long(2), long(5), long(1), long(3), long(4), long(6)])
+
+@test("urgent is one above the highest priority queued, and above the default 0 when every other is lower or none is queued")
+urgentLevels()
+    assertEq(marshal.urgentPriority([]), Some(1))
+    assertEq(marshal.urgentPriority([0, 0]), Some(1))
+    assertEq(marshal.urgentPriority([-5, -1]), Some(1))
+    assertEq(marshal.urgentPriority([3, 9, 2]), Some(10))
+    assertEq(marshal.urgentPriority([int.MaxValue - 1]), Some(int.MaxValue))
+    assertEq(marshal.urgentPriority([int.MinValue]), Some(1))
+    assertEq(marshal.urgentPriority([1, int.MaxValue]), None)
+
+@test("a held job waits as held, keeps its place, and the jobs behind it start as if it were not there")
+heldJobWaits()
+    val queue = [dev(1, 8), dev(2, 4), dev(3, 4)]
+    // job 1 held: 2 and 3 fit and start; job 1 is still first in the lane
+    assertEq(marshal.queueWaits(budget, [], queue, [1], false, 0), [(long(1), 1, Held), (long(2), 2, Starting), (long(3), 3, Starting)])
+    // nothing held: 1 and 2 start, 3 waits for units
+    assertEq(marshal.queueWaits(budget, [], queue, [], false, 0), [(long(1), 1, Starting), (long(2), 2, Starting), (long(3), 3, NoUnits)])
+    // a held job is not the head that others wait behind
+    // job 3 outlasts the wait of whichever job is the head, so it may not backfill
+    val big = [dev(1, 12), dev(2, 12), Waiting(3, 1, 0, false, 2 * hour, 30)]
+    val busy = [Started(9, 6, 0, false, 0, hour)]
+    assertEq(marshal.queueWaits(budget, busy, big, [], false, 0)(2), (long(3), 3, Behind(1)))
+    assertEq(marshal.queueWaits(budget, busy, big, [1], false, 0)(2), (long(3), 3, Behind(2)))
+    assertEq(marshal.queueWaits(budget, busy, big, [1, 2], false, 0)(2), (long(3), 3, Starting))
+
+@test("a held queue holds every job in both lanes, a held job still saying held")
+queueHeldWaits()
+    val queue = [land(1), dev(2, 1), land(3), dev(4, 1)]
+    assertEq(marshal.queueWaits(budget, [], queue, [4], true, 0), [(long(1), 1, QueueHeld), (long(2), 1, QueueHeld), (long(3), 2, QueueHeld), (long(4), 2, Held)])
+    assertEq(marshal.queueWaits(budget, [], queue, [], false, 0), [(long(1), 1, Starting), (long(2), 1, Starting), (long(3), 2, LaneBusy), (long(4), 2, Starting)])
+    assertEq(marshal.queueWaits(budget, [], [], [], true, 0), Vector[(long, int, Why)]())
+
+@test("the scheduler never sees a held job: what it starts is what it would start without it")
+heldNotScheduled()
+    val queue = [dev(1, 8), dev(2, 4), dev(3, 4)]
+    assertEq(marshal.schedule(budget, [], queue.filter(w -> w.id != 1), 0), [long(2), long(3)])
+
+@test("priority takes a whole number or --urgent, and nothing else")
+cliPriority()
+    assertEq(cli.parsePriority("--urgent"), Some(marshal.Urgent))
+    assertEq(cli.parsePriority("0"), Some(marshal.Level(0)))
+    assertEq(cli.parsePriority("-3"), Some(marshal.Level(-3)))
+    assertEq(cli.parsePriority("2147483647"), Some(marshal.Level(int.MaxValue)))
+    for bad in ["", "urgent", "-urgent", "1.5", "2147483648", "x", "--urgent2"]
+        assertEq(cli.parsePriority(bad), None)
+
+@test("ls shows a held job as held, and status and top say the queue is held")
+shownHeld()
+    assertEq(marshal.stateColumn(infoOf(1, true)), "held")
+    assertEq(marshal.stateColumn(infoOf(1)), "queued")
+    assert(marshal.listing([infoOf(1, true)]).contains("held"))
+    assertEq(marshal.usageLine(Usage(0, 12, 0, long.MaxValue, 0, 2, None, None, true)), "units 0/12, memory 0, 0 running, 2 queued, landing lane free; the queue is held: nothing new starts")
+    assertEq(top.whyText(Held), "held")
+    assertEq(top.whyText(QueueHeld), "queue held")
+
+@test("hold, release, priority, pause and resume each have their usage, and pause and resume take no arguments")
+controlUsage()
+    for name in ["hold", "release", "priority", "pause", "resume"]
+        assert(cli.commandHelp(name).isDefined(), name)
+        assert(cli.asksHelp(name, ["--help"]), name)
+    assert(cli.commandHelp("priority").get().contains("--urgent"))

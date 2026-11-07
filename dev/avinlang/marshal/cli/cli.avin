@@ -24,6 +24,11 @@ val Commands: Vector[(string, string)] = [
     ("wait <id>", "waits for the job; prints one result line; exits with the job's status"),
     ("ls", "jobs queued, running and recently ended"),
     ("kill <id>", "stops the job's whole process tree (a queued job is cancelled)"),
+    ("hold <id>", "keeps a queued job from starting; it keeps its place"),
+    ("release <id>", "lets a held job start again"),
+    ("priority <id> <n> | --urgent", "places a queued job in its lane: higher first; --urgent: the front"),
+    ("pause", "holds the queue: running jobs go on, nothing new starts in either lane"),
+    ("resume", "releases the queue"),
     ("tail <id> [-f] [-n <lines>]", "the job's log; -f follows it until the job ends"),
     ("status [--json]", "the budget in use; --json: one JSON object with the running and queued jobs"),
     ("top", "a live view of the budget, the jobs and their logs; h lists its keys"),
@@ -94,6 +99,11 @@ main(args: Vector[string]) -> int
         "run" -> submit(rest, true)
         "wait" -> withId(rest, id -> waitFor(id))
         "kill" -> withId(rest, id -> simple(Request.Kill(id), s"marshal: job $id is being stopped"))
+        "hold" -> withId(rest, id -> simple(Request.Hold(id), s"marshal: job $id is held"))
+        "release" -> withId(rest, id -> simple(Request.Release(id), s"marshal: job $id is released"))
+        "priority" -> priority(rest)
+        "pause" -> if rest.isEmpty() then simple(Request.PauseQueue, "marshal: the queue is held: running jobs go on, nothing new starts") else complain("marshal: pause takes no arguments")
+        "resume" -> if rest.isEmpty() then simple(Request.ResumeQueue, "marshal: the queue is released") else complain("marshal: resume takes no arguments")
         "ls" -> list()
         "status" -> rest match
             [] -> status()
@@ -132,6 +142,24 @@ withId([word], body) = word.toLongOption() match
     Some(id) -> body(id)
     None -> complain(s"marshal: `$word` is not a job id")
 withId(_, _) = complain("marshal: give one job id")
+
+// `priority <id> <n>` or `priority <id> --urgent`.
+priority(args: Vector[string]) -> int
+    val (word, level) = args match
+        [w, l] -> (w, l)
+        _ -> return complain("marshal: priority takes a job id and a whole number, or --urgent")
+    val id = word.toLongOption() match
+        Some(n) -> n
+        None -> return complain(s"marshal: `$word` is not a job id")
+    val p = parsePriority(level) match
+        Some(p) -> p
+        None -> return complain(s"marshal: `$level` is not a priority: a whole number, or --urgent")
+    simple(Request.Prioritize(id, p), s"marshal: job $id is placed")
+
+// A priority as the command line gives it: a whole number, or `--urgent`.
+parsePriority(word: string) -> Option[marshal.Priority]
+parsePriority("--urgent") = Some(marshal.Urgent)
+parsePriority(word) = word.toIntOption().map(n -> marshal.Level(n))
 
 // Reads the options of `submit` and `run`, `[options] [--] command...`. The command begins after `--`, or at the first word that is
 // not an option.

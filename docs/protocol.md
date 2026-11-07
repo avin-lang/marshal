@@ -13,10 +13,15 @@ thread of its own, so a client blocked in `wait` holds up nobody else.
 | `wait` | `id` | `{"ok":true,"job":JOB}` once the job has ended; at once for a job already ended, including one an earlier daemon ran |
 | `kill` | `id` | `{"ok":true}`; the job's end is what `wait` answers |
 | `ls` | | `{"ok":true,"jobs":[JOB...]}`: running, then queued, then the last ten ended |
-| `status` | | `{"ok":true,"units":U,"unit_budget":B,"mem":M,"mem_budget":MB,"running":R,"queued":Q,"landing":id or null,"take_slot":{"dir":D,"units":TU,"waiting":TW,"landing":bool} or null}` |
+| `status` | | `{"ok":true,"units":U,"unit_budget":B,"mem":M,"mem_budget":MB,"running":R,"queued":Q,"landing":id or null,"take_slot":{"dir":D,"units":TU,"waiting":TW,"landing":bool} or null,"queue_held":bool}`; a reply without `queue_held` (an older daemon's) reads as false |
 | `snapshot` | | `{"ok":true,"snapshot":{...}}`: the fields of the `status` reply but `running` and `queued`, then `uptime_ms` (how long the daemon has run), `running` (jobs), `queued` (jobs in queue order, each with `position` and `waits`, below) and `recent` (the last ten jobs that ended, earlier daemons' included, the latest first) |
 | `stop` | `force` (bool), `wait` (bool) | `{"ok":true}` once the daemon has removed its socket; refused while jobs run unless one of the two is true |
 | `version` | | `{"ok":true,"version":"<marshal's version>","pid":P}`, the daemon's process |
+| `pause` | (no `id`) | `{"ok":true}`; the queue is held: nothing new starts in either lane. Refused when it is already held or the daemon is stopping |
+| `resume` | (no `id`) | `{"ok":true}`; the queue is released and what fits starts. Refused when it is not held |
+| `hold` | `id` | `{"ok":true}`; the queued job is kept from starting and keeps its place. Refused for a job that runs or has ended, or is already held, or while the daemon drains |
+| `release` | `id` | `{"ok":true}`; the held job may start again. Refused for a job that is not held |
+| `priority` | `id`, `priority` (an int, or `"urgent"`) | `{"ok":true}`; the queued job is placed in its lane: higher first, equal ones by arrival; `"urgent"` is one above the highest priority queued in its lane and above 0. Refused for a job that runs or has ended, and for `"urgent"` behind a job at the highest int |
 | `restart` | | no reply when the daemon restarts: the connection closes as it replaces its program, and the client connects again and asks `version`, whose `pid` is the same; `{"ok":false,"error":...}` when it could not, and it goes on as it was |
 
 Any request may be refused: `{"ok":false,"error":"<a sentence>"}`, for a request that is not JSON,
@@ -27,14 +32,16 @@ lacks a field or has one of the wrong type, names no job, or asks for a job that
 ```json
 {"id":7,"kind":"test","units":4,"mem":0,"landing":false,"dir":"/work","cmd":["sysl","test","."],
  "state":"done","outcome":{"how":"exit","code":0},"killed":false,"queued_ms":12,
- "elapsed_ms":4200,"deadline_ms":2700000,"log":"/home/.marshal/jobs/7.log","sample":null}
+ "elapsed_ms":4200,"deadline_ms":2700000,"log":"/home/.marshal/jobs/7.log","sample":null,
+ "held":false,"priority":0}
 ```
 
 `state` is `queued`, `running` or `done`. `outcome` is null until the job ends, then one of
 `{"how":"exit","code":C}`, `{"how":"signal","signal":S}`, `{"how":"timeout"}`, `{"how":"cancelled"}`
 and `{"how":"lost"}`. `elapsed_ms` is the time queued for a queued job and the time run otherwise;
 `killed` says `marshal kill` or a forced stop ended it; `sample` names the stack sample of a job
-stopped at its deadline.
+stopped at its deadline. `held` says a queued job is kept from starting, and `priority` places it
+in its lane's queue; a job without them (from an older daemon or log) is not held, at priority 0.
 
 A queued job in a snapshot is the job object with two fields more, and a third for one behind
 another job: `position`, its place in its lane's queue counted from 1 (landing jobs and development
@@ -48,6 +55,8 @@ jobs queue apart), and `waits`, why it has not started:
 | `take-slot` | it waits for what take-slot holds: its runs' units or landing lock, or a take-slot run that arrived before it |
 | `behind` | it fits, but starting it would delay the job at the head of the queue, whose id is `behind` |
 | `starting` | it starts at the daemon's next look |
+| `held` | it is held (`hold`) |
+| `queue-held` | the whole queue is held (`pause`) |
 
 **Across a restart.** The daemon writes every reply it has given before it restarts, and carries
 out no request that arrives while it hands over: those connections close unanswered. So a
@@ -61,7 +70,7 @@ refuses it with `no such request: `snapshot``.
 ## The event log
 
 `events.jsonl` holds one line per step, the job object above preceded by `ts` (milliseconds since
-1970) and `event`: `submitted`, `started` (adds `pgid` and `pid`, the job's main process), and one ending, `finished`, `timeout`,
+1970) and `event`: `submitted`, `held`, `released` and `prioritized` (a queued job's), `started` (adds `pgid` and `pid`, the job's main process), and one ending, `finished`, `timeout`,
 `killed` or `lost`, which adds `run_ms` and `exit`, the status `wait` exits with. `lost` also adds
 `pgid` and `group_alive`, whether the job's processes were still running when the new daemon looked.
 
@@ -70,9 +79,9 @@ refuses it with `no such request: `snapshot``.
 `state.json` in marshal's home is what a restarting daemon hands to the program it becomes, which
 reads and removes it. It is one JSON object: `version` and `pid` of the daemon that wrote it,
 `saved_at`, `began_at` (when the daemon first started), `next_id`, `queue` (in order), `running`,
-`ended` (the last ten, oldest first) and `ticket` (its waiting ticket in take-slot's directory, or
-null). Each job holds `id`, `spec` (the fields of a `submit` request but `op`), `state`,
+`ended` (the last ten, oldest first), `ticket` (its waiting ticket in take-slot's directory, or
+null) and `queue_held` (false when absent). Each job holds `id`, `spec` (the fields of a `submit` request but `op`), `state`,
 `submitted_at`, `arrived` (microseconds, take-slot's order), `started_at`, `ended_at`, `deadline_ms`,
-`expected_ms`, `log`, `pid`, `pgid`, `outcome`, `killed`, `timed_out` and `sample`. Times are
+`expected_ms`, `log`, `pid`, `pgid`, `outcome`, `killed`, `timed_out`, `sample`, `held` and `priority` (false and 0 when absent). Times are
 milliseconds since 1970, and a time that has not come yet is 0. A file written by another process
 than the one reading it is not taken over.

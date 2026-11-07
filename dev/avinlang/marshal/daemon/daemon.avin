@@ -65,6 +65,9 @@ class Job(val id: long, val spec: JobSpec, val submittedMs: long, val arrived: l
     var killed = false
     var timedOut = false
     var sample: Option[string] = None
+    // a queued job kept from starting, and its place in the queue
+    var held = false
+    var priority = 0
     val waiters = Buffer[Channel[Reply]]()
 
     info(now: long) -> JobInfo =
@@ -73,7 +76,7 @@ class Job(val id: long, val spec: JobSpec, val submittedMs: long, val arrived: l
             "running" -> now - startedMs
             _ -> endedMs - startedMs
         val queued = if state == "queued" then now - submittedMs else startedMs - submittedMs
-        JobInfo(id, spec.kind, spec.units, spec.memory, spec.landing, spec.dir, spec.cmd, state, outcome, killed, queued, elapsed, deadlineMs, log, sample)
+        JobInfo(id, spec.kind, spec.units, spec.memory, spec.landing, spec.dir, spec.cmd, state, outcome, killed, queued, elapsed, deadlineMs, log, sample, held, priority)
 
 // The daemon's state, owned by its own thread.
 // `slots` is the take-slot directory it shares, if any; `ticket` the name of its waiting ticket there.
@@ -93,6 +96,8 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
     // While a restart hands over, nothing starts and requests wait for its outcome.
     var restarting = false
     var termed = false
+    // While the queue is held, nothing new starts in either lane.
+    var queueHeld = false
 
     now() -> long = time.monotonic().toMillis()
 
@@ -141,6 +146,11 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             Stop(force, drain) -> stop(force, drain, Some(reply))
             Request.Hello -> give(reply, Hi(reportedVersion(), process.pid()))
             Request.Restart -> restart(reply)
+            Request.PauseQueue -> give(reply, holdQueue(true))
+            Request.ResumeQueue -> give(reply, holdQueue(false))
+            Request.Hold(id) -> give(reply, hold(id, true))
+            Request.Release(id) -> give(reply, hold(id, false))
+            Request.Prioritize(id, p) -> give(reply, prioritize(id, p))
 
     submit(spec: JobSpec) -> Reply
         if stopping || draining then return Failed("the daemon is stopping and takes no new jobs")
@@ -157,6 +167,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         val job = Job(id, spec, now(), time.now().epochMicros, deadline, expected, s"$home/jobs/$id.log")
         jobs(id) = job
         queue += job
+        order()
         record("submitted", job)
         schedule()
         Submitted(id, job.log)
@@ -188,18 +199,74 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
                 Done
             _ -> Failed(s"job $id has already ended")
 
+    // Holds the queue (`on`) or releases it. A release starts what fits at once.
+    holdQueue(on: bool) -> Reply
+        if on
+            if stopping || draining then return Failed("the daemon is stopping")
+            if queueHeld then return Failed("the queue is already held")
+        elif !queueHeld then return Failed("the queue is not held")
+        queueHeld = on
+        eprintln(if on then "marshal: the queue is held" else "marshal: the queue is released")
+        schedule()
+        Done
+
+    // The queued job `id`, or why there is none: a job that runs or has ended is refused, saying
+    // `what` only a queued job may have done to it.
+    queued(id: long, what: string) -> Result[Job, string] = jobs.get(id) match
+        Some(j) if j.state == "queued" -> Ok(j)
+        Some(j) if j.state == "running" -> Err(s"job $id is running: only a queued job $what")
+        Some(_) -> Err(s"job $id has already ended")
+        None -> Err(if 1 <= id < nextId then s"job $id has already ended" else s"no job $id")
+
+    // Holds the queued job `id` (`on`) or releases it. A release starts it when it fits.
+    hold(id: long, on: bool) -> Reply
+        val job = queued(id, if on then "is held" else "is released") match
+            Ok(j) -> j
+            Err(e) -> return Failed(e)
+        if on && draining then return Failed("the daemon is stopping")
+        if job.held == on then return Failed(if on then s"job $id is already held" else s"job $id is not held")
+        job.held = on
+        record(if on then "held" else "released", job)
+        schedule()
+        Done
+
+    // Places the queued job `id` by priority, which may start it at once.
+    prioritize(id: long, p: marshal.Priority) -> Reply
+        val job = queued(id, "is given a priority") match
+            Ok(j) -> j
+            Err(e) -> return Failed(e)
+        val level = p match
+            marshal.Level(n) -> n
+            marshal.Urgent ->
+                val others = queue.filter(j -> j.id != id && j.spec.landing == job.spec.landing).map(j -> j.priority).toVector()
+                marshal.urgentPriority(others) match
+                    Some(n) -> n
+                    None -> return Failed(s"a job ahead of job $id already has the highest priority there is")
+        job.priority = level
+        order()
+        record("prioritized", job)
+        schedule()
+        Done
+
+    // Orders the queue by priority, the highest first, keeping arrival order among equals.
+    order() = queue.sortInPlaceWith((a, b) -> marshal.priorityOrder(a.priority, b.priority))
+
     // Starts what the scheduler says fits. With a take-slot directory, the decision and the
     // registration of what starts are made under take-slot's mutex, as take-slot makes its own, and
-    // the daemon's ticket there is brought up to date.
+    // the daemon's ticket there is brought up to date. A held queue starts nothing and keeps no
+    // ticket.
     schedule()
         if stopping || restarting then return
         slots match
-            None -> plan(marshal.NoOutside)
+            None -> if !queueHeld then plan(marshal.NoOutside)
             Some(ts) ->
                 ts.lock()
-                plan(ts.scan(ours(), config.budget.units))
+                if !queueHeld then plan(ts.scan(ours(), config.budget.units))
                 keepTicket(ts)
                 ts.unlock()
+
+    // The queued jobs the scheduler weighs: those not held.
+    eligible() -> Vector[Job] = queue.filter(j -> !j.held).toVector()
 
     // The pids of the running jobs.
     ours() -> Vector[long] = running.map(j -> j.pid).toVector()
@@ -207,7 +274,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
     plan(outside: Outside)
         val t = now()
         val started = running.map(j -> Started(j.id, j.spec.units, j.spec.memory, j.spec.landing, j.startedMs, j.expectedMs)).toVector()
-        val waiting = queue.map(j -> Waiting(j.id, j.spec.units, j.spec.memory, j.spec.landing, j.expectedMs, j.arrived)).toVector()
+        val waiting = eligible().map(j -> Waiting(j.id, j.spec.units, j.spec.memory, j.spec.landing, j.expectedMs, j.arrived))
         for id in marshal.schedule(config.budget, started, waiting, t, outside)
             val job = jobs(id)
             // a job that could not be started schedules again, which may have started this one
@@ -219,7 +286,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
     // While a development job waits, take-slot sees a ticket of the first one's arrival, so its
     // later runs wait behind it as they wait behind each other.
     keepTicket(ts: TakeSlot)
-        val head = queue.find(j -> !j.spec.landing)
+        val head = if queueHeld then None else eligible().find(j -> !j.spec.landing)
         val want = head.map(j -> marshal.ticketName(j.arrived, ts.me))
         if want == ticket then return
         ticket.foreach(name -> ts.removeTicket(name))
@@ -341,7 +408,8 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         val t = now()
         val started = running.map(j -> Started(j.id, j.spec.units, j.spec.memory, j.spec.landing, j.startedMs, j.expectedMs)).toVector()
         val waiting = queue.map(j -> Waiting(j.id, j.spec.units, j.spec.memory, j.spec.landing, j.expectedMs, j.arrived)).toVector()
-        val queued = marshal.waits(config.budget, started, waiting, t, outside.getOrElse(marshal.NoOutside)).map(w ->
+        val held = queue.filter(j -> j.held).map(j -> j.id).toVector()
+        val queued = marshal.queueWaits(config.budget, started, waiting, held, queueHeld, t, outside.getOrElse(marshal.NoOutside)).map(w ->
             QueuedJob(jobs(w.0).info(t), w.1, w.2))
         val recent = (earlier ++ ended.takeRight(Recent).map(j -> j.info(t))).takeRight(Recent).reverse()
         Overview(usageWith(outside), t - began, running.map(j -> j.info(t)).toVector(), queued, recent)
@@ -356,7 +424,8 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             running.length(),
             queue.length(),
             running.find(j -> j.spec.landing).map(j -> j.id),
-            slots.flatMap(ts -> outside.map(o -> TakeSlotUse(ts.dir, o.units, o.waiting.length(), o.landing))))
+            slots.flatMap(ts -> outside.map(o -> TakeSlotUse(ts.dir, o.units, o.waiting.length(), o.landing))),
+            queueHeld)
 
     // A stop asks for the daemon to end: at once when nothing is queued or running; with `force`,
     // after killing what runs and cancelling what waits; with `drain`, once what is queued and
@@ -365,6 +434,11 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         val busy = running.length() + queue.length()
         if busy > 0 && !force && !drain
             reply.foreach(r -> give(r, Failed(s"${running.length()} running and ${queue.length()} queued: `marshal stop --wait` waits for them and `--force` kills them")))
+            return
+        // a held job, or any queued one while the queue is held, would never end
+        if drain && !force && queue.nonEmpty() && (queueHeld || queue.exists(j -> j.held))
+            val what = if queueHeld then "the queue is held" else "a queued job is held"
+            reply.foreach(r -> give(r, Failed(s"$what, so `--wait` would wait for ever: release it first, or `--force`")))
             return
         reply.foreach(r -> stopReplies += r)
         if force
@@ -475,9 +549,9 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             j.id, j.spec, j.state, wall(j.submittedMs), j.arrived,
             if j.state == "queued" then 0 else wall(j.startedMs),
             if j.state == "done" then wall(j.endedMs) else 0,
-            j.deadlineMs, j.expectedMs, j.log, j.pid, j.pgid, j.outcome, j.killed, j.timedOut, j.sample)
+            j.deadlineMs, j.expectedMs, j.log, j.pid, j.pgid, j.outcome, j.killed, j.timedOut, j.sample, j.held, j.priority)
         SavedState(reportedVersion(), process.pid(), wallNow, wall(began), nextId,
-            queue.map(saved).toVector(), running.map(saved).toVector(), ended.takeRight(Recent).map(saved).toVector(), ticket)
+            queue.map(saved).toVector(), running.map(saved).toVector(), ended.takeRight(Recent).map(saved).toVector(), ticket, queueHeld)
 
     // Takes over what an earlier image of this daemon saved: its jobs, queue and ticket. The
     // running jobs are still this process's children, so they are waited for by pid; one that was
@@ -489,6 +563,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         began = mono(s.beganAt)
         if s.nextId > nextId then nextId = s.nextId
         ticket = s.ticket
+        queueHeld = s.queueHeld
         val rebuilt = (sj: SavedJob) ->
             val job = Job(sj.id, sj.spec, mono(sj.submittedAt), sj.arrived, sj.deadlineMs, sj.expectedMs, sj.log)
             job.state = sj.state
@@ -500,6 +575,8 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             job.killed = sj.killed
             job.timedOut = sj.timedOut
             job.sample = sj.sample
+            job.held = sj.held
+            job.priority = sj.priority
             jobs(job.id) = job
             job
         for sj in s.ended do ended += rebuilt(sj)

@@ -1,0 +1,46 @@
+module dev.avinlang.marshal
+
+// Holding and ordering the queue: what the daemon decides when a job, or the whole queue, is held,
+// and where a job's priority places it.
+//
+// - A held job stays in the queue, in its place, and the scheduler does not see it: it neither
+//   starts nor blocks the jobs behind it.
+// - A held queue starts nothing in either lane, the landing lane included; running jobs go on.
+// - Each lane's queue is ordered by priority, the highest first, and jobs of equal priority by
+//   arrival. Priority orders marshal's own jobs; take-slot's waiters keep their places by arrival.
+
+// How two priorities order their jobs in the queue: negative when the job of `a` goes first.
+priorityOrder(a: int, b: int) -> int
+priorityOrder(a, b) | a > b = -1
+priorityOrder(a, b) | a < b = 1
+priorityOrder(_, _) = 0
+
+// The priority that puts a job in front of every other job queued in its lane, whose priorities
+// are `others`, and in front of jobs submitted later at the default 0; None when a job there
+// already has the highest priority there is.
+urgentPriority(others: Vector[int]) -> Option[int]
+    val top = others.maxOption().filter(p -> p > 0).getOrElse(0)
+    if top == int.MaxValue then None else Some(top + 1)
+
+// Each queued job's place in its lane's queue (from 1, held jobs counted) and why it waits, in the
+// order of `queue`: `Held` for a job in `held`, `QueueHeld` for any other while the queue is held,
+// and otherwise what the scheduler makes of the jobs not held.
+queueWaits(budget: Budget, running: Vector[Started], queue: Vector[Waiting], held: Vector[long], queueHeld: bool, now: long, outside: Outside = NoOutside) -> Vector[(long, int, Why)]
+    val decided = if queueHeld then Vector[(long, int, Why)]() else waits(budget, running, queue.filter(w -> !held.contains(w.id)), now, outside)
+    var landings = 0
+    var others = 0
+    val out = Buffer[(long, int, Why)]()
+    for w in queue
+        val position = if w.landing
+            landings += 1
+            landings
+        else
+            others += 1
+            others
+        out += (w.id, position, whyWaits(w.id, held, queueHeld, decided))
+    out.toVector()
+
+private whyWaits(id: long, held: Vector[long], queueHeld: bool, decided: Vector[(long, int, Why)]) -> Why
+    if held.contains(id) then Held
+    elif queueHeld then QueueHeld
+    else decided.find(d -> d.0 == id).map(d -> d.2).getOrElse(Starting)

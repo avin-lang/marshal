@@ -5,7 +5,7 @@ module dev.avinlang.marshal.top
 // that reads the terminal and asks the daemon is the command line's (`cli/top.avin`).
 import dev.avinlang.marshal
 import dev.avinlang.marshal.{JobInfo, Overview, QueuedJob, Why}
-import dev.avinlang.marshal.{NoUnits, NoMemory, LaneBusy, ForTakeSlot, Behind, Starting}
+import dev.avinlang.marshal.{NoUnits, NoMemory, LaneBusy, ForTakeSlot, Behind, Starting, Held, QueueHeld}
 import dev.avinlang.marshal.{Exited, Signalled, TimedOut, Cancelled, Lost}
 import dev.avinlang.tui.{Black, Bold, BrightBlack, Char, Column, Ctrl, Cyan, Dim, Down, End, Enter, Escape, Event,
                          Green, Grid, Home, Key, KeyPress, Magenta, PageDown, PageUp, Rect, Red, Reverse, Rounded,
@@ -61,6 +61,8 @@ whyText(LaneBusy) = "lane busy"
 whyText(ForTakeSlot) = "take-slot"
 whyText(Behind(id)) = s"behind $id"
 whyText(Starting) = "starting"
+whyText(Held) = "held"
+whyText(QueueHeld) = "queue held"
 
 // A time as a clock: `0:07`, `18:12`, `1:02:03`; a negative time is shown as none.
 clock(ms: long) -> string
@@ -395,7 +397,8 @@ val helpLines: Vector[string] = [
     "A queued job's STATE is its place in the queue and why it waits:",
     "no units, no memory, lane busy (another landing job), take-slot",
     "(what take-slot.zsh holds or waits for), or behind the job at",
-    "the head of the queue, which it would delay.",
+    "the head of the queue, which it would delay; held (marshal hold),",
+    "or queue held (marshal pause).",
     "DEADLINE is the time left; yellow, then red, as it nears."
 ]
 
@@ -410,6 +413,7 @@ drawHeader(g: Grid, o: Overview, since: long, f: Filter) -> int
     x = g.text(x, 0, s"${u.running} running", Style.fg(Green))
     x = g.text(x, 0, "  ")
     x = g.text(x, 0, s"${u.queued} queued", Style.fg(Yellow))
+    if u.queueHeld then x = g.text(x, 0, " (held)", Style.fg(Red).with(Bold))
     x = g.text(x, 0, "   landing: ")
     val (lane, laneStyle) = laneText(o)
     g.text(x, 0, lane, laneStyle)
