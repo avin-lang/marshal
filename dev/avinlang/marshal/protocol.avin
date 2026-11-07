@@ -33,6 +33,10 @@ data Request
     Hello
     // The daemon replaces itself with the program installed at its own path, keeping its jobs.
     Restart
+    // Follows events: `source` is the condition as written, `cond` what it parses to. The daemon
+    // streams replies until the watch ends, which `mode` says; `since` and `sinceId` ask for the
+    // events already in the log from a time (milliseconds since 1970, inclusive) and from a job.
+    Watch(source: string, cond: Condition, mode: Mode, since: Option[long], sinceId: Option[long])
 
 // How a job ended.
 data Outcome
@@ -123,6 +127,9 @@ data Reply
     Viewed(overview: Overview)
     // The daemon's version and process id.
     Hi(version: string, pid: long)
+    // One event of a watch, as the log holds it, or the events of its backlog together.
+    Streamed(event: Json)
+    Replayed(events: Vector[Json])
     Done
     Failed(message: string)
 
@@ -140,6 +147,31 @@ encodeRequest(Snapshot) = Json.obj(("op", Json.str("snapshot")))
 encodeRequest(Stop(force, drain)) = Json.obj(("op", Json.str("stop")), ("force", Json.Bool(force)), ("wait", Json.Bool(drain)))
 encodeRequest(Hello) = Json.obj(("op", Json.str("version")))
 encodeRequest(Restart) = Json.obj(("op", Json.str("restart")))
+encodeRequest(Watch(source, _, mode, since, sinceId)) = Json.obj(
+    ("op", Json.str("watch")), ("cond", Json.str(source)), ("mode", Json.str(modeWord(mode))),
+    ("since", since.map(n -> Json.num(n)).getOrElse(Json.Null)),
+    ("since_id", sinceId.map(n -> Json.num(n)).getOrElse(Json.Null)))
+
+private modeWord(m: Mode) -> string
+modeWord(Once) = "once"
+modeWord(Past) = "past"
+modeWord(Follow) = "follow"
+
+// Whether a request is a watch, answered with a stream rather than one reply.
+watching(r: Request) -> bool
+watching(Watch(_, _, _, _, _)) = true
+watching(_) = false
+
+private decodeWatch(j: Json) -> Result[Request, string]
+    val source = field(j, "cond", v -> v.asString(), "a string")?
+    val cond = parseCondition(source).mapErr(e -> s"bad condition: $e")?
+    val mode = field(j, "mode", v -> v.asString(), "a string")? match
+        "once" -> Once
+        "past" -> Past
+        "follow" -> Follow
+        other -> return Err(s"`mode` is not once, past or follow: `$other`")
+    if mode != Once && parseFilter(source).isErr() then return Err("bad condition: events takes an event filter, not `idle` or `job=`")
+    Ok(Watch(source, cond, mode, optional(j, "since", someLong, "a whole number", None)?, optional(j, "since_id", someLong, "a whole number", None)?))
 
 // A job's specification, as a submit request carries it after its `op`.
 encodeSpec(s: JobSpec) -> Json = Json.obj(
@@ -207,6 +239,7 @@ decodeRequest(text: string) -> Result[Request, string]
         "stop" -> Ok(Stop(optional(j, "force", v -> v.asBool(), "a bool", false)?, optional(j, "wait", v -> v.asBool(), "a bool", false)?))
         "version" -> Ok(Hello)
         "restart" -> Ok(Restart)
+        "watch" -> decodeWatch(j)
         other -> Err(s"no such request: `$other`")
 
 // Outcomes.
@@ -321,6 +354,8 @@ encodeReply(Using(u)) = Json.obj(
     ("take_slot", u.takeSlot.map(encodeTakeSlot).getOrElse(Json.Null)))
 encodeReply(Viewed(o)) = Json.obj(("ok", Json.Bool(true)), ("snapshot", encodeOverview(o)))
 encodeReply(Hi(version, pid)) = Json.obj(("ok", Json.Bool(true)), ("version", Json.str(version)), ("pid", Json.num(pid)))
+encodeReply(Streamed(event)) = Json.obj(("ok", Json.Bool(true)), ("event", event))
+encodeReply(Replayed(events)) = Json.obj(("ok", Json.Bool(true)), ("events", Json.Arr(events)))
 encodeReply(Done) = Json.obj(("ok", Json.Bool(true)))
 encodeReply(Failed(message)) = Json.obj(("ok", Json.Bool(false)), ("error", Json.str(message)))
 
@@ -330,6 +365,8 @@ decodeReply(text: string) -> Result[Reply, string]
         Err(e) -> return Err(s"not JSON: $e")
     if !field(j, "ok", v -> v.asBool(), "a bool")?
         return Ok(Failed(field(j, "error", v -> v.asString(), "a string")?))
+    if j.has("event") then return Ok(Streamed(j("event")))
+    if j.has("events") then return Ok(Replayed(field(j, "events", v -> v.asVector(), "an array")?))
     if j.has("snapshot") then return Ok(Viewed(decodeOverview(j("snapshot"))?))
     if j.has("job") then return Ok(Ended(decodeJob(j("job"))?))
     if j.has("jobs")
