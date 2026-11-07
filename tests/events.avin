@@ -1,14 +1,18 @@
 module tests
 
 // The event log as a restarting daemon reads it, the settings file, and what the command line prints.
+import avin.time
 import json
 import json.Json
 import dev.avinlang.marshal
 import dev.avinlang.marshal.cli
 import dev.avinlang.marshal.{Budget, JobInfo, Learning, Outcome, TakeSlotUse, Usage}
 
-info(id: long, kind: string = "test", landing: bool = false, state: string = "queued", outcome: Option[Outcome] = None, elapsed: long = 0) -> JobInfo =
-    JobInfo(id, kind, 4, 0, landing, "/d", ["make", "it"], state, outcome, false, 5, elapsed, 60000, s"/h/jobs/$id.log", None)
+info(id: long, kind: string = "test", landing: bool = false, state: string = "queued", outcome: Option[Outcome] = None, elapsed: long = 0, started: long = 0) -> JobInfo =
+    JobInfo(id, kind, 4, 0, landing, "/d", ["make", "it"], state, outcome, false, 5, elapsed, 60000, s"/h/jobs/$id.log", None, 0, 0, started)
+
+// A zone the tz database names.
+zoneNamed(name: string) -> time.Zone = time.zone(name).ok().get()
 
 line(event: string, j: JobInfo, extra: Vector[(string, Json)] = []) -> string = marshal.eventLine(1000, event, j, extra)
 
@@ -184,10 +188,50 @@ resultLines()
 listings()
     val rows = marshal.listing([info(1, state = "running"), info(12, "build", true)]).lines().toVector()
     assertEq(rows.length(), 3)
-    assertEq(rows(0), "ID  STATE    KIND    UNITS  RESV  ELAPSED  COMMAND")
-    assertEq(rows(1), "1   running  test    4      -     0ms      make it")
-    assertEq(rows(2), "12  queued   build*  4      -     0ms      make it")
-    assertEq(marshal.listing([]), "ID  STATE  KIND  UNITS  RESV  ELAPSED  COMMAND")
+    assertEq(rows(0), "ID  STATE    KIND    UNITS  RESV  STARTED  ELAPSED  COMMAND")
+    assertEq(rows(1), "1   running  test    4      -     -        0ms      make it")
+    assertEq(rows(2), "12  queued   build*  4      -     -        0ms      make it")
+    assertEq(marshal.listing([]), "ID  STATE  KIND  UNITS  RESV  STARTED  ELAPSED  COMMAND")
+
+@test("the STARTED column is the local date and minute, `-` for a job that has not started")
+startedColumn()
+    val utc = time.utc
+    val york = zoneNamed("America/New_York")
+    val started = (at: long) -> info(1, state = "running", started = at)
+    // 2026-11-07 13:31:30 UTC: eight in the morning in New York, seconds dropped
+    assertEq(marshal.startedColumn(started(1794058290000), utc), "11-07 13:31")
+    assertEq(marshal.startedColumn(started(1794058290000), york), "11-07 08:31")
+    // queued, held and cancelled-before-running jobs have no start
+    assertEq(marshal.startedColumn(info(2), utc), "-")
+    assertEq(marshal.startedColumn(info(2), york), "-")
+    assertEq(marshal.startedColumn(started(-5), utc), "-")
+
+@test("the STARTED column follows daylight saving: the minute before and the minute of New York's spring forward")
+startedAcrossDaylightSaving()
+    val york = zoneNamed("America/New_York")
+    // 2026-03-08 06:59 UTC is 01:59 EST; one minute later the clocks read 03:00 EDT
+    assertEq(marshal.startedColumn(info(1, started = 1772953140000), york), "03-08 01:59")
+    assertEq(marshal.startedColumn(info(1, started = 1772953200000), york), "03-08 03:00")
+    assertEq(marshal.startedColumn(info(1, started = 1772953140000), time.utc), "03-08 06:59")
+    assertEq(marshal.startedColumn(info(1, started = 1772953200000), time.utc), "03-08 07:00")
+    // 2026-11-01 05:30 UTC is still daylight time in New York (01:30 EDT)
+    assertEq(marshal.startedColumn(info(1, started = 1793511000000), york), "11-01 01:30")
+
+@test("a job that started on another day shows that day, the zone moving it across midnight and the new year")
+startedOnAnotherDay()
+    // 2026-12-31 23:59:59 UTC
+    val at: long = 1798761599000
+    assertEq(marshal.startedColumn(info(1, started = at), time.utc), "12-31 23:59")
+    assertEq(marshal.startedColumn(info(1, started = at), zoneNamed("America/New_York")), "12-31 18:59")
+    assertEq(marshal.startedColumn(info(1, started = at), zoneNamed("Asia/Kolkata")), "01-01 05:29")
+
+@test("a listing shows each job's start in the host's zone, and - for a queued one")
+listingStarted()
+    val rows = marshal.listing([info(1, state = "running", started = 1794058290000), info(2)]).lines().toVector()
+    val expected = time.epochMillis(1794058290000).atZone(time.localZone()).format("MM-DD hh:mm")
+    assertEq(rows(0), "ID  STATE    KIND  UNITS  RESV  STARTED      ELAPSED  COMMAND")
+    assertEq(rows(1), s"1   running  test  4      -     $expected  0ms      make it")
+    assertEq(rows(2), "2   queued   test  4      -     -            0ms      make it")
 
 @test("the status line shows units, memory, counts and the landing lane")
 usageLines()
@@ -216,3 +260,15 @@ submissions()
     assertEq(cli.parseSubmission(["--dir", "/abs", "--", "a"], "/w", env).map(s -> s.dir), Ok("/abs"))
     for bad in [[], ["--"], ["--units"], ["--units", "x", "a"], ["--mem", "1.5G", "a"], ["--deadline", "0", "a"], ["--kind", "", "a"], ["--frob", "1", "a"]]
         assert(cli.parseSubmission(bad, "/w", env).isErr(), s"$bad")
+
+@test("the narrow STARTED text is hh:mm for a job that started today, the full form for another day, - for none")
+startedShortText()
+    val york = zoneNamed("America/New_York")
+    // 2026-11-07 13:31:30 UTC is 08:31 on the 7th in New York and 13:31 in UTC
+    val at: long = 1794058290000
+    assertEq(marshal.startedShort(info(1, started = at), york, "2026-11-07"), "08:31")
+    assertEq(marshal.startedShort(info(1, started = at), york, "2026-11-08"), "11-07 08:31")
+    assertEq(marshal.startedShort(info(1, started = at), time.utc, "2026-11-07"), "13:31")
+    // the day is the zone's: 2026-11-07 03:00 UTC is still the 6th in New York
+    assertEq(marshal.startedShort(info(1, started = 1794020400000), york, "2026-11-07"), "11-06 22:00")
+    assertEq(marshal.startedShort(info(2), york, "2026-11-07"), "-")

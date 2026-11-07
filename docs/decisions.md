@@ -555,6 +555,27 @@ Known gap in Avin, left for it to fix rather than worked around here:
   the derived value to the second (hides the drift, still wrong); keep only the monotonic clock and
   report offsets (a restart loses the wall time).
 
+## The STARTED column (branch `started-column`)
+
+**Proposed.**
+
+- **`top` and `ls` show a STARTED column, `MM-DD hh:mm` in the caller's local zone, between RESV (`ls`)
+  or PEAK (`top`) and ELAPSED.** The zone is read once per rendering (`TZ`, else the system's), and
+  the time comes from the job's recorded `started_at`; a job with none (queued, or cancelled before it
+  ran) shows `-`. The year is left out, so a job from a year ago reads like one from today; the
+  JSON has the full instant. Alternatives: an ISO date with the year (16 cells, too wide for top);
+  a relative age (`3h ago`, which ELAPSED already half says and which changes every frame).
+- **`top` leaves PEAK out under 90 columns, and always shows STARTED.** (Settled on the user's
+  delegation 2026-11-07, replacing the first proposal, which dropped STARTED.) The user asked for
+  STARTED, so it must show at 80. The fixed columns with everything take 85 cells; without PEAK
+  they leave the command 1 cell, too little, so under 90 cells STARTED also narrows (the coordinator's
+  fallback): a job that started today shows just `hh:mm`, any other day keeps `MM-DD hh:mm`, and the
+  column is 7 wide (its heading) unless a shown job started on another day, when it is 11. At 80 the
+  command then has 5 cells (the heading reads `COMM…`) against 7 before STARTED existed. PEAK is
+  the column given up because the most a job held stays in the JSON, and RSS, the live figure,
+  stays. Alternatives: drop STARTED (what was asked for); drop RSS and PEAK (a second column for no
+  gain); shrink every column by a cell (the memory sizes need theirs).
+
 ## Waiting for other jobs, retries and rerun (branch `depends`)
 
 **Proposed**; each says why and what else was weighed.

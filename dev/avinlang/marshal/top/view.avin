@@ -3,6 +3,7 @@ module dev.avinlang.marshal.top
 // What `marshal top` shows and how its keys change it, with no terminal: the screen is drawn into a
 // tui grid from a daemon's snapshot, and every key is an event handed to `App.handle`. The loop
 // that reads the terminal and asks the daemon is the command line's (`cli/top.avin`).
+import avin.time
 import dev.avinlang.marshal
 import dev.avinlang.marshal.{JobInfo, Overview, QueuedJob, Usage, Why}
 import dev.avinlang.marshal.{NoUnits, NoMemory, LaneBusy, ForTakeSlot, Behind, Starting, Held, QueueHeld}
@@ -125,6 +126,7 @@ val columns: Vector[Column] = [
     Column("RESV", 6, 1),
     Column("RSS", 5, 1),
     Column("PEAK", 5, 1),
+    Column("STARTED", 11),
     Column("ELAPSED", 8, 1),
     Column("DEADLINE", 8, 1),
     Column("COMMAND", 0)
@@ -132,15 +134,32 @@ val columns: Vector[Column] = [
 
 // The column of STATE and of DEADLINE, which are drawn again in colour over the table's plain text.
 val StateColumn: int = 1
-val DeadlineColumn: int = 8
+val DeadlineColumn: int = 9
+
+// The column PEAK sits at, and the narrowest screen that shows it: the fixed columns with it take 85
+// cells, so under 90 the table is drawn without PEAK (the peak is still in `stats` and the JSON) and
+// keeps STARTED and every other column.
+val PeakColumn: int = 6
+val PeakWidth: int = 90
+
+// Whether a screen `width` cells wide shows the PEAK column.
+showsPeak(width: int) -> bool = width >= PeakWidth
+
+// The columns a screen `width` cells wide draws, and where DEADLINE sits among them. Under 90 cells
+// STARTED is 7 wide (its heading and `hh:mm`), or 11 where a shown job started on another day.
+columnsFor(width: int, startedWidth: int) -> Vector[Column]
+    if showsPeak(width) then return columns
+    val narrow = columns.slice(0, PeakColumn) ++ columns.slice(PeakColumn + 1, columns.length())
+    narrow.map(c -> if c.title == "STARTED" then Column("STARTED", startedWidth) else c)
+deadlineColumnFor(width: int) -> int = if showsPeak(width) then DeadlineColumn else DeadlineColumn - 1
 
 // A measured size for the RSS and PEAK columns: `-` where nothing was measured.
 measuredText(bytes: long) -> string = if bytes <= 0 then "-" else marshal.roundSize(bytes)
 
-// The text of a line's cells.
-cells(l: Line, since: long) -> Vector[string]
+// The text of a line's cells on a screen `width` cells wide, the start time read in `zone`.
+cells(l: Line, since: long, zone: time.Zone, today: string, width: int) -> Vector[string]
     val j = l.job
-    [
+    val all = [
         j.id.toString(),
         stateOf(l).0,
         if j.landing then j.kind + "*" else j.kind,
@@ -148,10 +167,12 @@ cells(l: Line, since: long) -> Vector[string]
         if j.memory == 0 then "-" else marshal.formatSize(j.memory),
         measuredText(if j.state == "running" then j.rss else 0),
         measuredText(j.peakRss),
+        if showsPeak(width) then marshal.startedColumn(j, zone) else marshal.startedShort(j, zone, today),
         clock(elapsedOf(l, since)),
         deadlineOf(l, since).0,
         j.cmd.mkString(" ")
     ]
+    if showsPeak(width) then all else all.slice(0, PeakColumn) ++ all.slice(PeakColumn + 1, all.length())
 
 // The state of the screen: the latest snapshot and when it came, the filter, the selected job (kept
 // on its job from one snapshot to the next), the log pane and how far back it is scrolled, a kill
@@ -310,8 +331,17 @@ class App(val sock: string)
             val tableRows = if logOf.isDefined() then maxInt(space / 2, 2) else space
             val area = Rect(0, top, g.width, maxInt(minInt(tableRows, space), 0))
             page = if area.h > 2 then area.h - 1 else 1
-            table.draw(g, area, shown.map(l -> cells(l, since)))
-            paintCells(g, area, since)
+            val zone = time.localZone()
+            val today = time.now().atZone(zone).format("YYYY-MM-DD")
+            val rows = shown.map(l -> cells(l, since, zone, today, area.w))
+            val startedWidth = if rows.exists(r -> r(PeakColumn).charCount() > 7) then 11 else 7
+            val drawing = if showsPeak(area.w) then table else Table(columnsFor(area.w, startedWidth))
+            drawing.selected = table.selected
+            drawing.offset = table.offset
+            drawing.draw(g, area, rows)
+            table.selected = drawing.selected
+            table.offset = drawing.offset
+            paintCells(g, area, since, drawing)
             remember()
             for j in logOf
                 drawLog(g, Rect(0, top + area.h, g.width, maxInt(bottom - top - area.h, 0)), j)
@@ -322,11 +352,12 @@ class App(val sock: string)
 
     // STATE and DEADLINE again over the table's text, in their colours; on the selected line the
     // colours are reversed as the table reverses it.
-    private paintCells(g: Grid, area: Rect, since: long)
+    private paintCells(g: Grid, area: Rect, since: long, drawn: Table)
         if area.h < 2 then return
-        val ws = table.widths(area.w)
+        val ws = drawn.widths(area.w)
+        val deadlineColumn = deadlineColumnFor(area.w)
         val stateX = columnX(ws, StateColumn)
-        val deadlineX = columnX(ws, DeadlineColumn)
+        val deadlineX = columnX(ws, deadlineColumn)
         for k in 0 ..< area.h - 1
             val i = table.offset + k
             if i >= shown.length() then break
@@ -335,7 +366,7 @@ class App(val sock: string)
             val (state, stateStyle) = stateOf(l)
             val (left, leftStyle) = deadlineOf(l, since)
             g.textIn(stateX, area.y + 1 + k, ws(StateColumn), state, stateStyle.with(mark), columns(StateColumn).align, area)
-            g.textIn(deadlineX, area.y + 1 + k, ws(DeadlineColumn), left, leftStyle.with(mark), columns(DeadlineColumn).align, area)
+            g.textIn(deadlineX, area.y + 1 + k, ws(deadlineColumn), left, leftStyle.with(mark), columns(DeadlineColumn).align, area)
 
     // The log pane: a box titled with the job, its log's lines at the pane's scroll inside.
     private drawLog(g: Grid, r: Rect, j: JobInfo)

@@ -8,15 +8,17 @@ import avin.process
 import avin.process.{Command, MacOS}
 import avin.net.UnixStream
 import avin.threads
+import avin.time
 import avin.time.millis
 import dev.avinlang.marshal
 import dev.avinlang.marshal.{Outcome, Overview, Reply, Why}
 
 // Runs `marshal top` against `home` in a 100 by 30 pty, typing `keys` (a shell `printf` format) once
 // it has drawn: what it wrote, with every escape sequence a space and runs of blanks one space.
-topIn(home: string, keys: string) -> string
+topIn(home: string, keys: string, zone: string = "") -> string
     val script = "(sleep 3; printf '" + keys + "'; sleep 2) | script -q /dev/null sh -c 'stty cols 100 rows 30; \"$M\" top; echo STATUS=$?'"
-    val out = Command("sh", "-c", script).withEnv("M", bin()).withEnv("MARSHAL_HOME", home).withEnv("MARSHAL_TAKE_SLOT_DIR", slots(home)).output().getOrElse("")
+    val base = Command("sh", "-c", script).withEnv("M", bin()).withEnv("MARSHAL_HOME", home).withEnv("MARSHAL_TAKE_SLOT_DIR", slots(home))
+    val out = (if zone.nonEmpty() then base.withEnv("TZ", zone) else base).output().getOrElse("")
     plainText(out)
 
 // `text` with each escape sequence (ESC, `[`, parameters, a final letter) a space, and every run of
@@ -57,6 +59,25 @@ topShowsRunningJob()
     assert(shown.contains("1 exit 0 build 1"), shown)
     assert(shown.contains("3 + take-slot 0 / 12"), shown)
     assertEq(eventsOf(home, id), ["submitted", "started"])
+    cleanUp(home)
+
+@test("top in a pty shows when each job started in the terminal's zone, and - for a queued one")
+topShowsStartTime()
+    if process.os() != MacOS then return
+    val home = newHome("{\"units\": 1}")
+    val id = submitted(home, "--", "sleep", "60")
+    val waiting = submitted(home, "--", "sleep", "60")
+    assert(runningSoon(home, id))
+    val startedAt = snapshotOf(home).running(0).startedAt
+    assert(startedAt > 0)
+    val utc = topIn(home, "q", "UTC")
+    val utcText = time.epochMillis(startedAt).atZone(time.utc).format("MM-DD hh:mm")
+    assert(utc.contains(s"$id running build 1 - ") && utc.contains(s" $utcText 0:"), utc)
+    assert(utc.contains(s"$waiting #1 no units build 1 - - - - "), utc)
+    val york = topIn(home, "q", "America/New_York")
+    val yorkText = time.epochMillis(startedAt).atZone(time.zone("America/New_York").ok().get()).format("MM-DD hh:mm")
+    assert(york.contains(s"$id running build 1 - ") && york.contains(s" $yorkText 0:"), york)
+    assert(utcText != yorkText)
     cleanUp(home)
 
 @test("top kills the selected job after k and y")

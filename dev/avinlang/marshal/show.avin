@@ -1,5 +1,7 @@
 module dev.avinlang.marshal
 
+import avin.time
+
 // What the command line prints: a job's one-line result, a listing, the budget's use.
 
 // The line `wait` and `run` end with.
@@ -37,18 +39,32 @@ stateColumn(j: JobInfo) -> string = j.outcome match
             "retrying" -> s"retry ${j.attempt}"
             other -> other
 
+// When a job started, as the STARTED column shows it: the local date and minute, `11-07 08:31`, in
+// `zone`; `-` for a job that has not started (queued, or cancelled before it ran).
+startedColumn(j: JobInfo, zone: time.Zone) -> string
+startedColumn(j, zone) = if j.startedAt <= 0 then "-" else time.epochMillis(j.startedAt).atZone(zone).format("MM-DD hh:mm")
+
+// The same for a narrow screen: just `hh:mm` for a job that started on `today` (a `YYYY-MM-DD` in
+// `zone`), the full form for any other day.
+startedShort(j: JobInfo, zone: time.Zone, today: string) -> string
+    if j.startedAt <= 0 then return "-"
+    val at = time.epochMillis(j.startedAt).atZone(zone)
+    if at.format("YYYY-MM-DD") == today then at.format("hh:mm") else at.format("MM-DD hh:mm")
+
 // The listing `ls` prints: a header, then one row per job.
 listing(jobs: Vector[JobInfo]) -> string
-    val rows = [["ID", "STATE", "KIND", "UNITS", "RESV", "ELAPSED", "COMMAND"]] ++ jobs.map(j -> [
+    val zone = time.localZone()
+    val rows = [["ID", "STATE", "KIND", "UNITS", "RESV", "STARTED", "ELAPSED", "COMMAND"]] ++ jobs.map(j -> [
         j.id.toString(),
         stateColumn(j),
         if j.landing then j.kind + "*" else j.kind,
         j.units.toString(),
         if j.memory == 0 then "-" else formatSize(j.memory),
+        startedColumn(j, zone),
         formatMillis(j.elapsedMs),
         j.cmd.mkString(" ")])
-    val widths = (0..<6).map(c -> rows.map(r -> r(c).charCount()).max())
-    rows.map(r -> (0..<6).map(c -> r(c).padEnd(widths(c), ' ')).mkString("  ") + "  " + r(6)).mkString("\n")
+    val widths = (0..<7).map(c -> rows.map(r -> r(c).charCount()).max())
+    rows.map(r -> (0..<7).map(c -> r(c).padEnd(widths(c), ' ')).mkString("  ") + "  " + r(7)).mkString("\n")
 
 // The line `status` prints.
 usageLine(u: Usage) -> string
