@@ -223,3 +223,33 @@ Known gaps in Avin, left for it to fix rather than worked around here:
 - `avin.fs` has no rename, so `state.json` is written in place rather than written aside and
   renamed. Only the program the daemon becomes reads it, after the write has finished, so this
   matters only to a daemon killed mid-write, which leaves a partial file that nothing reads.
+
+## Accounting: `history` and `stats`
+
+- **Proposed: both commands read `events.jsonl` in the client, streamed line by line, and never ask
+  the daemon.** Why: the log is the record, they work with no daemon (and after a crash), and a huge
+  log never goes through the socket or into memory whole; only one small record per ended job is
+  kept. Alternative: a daemon request (needs a running, new-enough daemon and a new reply shape).
+- **Proposed: a job that has several ending events is listed once, as its last one**, as the
+  restart recovery does.
+- **Proposed: outcomes are listed as `ok`, `failed`, `signal`, `killed`, `timeout`, `cancelled`,
+  `lost`; `--failed` means "did not exit 0", so a kill, a timeout, a cancel and a loss all count.**
+  Why: one rule with no judgement about whose fault an end was, and it matches what learning
+  counts as a success. Alternative: only `failed`, `signal` and `timeout`.
+- **Proposed: percentiles are nearest-rank** (the value at rank ceil(p*n/100)). Why: it always
+  names a run that happened, and is defined for one sample (every percentile) and two (p50 is the
+  lesser, p90 the greater). Alternative: interpolation, which invents durations.
+- **Proposed: durations in `stats` cover every job that started** (cancelled jobs have none);
+  the success rate is over all of a kind's jobs, and `stats` rows are per history key, so landing
+  runs are a separate `kind+landing` row. The deadline shown is the one the daemon would give the
+  next job, learned from the whole log whatever `--kind`/`--since` select.
+- **Proposed: `--since` takes a length back from now (`s m h d w`) or a UTC date or date and
+  minute; times are listed in UTC.** Why: no time zone data in the library, and logs compare across
+  machines. A bare number is refused, as it is ambiguous (the `--deadline` option reads it as
+  minutes). Alternative: local time.
+- **Proposed: `history` lists 20 jobs unless `--limit` says otherwise**; `--limit 0` is refused.
+  `--json` is one object on one line, like `status --json`, not a line per job.
+- **Proposed: peak memory is read from `peak_rss` on ending events when it is present and above
+  zero; otherwise `-` (null in JSON).** `history` does not show it.
+- **Proposed: lines that are not events (or ending events that do not describe a job) are
+  skipped, counted in `unreadable`, and reported on standard error; the exit status stays 0.**

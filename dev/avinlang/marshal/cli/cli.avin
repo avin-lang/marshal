@@ -26,6 +26,8 @@ val Commands: Vector[(string, string)] = [
     ("kill <id>", "stops the job's whole process tree (a queued job is cancelled)"),
     ("tail <id> [-f] [-n <lines>]", "the job's log; -f follows it until the job ends"),
     ("status [--json]", "the budget in use; --json: one JSON object with the running and queued jobs"),
+    ("history [options]", "ended jobs from the event log, newest first: id, kind, outcome, exit code, duration, when"),
+    ("stats [options]", "per kind from the event log: count, success rate, p50/p90/max duration, timeouts, deadline, peak memory"),
     ("top", "a live view of the budget, the jobs and their logs; h lists its keys"),
     ("stop [--wait | --force]", "stops the daemon; refused while jobs run unless it may wait for them or kill them"),
     ("restart", "the daemon becomes the marshal installed now, keeping its jobs running and queued"),
@@ -44,19 +46,31 @@ Options of submit and run:
   --                the command begins after this; nothing after it is an option\
 """
 
+// The options of `history` and `stats`.
+val Queries: string = """
+Options of history and stats (both read events.jsonl; no daemon is needed):
+  --kind <k>        only jobs of this kind
+  --since <t>       only jobs that ended in the last t (90m, 2h, 3d, 1w) or since a date (2026-11-07 or 2026-11-07T14:30, UTC)
+  --json            one JSON object on one line
+  --failed          history only: jobs that did not exit 0 (failed, signal, killed, timeout, cancelled, lost)
+  --limit <n>       history only: at most n jobs (default 20)\
+"""
+
 val Footer: string = "Marshal's files are in $MARSHAL_HOME, or ~/.marshal. `marshal <command> --help` describes one command."
 
 // One line of the command list: `marshal` and the command, then what it does.
 commandLine(c: (string, string)) -> string = ("marshal " + c.0).padEnd(43, ' ') + c.1
 
 // What `marshal --help` prints.
-val usage: string = "usage: marshal <command> [options]\n\n" + Commands.map(commandLine).mkString("\n") + "\n\n" + Options + "\n\n" + Footer
+val usage: string = "usage: marshal <command> [options]\n\n" + Commands.map(commandLine).mkString("\n") + "\n\n" + Options + "\n" + Queries + "\n\n" + Footer
 
 // What `marshal <command> --help` prints, or None for a word that is not a command.
 commandHelp(name: string) -> Option[string]
     Commands.find(c -> c.0.split(" ")(0) == name).map(c ->
         val head = s"usage: marshal ${c.0}\n\n${c.1}"
-        if name == "submit" || name == "run" then head + "\n\n" + Options else head)
+        if name == "submit" || name == "run" then head + "\n\n" + Options
+        elif name == "history" || name == "stats" then head + "\n\n" + Queries
+        else head)
 
 private isHelp(word: string) -> bool = word == "--help" || word == "-h"
 
@@ -99,6 +113,8 @@ main(args: Vector[string]) -> int
             [] -> status()
             ["--json"] -> statusJson()
             _ -> complain("marshal: status takes --json or nothing")
+        "history" -> history(rest)
+        "stats" -> stats(rest)
         "tail" -> tail(rest)
         "top" -> top(rest)
         "stop" -> stop(rest)

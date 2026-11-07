@@ -16,6 +16,8 @@ marshal ls                                 jobs queued, running and recently end
 marshal kill <id>                          stops the job's whole process tree (a queued job is cancelled)
 marshal tail <id> [-f] [-n <lines>]        the job's log; -f follows it until the job ends
 marshal status [--json]                    the budget in use; --json: one JSON object with the running and queued jobs
+marshal history [options]                  ended jobs from the event log, newest first: id, kind, outcome, exit code, duration, when
+marshal stats [options]                    per kind from the event log: count, success rate, p50/p90/max duration, timeouts, deadline, peak memory
 marshal top                                a live view of the budget, the jobs and their logs; h lists its keys
 marshal stop [--wait | --force]            stops the daemon; refused while jobs run unless it may wait for them or kill them
 marshal restart                            the daemon becomes the marshal installed now, keeping its jobs running and queued
@@ -37,6 +39,32 @@ Options of `submit` and `run`:
 | `--landing` | The landing lane: starts before every development job, outside the unit budget, at normal priority. One landing job runs at a time. |
 | `--dir <d>` | Where it runs, relative to the current directory. Default: the current directory. |
 | `--deadline <t>` | Stops it after `t`: a number of minutes, or `90s`, `30m`, `2h`. Default: learned for its kind. |
+
+**Accounting.** `history` and `stats` read `events.jsonl` directly, a line at a time, so they answer
+with no daemon running and change nothing. Lines that are not events are skipped and counted on
+standard error.
+
+| Option | Meaning |
+| --- | --- |
+| `--kind <k>` | Only jobs of this kind. |
+| `--since <t>` | Only jobs that ended in the last `t` (`90m`, `2h`, `3d`, `1w`; `s` too) or since a date in UTC (`2026-11-07`, `2026-11-07T14:30`). |
+| `--json` | One JSON object on one line. |
+| `--failed` | `history` only: jobs that did not exit 0, whatever the cause. |
+| `--limit <n>` | `history` only: at most `n` jobs. Default 20. |
+
+`history` has the columns ID, KIND (`*` marks a landing job), OUTCOME (`ok`, `failed`, `signal`,
+`killed`, `timeout`, `cancelled`, `lost`), EXIT (the status `wait` exits with), DURATION and ENDED
+(UTC). `stats` has one row per kind (a kind's landing runs are their own row, `kind+landing`, as for
+learning deadlines): COUNT, OK (the share that exited 0), P50, P90 and MAX of the run times,
+TIMEOUTS, DEADLINE (what the next job of the kind would get, learned from every successful run in the
+log whatever the filters) and PEAK P50 / PEAK MAX of the memory the jobs' process trees held, `-`
+for jobs whose events do not say. Percentiles are nearest-rank, so they are always a run that
+happened.
+
+```
+$ marshal history --failed --since 1d --limit 5
+$ marshal stats --kind test --json
+```
 
 A job runs with the caller's environment, in a process group of its own, under `nice -n 15` unless it
 is a landing job, with its standard output and error in `~/.marshal/jobs/<id>.log`.

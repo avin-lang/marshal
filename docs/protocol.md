@@ -19,6 +19,8 @@ thread of its own, so a client blocked in `wait` holds up nobody else.
 | `version` | | `{"ok":true,"version":"<marshal's version>","pid":P}`, the daemon's process |
 | `restart` | | no reply when the daemon restarts: the connection closes as it replaces its program, and the client connects again and asks `version`, whose `pid` is the same; `{"ok":false,"error":...}` when it could not, and it goes on as it was |
 
+`history` and `stats` are not requests: the command line reads `events.jsonl` itself (below).
+
 Any request may be refused: `{"ok":false,"error":"<a sentence>"}`, for a request that is not JSON,
 lacks a field or has one of the wrong type, names no job, or asks for a job that can never fit.
 
@@ -63,7 +65,15 @@ refuses it with `no such request: `snapshot``.
 `events.jsonl` holds one line per step, the job object above preceded by `ts` (milliseconds since
 1970) and `event`: `submitted`, `started` (adds `pgid` and `pid`, the job's main process), and one ending, `finished`, `timeout`,
 `killed` or `lost`, which adds `run_ms` and `exit`, the status `wait` exits with. `lost` also adds
-`pgid` and `group_alive`, whether the job's processes were still running when the new daemon looked.
+`pgid` and `group_alive`, whether the job's processes were still running when the new daemon looked. An ending event may also carry `peak_rss`, the most memory the job's process tree was
+measured holding, in bytes; `stats` reads it where present.
+
+`marshal history --json` prints `{"jobs":[{"id","kind","landing","outcome","exit","duration_ms",
+"ended_at","peak_rss"}...],"unreadable":N}`, newest first (`ended_at` is `ts` of the ending event,
+`peak_rss` null where unknown, `outcome` one of `ok`, `failed`, `signal`, `killed`, `timeout`,
+`cancelled`, `lost`). `marshal stats --json` prints `{"kinds":[{"kind","count","ok","success_pct",
+"timeouts","p50_ms","p90_ms","max_ms","deadline_ms","peak_p50","peak_max"}...],"unreadable":N}`;
+the percentiles and peaks are null where no job has one. `unreadable` counts the log lines skipped.
 
 ## The restart state
 

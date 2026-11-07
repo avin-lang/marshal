@@ -1,0 +1,86 @@
+module dev.avinlang.marshal.cli
+
+// `marshal history` and `marshal stats`: accounting read from `events.jsonl`. They never ask the
+// daemon, so they answer with none running; the log is streamed a line at a time.
+import avin.fs
+import avin.io.IoError
+import avin.time
+import dev.avinlang.marshal
+import dev.avinlang.marshal.{Filter, Ledger}
+
+// The jobs `history` lists when `--limit` is not given.
+val DefaultLimit: int = 20
+
+// What the options of `history` and `stats` asked for.
+data Query(filter: Filter, limit: int, json: bool)
+
+// Reads `[--kind k] [--since t] [--failed] [--limit n] [--json]`; `stats` takes no `--failed` or
+// `--limit`.
+parseQuery(command: string, args: Vector[string], nowMs: long) -> Result[Query, string]
+    var kind: Option[string] = None
+    var since: Option[long] = None
+    var failed = false
+    var limit = DefaultLimit
+    var json = false
+    var i = 0
+    while i < args.length()
+        val word = args(i)
+        val takes = word == "--kind" || word == "--since" || (word == "--limit" && command == "history")
+        if takes
+            i += 1
+            if i >= args.length() then return Err(s"marshal: $word needs a value")
+            val value = args(i)
+            word match
+                "--kind" ->
+                    if value.isEmpty() then return Err("marshal: --kind needs a kind")
+                    kind = Some(value)
+                "--since" -> marshal.parseSince(value, nowMs) match
+                    Some(t) -> since = Some(t)
+                    None -> return Err(s"marshal: `$value` is not a time: give a length such as 90m, 2h, 3d or 1w, or a date such as 2026-11-07 or 2026-11-07T14:30 (UTC)")
+                _ -> value.toIntOption() match
+                    Some(n) if n > 0 -> limit = n
+                    _ -> return Err(s"marshal: `$value` is not a number of jobs")
+        elif word == "--json" then json = true
+        elif word == "--failed" && command == "history" then failed = true
+        else return Err(s"marshal: $command: no option `$word`")
+        i += 1
+    Ok(Query(Filter(kind, since, failed), limit, json))
+
+// The ledger of the log at `log`: empty where there is no log.
+readLedger(log: string) -> Result[Ledger, string]
+    val ledger = Ledger()
+    val f = fs.open(log) match
+        Ok(f) -> f
+        Err(IoError.NotFound) -> return Ok(ledger)
+        Err(e) -> return Err(s"marshal: $log: ${e.message()}")
+    loop
+        f.readLine() match
+            Ok(Some(line)) -> ledger.add(line)
+            Ok(None) -> break
+            Err(e) ->
+                f.close()
+                return Err(s"marshal: $log: ${e.message()}")
+    f.close()
+    Ok(ledger)
+
+history(args: Vector[string]) -> int = account("history", args, (ledger, q) ->
+    val jobs = marshal.selectEnded(ledger, q.filter, q.limit)
+    if q.json then marshal.historyJson(jobs, ledger.unreadable).render() else marshal.historyListing(jobs))
+
+stats(args: Vector[string]) -> int = account("stats", args, (ledger, q) ->
+    val rows = marshal.kindStats(ledger, q.filter)
+    if q.json then marshal.statsJson(rows, ledger.unreadable).render() else marshal.statsListing(rows))
+
+// Parses the options, reads the log and prints what `render` makes of them. Lines the log has that
+// are not events are skipped, and said so on standard error.
+account(command: string, args: Vector[string], render: (Ledger, Query) -> string) -> int
+    val q = parseQuery(command, args, time.now().epochMillis()) match
+        Ok(q) -> q
+        Err(e) -> return complain(e)
+    val log = home() + "/events.jsonl"
+    val ledger = readLedger(log) match
+        Ok(l) -> l
+        Err(e) -> return complain(e)
+    println(render(ledger, q))
+    if ledger.unreadable > 0 then eprintln(s"marshal: skipped ${ledger.unreadable} lines of $log that are not events")
+    0
