@@ -13,7 +13,8 @@ marshal submit [options] -- <command...>   queue a job; prints its id
 marshal run [options] -- <command...>      submit and wait: prints the log's path, then the result; exits with the job's status
 marshal wait <id>                          waits for the job; prints one result line; exits with the job's status
 marshal ls                                 jobs queued, running and recently ended
-marshal kill <id>                          stops the job's whole process tree (a queued job is cancelled)
+marshal kill <id>                          stops the job's whole process tree (a queued or held job is cancelled)
+marshal rerun <id>                         submits an ended job again: its command, directory, environment, kind and resources; prints the new id
 marshal tail <id> [-f] [-n <lines>]        the job's log; -f follows it until the job ends
 marshal status [--json]                    the budget in use; --json: one JSON object with the running and queued jobs
 marshal top                                a live view of the budget, the jobs and their logs; h lists its keys
@@ -37,14 +38,34 @@ Options of `submit` and `run`:
 | `--landing` | The landing lane: starts before every development job, outside the unit budget, at normal priority. One landing job runs at a time. |
 | `--dir <d>` | Where it runs, relative to the current directory. Default: the current directory. |
 | `--deadline <t>` | Stops it after `t`: a number of minutes, or `90s`, `30m`, `2h`. Default: learned for its kind. |
+| `--after <ids>` | Holds it until jobs `<ids>` (`3` or `3,4`) have ended; the same as `--after-ok`. |
+| `--after-ok <ids>` | Holds it until they have ended, then queues it if each exited 0, and otherwise cancels it (`dependency-failed`, exit 126), which cancels in turn what is held for it. |
+| `--after-any <ids>` | Holds it until they have ended, then queues it however they ended. |
+| `--retries <n>` | Runs it again, up to `n` times, when it exits nonzero, is ended by a signal it was not sent by `kill`, or passes its deadline. Default 0. |
+| `--retry-delay <t>` | Waits `t` before each retry. Default: none. |
 
 A job runs with the caller's environment, in a process group of its own, under `nice -n 15` unless it
 is a landing job, with its standard output and error in `~/.marshal/jobs/<id>.log`.
 
 **Exit statuses.** `wait` and `run` exit with the job's own code; 128 + the signal for a job ended by
 a signal (143 for `kill`); 124 for a job stopped at its deadline; 143 for a job cancelled before it
-started; 125 for a job lost when a daemon died. marshal's own failures (a bad command line, an unknown
-job, no daemon) exit 2.
+started; 125 for a job lost when a daemon died; 126 for a job cancelled because a job it was held for
+did not succeed. marshal's own failures (a bad command line, an unknown job, no daemon) exit 2.
+
+**Holds and retries.** A job held with `--after` names only jobs that already exist, so holds never
+form a cycle. While held, `ls` and `top` show it as `held 3,4`, the jobs it still waits for; once
+they have ended it joins the back of the queue. A retried job keeps its id: each attempt is
+recorded in the event log, its output is appended to the same log after a `marshal: attempt 2 of 3`
+line, each attempt has the whole deadline, and `wait` answers with the last attempt's status. A job
+waiting out its retry delay shows as `retry 2`. `kill` cancels a held job or one waiting to retry,
+and a killed job is never retried. Both survive `marshal restart`.
+
+```
+$ a=$(marshal submit -- make)
+$ b=$(marshal submit --after $a --retries 2 -- make test)
+$ marshal wait $b
+$ marshal rerun $b
+```
 
 ```
 $ marshal run --kind test -- sysl test compiler --timeout 1800
@@ -68,8 +89,9 @@ ends: nothing polls.
   minutes; until it has 3 runs it is 20 minutes for a build, 45 for a test, 30 for anything else and
   120 for a landing job. A job past its deadline has its busiest process sampled (`sample`, 5
   seconds, to `jobs/<id>.sample.txt`), then its group gets TERM and, 5 seconds later, KILL.
-- **Events.** `events.jsonl` records every job's `submitted`, `started` and ending (`finished`,
-  `timeout`, `killed`, `lost`), each with the time, the job, and its durations and exit status.
+- **Events.** `events.jsonl` records every job's `submitted`, `released` (a held job joining the
+  queue), `started`, `retry` and ending (`finished`, `timeout`, `killed`, `cancelled`, `lost`), each
+  with the time, the job, and its durations and exit status.
   Deadlines are learned from it, and a daemon that starts after one died records the jobs that
   were left open as `lost`.
 - **Stopping.** `marshal stop` or a TERM signal ends the daemon. TERM, like `stop --force`, kills

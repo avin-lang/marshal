@@ -23,7 +23,8 @@ val Commands: Vector[(string, string)] = [
     ("run [options] -- <command...>", "submit and wait: prints the log's path, then the result; exits with the job's status"),
     ("wait <id>", "waits for the job; prints one result line; exits with the job's status"),
     ("ls", "jobs queued, running and recently ended"),
-    ("kill <id>", "stops the job's whole process tree (a queued job is cancelled)"),
+    ("kill <id>", "stops the job's whole process tree (a queued or held job is cancelled)"),
+    ("rerun <id>", "submits an ended job again: its command, directory, environment, kind and resources; prints the new id"),
     ("tail <id> [-f] [-n <lines>]", "the job's log; -f follows it until the job ends"),
     ("status [--json]", "the budget in use; --json: one JSON object with the running and queued jobs"),
     ("top", "a live view of the budget, the jobs and their logs; h lists its keys"),
@@ -41,6 +42,11 @@ Options of submit and run:
   --landing         run it in the landing lane: first, outside the unit budget, not niced
   --dir <d>         the directory to run it in, relative to this one (default: this one)
   --deadline <t>    stop it after t: minutes, or 90s, 30m, 2h (default: learned for the kind)
+  --after <ids>     hold it until jobs <ids> (such as 3,4) have ended; the same as --after-ok
+  --after-ok <ids>  hold it until they have ended, and cancel it unless each of them succeeded
+  --after-any <ids> hold it until they have ended, then run it however they ended
+  --retries <n>     run it again, up to n times, when it fails or times out (default: 0)
+  --retry-delay <t> wait t before each retry: 90s, 30m, 2h (default: none)
   --                the command begins after this; nothing after it is an option\
 """
 
@@ -93,6 +99,7 @@ main(args: Vector[string]) -> int
         "submit" -> submit(rest, false)
         "run" -> submit(rest, true)
         "wait" -> withId(rest, id -> waitFor(id))
+        "rerun" -> withId(rest, id -> rerun(id))
         "kill" -> withId(rest, id -> simple(Request.Kill(id), s"marshal: job $id is being stopped"))
         "ls" -> list()
         "status" -> rest match
@@ -142,6 +149,10 @@ parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]
     var landing = false
     var workDir = dir
     var deadline: Option[long] = None
+    val after = Buffer[long]()
+    var afterMode: Option[string] = None
+    var retries = 0
+    var retryDelay: long = 0
     var i = 0
     while i < args.length()
         val word = args(i)
@@ -169,12 +180,33 @@ parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]
             "--deadline" -> marshal.parseDeadline(value) match
                 Some(ms) -> deadline = Some(ms)
                 None -> return Err(s"`--deadline $value`: a deadline is minutes, or a number with s, m or h, such as 90s")
+            "--after" | "--after-ok" | "--after-any" ->
+                val mode = if word == "--after-any" then "--after-any" else "--after-ok"
+                if afterMode.exists(m -> m != mode) then return Err("a job is held with --after-ok or with --after-any, not both")
+                afterMode = Some(mode)
+                after ++= parseIds(value).mapErr(e -> s"`$word $value`: $e")?
+            "--retries" -> value.toIntOption() match
+                Some(n) if n >= 0 -> retries = n
+                _ -> return Err(s"`--retries $value`: retries are a whole number, 0 or more")
+            "--retry-delay" -> marshal.parseDeadline(value) match
+                Some(ms) -> retryDelay = ms
+                None -> return Err(s"`--retry-delay $value`: a delay is minutes, or a number with s, m or h, such as 90s")
             _ -> return Err(s"no option `$word`")
         i += 2
     val cmd = args.drop(i)
     if cmd.isEmpty() then return Err("no command to run: give it after `--`")
     val k = kind.getOrElse(if cmd.exists(w -> w == "test") then "test" else "build")
-    Ok(JobSpec(k, units.getOrElse(marshal.defaultUnits(k)), memory, landing, workDir, deadline, cmd, env))
+    Ok(JobSpec(k, units.getOrElse(marshal.defaultUnits(k)), memory, landing, workDir, deadline, cmd, env,
+        after.toVector().distinct(), afterMode == Some("--after-any"), retries, retryDelay))
+
+// Job ids separated by commas, such as `3,4`.
+parseIds(text: string) -> Result[Vector[long], string]
+    val ids = Buffer[long]()
+    for word in text.split(",")
+        word.trim().toLongOption() match
+            Some(id) if id >= 1 -> ids += id
+            _ -> return Err(s"`$word` is not a job id")
+    Ok(ids.toVector())
 
 submit(args: Vector[string], andWait: bool) -> int
     val dir = process.currentDir().getOrElse(".")
@@ -197,6 +229,15 @@ waitFor(id: long) -> int = askDaemon(Request.Wait(id)) match
     Ok(Ended(job)) ->
         println(marshal.resultLine(job))
         job.outcome.map(marshal.exitCode).getOrElse(Trouble)
+    Ok(Failed(e)) -> complain(s"marshal: $e")
+    Ok(other) -> complain(s"marshal: unexpected reply $other")
+    Err(e) -> complain(e)
+
+// `rerun <id>`: prints the id of the job that runs job `id` again.
+rerun(id: long) -> int = askDaemon(Request.Rerun(id)) match
+    Ok(Submitted(n, _)) ->
+        println(n)
+        0
     Ok(Failed(e)) -> complain(s"marshal: $e")
     Ok(other) -> complain(s"marshal: unexpected reply $other")
     Err(e) -> complain(e)

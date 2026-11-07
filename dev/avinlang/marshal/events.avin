@@ -2,14 +2,17 @@ module dev.avinlang.marshal
 
 // The event log, `events.jsonl`: one JSON object per line, appended as jobs move. Each event holds
 // the whole job as a listing shows it (the fields of `encodeJob`) and, before them, `ts` (the wall
-// clock in milliseconds since 1970) and `event`, one of `submitted`, `started`, `finished`,
-// `timeout`, `killed` and `lost`; the last four end a job. An ending event adds `run_ms` and `exit`
-// (the status `wait` exits with), and `started` adds `pgid`, the job's process group.
+// clock in milliseconds since 1970) and `event`, one of `submitted`, `released`, `started`,
+// `retry`, `finished`, `timeout`, `killed`, `cancelled` and `lost`; the last five end a job.
+// An ending event adds `run_ms` and `exit` (the status `wait` exits with), and `started` adds
+// `pgid`, the job's process group. `submitted` adds `spec`, the job's whole specification, which
+// `rerun` submits again. A job that is retried ends each attempt with an ending event and then
+// records `retry`, so its last event is an ending only once its last attempt has ended.
 import avin.collections.mutable.{Map as MutableMap}
 import json
 import json.Json
 
-val endings: Set[string] = {"finished", "timeout", "killed", "lost"}
+val endings: Set[string] = {"finished", "timeout", "killed", "cancelled", "lost"}
 
 // One event line, without its line feed.
 eventLine(ts: long, event: string, job: JobInfo, extra: Vector[(string, Json)]) -> string =
@@ -78,7 +81,18 @@ lostLine(ts: long, ev: Json, groupAlive: bool) -> Option[string] = decodeJob(ev)
     Err(_) -> None
 
 // Job `j` as its `lost` event describes it.
-asLost(j: JobInfo) -> JobInfo = JobInfo(j.id, j.kind, j.units, j.memory, j.landing, j.dir, j.cmd, "done", Some(Lost), j.killed, j.queuedMs, j.elapsedMs, j.deadlineMs, j.log, j.sample)
+asLost(j: JobInfo) -> JobInfo = JobInfo(j.id, j.kind, j.units, j.memory, j.landing, j.dir, j.cmd, "done", Some(Lost), j.killed, j.queuedMs, j.elapsedMs, j.deadlineMs, j.log, j.sample, [], j.attempt)
+
+// The specification job `id` was submitted with, as its `submitted` event records it; None when the
+// log has no such event or it records none.
+specOf(lines: Iterable[string], id: long) -> Option[JobSpec]
+    for line in lines
+        if !line.contains("\"id\":" + id.toString()) || !line.contains("\"submitted\"") then continue
+        json.parse(line) match
+            Ok(ev) if ev.get("id").flatMap(v -> v.asLong()) == Some(id) && ev.get("event").flatMap(v -> v.asString()) == Some("submitted") ->
+                return ev.get("spec").flatMap(s -> decodeSpec(s).ok())
+            _ -> ()
+    None
 
 // The last event that ended job `id`, or None while the log has none.
 endOf(lines: Iterable[string], id: long) -> Option[Json]

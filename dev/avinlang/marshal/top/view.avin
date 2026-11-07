@@ -6,7 +6,7 @@ module dev.avinlang.marshal.top
 import dev.avinlang.marshal
 import dev.avinlang.marshal.{JobInfo, Overview, QueuedJob, Why}
 import dev.avinlang.marshal.{NoUnits, NoMemory, LaneBusy, ForTakeSlot, Behind, Starting}
-import dev.avinlang.marshal.{Exited, Signalled, TimedOut, Cancelled, Lost}
+import dev.avinlang.marshal.{Exited, Signalled, TimedOut, Cancelled, Lost, DependencyFailed}
 import dev.avinlang.tui.{Black, Bold, BrightBlack, Char, Column, Ctrl, Cyan, Dim, Down, End, Enter, Escape, Event,
                          Green, Grid, Home, Key, KeyPress, Magenta, PageDown, PageUp, Rect, Red, Reverse, Rounded,
                          Stop, Style, Table, Up, Yellow, textWidth}
@@ -46,12 +46,16 @@ data Line(job: JobInfo, queued: Option[(int, Why)])
 lines(o: Overview, f: Filter) -> Vector[Line]
     val running = o.running.map(j -> Line(j, None))
     val queued = o.queued.map(q -> Line(q.job, Some((q.position, q.why))))
+    val held = o.held.map(j -> Line(j, None))
     val recent = o.recent.map(j -> Line(j, None))
     f match
-        ShowAll -> running ++ queued ++ recent
+        ShowAll -> running ++ queued ++ held ++ recent
         ShowRunning -> running
-        ShowQueued -> queued
+        ShowQueued -> queued ++ held
         ShowFinished -> recent
+
+// Whether a line is a job held for others or waiting to retry.
+waiting(l: Line) -> bool = l.job.outcome.isEmpty() && (l.job.state == "held" || l.job.state == "retrying")
 
 // Why a queued job waits, in the words of its STATE cell.
 whyText(w: Why) -> string
@@ -85,6 +89,7 @@ stateOf(l: Line) -> (string, Style)
     l.queued match
         Some((position, why)) -> (s"#$position ${whyText(why)}", Style.fg(Yellow))
         None -> j.outcome match
+            None if waiting(l) -> (marshal.stateColumn(j), Style.fg(Yellow))
             None -> (if j.landing then "landing" else "running", Style.fg(Green).with(Bold))
             Some(Exited(0)) -> ("exit 0", Style.fg(Green))
             Some(Exited(code)) -> (s"exit $code", Style.fg(Red).with(Bold))
@@ -92,13 +97,14 @@ stateOf(l: Line) -> (string, Style)
             Some(TimedOut) -> ("timeout", Style.fg(Red).with(Bold | Reverse))
             Some(Cancelled) -> ("cancelled", Style.fg(BrightBlack))
             Some(Lost) -> ("lost", Style.fg(Magenta).with(Bold | Reverse))
+            Some(DependencyFailed(after)) -> (s"dep $after failed", Style.fg(BrightBlack))
 
 // A line's DEADLINE cell and its style: time left for a running job, the deadline it will have for a
 // queued one, nothing for one that ended.
 deadlineOf(l: Line, since: long) -> (string, Style)
     val j = l.job
     if j.outcome.isDefined() then return ("-", Style.fg(BrightBlack))
-    if l.queued.isDefined() then return (clock(j.deadlineMs), Style.fg(BrightBlack))
+    if l.queued.isDefined() || waiting(l) then return (clock(j.deadlineMs), Style.fg(BrightBlack))
     val left = timeLeft(j, since)
     (if left <= 0 then "over" else clock(left), leftStyle(left, j.deadlineMs))
 
@@ -396,6 +402,8 @@ val helpLines: Vector[string] = [
     "no units, no memory, lane busy (another landing job), take-slot",
     "(what take-slot.zsh holds or waits for), or behind the job at",
     "the head of the queue, which it would delay.",
+    "held 3,4 waits for jobs 3 and 4 to end; retry 2 waits to make",
+    "its second attempt.",
     "DEADLINE is the time left; yellow, then red, as it nears."
 ]
 

@@ -31,16 +31,18 @@ import json
 import json.Json
 import dev.avinlang.marshal
 import dev.avinlang.marshal.{Config,JobInfo, JobSpec, Outcome, Outside, Reply, Request, Started, TakeSlot, TakeSlotUse, Usage, Waiting}
-import dev.avinlang.marshal.{Submit, Wait, Kill, Status, Stop}
+import dev.avinlang.marshal.{Submit, Wait, Kill, Status, Stop, Rerun}
 import dev.avinlang.marshal.{Submitted, Ended, Jobs, Using, Viewed, Hi, Done, Failed}
 import dev.avinlang.marshal.{Overview, QueuedJob, SavedJob, SavedState}
-import dev.avinlang.marshal.{Cancelled, TimedOut}
+import dev.avinlang.marshal.{Cancelled, DependencyFailed, TimedOut}
 
-// `Written` follows each reply the daemon gave, once its connection has written it.
+// `Written` follows each reply the daemon gave, once its connection has written it. `Due` and
+// `Retry` name the attempt they were set for, so a timer left from an earlier attempt does nothing.
 data Message
     FromClient(request: Request, reply: Channel[Reply])
     Exit(id: long, status: Result[ExitStatus, IoError])
-    Due(id: long)
+    Due(id: long, attempt: int)
+    Retry(id: long, attempt: int)
     Written
     Terminate
     Tick
@@ -54,8 +56,11 @@ val Recent: int = 10
 // How often waiting jobs look again at what take-slot holds, in milliseconds.
 val TickMs: long = 3000
 
-// `arrived` is when it was submitted on the wall clock, in microseconds; `pid` its main process.
-class Job(val id: long, val spec: JobSpec, val submittedMs: long, val arrived: long, val deadlineMs: long, val expectedMs: long, val log: string)
+// `arrived` is when it joined the queue on the wall clock, in microseconds: when it was submitted,
+// released by the jobs it was held for, or queued again to retry. `pid` is its main process.
+// `holds` the jobs a held job still waits for; `attempt` counts its runs from 1, and `retryAt` is
+// when a job waiting to retry queues again.
+class Job(val id: long, val spec: JobSpec, val submittedMs: long, var arrived: long, val deadlineMs: long, val expectedMs: long, val log: string)
     var state = "queued"
     var pid: long = 0
     var startedMs: long = 0
@@ -65,15 +70,19 @@ class Job(val id: long, val spec: JobSpec, val submittedMs: long, val arrived: l
     var killed = false
     var timedOut = false
     var sample: Option[string] = None
+    var holds: Vector[long] = []
+    var attempt = 1
+    var retryAt: long = 0
     val waiters = Buffer[Channel[Reply]]()
 
     info(now: long) -> JobInfo =
+        val waiting = state == "queued" || state == "held"
         val elapsed = state match
-            "queued" -> now - submittedMs
+            "queued" | "held" -> now - submittedMs
             "running" -> now - startedMs
             _ -> endedMs - startedMs
-        val queued = if state == "queued" then now - submittedMs else startedMs - submittedMs
-        JobInfo(id, spec.kind, spec.units, spec.memory, spec.landing, spec.dir, spec.cmd, state, outcome, killed, queued, elapsed, deadlineMs, log, sample)
+        val queued = if waiting then now - submittedMs else startedMs - submittedMs
+        JobInfo(id, spec.kind, spec.units, spec.memory, spec.landing, spec.dir, spec.cmd, state, outcome, killed, queued, elapsed, deadlineMs, log, sample, holds, attempt)
 
 // The daemon's state, owned by its own thread.
 // `slots` is the take-slot directory it shares, if any; `ticket` the name of its waiting ticket there.
@@ -83,6 +92,8 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
     val queue = Buffer[Job]()
     val running = Buffer[Job]()
     val ended = Buffer[Job]()
+    // Jobs held for others to end, and jobs waiting out a retry delay, oldest first.
+    val held = Buffer[Job]()
     var stopping = false
     var draining = false
     val stopReplies = Buffer[Channel[Reply]]()
@@ -116,15 +127,19 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             message match
                 FromClient(request, reply) -> answer(request, reply)
                 Exit(id, status) -> exited(id, status)
-                Due(id) -> due(id)
+                Due(id, attempt) -> due(id, attempt)
+                Retry(id, attempt) -> retryDue(id, attempt)
                 Written -> unwritten -= 1
                 Tick -> if queue.nonEmpty() then schedule()
                 Terminate ->
                     eprintln("marshal: TERM received: stopping, killing what runs")
                     stop(true, false, None)
-            if draining && running.isEmpty() && queue.isEmpty() then stopping = true
-            if stopping && running.isEmpty() && queue.isEmpty() then break
+            if draining && idle() then stopping = true
+            if stopping && idle() then break
         finish()
+
+    // Whether no job runs, waits in the queue, is held or waits to retry.
+    idle() -> bool = running.isEmpty() && queue.isEmpty() && held.isEmpty()
 
     // Answers a request at once, or keeps its reply channel for when the answer is known.
     answer(request: Request, reply: Channel[Reply])
@@ -141,13 +156,25 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             Stop(force, drain) -> stop(force, drain, Some(reply))
             Request.Hello -> give(reply, Hi(reportedVersion(), process.pid()))
             Request.Restart -> restart(reply)
+            Rerun(id) -> give(reply, rerun(id))
 
-    submit(spec: JobSpec) -> Reply
+    // Queues a job, or holds it while the jobs it is held for have not all ended. `extra` goes into
+    // its `submitted` event.
+    submit(spec: JobSpec, extra: Vector[(string, Json)] = []) -> Reply
         if stopping || draining then return Failed("the daemon is stopping and takes no new jobs")
         marshal.neverFits(config.budget, spec.units, spec.memory, spec.landing) match
             Some(why) -> return Failed(why)
             None -> ()
         if !fs.isDir(spec.dir) then return Failed(s"no directory ${spec.dir}")
+        if spec.retries < 0 then return Failed(s"retries are 0 or more, not ${spec.retries}")
+        if spec.retryDelayMs < 0 then return Failed("a retry delay is not negative")
+        // Only a job that exists can be waited for, so the jobs a job is held for are all older
+        // than it, and holds can never form a cycle.
+        for dep in spec.after
+            if dep == nextId then return Failed(s"job $dep cannot be held for itself")
+            endingOf(dep) match
+                Err(e) -> return Failed(e)
+                Ok(_) -> ()
         val past = history(spec)
         val deadline = spec.deadlineMs.getOrElse(marshal.deadlineMs(config.learning, spec.kind, spec.landing, past))
         val learned = marshal.expectedMs(config.learning, spec.kind, spec.landing, past)
@@ -156,10 +183,124 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         nextId += 1
         val job = Job(id, spec, now(), time.now().epochMicros, deadline, expected, s"$home/jobs/$id.log")
         jobs(id) = job
-        queue += job
-        record("submitted", job)
+        if spec.after.isEmpty()
+            queue += job
+            record("submitted", job, [("spec", marshal.encodeSpec(spec))] ++ extra)
+        else
+            job.state = "held"
+            job.holds = spec.after.distinct()
+            held += job
+            record("submitted", job, [("spec", marshal.encodeSpec(spec))] ++ extra)
+            reconsider(job)
         schedule()
         Submitted(id, job.log)
+
+    // `rerun`: job `id`, ended, submitted again with the same command, directory, environment, kind,
+    // resources, deadline and retries, but held for nothing.
+    rerun(id: long) -> Reply
+        val spec = jobs.get(id) match
+            Some(j) if j.state != "done" -> return Failed(s"job $id is ${j.state}: only a job that has ended runs again")
+            Some(j) -> j.spec
+            None ->
+                if id < 1 || id >= nextId then return Failed(s"no job $id")
+                val text = fs.readText(home + "/events.jsonl").getOrElse("")
+                marshal.specOf(text.lines(), id) match
+                    Some(s) -> s
+                    None -> return Failed(s"job $id's command is not in the event log")
+        submit(JobSpec(spec.kind, spec.units, spec.memory, spec.landing, spec.dir, spec.deadlineMs, spec.cmd, spec.env, [], false, spec.retries, spec.retryDelayMs), [("rerun_of", Json.num(id))])
+
+    // How job `id` ended: None while it has not, and an error when there is no such job or its end
+    // cannot be read.
+    endingOf(id: long) -> Result[Option[Outcome], string]
+        jobs.get(id) match
+            Some(j) -> return Ok(if j.state == "done" then j.outcome else None)
+            None -> ()
+        endedEarlier(id) match
+            Ended(info) -> Ok(info.outcome)
+            Failed(e) -> Err(e)
+            other -> Err(s"job $id: unexpected $other")
+
+    // Looks again at the jobs a held job waits for. One that did not succeed cancels it, unless it
+    // runs after them whatever their outcome; once none is left to wait for, it joins the queue.
+    reconsider(job: Job)
+        if job.state != "held" then return
+        val pending = Buffer[long]()
+        for dep in job.holds
+            endingOf(dep) match
+                Ok(None) -> pending += dep
+                Ok(Some(o)) -> if !job.spec.afterAny && !marshal.succeeded(o)
+                    held.remove(held.indexOf(job))
+                    conclude(job, DependencyFailed(dep), "cancelled")
+                    return
+                // a job whose end cannot be read is taken to have failed
+                Err(_) -> if !job.spec.afterAny
+                    held.remove(held.indexOf(job))
+                    conclude(job, DependencyFailed(dep), "cancelled")
+                    return
+        job.holds = pending.toVector()
+        if pending.nonEmpty() then return
+        held.remove(held.indexOf(job))
+        enqueue(job)
+        record("released", job)
+
+    // Puts a job at the back of the queue, arriving now.
+    enqueue(job: Job)
+        job.state = "queued"
+        job.arrived = time.now().epochMicros
+        queue += job
+
+    // The held jobs waiting for job `id`, which has just ended, look again.
+    heldFor(id: long)
+        for job in held.toVector()
+            if job.holds.contains(id) then reconsider(job)
+
+    // A job's attempt ended so: it is retried when it failed in a way another attempt may mend and
+    // has attempts left, and otherwise it ends.
+    attemptEnded(job: Job, outcome: Outcome, event: string)
+        if stopping || job.attempt > job.spec.retries || !marshal.retryable(outcome, job.killed)
+            conclude(job, outcome, event)
+            return
+        val t = now()
+        offMachine(job)
+        job.state = "done"
+        job.endedMs = t
+        job.outcome = Some(outcome)
+        record(event, job, [("run_ms", Json.num(job.endedMs - job.startedMs)), ("exit", Json.num(marshal.exitCode(outcome)))])
+        job.outcome = None
+        job.timedOut = false
+        job.sample = None
+        job.pid = 0
+        job.pgid = 0
+        job.attempt += 1
+        val delay = job.spec.retryDelayMs
+        eprintln(s"marshal: job ${job.id} failed (exit ${marshal.exitCode(outcome)}): attempt ${job.attempt} of ${job.spec.retries + 1}" + (if delay > 0 then s" in ${marshal.formatMillis(delay)}" else ""))
+        if delay > 0
+            job.state = "retrying"
+            job.retryAt = t + delay
+            held += job
+            record("retry", job, [("delay_ms", Json.num(delay))])
+            armRetry(job)
+        else
+            enqueue(job)
+            record("retry", job, [("delay_ms", Json.num(0))])
+        schedule()
+
+    // A thread that sleeps until a job waiting to retry may queue again.
+    armRetry(job: Job)
+        val events = self.events
+        val id = job.id
+        val attempt = job.attempt
+        val left = job.retryAt - now()
+        spawn(() ->
+            if left > 0 then threads.sleep(millis(left))
+            events.send(Retry(id, attempt)))
+
+    retryDue(id: long, attempt: int)
+        val job = jobs(id)
+        if job.state != "retrying" || job.attempt != attempt then return
+        held.remove(held.indexOf(job))
+        enqueue(job)
+        schedule()
 
     // A job this daemon never held: one an earlier daemon ran, answered from the log.
     endedEarlier(id: long) -> Reply
@@ -179,6 +320,11 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             "queued" ->
                 job.killed = true
                 queue.remove(queue.indexOf(job))
+                conclude(job, Cancelled, "killed")
+                Done
+            "held" | "retrying" ->
+                job.killed = true
+                held.remove(held.indexOf(job))
                 conclude(job, Cancelled, "killed")
                 Done
             "running" ->
@@ -228,7 +374,10 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
     start(job: Job)
         val spec = job.spec
         val program = if spec.landing then Command(spec.cmd(0), spec.cmd.drop(1)*) else Command("nice", (["-n", "15"] ++ spec.cmd)*)
-        var command = program.inDir(spec.dir).toFile(job.log).errorsToOutput().inNewGroup()
+        // A retry's output follows the earlier attempts' in the job's log.
+        if job.attempt > 1 then fs.appendText(job.log, s"marshal: attempt ${job.attempt} of ${spec.retries + 1}\n")
+        val placed = program.inDir(spec.dir)
+        var command = (if job.attempt > 1 then placed.appendTo(job.log) else placed.toFile(job.log)).errorsToOutput().inNewGroup()
         for (name, value) in spec.env do command = command.withEnv(name, value)
         job.state = "running"
         job.startedMs = now()
@@ -245,9 +394,10 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
                 watch(job)
             Err(e) ->
                 if spec.landing then slots.foreach(ts -> ts.releaseLanding(0))
-                fs.writeText(job.log, s"marshal: could not start `${spec.cmd(0)}` in ${spec.dir}: ${e.message()}\n")
+                val why = s"marshal: could not start `${spec.cmd(0)}` in ${spec.dir}: ${e.message()}\n"
+                if job.attempt > 1 then fs.appendText(job.log, why) else fs.writeText(job.log, why)
                 record("started", job, [("pgid", Json.num(0))])
-                conclude(job, Outcome.Exited(127), "finished")
+                attemptEnded(job, Outcome.Exited(127), "finished")
 
     // A thread that waits for the running job's process by pid, and one that sleeps until what is
     // left of its deadline; a job already being stopped needs no deadline.
@@ -255,12 +405,13 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         val events = self.events
         val id = job.id
         val pid = job.pid
+        val attempt = job.attempt
         spawn(() -> events.send(Exit(id, process.waitPid(pid))))
         if job.killed || job.timedOut then return
         val left = job.deadlineMs - (now() - job.startedMs)
         spawn(() ->
             if left > 0 then threads.sleep(millis(left))
-            events.send(Due(id)))
+            events.send(Due(id, attempt)))
 
     exited(id: long, status: Result[ExitStatus, IoError])
         val job = jobs(id)
@@ -268,7 +419,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         // Whatever the job left running in its group goes with it.
         process.signal(-job.pgid, signal.Terminate)
         if job.timedOut
-            conclude(job, TimedOut, "timeout")
+            attemptEnded(job, TimedOut, "timeout")
             return
         val outcome = status match
             Ok(ExitStatus.Exited(code)) -> Outcome.Exited(code)
@@ -281,11 +432,11 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
                 eprintln(s"marshal: job $id could not be waited for: ${e.message()}")
                 Outcome.Lost
         val event = if outcome == Outcome.Lost then "lost" elif job.killed then "killed" else "finished"
-        conclude(job, outcome, event)
+        attemptEnded(job, outcome, event)
 
-    due(id: long)
+    due(id: long, attempt: int)
         val job = jobs(id)
-        if job.state != "running" || job.killed || job.timedOut then return
+        if job.state != "running" || job.attempt != attempt || job.killed || job.timedOut then return
         job.timedOut = true
         val sample = s"$home/jobs/$id.sample.txt"
         job.sample = Some(sample)
@@ -296,12 +447,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
     conclude(job: Job, outcome: Outcome, event: string)
         val t = now()
         // A job cancelled while queued ran for no time: it "starts" and ends as it is cancelled.
-        if job.state == "running"
-            running.remove(running.indexOf(job))
-            val pid = job.pid
-            if pid > 0 then slots.foreach(ts -> if job.spec.landing then ts.releaseLanding(pid) else ts.unregister(pid))
-        else
-            job.startedMs = t
+        if job.state == "running" then offMachine(job) else job.startedMs = t
         job.state = "done"
         job.endedMs = t
         job.outcome = Some(outcome)
@@ -318,11 +464,18 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
                     histories(key) = b
         for w in job.waiters do give(w, Ended(info))
         job.waiters.clear()
+        heldFor(job.id)
         schedule()
+
+    // A running job leaves the machine: the running jobs and take-slot's files.
+    offMachine(job: Job)
+        running.remove(running.indexOf(job))
+        val pid = job.pid
+        if pid > 0 then slots.foreach(ts -> if job.spec.landing then ts.releaseLanding(pid) else ts.unregister(pid))
 
     listing() -> Vector[JobInfo]
         val t = now()
-        (running.toVector() ++ queue.toVector() ++ ended.takeRight(Recent)).map(j -> j.info(t))
+        (running.toVector() ++ queue.toVector() ++ held.toVector() ++ ended.takeRight(Recent)).map(j -> j.info(t))
 
     usage() -> Usage = usageWith(slots.map(ts ->
         ts.lock()
@@ -344,7 +497,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         val queued = marshal.waits(config.budget, started, waiting, t, outside.getOrElse(marshal.NoOutside)).map(w ->
             QueuedJob(jobs(w.0).info(t), w.1, w.2))
         val recent = (earlier ++ ended.takeRight(Recent).map(j -> j.info(t))).takeRight(Recent).reverse()
-        Overview(usageWith(outside), t - began, running.map(j -> j.info(t)).toVector(), queued, recent)
+        Overview(usageWith(outside), t - began, running.map(j -> j.info(t)).toVector(), queued, recent, held.map(j -> j.info(t)).toVector())
 
     private usageWith(outside: Option[Outside]) -> Usage
         val dev = running.filter(j -> !j.spec.landing)
@@ -362,13 +515,20 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
     // after killing what runs and cancelling what waits; with `drain`, once what is queued and
     // running has ended. Otherwise it is refused.
     stop(force: bool, drain: bool, reply: Option[Channel[Reply]])
-        val busy = running.length() + queue.length()
+        val busy = running.length() + queue.length() + held.length()
         if busy > 0 && !force && !drain
-            reply.foreach(r -> give(r, Failed(s"${running.length()} running and ${queue.length()} queued: `marshal stop --wait` waits for them and `--force` kills them")))
+            val holding = if held.isEmpty() then "" else s" and ${held.length()} held"
+            reply.foreach(r -> give(r, Failed(s"${running.length()} running and ${queue.length()} queued$holding: `marshal stop --wait` waits for them and `--force` kills them")))
             return
         reply.foreach(r -> stopReplies += r)
         if force
             stopping = true
+            // the held go first, so none is released into the queue by a job cancelled before it
+            for job in held.toVector()
+                if job.state == "done" then continue
+                job.killed = true
+                held.remove(held.indexOf(job))
+                conclude(job, Cancelled, "killed")
             for job in queue.toVector()
                 job.killed = true
                 queue.remove(queue.indexOf(job))
@@ -460,7 +620,8 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         events.receive() match
             Some(FromClient(r, c)) -> held += (r, c)
             Some(Exit(id, status)) -> exited(id, status)
-            Some(Due(id)) -> due(id)
+            Some(Due(id, attempt)) -> due(id, attempt)
+            Some(Retry(id, attempt)) -> retryDue(id, attempt)
             Some(Written) -> unwritten -= 1
             Some(Terminate) -> termed = true
             Some(Tick) -> ()
@@ -475,9 +636,11 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             j.id, j.spec, j.state, wall(j.submittedMs), j.arrived,
             if j.state == "queued" then 0 else wall(j.startedMs),
             if j.state == "done" then wall(j.endedMs) else 0,
-            j.deadlineMs, j.expectedMs, j.log, j.pid, j.pgid, j.outcome, j.killed, j.timedOut, j.sample)
+            j.deadlineMs, j.expectedMs, j.log, j.pid, j.pgid, j.outcome, j.killed, j.timedOut, j.sample,
+            j.attempt, if j.state == "retrying" then wall(j.retryAt) else 0)
         SavedState(reportedVersion(), process.pid(), wallNow, wall(began), nextId,
-            queue.map(saved).toVector(), running.map(saved).toVector(), ended.takeRight(Recent).map(saved).toVector(), ticket)
+            queue.map(saved).toVector(), running.map(saved).toVector(), ended.takeRight(Recent).map(saved).toVector(), ticket,
+            held.map(saved).toVector())
 
     // Takes over what an earlier image of this daemon saved: its jobs, queue and ticket. The
     // running jobs are still this process's children, so they are waited for by pid; one that was
@@ -500,6 +663,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             job.killed = sj.killed
             job.timedOut = sj.timedOut
             job.sample = sj.sample
+            job.attempt = sj.attempt
             jobs(job.id) = job
             job
         for sj in s.ended do ended += rebuilt(sj)
@@ -509,6 +673,16 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             running += job
             watch(job)
             if job.killed || job.timedOut then terminate(job.pgid, None)
+        // A held job waits again for those of its jobs that have not ended, which may be none by
+        // now; a job waiting to retry waits out what is left of its delay.
+        val holding = s.held.map(sj ->
+            val job = rebuilt(sj)
+            if job.state == "held" then job.holds = job.spec.after.distinct()
+            if job.state == "retrying" then job.retryAt = mono(sj.retryAt)
+            held += job
+            job)
+        for job in holding
+            if job.state == "retrying" then armRetry(job) else reconsider(job)
         schedule()
 
 // Stops a job's process group: samples its busiest process first when `sample` names a file, then
@@ -626,7 +800,7 @@ run(home: string, resume: Option[string] = None) -> int
     val log = home + "/events.jsonl"
     val recovered = marshal.recover(if fs.exists(log) then fs.readText(log).getOrElse("").lines() else [])
     // the jobs the log left open that a restart did not hand over were lost with the daemon that held them
-    val kept = saved.map(s -> (s.queue ++ s.running).map(j -> j.id)).getOrElse([])
+    val kept = saved.map(s -> (s.queue ++ s.running ++ s.held).map(j -> j.id)).getOrElse([])
     val orphans = recovered.open.filter(ev -> !kept.contains(ev.get("id").flatMap(v -> v.asLong()).getOrElse(0)))
     for ev in orphans
         val pgid = ev.get("pgid").flatMap(v -> v.asLong()).getOrElse(0)
@@ -674,6 +848,7 @@ run(home: string, resume: Option[string] = None) -> int
     for s in saved
         daemon.restore(s)
         val upgrade = if s.version == reportedVersion() then s"version ${s.version}" else s"version ${s.version} to ${reportedVersion()}"
-        eprintln(s"marshal: daemon ${process.pid()} restarted ($upgrade), taking over ${s.running.length()} running and ${s.queue.length()} queued jobs")
+        val holding = if s.held.isEmpty() then "" else s" and ${s.held.length()} held"
+        eprintln(s"marshal: daemon ${process.pid()} restarted ($upgrade), taking over ${s.running.length()} running and ${s.queue.length()} queued$holding jobs")
     daemon.serve()
     0

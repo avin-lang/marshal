@@ -8,7 +8,9 @@ import json.Json
 // marshal's version, as `avin.hocon` gives it: what `marshal version` and `marshal restart` print.
 val Version: string = "0.1.0"
 
-// What a job is to run and how much of the machine it takes.
+// What a job is to run and how much of the machine it takes. `after` names the jobs it is held for:
+// it queues once they have all ended, and with `afterAny` false only if each of them succeeded.
+// `retries` is how many times more it runs after failing or timing out, `retryDelayMs` after how long.
 data JobSpec(
     kind: string,
     units: int,
@@ -17,7 +19,11 @@ data JobSpec(
     dir: string,
     deadlineMs: Option[long],
     cmd: Vector[string],
-    env: Vector[(string, string)])
+    env: Vector[(string, string)],
+    after: Vector[long] = [],
+    afterAny: bool = false,
+    retries: int = 0,
+    retryDelayMs: long = 0)
 
 data Request
     Submit(spec: JobSpec)
@@ -33,27 +39,44 @@ data Request
     Hello
     // The daemon replaces itself with the program installed at its own path, keeping its jobs.
     Restart
+    // Submits again a job that has ended, as it was submitted.
+    Rerun(id: long)
 
-// How a job ended.
+// How a job ended. `DependencyFailed` cancels a job held for job `after`, which did not succeed.
 data Outcome
     Exited(code: int)
     Signalled(signal: int)
     TimedOut
     Cancelled
     Lost
+    DependencyFailed(after: long)
 
 // The exit status `wait` and `run` end with: the job's own code, 128 + the signal that ended it,
-// 124 for a timeout, 143 for a job cancelled before it started (as a TERM would) and 125 for a job
-// lost with a daemon that died.
+// 124 for a timeout, 143 for a job cancelled before it started (as a TERM would), 125 for a job
+// lost with a daemon that died and 126 for a job cancelled because a job it was held for failed.
 exitCode(o: Outcome) -> int
 exitCode(Exited(code)) = code
 exitCode(Signalled(sig)) = 128 + sig
 exitCode(TimedOut) = 124
 exitCode(Cancelled) = 143
 exitCode(Lost) = 125
+exitCode(DependencyFailed(_)) = 126
 
-// One job as a listing shows it. `state` is `queued`, `running` or `done`; `elapsedMs` is the time
-// queued for a queued job and the time run for the others.
+// Whether a job that ended so succeeded, as a job held for it with `--after-ok` asks.
+succeeded(o: Outcome) -> bool = o == Exited(0)
+
+// Whether a job that ended so failed in a way another attempt may mend: a nonzero exit, a signal it
+// was not sent by `kill`, or its deadline.
+retryable(o: Outcome, killed: bool) -> bool
+retryable(_, true) = false
+retryable(Exited(code), _) = code != 0
+retryable(Signalled(_) | TimedOut, _) = true
+retryable(_, _) = false
+
+// One job as a listing shows it. `state` is `held`, `queued`, `running`, `retrying` (waiting out its
+// retry delay) or `done`; `elapsedMs` is the time queued for a queued job and the time run for the
+// others. `holds` is what a held job waits for, the jobs that have not ended yet; `attempt` counts
+// its runs from 1.
 data JobInfo(
     id: long,
     kind: string,
@@ -69,7 +92,9 @@ data JobInfo(
     elapsedMs: long,
     deadlineMs: long,
     log: string,
-    sample: Option[string])
+    sample: Option[string],
+    holds: Vector[long] = [],
+    attempt: int = 1)
 
 data Usage(
     units: int,
@@ -102,8 +127,9 @@ data Why
 data QueuedJob(job: JobInfo, position: int, why: Why)
 
 // What `marshal top` draws: the budget in use, how long the daemon has run, the running jobs, the
-// queued ones, and the jobs that ended last, the latest first.
-data Overview(usage: Usage, uptimeMs: long, running: Vector[JobInfo], queued: Vector[QueuedJob], recent: Vector[JobInfo])
+// queued ones, the jobs that ended last, the latest first, and the jobs held for others or waiting
+// to retry, oldest first.
+data Overview(usage: Usage, uptimeMs: long, running: Vector[JobInfo], queued: Vector[QueuedJob], recent: Vector[JobInfo], held: Vector[JobInfo] = [])
 
 data Reply
     Submitted(id: long, log: string)
@@ -130,6 +156,9 @@ encodeRequest(Snapshot) = Json.obj(("op", Json.str("snapshot")))
 encodeRequest(Stop(force, drain)) = Json.obj(("op", Json.str("stop")), ("force", Json.Bool(force)), ("wait", Json.Bool(drain)))
 encodeRequest(Hello) = Json.obj(("op", Json.str("version")))
 encodeRequest(Restart) = Json.obj(("op", Json.str("restart")))
+encodeRequest(Rerun(id)) = Json.obj(("op", Json.str("rerun")), ("id", Json.num(id)))
+
+private longs(xs: Vector[long]) -> Json = Json.Arr(xs.map(x -> Json.num(x)))
 
 // A job's specification, as a submit request carries it after its `op`.
 encodeSpec(s: JobSpec) -> Json = Json.obj(
@@ -140,7 +169,11 @@ encodeSpec(s: JobSpec) -> Json = Json.obj(
     ("dir", Json.str(s.dir)),
     ("deadline_ms", s.deadlineMs.map(d -> Json.num(d)).getOrElse(Json.Null)),
     ("cmd", strings(s.cmd)),
-    ("env", Json.Obj(s.env.map(e -> (e.0, Json.str(e.1))))))
+    ("env", Json.Obj(s.env.map(e -> (e.0, Json.str(e.1))))),
+    ("after", longs(s.after)),
+    ("after_any", Json.Bool(s.afterAny)),
+    ("retries", Json.num(s.retries)),
+    ("retry_delay_ms", Json.num(s.retryDelayMs)))
 
 decodeSpec(j: Json) -> Result[JobSpec, string]
     val cmd = field(j, "cmd", stringVector, "an array of strings")?
@@ -153,7 +186,11 @@ decodeSpec(j: Json) -> Result[JobSpec, string]
         field(j, "dir", v -> v.asString(), "a string")?,
         optional(j, "deadline_ms", someLong, "a whole number", None)?,
         cmd,
-        optional(j, "env", stringPairs, "an object of strings", Vector[(string, string)]())?))
+        optional(j, "env", stringPairs, "an object of strings", Vector[(string, string)]())?,
+        optional(j, "after", longVector, "an array of job ids", Vector[long]())?,
+        optional(j, "after_any", v -> v.asBool(), "a bool", false)?,
+        optional(j, "retries", v -> v.asInt(), "an int", 0)?,
+        optional(j, "retry_delay_ms", v -> v.asLong(), "a whole number", long(0))?))
 
 private field[T](j: Json, key: string, read: (Json) -> Option[T], what: string) -> Result[T, string] =
     j.get(key) match
@@ -172,6 +209,10 @@ private optional[T](j: Json, key: string, read: (Json) -> Option[T], what: strin
 
 private stringVector(j: Json) -> Option[Vector[string]] = j.asVector() match
     Some(items) if items.forall(i -> i.asString().isDefined()) -> Some(items.map(i -> i.asString().get()))
+    _ -> None
+
+private longVector(j: Json) -> Option[Vector[long]] = j.asVector() match
+    Some(items) if items.forall(i -> i.asLong().isDefined()) -> Some(items.map(i -> i.asLong().get()))
     _ -> None
 
 private stringPairs(j: Json) -> Option[Vector[(string, string)]] = j.asMembers() match
@@ -196,6 +237,7 @@ decodeRequest(text: string) -> Result[Request, string]
         "stop" -> Ok(Stop(optional(j, "force", v -> v.asBool(), "a bool", false)?, optional(j, "wait", v -> v.asBool(), "a bool", false)?))
         "version" -> Ok(Hello)
         "restart" -> Ok(Restart)
+        "rerun" -> Ok(Rerun(field(j, "id", v -> v.asLong(), "a whole number")?))
         other -> Err(s"no such request: `$other`")
 
 // Outcomes.
@@ -206,6 +248,7 @@ encodeOutcome(Signalled(sig)) = Json.obj(("how", Json.str("signal")), ("signal",
 encodeOutcome(TimedOut) = Json.obj(("how", Json.str("timeout")))
 encodeOutcome(Cancelled) = Json.obj(("how", Json.str("cancelled")))
 encodeOutcome(Lost) = Json.obj(("how", Json.str("lost")))
+encodeOutcome(DependencyFailed(after)) = Json.obj(("how", Json.str("dependency-failed")), ("after", Json.num(after)))
 
 decodeOutcome(j: Json) -> Result[Outcome, string]
     field(j, "how", v -> v.asString(), "a string")? match
@@ -214,6 +257,7 @@ decodeOutcome(j: Json) -> Result[Outcome, string]
         "timeout" -> Ok(TimedOut)
         "cancelled" -> Ok(Cancelled)
         "lost" -> Ok(Lost)
+        "dependency-failed" -> Ok(DependencyFailed(field(j, "after", v -> v.asLong(), "a whole number")?))
         other -> Err(s"no such outcome: `$other`")
 
 // Replies.
@@ -233,7 +277,9 @@ encodeJob(i: JobInfo) -> Json = Json.obj(
     ("elapsed_ms", Json.num(i.elapsedMs)),
     ("deadline_ms", Json.num(i.deadlineMs)),
     ("log", Json.str(i.log)),
-    ("sample", i.sample.map(s -> Json.str(s)).getOrElse(Json.Null)))
+    ("sample", i.sample.map(s -> Json.str(s)).getOrElse(Json.Null)),
+    ("holds", longs(i.holds)),
+    ("attempt", Json.num(i.attempt)))
 
 decodeJob(j: Json) -> Result[JobInfo, string]
     val outcome = j.get("outcome") match
@@ -255,7 +301,9 @@ decodeJob(j: Json) -> Result[JobInfo, string]
         field(j, "elapsed_ms", v -> v.asLong(), "a whole number")?,
         field(j, "deadline_ms", v -> v.asLong(), "a whole number")?,
         field(j, "log", v -> v.asString(), "a string")?,
-        optional(j, "sample", v -> v.asString().map(s -> Some(s)), "a string", None)?))
+        optional(j, "sample", v -> v.asString().map(s -> Some(s)), "a string", None)?,
+        optional(j, "holds", longVector, "an array of job ids", Vector[long]())?,
+        optional(j, "attempt", v -> v.asInt(), "an int", 1)?))
 
 encodeTakeSlot(t: TakeSlotUse) -> Json = Json.obj(
     ("dir", Json.str(t.dir)),
@@ -369,7 +417,8 @@ encodeOverview(o: Overview) -> Json = Json.obj(
     ("uptime_ms", Json.num(o.uptimeMs)),
     ("running", Json.Arr(o.running.map(encodeJob))),
     ("queued", Json.Arr(o.queued.map(encodeQueued))),
-    ("recent", Json.Arr(o.recent.map(encodeJob))))
+    ("recent", Json.Arr(o.recent.map(encodeJob))),
+    ("held", Json.Arr(o.held.map(encodeJob))))
 
 private each[T](j: Json, key: string, read: (Json) -> Result[T, string]) -> Result[Vector[T], string]
     val items = field(j, key, v -> v.asVector(), "an array")?
@@ -393,4 +442,5 @@ decodeOverview(j: Json) -> Result[Overview, string]
         field(j, "uptime_ms", v -> v.asLong(), "a whole number")?,
         running,
         queued,
-        each(j, "recent", decodeJob)?))
+        each(j, "recent", decodeJob)?,
+        if j.has("held") then each(j, "held", decodeJob)? else Vector[JobInfo]()))

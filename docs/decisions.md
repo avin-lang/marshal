@@ -223,3 +223,57 @@ Known gaps in Avin, left for it to fix rather than worked around here:
 - `avin.fs` has no rename, so `state.json` is written in place rather than written aside and
   renamed. Only the program the daemon becomes reads it, after the write has finished, so this
   matters only to a daemon killed mid-write, which leaves a partial file that nothing reads.
+
+## Holds, retries and rerun (branch `depends`)
+
+**Proposed**; each says why and what else was weighed.
+
+- **A dependency may name only a job that already exists, so holds cannot form a cycle.** A job's
+  id is given when it is submitted, after the jobs it names, so every hold points to an older job.
+  An id that is no job, or the id the job itself would get, is refused; no cycle check is needed.
+  Alternative: allowing ids of jobs not yet submitted (a cycle check, and a job that may wait for
+  ever on a mistyped id).
+- **`--after` means `--after-ok`; one job is held one way, not both.** The ids of repeated options
+  of the same way are joined. Alternative: a mode per id (`--after-ok 3 --after-any 4`): more to
+  explain, for a case no one asked for.
+- **A failed dependency cancels the held job at once**, even while its other dependencies still
+  run, with the outcome `dependency-failed` naming the job that failed; the cancel ends that job,
+  so it cascades to what is held for it. "Failed" is anything but exit 0: a nonzero exit, a signal,
+  a timeout, a kill, a cancel, a loss. Alternative: waiting for every dependency before deciding
+  (holds the queue's view of a job that can no longer run).
+- **`dependency-failed` exits 126**, apart from a plain cancel's 143, so a script can tell "it
+  never ran because something before it failed" from "it was cancelled". Alternatives: 143, as
+  for every cancel; or a code above 128 (those read as signals).
+- **A job released by its holds arrives in the queue when it is released**, not when it was
+  submitted: it was not runnable before, and jumping ahead of jobs that were would be unfair to
+  them. Alternative: its submission time (it would start ahead of jobs that queued while it was
+  held).
+- **A job held for one that already ended is decided at submit**: it queues at once, or is
+  cancelled at once, and still gets an id, so a script's `marshal wait` works the same either way.
+  A dependency an earlier daemon ended is read from the event log. Alternative: refusing the
+  submit when a dependency already failed (a script would need two paths).
+- **A retried job keeps its id.** Each attempt starts with the whole deadline, appends its output
+  to the job's log after a `marshal: attempt N of M` line, and is recorded in the event log, its
+  ending followed by `retry`; `wait` answers when the last attempt ends. Retried: a nonzero exit, a
+  signal not sent by `kill`, a timeout, a command that could not start. Never retried: a kill, a
+  cancel, a loss, or any attempt while the daemon stops with `--force` or TERM. Alternatives: a
+  new job id per attempt (a `wait` on the first id would end at the first failure); one deadline
+  across all attempts (a retry after a timeout would have no time left).
+- **No backoff by default; `--retry-delay` is one fixed delay before each retry**, shown as
+  `retrying` (`retry N` in `ls` and `top`). A job waiting out its delay holds no units. Alternative:
+  exponential backoff (one more option to explain; a fixed delay covers waiting out a flaky
+  resource).
+- **Held jobs and jobs waiting to retry are carried across `marshal restart`** in the state's
+  `held` list. A held job's remaining holds are not saved but worked out again from its `after`,
+  so a dependency that ended during the hand-over releases it; a retry's time is saved on the wall
+  clock like the other times.
+- **`stop` counts held jobs as busy**: plain `stop` is refused while any is held, `--wait` waits
+  for them, and `--force` cancels them first, before the queue, so none is released into a queue
+  that is being cancelled.
+- **`rerun <id>` submits the ended job's spec again — command, directory, environment, kind,
+  units, memory, lane, deadline (as given, or learned again) and retries — but not its holds**,
+  which have all ended. It is refused for a job not yet ended. A job that is no longer in the
+  daemon's memory is found in the event log, whose `submitted` event now carries the whole spec;
+  a job logged before that has none, and is refused. Alternatives: a spec file per job under
+  `jobs/` (another file per job to clean up); carrying the holds (they have ended, so the rerun
+  would be decided at once by the old outcomes).

@@ -13,17 +13,24 @@ resultLine(j: JobInfo) -> string
             s"timed out after $took (deadline ${formatMillis(j.deadlineMs)})$sample"
         Some(Cancelled) -> "cancelled before it started"
         Some(Lost) -> "lost: the daemon stopped while it was queued or running"
+        Some(DependencyFailed(after)) -> s"cancelled before it started: job $after, which it was held for, did not succeed"
         None -> s"is ${j.state}"
-    s"marshal: job ${j.id} $how; log ${j.log}"
+    val attempts = if j.attempt > 1 && j.outcome.isDefined() then s" (attempt ${j.attempt})" else ""
+    s"marshal: job ${j.id} $how$attempts; log ${j.log}"
 
-// A job's state as a listing's column shows it.
+// A job's state as a listing's column shows it: a held job's with the jobs it waits for, and a job
+// waiting to retry with the attempt it will make.
 stateColumn(j: JobInfo) -> string = j.outcome match
     Some(Exited(code)) -> s"exit $code"
     Some(Signalled(sig)) -> if j.killed then "killed" else s"signal $sig"
     Some(TimedOut) -> "timeout"
     Some(Cancelled) -> "cancelled"
     Some(Lost) -> "lost"
-    None -> j.state
+    Some(DependencyFailed(after)) -> s"dep $after failed"
+    None -> j.state match
+        "held" -> "held " + j.holds.map(id -> id.toString()).mkString(",")
+        "retrying" -> s"retry ${j.attempt}"
+        other -> other
 
 // The listing `ls` prints: a header, then one row per job.
 listing(jobs: Vector[JobInfo]) -> string
