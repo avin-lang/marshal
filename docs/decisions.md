@@ -557,7 +557,8 @@ Known gap in Avin, left for it to fix rather than worked around here:
 
 ## The STARTED column (branch `started-column`)
 
-**Proposed.**
+**Settled on the user's delegation 2026-11-07.** Review with the user: the year left out of
+STARTED.
 
 - **`top` and `ls` show a STARTED column, `MM-DD hh:mm` in the caller's local zone, between RESV (`ls`)
   or PEAK (`top`) and ELAPSED.** The zone is read once per rendering (`TZ`, else the system's), and
@@ -578,7 +579,8 @@ Known gap in Avin, left for it to fix rather than worked around here:
 
 ## Waiting for other jobs, retries and rerun (branch `depends`)
 
-**Proposed**; each says why and what else was weighed.
+**Settled on the user's delegation 2026-11-07**; each says why and what else was weighed. Review
+with the user: `dependency-failed` exiting 126, and a failed dependency cancelling at once.
 
 - **A dependency may name only a job that already exists, so waits cannot form a cycle.** A job's
   id is given when it is submitted, after the jobs it names, so every wait points to an older job.
@@ -632,7 +634,8 @@ Known gap in Avin, left for it to fix rather than worked around here:
 
 ## Waiting for other jobs beside holding, pausing and the urgent band (merge of `depends` and `pause-resume`)
 
-**Proposed**; each says why and what else was weighed.
+**Settled on the user's delegation 2026-11-07**; each says why and what else was weighed. Review
+with the user: hold applying to waiting jobs, and priority staying for queued jobs only.
 
 - **"Held" means held by hand and nothing else.** A job waiting for its dependencies has the state
   `waiting` and shows as `after 3,4` in `ls` and `top`; the state's and the snapshot's list of such
