@@ -7,10 +7,10 @@ import json
 import json.Json
 import dev.avinlang.marshal
 import dev.avinlang.marshal.cli
-import dev.avinlang.marshal.{EndedJob, Filter, JobInfo, Ledger, Outcome}
+import dev.avinlang.marshal.{EndedJob, HistoryFilter, JobInfo, Ledger, Outcome}
 
 val Minute: long = 60000
-val Everything: Filter = Filter(None, None, false)
+val Everything: HistoryFilter = HistoryFilter(None, None, false)
 
 // An ending event of job `id` at wall clock `ts`.
 endLine(ts: long, id: long, how: Outcome = Outcome.Exited(0), kind: string = "test", run: long = 1000, landing: bool = false, killed: bool = false, extra: Vector[(string, Json)] = [], event: string = "finished") -> string =
@@ -84,14 +84,14 @@ historyFilters()
     val l = ledgerOf([
         endLine(1000, 1, kind = "build"), endLine(2000, 2, Outcome.Exited(1), kind = "test"), endLine(3000, 3, kind = "test"),
         endLine(4000, 4, Outcome.TimedOut, kind = "build", event = "timeout"), endLine(5000, 5, Outcome.Exited(2), kind = "test")])
-    assertEq(ids(marshal.selectEnded(l, Filter(Some("build"), None, false), 20)), [long(4), long(1)])
-    assertEq(ids(marshal.selectEnded(l, Filter(Some("none"), None, false), 20)), [])
-    assertEq(ids(marshal.selectEnded(l, Filter(None, Some(3000), false), 20)), [long(5), long(4), long(3)])
-    assertEq(ids(marshal.selectEnded(l, Filter(None, Some(3001), false), 20)), [long(5), long(4)])
-    assertEq(ids(marshal.selectEnded(l, Filter(None, Some(9000), false), 20)), [])
-    assertEq(ids(marshal.selectEnded(l, Filter(None, None, true), 20)), [long(5), long(4), long(2)])
-    assertEq(ids(marshal.selectEnded(l, Filter(Some("test"), Some(2500), true), 20)), [long(5)])
-    assertEq(ids(marshal.selectEnded(l, Filter(Some("test"), Some(2500), true), 0)), [])
+    assertEq(ids(marshal.selectEnded(l, HistoryFilter(Some("build"), None, false), 20)), [long(4), long(1)])
+    assertEq(ids(marshal.selectEnded(l, HistoryFilter(Some("none"), None, false), 20)), [])
+    assertEq(ids(marshal.selectEnded(l, HistoryFilter(None, Some(3000), false), 20)), [long(5), long(4), long(3)])
+    assertEq(ids(marshal.selectEnded(l, HistoryFilter(None, Some(3001), false), 20)), [long(5), long(4)])
+    assertEq(ids(marshal.selectEnded(l, HistoryFilter(None, Some(9000), false), 20)), [])
+    assertEq(ids(marshal.selectEnded(l, HistoryFilter(None, None, true), 20)), [long(5), long(4), long(2)])
+    assertEq(ids(marshal.selectEnded(l, HistoryFilter(Some("test"), Some(2500), true), 20)), [long(5)])
+    assertEq(ids(marshal.selectEnded(l, HistoryFilter(Some("test"), Some(2500), true), 0)), [])
 
 @test("a landing job is marked with a star in the listing")
 landingStar()
@@ -147,7 +147,7 @@ statsLandingAndFilters()
     assertEq(all(0).deadlineMs, 20 * Minute)
     assertEq(all(0).count, 4)
     assertEq((all(0).p50, all(0).max), (Some(10 * Minute), Some(10 * Minute)))
-    val late = marshal.kindStats(l, Filter(Some("test"), Some(250), false))
+    val late = marshal.kindStats(l, HistoryFilter(Some("test"), Some(250), false))
     assertEq(late.length(), 2)
     assertEq(late(0).count, 2)
     assertEq(late(0).deadlineMs, 20 * Minute)
@@ -233,7 +233,7 @@ parseHistoryOptions()
     assertEq(none.limit, 20)
     assert(!none.json)
     val all = cli.parseQuery("history", ["--kind", "build", "--since", "1h", "--failed", "--limit", "3", "--json"], now).ok().get()
-    assertEq(all.filter, Filter(Some("build"), Some(now - 3600000), true))
+    assertEq(all.filter, HistoryFilter(Some("build"), Some(now - 3600000), true))
     assertEq(all.limit, 3)
     assert(all.json)
 
@@ -241,7 +241,7 @@ parseHistoryOptions()
 parseStatsOptions()
     val now: long = 1794061800000
     val q = cli.parseQuery("stats", ["--json", "--kind", "test"], now).ok().get()
-    assertEq(q.filter, Filter(Some("test"), None, false))
+    assertEq(q.filter, HistoryFilter(Some("test"), None, false))
     assert(q.json)
     assert(cli.parseQuery("stats", ["--failed"], now).isErr())
     assert(cli.parseQuery("stats", ["--limit", "3"], now).isErr())

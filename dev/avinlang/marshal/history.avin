@@ -65,13 +65,13 @@ class Ledger()
                 ends += e
 
 // Which jobs a query asks for.
-data Filter(kind: Option[string], since: Option[long], failed: bool)
+data HistoryFilter(kind: Option[string], since: Option[long], failed: bool)
 
-matches(f: Filter, e: EndedJob) -> bool =
+matches(f: HistoryFilter, e: EndedJob) -> bool =
     f.kind.forall(k -> k == e.kind) && f.since.forall(s -> e.endedAt >= s) && (!f.failed || e.how != "ok")
 
 // The jobs `history` lists: those that match, newest first, at most `limit` of them.
-selectEnded(ledger: Ledger, f: Filter, limit: int) -> Vector[EndedJob]
+selectEnded(ledger: Ledger, f: HistoryFilter, limit: int) -> Vector[EndedJob]
     val hits = ledger.ends.toVector().filter(e -> matches(f, e))
     hits.sortWith((a, b) -> if a.endedAt != b.endedAt then (if a.endedAt > b.endedAt then -1 else 1) elif a.id != b.id then (if a.id > b.id then -1 else 1) else 0).take(limit)
 
@@ -93,7 +93,7 @@ private someIfAny(xs: Vector[long], f: (Vector[long]) -> long) -> Option[long] =
 // The statistics of each history key among the jobs that match, in the order keys first ended. The
 // learned deadline is the one the daemon would give the next job of the key: learned from every
 // successful run in the log, whatever the filter.
-kindStats(ledger: Ledger, f: Filter, learning: Learning = defaultLearning) -> Vector[KindStats]
+kindStats(ledger: Ledger, f: HistoryFilter, learning: Learning = defaultLearning) -> Vector[KindStats]
     val order = Buffer[string]()
     val groups = MutableMap[string, Buffer[EndedJob]]()
     for e in ledger.ends.toVector().filter(e -> matches(f, e))

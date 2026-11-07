@@ -6,13 +6,13 @@ import avin.fs
 import avin.io.IoError
 import avin.time
 import dev.avinlang.marshal
-import dev.avinlang.marshal.{Filter, Ledger}
+import dev.avinlang.marshal.{HistoryFilter, Ledger}
 
 // The jobs `history` lists when `--limit` is not given.
 val DefaultLimit: int = 20
 
 // What the options of `history` and `stats` asked for.
-data Query(filter: Filter, limit: int, json: bool)
+data Query(filter: HistoryFilter, limit: int, json: bool)
 
 // Reads `[--kind k] [--since t] [--failed] [--limit n] [--json]`; `stats` takes no `--failed` or
 // `--limit`.
@@ -44,7 +44,7 @@ parseQuery(command: string, args: Vector[string], nowMs: long) -> Result[Query, 
         elif word == "--failed" && command == "history" then failed = true
         else return Err(s"marshal: $command: no option `$word`")
         i += 1
-    Ok(Query(Filter(kind, since, failed), limit, json))
+    Ok(Query(HistoryFilter(kind, since, failed), limit, json))
 
 // The ledger of the log at `log`: empty where there is no log.
 readLedger(log: string) -> Result[Ledger, string]
