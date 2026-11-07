@@ -260,3 +260,15 @@ submissions()
     assertEq(cli.parseSubmission(["--dir", "/abs", "--", "a"], "/w", env).map(s -> s.dir), Ok("/abs"))
     for bad in [[], ["--"], ["--units"], ["--units", "x", "a"], ["--mem", "1.5G", "a"], ["--deadline", "0", "a"], ["--kind", "", "a"], ["--frob", "1", "a"]]
         assert(cli.parseSubmission(bad, "/w", env).isErr(), s"$bad")
+
+@test("the narrow STARTED text is hh:mm for a job that started today, the full form for another day, - for none")
+startedShortText()
+    val york = zoneNamed("America/New_York")
+    // 2026-11-07 13:31:30 UTC is 08:31 on the 7th in New York and 13:31 in UTC
+    val at: long = 1794058290000
+    assertEq(marshal.startedShort(info(1, started = at), york, "2026-11-07"), "08:31")
+    assertEq(marshal.startedShort(info(1, started = at), york, "2026-11-08"), "11-07 08:31")
+    assertEq(marshal.startedShort(info(1, started = at), time.utc, "2026-11-07"), "13:31")
+    // the day is the zone's: 2026-11-07 03:00 UTC is still the 6th in New York
+    assertEq(marshal.startedShort(info(1, started = 1794020400000), york, "2026-11-07"), "11-06 22:00")
+    assertEq(marshal.startedShort(info(2), york, "2026-11-07"), "-")

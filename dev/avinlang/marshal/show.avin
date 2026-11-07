@@ -32,6 +32,13 @@ stateColumn(j: JobInfo) -> string = j.outcome match
 startedColumn(j: JobInfo, zone: time.Zone) -> string
 startedColumn(j, zone) = if j.startedAt <= 0 then "-" else time.epochMillis(j.startedAt).atZone(zone).format("MM-DD hh:mm")
 
+// The same for a narrow screen: just `hh:mm` for a job that started on `today` (a `YYYY-MM-DD` in
+// `zone`), the full form for any other day.
+startedShort(j: JobInfo, zone: time.Zone, today: string) -> string
+    if j.startedAt <= 0 then return "-"
+    val at = time.epochMillis(j.startedAt).atZone(zone)
+    if at.format("YYYY-MM-DD") == today then at.format("hh:mm") else at.format("MM-DD hh:mm")
+
 // The listing `ls` prints: a header, then one row per job.
 listing(jobs: Vector[JobInfo]) -> string
     val zone = time.localZone()

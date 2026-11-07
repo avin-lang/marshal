@@ -445,8 +445,13 @@ Known gap in Avin, left for it to fix rather than worked around here:
   ran) shows `-`. The year is left out, so a job from a year ago reads like one from today; the
   JSON has the full instant. Alternatives: an ISO date with the year (16 cells, too wide for top);
   a relative age (`3h ago`, which ELAPSED already half says and which changes every frame).
-- **`top` leaves STARTED out under 90 columns.** The fixed columns with it take 85 cells, so at 80
-  the command would have no room. `top` dropped no column before, so STARTED is the one dropped:
-  it is the newest, and a running job's age is still in ELAPSED. Alternatives: drop RSS and PEAK
-  (they are what `top` is for); let the command column vanish (the line then says nothing of what
-  runs); shrink every column by a cell (the memory sizes need theirs).
+- **`top` leaves PEAK out under 90 columns, and always shows STARTED.** (Settled on the user's
+  delegation 2026-11-07, replacing the first proposal, which dropped STARTED.) The user asked for
+  STARTED, so it must show at 80. The fixed columns with everything take 85 cells; without PEAK
+  they leave the command 1 cell, too little, so under 90 cells STARTED also narrows (the coordinator's
+  fallback): a job that started today shows just `hh:mm`, any other day keeps `MM-DD hh:mm`, and the
+  column is 7 wide (its heading) unless a shown job started on another day, when it is 11. At 80 the
+  command then has 5 cells (the heading reads `COMM…`) against 7 before STARTED existed. PEAK is
+  the column given up because the most a job held stays in the JSON, and RSS, the live figure,
+  stays. Alternatives: drop STARTED (what was asked for); drop RSS and PEAK (a second column for no
+  gain); shrink every column by a cell (the memory sizes need theirs).

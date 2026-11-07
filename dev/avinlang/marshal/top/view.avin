@@ -124,23 +124,28 @@ val columns: Vector[Column] = [
 val StateColumn: int = 1
 val DeadlineColumn: int = 9
 
-// The column STARTED sits at, and the narrowest screen that shows it: the fixed columns with it take
-// 85 cells, so under 90 the command would be left with less than four and the table is drawn without it.
-val StartedColumn: int = 7
-val StartedWidth: int = 90
+// The column PEAK sits at, and the narrowest screen that shows it: the fixed columns with it take 85
+// cells, so under 90 the table is drawn without PEAK (the peak is still in `stats` and the JSON) and
+// keeps STARTED and every other column.
+val PeakColumn: int = 6
+val PeakWidth: int = 90
 
-// Whether a screen `width` cells wide shows the STARTED column.
-showsStarted(width: int) -> bool = width >= StartedWidth
+// Whether a screen `width` cells wide shows the PEAK column.
+showsPeak(width: int) -> bool = width >= PeakWidth
 
-// The columns a screen `width` cells wide draws, and where DEADLINE sits among them.
-columnsFor(width: int) -> Vector[Column] = if showsStarted(width) then columns else columns.slice(0, StartedColumn) ++ columns.slice(StartedColumn + 1, columns.length())
-deadlineColumnFor(width: int) -> int = if showsStarted(width) then DeadlineColumn else DeadlineColumn - 1
+// The columns a screen `width` cells wide draws, and where DEADLINE sits among them. Under 90 cells
+// STARTED is 7 wide (its heading and `hh:mm`), or 11 where a shown job started on another day.
+columnsFor(width: int, startedWidth: int) -> Vector[Column]
+    if showsPeak(width) then return columns
+    val narrow = columns.slice(0, PeakColumn) ++ columns.slice(PeakColumn + 1, columns.length())
+    narrow.map(c -> if c.title == "STARTED" then Column("STARTED", startedWidth) else c)
+deadlineColumnFor(width: int) -> int = if showsPeak(width) then DeadlineColumn else DeadlineColumn - 1
 
 // A measured size for the RSS and PEAK columns: `-` where nothing was measured.
 measuredText(bytes: long) -> string = if bytes <= 0 then "-" else marshal.roundSize(bytes)
 
 // The text of a line's cells on a screen `width` cells wide, the start time read in `zone`.
-cells(l: Line, since: long, zone: time.Zone, width: int) -> Vector[string]
+cells(l: Line, since: long, zone: time.Zone, today: string, width: int) -> Vector[string]
     val j = l.job
     val all = [
         j.id.toString(),
@@ -150,12 +155,12 @@ cells(l: Line, since: long, zone: time.Zone, width: int) -> Vector[string]
         if j.memory == 0 then "-" else marshal.formatSize(j.memory),
         measuredText(if j.state == "running" then j.rss else 0),
         measuredText(j.peakRss),
-        marshal.startedColumn(j, zone),
+        if showsPeak(width) then marshal.startedColumn(j, zone) else marshal.startedShort(j, zone, today),
         clock(elapsedOf(l, since)),
         deadlineOf(l, since).0,
         j.cmd.mkString(" ")
     ]
-    if showsStarted(width) then all else all.slice(0, StartedColumn) ++ all.slice(StartedColumn + 1, all.length())
+    if showsPeak(width) then all else all.slice(0, PeakColumn) ++ all.slice(PeakColumn + 1, all.length())
 
 // The state of the screen: the latest snapshot and when it came, the filter, the selected job (kept
 // on its job from one snapshot to the next), the log pane and how far back it is scrolled, a kill
@@ -315,10 +320,13 @@ class App(val sock: string)
             val area = Rect(0, top, g.width, maxInt(minInt(tableRows, space), 0))
             page = if area.h > 2 then area.h - 1 else 1
             val zone = time.localZone()
-            val drawing = if showsStarted(area.w) then table else Table(columnsFor(area.w))
+            val today = time.now().atZone(zone).format("YYYY-MM-DD")
+            val rows = shown.map(l -> cells(l, since, zone, today, area.w))
+            val startedWidth = if rows.exists(r -> r(PeakColumn).charCount() > 7) then 11 else 7
+            val drawing = if showsPeak(area.w) then table else Table(columnsFor(area.w, startedWidth))
             drawing.selected = table.selected
             drawing.offset = table.offset
-            drawing.draw(g, area, shown.map(l -> cells(l, since, zone, area.w)))
+            drawing.draw(g, area, rows)
             table.selected = drawing.selected
             table.offset = drawing.offset
             paintCells(g, area, since, drawing)

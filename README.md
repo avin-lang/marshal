@@ -311,8 +311,8 @@ against its own budget. `marshal status` shows what take-slot holds.
   holding, kept once it ends; `-` where there is none.
 - **Started**: STARTED is when the job started, in the terminal's local time zone (`TZ`, else the
   system's) to the minute, as `MM-DD hh:mm` (`11-07 08:31`); `-` for a job that has not started.
-  `marshal ls` has the same column. Under 90 columns `top` leaves it out so the table keeps room for
-  the command; `--json` carries `started_at` in milliseconds as before.
+  `marshal ls` has the same column. Under 90 columns `top` leaves PEAK out and shows just `hh:mm` for
+  a job that started today, so STARTED and the rest keep their room; `--json` carries `started_at` and the peak as before.
 - **Jobs**: running jobs, then queued ones, then the last ten that ended, the latest first. ELAPSED
   counts on between snapshots; DEADLINE is a running job's time left, yellow under a quarter of its
   deadline or five minutes and red under a tenth or one minute, and a queued job's deadline to come.
