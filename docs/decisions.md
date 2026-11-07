@@ -253,7 +253,10 @@ Known gaps in Avin, left for it to fix rather than worked around here:
 
 ## Job types and the train (branch `job-types`)
 
-**Proposed**; each says why and what else was weighed. The user approved the design (types as
+**Settled on the user's delegation 2026-11-07**; each says why and what else was weighed. Review
+with the user: take-slot sharing off unless configured; a type's run being one job; a diverged
+local target branch left with a warning. The FNV-1a step-cache digest is temporary, until avin's
+library has a content digest. The user approved the design (types as
 data, steps as any program, a line protocol, marshal core without git, stock steps in Avin) on
 2026-11-07; these are the choices it left open. Review with the user: the take-slot default
 (first), a type's run being one job, and the local target branch left behind as a warning.
