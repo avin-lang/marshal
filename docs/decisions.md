@@ -253,7 +253,7 @@ Known gaps in Avin, left for it to fix rather than worked around here:
 
 ## A job's start time across a restart (branch `started-at-restart`)
 
-**Proposed.**
+**Settled on the user's delegation 2026-11-07.**
 
 - **A job's wall-clock start (`started_at`) is stored once, when it starts, and saved and restored
   as that exact number.** The daemon used to save `wall(startedMs)`, re-deriving the wall time from
