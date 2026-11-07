@@ -145,8 +145,9 @@ private instantOfReading(wallMs: long, zone: time.Zone) -> long
 // other text.
 private parseOffset(text: string) -> Option[long]
     if text == "Z" then return Some(0)
-    if text.charCount() != 6 || text(3) != ':' then return None
-    val sign: long = text(0) match
+    val cs = text.chars().toVector()
+    if cs.length() != 6 || cs(3) != ':' then return None
+    val sign: long = cs(0) match
         '+' -> 1
         '-' -> -1
         _ -> 0

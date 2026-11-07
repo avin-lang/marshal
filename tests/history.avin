@@ -3,6 +3,7 @@ module tests
 // Accounting: the ledger an event log is read into, the filters, the statistics, the times, the
 // options and what `history` and `stats` print.
 import avin.fs
+import avin.time
 import json
 import json.Json
 import dev.avinlang.marshal
@@ -30,7 +31,7 @@ historyEmptyLog()
     assertEq(l.unreadable, 0)
     assertEq(marshal.selectEnded(l, Everything, 20), [])
     assertEq(marshal.kindStats(l, Everything), [])
-    assertEq(marshal.historyListing([]), "marshal: no ended jobs match")
+    assertEq(marshal.historyListing([], zoneNamed("UTC")), "marshal: no ended jobs match")
     assertEq(marshal.statsListing([]), "marshal: no ended jobs match")
     assertEq(marshal.historyJson([], 0).render(), "{\"jobs\":[],\"unreadable\":0}")
     assertEq(marshal.statsJson([], 0).render(), "{\"kinds\":[],\"unreadable\":0}")
@@ -95,7 +96,7 @@ historyFilters()
 
 @test("a landing job is marked with a star in the listing")
 landingStar()
-    val text = marshal.historyListing(marshal.selectEnded(ledgerOf([endLine(1, 1, landing = true), endLine(2, 2)]), Everything, 20))
+    val text = marshal.historyListing(marshal.selectEnded(ledgerOf([endLine(1, 1, landing = true), endLine(2, 2)]), Everything, 20), zoneNamed("UTC"))
     assert(text.contains("test*"), text)
     assertEq(text.lines().length(), 3)
 
@@ -196,61 +197,150 @@ jsonShape()
     assertEq(kinds(1)("peak_max"), Json.Null)
     assertEq(kinds(1)("kind").asString(), Some("test+landing"))
 
-@test("wall clock times are listed in UTC across leap days and the epoch")
+@test("wall clock times are listed on the clocks of the zone given, across leap days and the epoch")
 formatWhen()
-    assertEq(marshal.formatWhen(0), "1970-01-01 00:00:00")
-    assertEq(marshal.formatWhen(999), "1970-01-01 00:00:00")
-    assertEq(marshal.formatWhen(86399000), "1970-01-01 23:59:59")
-    assertEq(marshal.formatWhen(1709164800000), "2024-02-29 00:00:00")
-    assertEq(marshal.formatWhen(951868800000 + 3661000), "2000-03-01 01:01:01")
-    assertEq(marshal.formatWhen(1794061800000), "2026-11-07 14:30:00")
+    val utc = zoneNamed("UTC")
+    assertEq(marshal.formatWhen(0, utc), "1970-01-01 00:00:00")
+    assertEq(marshal.formatWhen(999, utc), "1970-01-01 00:00:00")
+    assertEq(marshal.formatWhen(86399000, utc), "1970-01-01 23:59:59")
+    assertEq(marshal.formatWhen(1709164800000, utc), "2024-02-29 00:00:00")
+    assertEq(marshal.formatWhen(951868800000 + 3661000, utc), "2000-03-01 01:01:01")
+    assertEq(marshal.formatWhen(1794061800000, utc), "2026-11-07 14:30:00")
 
-@test("--since reads a length back from now, or a UTC date, or a date and minute")
+@test("a time is listed in a zone with no daylight saving, in one with it, and across the change")
+formatWhenZones()
+    val york = zoneNamed("America/New_York")
+    val kolkata = zoneNamed("Asia/Kolkata")
+    assertEq(marshal.formatWhen(1794061800000, york), "2026-11-07 09:30:00")
+    assertEq(marshal.formatWhen(1794061800000, kolkata), "2026-11-07 20:00:00")
+    assertEq(marshal.formatWhen(0, york), "1969-12-31 19:00:00")
+    assertEq(marshal.formatWhen(1783182600000, york), "2026-07-04 12:30:00")
+    assertEq(marshal.formatWhen(1783182600000, kolkata), "2026-07-04 22:00:00")
+    assertEq(marshal.formatWhen(1772953200000 - 1000, york), "2026-03-08 01:59:59")
+    assertEq(marshal.formatWhen(1772953200000, york), "2026-03-08 03:00:00")
+
+@test("--since reads a length back from now, or a date, or a date and minute, on the zone's clocks")
 parseSince()
     val now: long = 1794061800000
-    assertEq(marshal.parseEndedSince("90s", now), Some(now - 90000))
-    assertEq(marshal.parseEndedSince("90m", now), Some(now - 90 * Minute))
-    assertEq(marshal.parseEndedSince("2h", now), Some(now - 7200000))
-    assertEq(marshal.parseEndedSince("3d", now), Some(now - 3 * 86400000))
-    assertEq(marshal.parseEndedSince("1w", now), Some(now - 604800000))
-    assertEq(marshal.parseEndedSince("1970-01-01", now), Some(long(0)))
-    assertEq(marshal.parseEndedSince("2026-11-07", now).map(marshal.formatWhen), Some("2026-11-07 00:00:00"))
-    assertEq(marshal.parseEndedSince("2026-11-07T14:30", now), Some(now))
-    assertEq(marshal.parseEndedSince("2024-02-29", now).map(marshal.formatWhen), Some("2024-02-29 00:00:00"))
-    assertEq(marshal.parseEndedSince("2026-11-07T00:00", now).map(marshal.formatWhen), Some("2026-11-07 00:00:00"))
+    val utc = zoneNamed("UTC")
+    assertEq(marshal.parseEndedSince("90s", now, utc), Some(now - 90000))
+    assertEq(marshal.parseEndedSince("90m", now, utc), Some(now - 90 * Minute))
+    assertEq(marshal.parseEndedSince("2h", now, utc), Some(now - 7200000))
+    assertEq(marshal.parseEndedSince("3d", now, utc), Some(now - 3 * 86400000))
+    assertEq(marshal.parseEndedSince("1w", now, utc), Some(now - 604800000))
+    assertEq(marshal.parseEndedSince("1970-01-01", now, utc), Some(long(0)))
+    assertEq(marshal.parseEndedSince("2026-11-07T14:30", now, utc), Some(now))
+    for text in ["2026-11-07", "2024-02-29", "2026-11-07T00:00", "2026-11-07T23:59", "2026-07-04T12:30"] do
+        for name in ["UTC", "America/New_York", "Asia/Kolkata", "Pacific/Auckland"] do
+            val z = zoneNamed(name)
+            val shown = marshal.parseEndedSince(text, now, z).map(ms -> marshal.formatWhen(ms, z))
+            val want = if text.charCount() == 10 then text + " 00:00:00" else text.replace("T", " ") + ":00"
+            assert(shown == Some(want), s"$text in $name: $shown")
+
+@test("--since in a zone with an offset from UTC counts the offset: the same words are different instants")
+parseSinceLocal()
+    val now: long = 1794061800000
+    val york = zoneNamed("America/New_York")
+    val kolkata = zoneNamed("Asia/Kolkata")
+    assertEq(marshal.parseEndedSince("2026-11-07T09:30", now, york), Some(now))
+    assertEq(marshal.parseEndedSince("2026-11-07T20:00", now, kolkata), Some(now))
+    assertEq(marshal.parseEndedSince("2026-11-07", now, york), Some(now - (14 * 60 + 30) * Minute + 5 * 60 * Minute))
+    assertEq(marshal.parseEndedSince("2026-11-07T14:30", now, york), Some(now + 5 * 60 * Minute))
+    assertEq(marshal.parseEndedSince("2026-11-07T14:30", now, kolkata), Some(now - 330 * Minute))
+
+@test("--since in a zone with daylight saving uses the offset in force on that date")
+parseSinceDaylight()
+    val now: long = 1794061800000
+    val york = zoneNamed("America/New_York")
+    assertEq(marshal.parseEndedSince("2026-07-04T12:30", now, york), Some(long(1783182600000)))
+    assertEq(marshal.parseEndedSince("2026-01-15T12:00", now, york), marshal.parseEndedSince("2026-01-15T17:00Z", now, york))
+    assertEq(marshal.parseEndedSince("2026-07-15T12:00", now, york), marshal.parseEndedSince("2026-07-15T16:00Z", now, york))
+    assertEq(marshal.parseEndedSince("2026-03-08", now, york), marshal.parseEndedSince("2026-03-08T05:00Z", now, york))
+    assertEq(marshal.parseEndedSince("2026-03-09", now, york), marshal.parseEndedSince("2026-03-09T04:00Z", now, york))
+    assertEq(marshal.parseEndedSince("2026-11-01", now, york), marshal.parseEndedSince("2026-11-01T04:00Z", now, york))
+    assertEq(marshal.parseEndedSince("2026-11-02", now, york), marshal.parseEndedSince("2026-11-02T05:00Z", now, york))
+
+@test("--since on a reading the clocks skip or repeat: the repeated one is its first, the skipped one follows the gap")
+parseSinceTransitions()
+    val now: long = 1794061800000
+    val york = zoneNamed("America/New_York")
+    assertEq(marshal.parseEndedSince("2026-11-01T01:30", now, york), marshal.parseEndedSince("2026-11-01T05:30Z", now, york))
+    assertEq(marshal.parseEndedSince("2026-11-01T00:59", now, york), marshal.parseEndedSince("2026-11-01T04:59Z", now, york))
+    assertEq(marshal.parseEndedSince("2026-11-01T02:00", now, york), marshal.parseEndedSince("2026-11-01T07:00Z", now, york))
+    assertEq(marshal.parseEndedSince("2026-03-08T02:30", now, york), marshal.parseEndedSince("2026-03-08T07:30Z", now, york))
+    assertEq(marshal.parseEndedSince("2026-03-08T01:59", now, york), marshal.parseEndedSince("2026-03-08T06:59Z", now, york))
+    assertEq(marshal.parseEndedSince("2026-03-08T03:00", now, york), marshal.parseEndedSince("2026-03-08T07:00Z", now, york))
+
+@test("--since with Z or an offset is that instant whatever the zone")
+parseSinceOffset()
+    val now: long = 1794061800000
+    for name in ["UTC", "America/New_York", "Asia/Kolkata"] do
+        val z = zoneNamed(name)
+        assertEq(marshal.parseEndedSince("2026-11-07T14:30Z", now, z), Some(now))
+        assertEq(marshal.parseEndedSince("2026-11-07T16:30+02:00", now, z), Some(now))
+        assertEq(marshal.parseEndedSince("2026-11-07T09:30-05:00", now, z), Some(now))
+        assertEq(marshal.parseEndedSince("2026-11-07T20:00+05:30", now, z), Some(now))
+        assertEq(marshal.parseEndedSince("2026-11-07T14:30+00:00", now, z), Some(now))
+        assertEq(marshal.parseEndedSince("2026-11-07T14:30-00:00", now, z), Some(now))
+    assertEq(marshal.parseEndedSince("2026-11-07T00:00Z", now, zoneNamed("Pacific/Auckland")), Some(now - (14 * 60 + 30) * Minute))
 
 @test("--since refuses what is not a time")
 parseSinceRefuses()
     val now: long = 1794061800000
-    for bad in ["", "5", "h", "0h", "-2h", "2x", "1.5h", "2h30m", "x", "2026", "2026-11", "2026-1-07", "2026-13-01", "2026-00-10", "2026-02-30", "2025-02-29", "2026-11-00", "2026-11-07T", "2026-11-07T25:00", "2026-11-07T10:60", "2026-11-07T1:30", "2026-11-07T10", "2026-11-07T10:30:00", "2026-11-07T10:30T", "abcd-ef-gh", "99999999999999999999h", "999999999999999h"] do
-        assert(marshal.parseEndedSince(bad, now).isEmpty(), bad)
+    for bad in ["", "5", "h", "0h", "-2h", "2x", "1.5h", "2h30m", "x", "2026", "2026-11", "2026-1-07", "2026-13-01", "2026-00-10", "2026-02-30", "2025-02-29", "2026-11-00", "2026-11-07T", "2026-11-07T25:00", "2026-11-07T10:60", "2026-11-07T1:30", "2026-11-07T10", "2026-11-07T10:30:00", "2026-11-07T10:30T", "abcd-ef-gh", "99999999999999999999h", "999999999999999h", "2026-11-07Z", "2026-11-07+02:00", "2026-11-07T14:30z", "2026-11-07T14:30+2", "2026-11-07T14:30+0200", "2026-11-07T14:30+02", "2026-11-07T14:30+24:00", "2026-11-07T14:30+02:60", "2026-11-07T14:30*02:00", "2026-11-07T14:30+0a:00", "2026-11-07T14:30ZZ", "2026-11-07T14:30 UTC", "2026-11-07T14:30+02:00Z", "2026-13-07T14:30Z", "2026-11-31T14:30+02:00", "2026-11-07T25:30Z"] do
+        for z in [zoneNamed("UTC"), zoneNamed("America/New_York")] do
+            assert(marshal.parseEndedSince(bad, now, z).isEmpty(), bad)
 
 @test("the options of history: each one, and what they default to")
 parseHistoryOptions()
     val now: long = 1794061800000
-    val none = cli.parseQuery("history", [], now).ok().get()
+    val utc = zoneNamed("UTC")
+    val none = cli.parseQuery("history", [], now, utc).ok().get()
     assertEq(none.filter, Everything)
     assertEq(none.limit, 20)
     assert(!none.json)
-    val all = cli.parseQuery("history", ["--kind", "build", "--since", "1h", "--failed", "--limit", "3", "--json"], now).ok().get()
+    val all = cli.parseQuery("history", ["--kind", "build", "--since", "1h", "--failed", "--limit", "3", "--json"], now, utc).ok().get()
     assertEq(all.filter, HistoryFilter(Some("build"), Some(now - 3600000), true))
     assertEq(all.limit, 3)
     assert(all.json)
 
+@test("--since in the options is read on the zone given")
+parseHistorySinceZone()
+    val now: long = 1794061800000
+    val york = zoneNamed("America/New_York")
+    val q = cli.parseQuery("history", ["--since", "2026-11-07T09:30"], now, york).ok().get()
+    assertEq(q.filter.since, Some(now))
+    val z = cli.parseQuery("history", ["--since", "2026-11-07T14:30Z"], now, york).ok().get()
+    assertEq(z.filter.since, Some(now))
+    assert(cli.parseQuery("history", ["--since", "2026-11-07T14:30+2"], now, york).isErr())
+
+@test("the listing shows ENDED, with no zone in the heading, and each row on the zone's clocks")
+historyListingZone()
+    val jobs = marshal.selectEnded(ledgerOf([endLine(1794061800000, 1), endLine(1783182600000, 2)]), Everything, 20)
+    val utc = marshal.historyListing(jobs, zoneNamed("UTC"))
+    assert(utc.lines().toVector()(0).endsWith("ENDED"), utc)
+    assert(!utc.contains("(UTC)"), utc)
+    assert(utc.contains("2026-11-07 14:30:00") && utc.contains("2026-07-04 16:30:00"), utc)
+    val york = marshal.historyListing(jobs, zoneNamed("America/New_York"))
+    assert(york.contains("2026-11-07 09:30:00") && york.contains("2026-07-04 12:30:00"), york)
+    assertEq(marshal.historyJson(jobs, 0).render().contains("\"ended_at\":1794061800000"), true)
+
 @test("the options of stats take no --failed or --limit")
 parseStatsOptions()
     val now: long = 1794061800000
-    val q = cli.parseQuery("stats", ["--json", "--kind", "test"], now).ok().get()
+    val utc = zoneNamed("UTC")
+    val q = cli.parseQuery("stats", ["--json", "--kind", "test"], now, utc).ok().get()
     assertEq(q.filter, HistoryFilter(Some("test"), None, false))
     assert(q.json)
-    assert(cli.parseQuery("stats", ["--failed"], now).isErr())
-    assert(cli.parseQuery("stats", ["--limit", "3"], now).isErr())
+    assert(cli.parseQuery("stats", ["--failed"], now, utc).isErr())
+    assert(cli.parseQuery("stats", ["--limit", "3"], now, utc).isErr())
 
 @test("bad options are refused with a sentence")
 parseRefusals()
     val now: long = 1794061800000
+    val utc = zoneNamed("UTC")
     for args in [["--kind"], ["--kind", ""], ["--since"], ["--since", "soon"], ["--limit"], ["--limit", "0"], ["--limit", "-1"], ["--limit", "x"], ["--limit", "2.5"], ["--bogus"], ["7"], ["--kind", "a", "--json", "extra"]] do
-        val r = cli.parseQuery("history", args, now)
+        val r = cli.parseQuery("history", args, now, utc)
         assert(r.isErr(), args.mkString(" "))
         assert(r.err().get().startsWith("marshal: "), args.mkString(" "))
 
