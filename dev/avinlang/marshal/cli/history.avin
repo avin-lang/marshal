@@ -34,7 +34,7 @@ parseQuery(command: string, args: Vector[string], nowMs: long) -> Result[Query, 
                 "--kind" ->
                     if value.isEmpty() then return Err("marshal: --kind needs a kind")
                     kind = Some(value)
-                "--since" -> marshal.parseSince(value, nowMs) match
+                "--since" -> marshal.parseEndedSince(value, nowMs) match
                     Some(t) -> since = Some(t)
                     None -> return Err(s"marshal: `$value` is not a time: give a length such as 90m, 2h, 3d or 1w, or a date such as 2026-11-07 or 2026-11-07T14:30 (UTC)")
                 _ -> value.toIntOption() match

@@ -159,7 +159,7 @@ private daysIn(year: long, month: long) -> long
 // The cutoff of `--since`, in wall clock milliseconds, given the time `nowMs`. Either a length of
 // time back from now: a whole number and `s`, `m`, `h`, `d` or `w`; or a date in UTC, `YYYY-MM-DD`
 // (its midnight) or `YYYY-MM-DDTHH:MM`. None for anything else.
-parseSince(text: string, nowMs: long) -> Option[long]
+parseEndedSince(text: string, nowMs: long) -> Option[long]
     if text.isEmpty() then return None
     val unit: long = text.last() match
         's' -> 1000
