@@ -4,6 +4,7 @@ module dev.avinlang.marshal
 // A `Ledger` takes the log one line at a time, so a log of any size is streamed through it and never
 // held whole; it keeps one small `EndedJob` per job the log saw end.
 import avin.collections.mutable.{Map as MutableMap}
+import avin.time
 import json
 import json.Json
 
@@ -120,36 +121,8 @@ kindStats(ledger: Ledger, f: HistoryFilter, learning: Learning = defaultLearning
 
 // Time.
 
-// The day number (days since 1970-01-01) of a calendar date in the proleptic Gregorian calendar.
-private daysFromCivil(year: long, month: long, day: long) -> long
-    val y = if month <= 2 then year - 1 else year
-    val era = (if y >= 0 then y else y - 399) / 400
-    val yoe = y - era * 400
-    val doy = (153 * (if month > 2 then month - 3 else month + 9) + 2) / 5 + day - 1
-    val doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
-    era * 146097 + doe - 719468
-
-// The calendar date `(year, month, day)` of a day number.
-private civilFromDays(days: long) -> (long, long, long)
-    val z = days + 719468
-    val era = (if z >= 0 then z else z - 146096) / 146097
-    val doe = z - era * 146097
-    val yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
-    val doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
-    val mp = (5 * doy + 2) / 153
-    val day = doy - (153 * mp + 2) / 5 + 1
-    val month = if mp < 10 then mp + 3 else mp - 9
-    (yoe + era * 400 + (if month <= 2 then 1 else 0), month, day)
-
-private two(n: long) -> string = if n < 10 then s"0$n" else n.toString()
-
-// A wall clock time as the listings show it: `2026-11-07 14:03:22`, in UTC.
-formatWhen(ms: long) -> string
-    val seconds = ms / 1000
-    val day = if seconds >= 0 then seconds / 86400 else (seconds - 86399) / 86400
-    val inDay = seconds - day * 86400
-    val (y, mo, d) = civilFromDays(day)
-    s"$y-${two(mo)}-${two(d)} ${two(inDay / 3600)}:${two(inDay / 60 % 60)}:${two(inDay % 60)}"
+// A wall clock time as the listings show it: `2026-11-07 14:03:22`, as the clocks of `zone` read it.
+formatWhen(ms: long, zone: time.Zone) -> string = time.epochMillis(ms).atZone(zone).format("YYYY-MM-DD hh:mm:ss")
 
 private isDigits(text: string) -> bool = text.nonEmpty() && text.chars().forall(c -> '0' <= c <= '9')
 
@@ -158,10 +131,36 @@ private daysIn(year: long, month: long) -> long
     elif month == 4 || month == 6 || month == 9 || month == 11 then 30
     else 31
 
+// The instant, in milliseconds, at which the clocks of `zone` read `wallMs` (the reading counted as
+// if it were UTC). A reading that occurs twice, as the clocks go back, is its first occurrence; one
+// that never occurs, as they go forward, is read with the offset in force before the change.
+private instantOfReading(wallMs: long, zone: time.Zone) -> long
+    val offsetAt = (ms: long) -> time.epochMillis(ms).atZone(zone).offset.toMillis()
+    val before = offsetAt(wallMs - 86400000)
+    val after = offsetAt(wallMs + 86400000)
+    val fits = [before, after].filter(o -> offsetAt(wallMs - o) == o).map(o -> wallMs - o)
+    if fits.isEmpty() then wallMs - before else fits.min()
+
+// The offset an ISO 8601 suffix writes, in milliseconds: `Z`, `+hh:mm` or `-hh:mm`. None for any
+// other text.
+private parseOffset(text: string) -> Option[long]
+    if text == "Z" then return Some(0)
+    if text.charCount() != 6 || text(3) != ':' then return None
+    val sign: long = text(0) match
+        '+' -> 1
+        '-' -> -1
+        _ -> 0
+    val (h, m) = (text.slice(1, 3), text.slice(4, 6))
+    if sign == 0 || !isDigits(h) || !isDigits(m) then return None
+    if h.toLong() > 23 || m.toLong() > 59 then return None
+    Some(sign * (h.toLong() * 60 + m.toLong()) * 60000)
+
 // The cutoff of `--since`, in wall clock milliseconds, given the time `nowMs`. Either a length of
-// time back from now: a whole number and `s`, `m`, `h`, `d` or `w`; or a date in UTC, `YYYY-MM-DD`
-// (its midnight) or `YYYY-MM-DDTHH:MM`. None for anything else.
-parseEndedSince(text: string, nowMs: long) -> Option[long]
+// time back from now: a whole number and `s`, `m`, `h`, `d` or `w`; or a date, `YYYY-MM-DD` (its
+// midnight) or `YYYY-MM-DDTHH:MM`, read on the clocks of `zone`. A date and minute may end in `Z` or
+// an offset (`+02:00`, `-05:00`), and is then taken as that instant whatever `zone` is. None for
+// anything else.
+parseEndedSince(text: string, nowMs: long, zone: time.Zone) -> Option[long]
     if text.isEmpty() then return None
     val unit: long = text.last() match
         's' -> 1000
@@ -183,14 +182,26 @@ parseEndedSince(text: string, nowMs: long) -> Option[long]
     if !ymd.forall(isDigits) then return None
     val (y, mo, d) = (ymd(0).toLong(), ymd(1).toLong(), ymd(2).toLong())
     if !(1 <= mo <= 12) || !(1 <= d <= daysIn(y, mo)) then return None
-    var clock: long = 0
+    var h: long = 0
+    var mi: long = 0
+    var offset: Option[long] = None
     if parts.length() == 2
-        val hm = parts(1).split(":")
+        var clock = parts(1)
+        val cut = if clock.endsWith("Z") then clock.charCount() - 1 elif clock.charCount() > 5 then 5 else clock.charCount()
+        val suffix = clock.drop(cut)
+        clock = clock.take(cut)
+        if suffix.nonEmpty()
+            parseOffset(suffix) match
+                Some(o) -> offset = Some(o)
+                None -> return None
+        val hm = clock.split(":")
         if hm.length() != 2 || hm(0).charCount() != 2 || hm(1).charCount() != 2 || !hm.forall(isDigits) then return None
-        val (h, mi) = (hm(0).toLong(), hm(1).toLong())
+        (h, mi) = (hm(0).toLong(), hm(1).toLong())
         if h > 23 || mi > 59 then return None
-        clock = (h * 60 + mi) * 60000
-    Some(daysFromCivil(y, mo, d) * 86400000 + clock)
+    val wall = time.Zoned(time.dateTime(int(y), int(mo), int(d), int(h), int(mi)), time.minutes(0), time.utc).toInstant().epochMillis()
+    offset match
+        Some(o) -> Some(wall - o)
+        None -> Some(instantOfReading(wall, zone))
 
 // Printing.
 
@@ -201,16 +212,16 @@ private table(rows: Vector[Vector[string]]) -> string
     val widths = (0..<cols).map(c -> rows.map(r -> r(c).charCount()).max())
     rows.map(r -> (0..<cols).map(c -> r(c).padEnd(widths(c), ' ')).mkString("  ").trim()).mkString("\n")
 
-// The table `history` prints, or a line saying nothing matched.
-historyListing(jobs: Vector[EndedJob]) -> string
+// The table `history` prints, its times on the clocks of `zone`, or a line saying nothing matched.
+historyListing(jobs: Vector[EndedJob], zone: time.Zone) -> string
     if jobs.isEmpty() then return "marshal: no ended jobs match"
-    table([["ID", "KIND", "OUTCOME", "EXIT", "DURATION", "ENDED (UTC)"]] ++ jobs.map(e -> [
+    table([["ID", "KIND", "OUTCOME", "EXIT", "DURATION", "ENDED"]] ++ jobs.map(e -> [
         e.id.toString(),
         if e.landing then e.kind + "*" else e.kind,
         e.how,
         e.exit.toString(),
         formatMillis(e.runMs),
-        formatWhen(e.endedAt)]))
+        formatWhen(e.endedAt, zone)]))
 
 // The table `stats` prints, or a line saying nothing matched.
 statsListing(rows: Vector[KindStats]) -> string

@@ -67,7 +67,7 @@ Options of submit and run:
 val Queries: string = """
 Options of history and stats (both read events.jsonl; no daemon is needed):
   --kind <k>        only jobs of this kind
-  --since <t>       only jobs that ended in the last t (90m, 2h, 3d, 1w) or since a date (2026-11-07 or 2026-11-07T14:30, UTC)
+  --since <t>       only jobs that ended in the last t (90m, 2h, 3d, 1w) or since a date (2026-11-07 or 2026-11-07T14:30 on your local clock, or ending in Z or an offset such as +02:00)
   --json            one JSON object on one line
   --failed          history only: jobs that did not exit 0 (failed, signal, killed, timeout, cancelled, lost)
   --limit <n>       history only: at most n jobs (default 20)\

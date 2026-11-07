@@ -110,7 +110,7 @@ where present.
 
 `marshal history --json` prints `{"jobs":[{"id","kind","landing","outcome","exit","duration_ms",
 "ended_at","peak_rss"}...],"unreadable":N}`, newest first (`ended_at` is `ts` of the ending event,
-`peak_rss` null where unknown, `outcome` one of `ok`, `failed`, `signal`, `killed`, `timeout`,
+`peak_rss` null where unknown, always an instant in milliseconds whatever the caller's zone, `outcome` one of `ok`, `failed`, `signal`, `killed`, `timeout`,
 `cancelled`, `lost`). `marshal stats --json` prints `{"kinds":[{"kind","count","ok","success_pct",
 "timeouts","p50_ms","p90_ms","max_ms","deadline_ms","peak_p50","peak_max"}...],"unreadable":N}`;
 the percentiles and peaks are null where no job has one. `unreadable` counts the log lines skipped.

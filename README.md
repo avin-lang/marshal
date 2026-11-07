@@ -193,14 +193,14 @@ standard error.
 | Option | Meaning |
 | --- | --- |
 | `--kind <k>` | Only jobs of this kind. |
-| `--since <t>` | Only jobs that ended in the last `t` (`90m`, `2h`, `3d`, `1w`; `s` too) or since a date in UTC (`2026-11-07`, `2026-11-07T14:30`). |
+| `--since <t>` | Only jobs that ended in the last `t` (`90m`, `2h`, `3d`, `1w`; `s` too) or since a date on the caller's local clock (`2026-11-07`, `2026-11-07T14:30`; `TZ`, else the host's zone), or since a date and minute that ends in `Z` or an offset (`2026-11-07T14:30Z`, `2026-11-07T14:30+02:00`), which is taken as that instant. |
 | `--json` | One JSON object on one line. |
 | `--failed` | `history` only: jobs that did not exit 0, whatever the cause. |
 | `--limit <n>` | `history` only: at most `n` jobs. Default 20. |
 
 `history` has the columns ID, KIND (`*` marks a landing job), OUTCOME (`ok`, `failed`, `signal`,
 `killed`, `timeout`, `cancelled`, `lost`), EXIT (the status `wait` exits with), DURATION and ENDED
-(UTC). `stats` has one row per kind (a kind's landing runs are their own row, `kind+landing`, as for
+(the end, to the second, in the caller's local time zone like STARTED; `--json` carries `ended_at` as milliseconds). `stats` has one row per kind (a kind's landing runs are their own row, `kind+landing`, as for
 learning deadlines): COUNT, OK (the share that exited 0), P50, P90 and MAX of the run times,
 TIMEOUTS, DEADLINE (what the next job of the kind would get, learned from every successful run in the
 log whatever the filters) and PEAK P50 / PEAK MAX of the memory the jobs' process trees held, `-`

@@ -253,9 +253,8 @@ Known gaps in Avin, left for it to fix rather than worked around here:
 
 ## Accounting: `history` and `stats` (branch `history`)
 
-**Settled on the user's delegation 2026-11-07.** Review with the user: `--since` dates and printed
-times in UTC (to become local time now that avin has zones), a bare number refused, and `--limit`
-defaulting to 20.
+**Settled on the user's delegation 2026-11-07.** Review with the user: a bare number refused, and
+`--limit` defaulting to 20. (Times and `--since` dates are local; see the last section.)
 
 - **both commands read `events.jsonl` in the client, streamed line by line, and never ask
   the daemon.** Why: the log is the record, they work with no daemon (and after a crash), and a huge
@@ -274,10 +273,9 @@ defaulting to 20.
   the success rate is over all of a kind's jobs, and `stats` rows are per history key, so landing
   runs are a separate `kind+landing` row. The deadline shown is the one the daemon would give the
   next job, learned from the whole log whatever `--kind`/`--since` select.
-- **`--since` takes a length back from now (`s m h d w`) or a UTC date or date and
-  minute; times are listed in UTC.** Why: no time zone data in the library, and logs compare across
-  machines. A bare number is refused, as it is ambiguous (the `--deadline` option reads it as
-  minutes). Alternative: local time.
+- **`--since` takes a length back from now (`s m h d w`) or a date or date and minute.** A bare
+  number is refused, as it is ambiguous (the `--deadline` option reads it as minutes). How dates and
+  printed times are read is in the last section.
 - **`history` lists 20 jobs unless `--limit` says otherwise**; `--limit 0` is refused.
   `--json` is one object on one line, like `status --json`, not a line per job.
 - **peak memory is read from `peak_rss` on ending events when it is present and above
@@ -666,3 +664,22 @@ with the user: hold applying to waiting jobs, and priority staying for queued jo
 - **`events` and `wait --until` take each new event name as a filter of its own**: `ready`,
   `retry`, `held`, `released`, `paused`, `resumed`, `prioritized`; and `cancelled` is an ending and
   an outcome.
+
+## Local time in `history` and `stats` (branch `local-history`)
+
+- **Proposed: `history` prints ENDED in the caller's local zone and `--since` dates are read
+  there, the zone being `TZ`, else the host's, as the STARTED column does.** The heading is `ENDED`
+  (it was `ENDED (UTC)`); the format is still `YYYY-MM-DD hh:mm:ss`. `--json` is unchanged: `ended_at`
+  is an instant in milliseconds. Why: a person reading `ls`, `top` and `history` side by side should
+  see one clock, and avin now has zones. Alternatives: keep UTC (the first proposal: the same text on
+  every machine, but a different clock from `ls`); print an offset on every row (wide, and still
+  two clocks).
+- **Proposed: a `--since` date without an offset is local; a date and minute ending in `Z` or
+  `+hh:mm`/`-hh:mm` is taken as that instant.** Why: bare is what a person types, and an explicit
+  offset is how a script or a pasted log timestamp stays exact whatever `TZ` is. A date-only form
+  takes no offset (`2026-11-07Z` is refused): its offset would be ambiguous with the date's dashes.
+  Alternatives: a `Z` for UTC only; no offsets at all.
+- **Proposed: a local reading that occurs twice (clocks going back) is the first occurrence, and one
+  that never occurs (clocks going forward) is read with the offset in force before the change,
+  so it falls just after the gap.** Why: a `--since` bound must be one instant, and these are the
+  usual conventions. Alternative: refuse the date.
