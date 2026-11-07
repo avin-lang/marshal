@@ -143,14 +143,100 @@ stepCacheStaleLock()
     val source = dir + "/hello.avin"
     writeProgram(source, "lock")
     val built = runner.stepBinary(source, home).ok().get()
-    // as a run killed while compiling leaves it: half an executable and its lock, held by a pid that is gone
-    fs.writeText(built.program, "half").ok().get()
+    // as a run killed while compiling leaves it: half an executable under the temporary name and
+    // the lock, held by a pid that is gone; nothing at the cache name
+    fs.remove(built.program).ok().get()
+    fs.writeText(built.program + ".building", "half").ok().get()
     fs.createDir(built.program + ".lock").ok().get()
     fs.writeText(built.program + ".lock/pid", "999999").ok().get()
+    assert(!fs.exists(built.program))
     val again = runner.stepBinary(source, home).ok().get()
     assert(again.fresh)
     assertEq(process.Command(again.program).output().ok().get(), "lock\n")
-    assert(!fs.exists(built.program + ".lock"))
+    assertEq(fs.listDir(home + "/steps").ok().get(), [again.program.drop(home.byteLength() + 7)])
+    fs.removeDirAll(dir)
+
+@test("an interrupted build leaves nothing at the cache name: a waiter that finds a dead holder never runs half a program")
+stepCacheInterrupted()
+    val dir = scratch()
+    val home = dir + "/home"
+    val source = dir + "/hello.avin"
+    writeProgram(source, "kill")
+    val built = runner.stepBinary(source, home).ok().get()
+    fs.remove(built.program).ok().get()
+    // the compiler was killed after writing part of its output, and the run after it
+    fs.writeText(built.program + ".building", "half").ok().get()
+    fs.writeText(built.program + ".build.log", "partial").ok().get()
+    fs.createDir(built.program + ".lock").ok().get()
+    fs.writeText(built.program + ".lock/pid", "999999").ok().get()
+    assert(!fs.isFile(built.program))
+    val again = runner.stepBinary(source, home).ok().get()
+    assert(again.fresh)
+    assertEq(process.Command(again.program).output().ok().get(), "kill\n")
+    assert(!fs.exists(again.program + ".building"))
+    assert(!fs.exists(again.program + ".build.log"))
+    fs.removeDirAll(dir)
+
+@test("a build leaves no temporary file, whether it succeeds, hits the cache or fails")
+stepCacheNoTemporaries()
+    val dir = scratch()
+    val home = dir + "/home"
+    val source = dir + "/hello.avin"
+    writeProgram(source, "tidy")
+    val built = runner.stepBinary(source, home).ok().get()
+    assertEq(fs.listDir(home + "/steps").ok().get().length(), 1)
+    runner.stepBinary(source, home).ok().get()
+    assertEq(fs.listDir(home + "/steps").ok().get().length(), 1)
+    assert(fs.isFile(built.program))
+    fs.writeText(dir + "/bad.avin", "main() -> int = nope\n").ok().get()
+    assert(runner.stepBinary(dir + "/bad.avin", home).isErr())
+    assertEq(fs.listDir(home + "/steps").ok().get().length(), 1)
+    fs.removeDirAll(dir)
+
+@test("the cache name follows the compiler's source text: the same text, the same name; another, another")
+stepCacheKey()
+    val dir = scratch()
+    val home = dir + "/home"
+    val a = dir + "/hello.avin"
+    val b = dir + "/other/hello.avin"
+    fs.createDir(dir + "/other").ok().get()
+    writeProgram(a, "same")
+    writeProgram(b, "same")
+    val first = runner.stepBinary(a, home).ok().get()
+    // another path, identical text: one build
+    assertEq(runner.stepBinary(b, home).ok().get(), runner.Compiled(first.program, false))
+    writeProgram(b, "diff")
+    assert(runner.stepBinary(b, home).ok().get().program != first.program)
+    // the name carries a 32-digit key
+    assertEq(first.program.drop(first.program.lastIndexOf("-") + 1).byteLength(), 32)
+    fs.removeDirAll(dir)
+
+@test("an atomic write replaces a file whole and leaves no temporary file, and a failed one leaves the old file")
+atomicWrite()
+    val dir = scratch()
+    val file = dir + "/state.json"
+    marshal.writeAtomic(file, "one\n").ok().get()
+    assertEq(fs.readText(file).ok().get(), "one\n")
+    marshal.writeAtomic(file, "two\n").ok().get()
+    assertEq(fs.readText(file).ok().get(), "two\n")
+    assertEq(fs.listDir(dir).ok().get(), ["state.json"])
+    marshal.writeAtomic(file, "").ok().get()
+    assertEq(fs.readText(file).ok().get(), "")
+    marshal.writeAtomic(file, "日本\n").ok().get()
+    assertEq(fs.readText(file).ok().get(), "日本\n")
+    // a directory that is not there: an error, nothing made
+    assert(marshal.writeAtomic(dir + "/missing/state.json", "x").isErr())
+    assertEq(fs.listDir(dir).ok().get(), ["state.json"])
+    // a target that cannot be replaced (a directory holding an entry): an error, the temporary file removed
+    fs.createDir(dir + "/full").ok().get()
+    fs.writeText(dir + "/full/x", "x").ok().get()
+    assert(marshal.writeAtomic(dir + "/full", "x").isErr())
+    assertEq(fs.listDir(dir).ok().get().length(), 2)
+    // a temporary file named by the caller, in another directory of the same file system
+    fs.createDir(dir + "/rec").ok().get()
+    marshal.writeAtomicVia(dir + "/rec/7", "3\n", dir + "/.t").ok().get()
+    assertEq(fs.listDir(dir + "/rec").ok().get(), ["7"])
+    assert(!fs.exists(dir + "/.t"))
     fs.removeDirAll(dir)
 
 @test("a type is looked for in the project, then marshal's home, then marshal's own types")

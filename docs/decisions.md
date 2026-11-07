@@ -247,9 +247,8 @@ Known gaps in Avin, left for it to fix rather than worked around here:
 
 - A job that ends in the milliseconds between the daemon's last look and its exec is reaped by the
   old image, so the new one cannot learn how it ended and records it `lost` (exit 125).
-- `avin.fs` has no rename, so `state.json` is written in place rather than written aside and
-  renamed. Only the program the daemon becomes reads it, after the write has finished, so this
-  matters only to a daemon killed mid-write, which leaves a partial file that nothing reads.
+- (Closed: `state.json` is now written aside and renamed, see "Atomic writes and the step-cache
+  digest".)
 
 ## Accounting: `history` and `stats` (branch `history`)
 
@@ -373,8 +372,7 @@ stops only the runner's group until avin can list a process's descendants.
 
 **Settled on the user's delegation 2026-11-07**; each says why and what else was weighed. Review
 with the user: take-slot sharing off unless configured; a type's run being one job; a diverged
-local target branch left with a warning. The FNV-1a step-cache digest is temporary, until avin's
-library has a content digest. The user approved the design (types as
+local target branch left with a warning. The user approved the design (types as
 data, steps as any program, a line protocol, marshal core without git, stock steps in Avin) on
 2026-11-07; these are the choices it left open. Review with the user: the take-slot default
 (first), a type's run being one job, and the local target branch left behind as a warning.
@@ -444,8 +442,8 @@ data, steps as any program, a line protocol, marshal core without git, stock ste
   `--version` and the source (every file of a package, by path), so a new compiler or a changed
   source compiles again and old builds stay for runs that want them. Concurrent runs compile once:
   the one that makes `<program>.lock` (holding its pid) compiles; a lock whose pid is dead is taken
-  over, with any half-written program. The hash is FNV-1a, 64 bits: a cache name, not a security
-  check. Avin's library has no content digest (a gap, below).
+  over, with any half-built file. The hash is SHA-256, shortened (see "Atomic writes and the
+  step-cache digest").
 - **The train merges the remote's copy of each branch**, as pushed, never the local one: what was
   pushed is what lands, and a commit not pushed never lands. A branch that does not merge is
   blamed by name (`=== FAIL merge <branch>`): the later of the two that conflict.
@@ -474,10 +472,8 @@ data, steps as any program, a line protocol, marshal core without git, stock ste
 
 Gaps in Avin met here, left for Avin to close:
 
-- No content digest (SHA-256 or the like) in the library: the step cache hashes with FNV-1a,
-  written in marshal.
-- `avin.fs` has no rename (coming): a compiled step is written in place under its lock rather than
-  built aside and renamed, so a reader must wait for the lock to go.
+- (Closed: the library now has `avin.crypto` and `fs.rename`; the step cache and the files other
+  processes read use them.)
 - A process's descendants in groups of their own cannot be listed (`process.groupMembers`, coming):
   a runner killed outright leaves its step's group behind.
 
@@ -683,3 +679,34 @@ with the user: hold applying to waiting jobs, and priority staying for queued jo
   that never occurs (clocks going forward) is read with the offset in force before the change,
   so it falls just after the gap.** Why: a `--since` bound must be one instant, and these are the
   usual conventions. Alternative: refuse the date.
+
+## Atomic writes and the step-cache digest (branch `step-cache-sha`)
+
+**Settled on the user's delegation 2026-11-07.** Review with the user: the cache key's length (32 hex digits).
+
+- **A file another process reads is written to a temporary name beside it and renamed into place**
+  (`writeAtomic`, `atomic.avin`), so a reader sees the old file or the new one, never half. The
+  temporary name is `<file>.tmp-<pid>`, removed if the write or the rename fails. Applied to:
+  `state.json` (the restart handover), the pid files inside lock directories (`starting`, the
+  take-slot mutex, `land.lock`, a step's build lock), take-slot's units registrations and the
+  daemon's ticket. Why those: a reader that gets a torn pid can take it for a dead process and
+  remove a live lock, and a torn ticket reads as a one-unit request. Registrations and tickets sit
+  in directories whose every entry is a record, so their temporary file lives one level up
+  (`.units-<pid>.tmp`, `.ticket-<pid>.tmp`). Alternative: leaving them, since the window is a few
+  microseconds (a lock taken over wrongly corrupts a build, and nothing would say why).
+- **Left as they are, because no reader can race them**: `report.json` and `report.txt` (written
+  by the run's own process at its very end; `marshal report` reads them after the job has ended),
+  the failure text in a job's log (the log is a stream readers follow, appended to, never
+  replaced), and `config.json` (marshal never writes it; the user does).
+- **A compiled step is built as `<name>.building` and renamed to `<name>`**, so the cache name
+  holds a whole executable or nothing. A run killed while compiling leaves `.building`, its log
+  and the lock; the next one to find the holder dead removes all three. The old takeover removed
+  a possibly half-written executable at the cache name; there is none to remove now, and a
+  complete one is kept. Alternative: compiling straight to the cache name under the lock (readers
+  outside the lock protocol could run a half-written file).
+- **The cache key is the first 32 hexadecimal digits (128 bits) of the SHA-256 of the compiler's
+  `--version`, a newline and the source text** (`stepKey`), replacing 64-bit FNV-1a. A prefix keeps
+  names short; 128 bits of a cryptographic digest do not collide by chance, which 64 bits of a
+  non-cryptographic hash were never promised to. Alternatives: the full 64 digits (long names in
+  every log line), the first 16 (the old width, with a birthday bound near four billion builds).
+  Existing cache entries are simply not found again and rebuilt.

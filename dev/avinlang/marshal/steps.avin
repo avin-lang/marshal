@@ -216,18 +216,3 @@ renderReport(typeName: string, r: RunReport) -> string
     for f in r.fails
         lines += s"  failed: ${f.test}" + f.branch.map(b -> s" ($b)").getOrElse("")
     lines.mkString("\n")
-
-// The 64-bit FNV-1a hash of the UTF-8 bytes of `text`, as 16 hexadecimal digits: part of the name
-// of a compiled step in the cache, which a change of its source changes.
-fnv1a(text: string) -> string
-    var h: long = -3750763034362895579
-    for b in text.bytes()
-        h = (h ^ long(b)) *% 1099511628211
-    val digits = "0123456789abcdef"
-    val out = Buffer[string]()
-    var shift: long = 60
-    while shift >= 0
-        val d = int((h >> shift) & 15)
-        out += digits.slice(d, d + 1)
-        shift -= 4
-    out.mkString("")
