@@ -79,6 +79,12 @@ savedNumbers()
     stateRoundTrip(SavedState("v", long.MaxValue, long.MaxValue, long.MaxValue, long.MaxValue, [], [big], [], None))
     stateRoundTrip(stateOf([], [savedJob(id = 1, state = "running", startedAt = -5, deadlineMs = -1, pid = -1)], []))
 
+@test("a start time is saved as it is for a running, an ended and a never-started job, odd millisecond values included")
+savedStartTimes()
+    for at in [long(1_762_521_060_404), 1_762_521_060_405, 1_762_521_060_999, 1_762_521_061_000, 9_007_199_254_740_993]
+        stateRoundTrip(stateOf([], [savedJob(id = 1, state = "running", startedAt = at, pid = 5, pgid = 5)], [savedJob(id = 2, state = "done", startedAt = at, endedAt = at + 1)]))
+    stateRoundTrip(stateOf([savedJob(id = 3, state = "queued", startedAt = 0)], [], [savedJob(id = 4, state = "done", startedAt = 0, endedAt = 1_762_521_060_404)]))
+
 @test("a running job's memory, now and at its peak, and its start time read back")
 savedMemory()
     stateRoundTrip(stateOf([], [savedRunningJob(), savedJob(id = 3, state = "running", startedAt = 1_762_000_000_002, pid = 9, pgid = 9, rss = 123_456_789, peakRss = 987_654_321)], []))
@@ -122,6 +128,35 @@ savedNulls()
     assertEq(marshal.decodeState(text), Ok(SavedState("0.1.0", 1, 2, 3, 4, [], [], [], None)))
     val noTicket = "{\"version\": \"0.1.0\", \"pid\": 1, \"saved_at\": 2, \"began_at\": 3, \"next_id\": 4, \"queue\": [], \"running\": [], \"ended\": []}"
     assertEq(marshal.decodeState(noTicket), Ok(SavedState("0.1.0", 1, 2, 3, 4, [], [], [], None)))
+
+@test("a held queue, held jobs and priorities read back as themselves, the extremes included")
+savedQueueControl()
+    val held = SavedJob(9, savedSpec, "queued", 1, 2, 0, 0, 5, 6, "/l", 0, 0, None, false, false, None, 0, 0, true, 7)
+    stateRoundTrip(SavedState("0.1.0", 1, 2, 3, 4, [held], [], [], None, true))
+    for p in [0, 1, -1, int.MaxValue, int.MinValue]
+        val j = SavedJob(9, savedSpec, "queued", 1, 2, 0, 0, 5, 6, "/l", 0, 0, None, false, false, None, 0, 0, false, p)
+        stateRoundTrip(stateOf([j], [], []))
+    stateRoundTrip(SavedState("0.1.0", 1, 2, 3, 4, [], [], [], None, false))
+
+@test("a state saved before holding and priorities existed reads as nothing held, every priority 0")
+savedBeforeQueueControl()
+    val head = "\"version\": \"0.1.0\", \"pid\": 1, \"saved_at\": 2, \"began_at\": 3, \"next_id\": 4"
+    val old = marshal.encodeSavedJob(savedQueued).render().replace(",\"held\":false,\"priority\":0", "")
+    assert(!old.contains("held") && !old.contains("priority"), old)
+    assertEq(marshal.decodeState(s"{$head, \"queue\": [$old], \"running\": [], \"ended\": [], \"ticket\": null}"), Ok(SavedState("0.1.0", 1, 2, 3, 4, [savedQueued], [], [], None, false)))
+    val nulls = marshal.encodeSavedJob(savedQueued).render().replace("\"held\":false,\"priority\":0", "\"held\":null,\"priority\":null")
+    assertEq(marshal.decodeState(s"{$head, \"queue\": [$nulls], \"running\": [], \"ended\": [], \"queue_held\": null}"), Ok(SavedState("0.1.0", 1, 2, 3, 4, [savedQueued], [], [], None, false)))
+
+@test("a held mark or priority of the wrong type is refused, naming the field")
+savedBadQueueControl()
+    val head = "\"version\": \"0.1.0\", \"pid\": 1, \"saved_at\": 2, \"began_at\": 3, \"next_id\": 4"
+    val good = marshal.encodeSavedJob(savedQueued).render()
+    val withJob = (j: string) -> s"{$head, \"queue\": [$j], \"running\": [], \"ended\": []}"
+    stateRefused(withJob(good.replace("\"held\":false", "\"held\":1")), "`held` is not a bool")
+    stateRefused(withJob(good.replace("\"priority\":0", "\"priority\":\"high\"")), "`priority` is not an int")
+    stateRefused(withJob(good.replace("\"priority\":0", "\"priority\":1.5")), "`priority` is not an int")
+    stateRefused(withJob(good.replace("\"priority\":0", "\"priority\":3000000000")), "`priority` is not an int")
+    stateRefused(s"{$head, \"queue\": [], \"running\": [], \"ended\": [], \"queue_held\": \"yes\"}", "`queue_held` is not a bool")
 
 @test("text that is not a saved state is refused with a reason")
 savedBadStates()

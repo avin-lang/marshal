@@ -8,9 +8,11 @@ import json.Json
 // marshal's version, as `avin.hocon` gives it: what `marshal version` and `marshal restart` print.
 val Version: string = "0.1.0"
 
-// What a job is to run and how much of the machine it takes. `after` names the jobs it is held for:
-// it queues once they have all ended, and with `afterAny` false only if each of them succeeded.
-// `retries` is how many times more it runs after failing or timing out, `retryDelayMs` after how long.
+// What a job is to run and how much of the machine it takes. `urgent` queues it in its lane's urgent
+// band, behind the urgent jobs already queued and ahead of every other. `after` names the jobs it
+// waits for: it queues once they have all ended, and with `afterAny` false only if each of them
+// succeeded. `retries` is how many times more it runs after failing or timing out, `retryDelayMs`
+// after how long.
 data JobSpec(
     kind: string,
     units: int,
@@ -20,6 +22,7 @@ data JobSpec(
     deadlineMs: Option[long],
     cmd: Vector[string],
     env: Vector[(string, string)],
+    urgent: bool = false,
     after: Vector[long] = [],
     afterAny: bool = false,
     retries: int = 0,
@@ -41,8 +44,32 @@ data Request
     Restart
     // Submits again a job that has ended, as it was submitted.
     Rerun(id: long)
+    // Holds the queue, both lanes: running jobs go on and nothing new starts.
+    PauseQueue
+    // Releases the queue PauseQueue held.
+    ResumeQueue
+    // Stops a running job's whole process group, keeping its units and stopping its deadline's
+    // clock, and continues it.
+    PauseJob(id: long)
+    ResumeJob(id: long)
+    // Keeps one queued job from starting, and lets it start again.
+    Hold(id: long)
+    Release(id: long)
+    // Places a queued job: by a priority number among the jobs not urgent, or at the back of its
+    // lane's urgent band.
+    Prioritize(id: long, priority: Priority)
+    // Follows events: `source` is the condition as written, `cond` what it parses to. The daemon
+    // streams replies until the watch ends, which `mode` says; `since` and `sinceId` ask for the
+    // events already in the log from a time (milliseconds since 1970, inclusive) and from a job.
+    Watch(source: string, cond: Condition, mode: Mode, since: Option[long], sinceId: Option[long])
 
-// How a job ended. `DependencyFailed` cancels a job held for job `after`, which did not succeed.
+// The priority a queued job is given: a number (higher first, equal ones in arrival order, all
+// behind the urgent band), or the back of the urgent band.
+data Priority
+    Level(n: int)
+    Urgent
+
+// How a job ended. `DependencyFailed` cancels a job waiting for job `after`, which did not succeed.
 data Outcome
     Exited(code: int)
     Signalled(signal: int)
@@ -53,7 +80,7 @@ data Outcome
 
 // The exit status `wait` and `run` end with: the job's own code, 128 + the signal that ended it,
 // 124 for a timeout, 143 for a job cancelled before it started (as a TERM would), 125 for a job
-// lost with a daemon that died and 126 for a job cancelled because a job it was held for failed.
+// lost with a daemon that died and 126 for a job cancelled because a job it waited for failed.
 exitCode(o: Outcome) -> int
 exitCode(Exited(code)) = code
 exitCode(Signalled(sig)) = 128 + sig
@@ -62,7 +89,7 @@ exitCode(Cancelled) = 143
 exitCode(Lost) = 125
 exitCode(DependencyFailed(_)) = 126
 
-// Whether a job that ended so succeeded, as a job held for it with `--after-ok` asks.
+// Whether a job that ended so succeeded, as a job waiting for it with `--after-ok` asks.
 succeeded(o: Outcome) -> bool = o == Exited(0)
 
 // Whether a job that ended so failed in a way another attempt may mend: a nonzero exit, a signal it
@@ -73,13 +100,17 @@ retryable(Exited(code), _) = code != 0
 retryable(Signalled(_) | TimedOut, _) = true
 retryable(_, _) = false
 
-// One job as a listing shows it. `state` is `held`, `queued`, `running`, `retrying` (waiting out its
-// retry delay) or `done`; `elapsedMs` is the time queued for a queued job and the time run for the
-// others. `memory` is the memory it declared; `rss` the bytes its whole process tree held in RAM
-// when the daemon last measured it, 0 unless it runs; `peakRss` the most any measurement found,
-// kept once it has ended; `startedAt` when it started on the wall clock, in milliseconds since 1970,
-// 0 while it waits. `holds` is what a held job waits for, the jobs that have not ended yet;
-// `attempt` counts its runs from 1.
+// One job as a listing shows it. `state` is `waiting` (for the jobs it runs after), `queued`,
+// `running`, `retrying` (waiting out its retry delay) or `done`; `elapsedMs` is the time queued for
+// a waiting or queued job and the time run for the others. `memory` is the memory it declared;
+// `rss` the bytes its whole process tree held in RAM when the daemon last measured it, 0 unless it
+// runs; `peakRss` the most any measurement found, kept once it has ended; `startedAt` when it
+// started on the wall clock, in milliseconds since 1970, 0 while it waits. `held` says a waiting or
+// queued job is kept from starting by hand; `priority` places it in its lane's queue, and `urgent`
+// puts it in the lane's urgent band, ahead of every job not urgent whatever its priority. `paused`
+// says a running job's processes are stopped by `pause`; its `elapsedMs` leaves its pauses out.
+// `after` is what a waiting job still waits for, the jobs that have not ended yet; `attempt` counts
+// its runs from 1.
 data JobInfo(
     id: long,
     kind: string,
@@ -99,11 +130,16 @@ data JobInfo(
     rss: long = 0,
     peakRss: long = 0,
     startedAt: long = 0,
-    holds: Vector[long] = [],
+    held: bool = false,
+    priority: int = 0,
+    urgent: bool = false,
+    paused: bool = false,
+    after: Vector[long] = [],
     attempt: int = 1)
 
 // The budget in use. `memory` is what the running jobs declared; `rss` what their process trees hold
-// in RAM, as last measured; `machineMemory` the memory the machine has, 0 where it is not known.
+// in RAM, as last measured; `machineMemory` the memory the machine has, 0 where it is not known;
+// `queueHeld` says the queue is held: nothing new starts in either lane.
 data Usage(
     units: int,
     unitBudget: int,
@@ -114,7 +150,8 @@ data Usage(
     landing: Option[long],
     takeSlot: Option[TakeSlotUse],
     rss: long = 0,
-    machineMemory: long = 0)
+    machineMemory: long = 0,
+    queueHeld: bool = false)
 
 // What take-slot.zsh holds in the directory `dir` that marshal shares: units its runs hold, how many
 // of its runs wait, and whether one of them holds the landing lane.
@@ -123,7 +160,7 @@ data TakeSlotUse(dir: string, units: int, waiting: int, landing: bool)
 // Why a queued job has not started: its units do not fit beside what runs, its memory does not, it
 // is a landing job and the lane is held, it waits for what take-slot holds or for a take-slot run
 // ahead of it, it fits but starting it would delay job `id` at the head of the queue, or it starts
-// at the daemon's next look.
+// at the daemon's next look; or it is held, or the whole queue is.
 data Why
     NoUnits
     NoMemory
@@ -131,15 +168,17 @@ data Why
     ForTakeSlot
     Behind(id: long)
     Starting
+    Held
+    QueueHeld
 
 // A queued job, its place in its lane's queue (from 1; landing jobs and development jobs each have a
 // queue), and why it waits.
 data QueuedJob(job: JobInfo, position: int, why: Why)
 
 // What `marshal top` draws: the budget in use, how long the daemon has run, the running jobs, the
-// queued ones, the jobs that ended last, the latest first, and the jobs held for others or waiting
-// to retry, oldest first.
-data Overview(usage: Usage, uptimeMs: long, running: Vector[JobInfo], queued: Vector[QueuedJob], recent: Vector[JobInfo], held: Vector[JobInfo] = [])
+// queued ones, the jobs that ended last, the latest first, and the jobs waiting for others or
+// waiting to retry, oldest first.
+data Overview(usage: Usage, uptimeMs: long, running: Vector[JobInfo], queued: Vector[QueuedJob], recent: Vector[JobInfo], waiting: Vector[JobInfo] = [])
 
 data Reply
     Submitted(id: long, log: string)
@@ -149,6 +188,9 @@ data Reply
     Viewed(overview: Overview)
     // The daemon's version and process id.
     Hi(version: string, pid: long)
+    // One event of a watch, as the log holds it, or the events of its backlog together.
+    Streamed(event: Json)
+    Replayed(events: Vector[Json])
     Done
     Failed(message: string)
 
@@ -167,6 +209,39 @@ encodeRequest(Stop(force, drain)) = Json.obj(("op", Json.str("stop")), ("force",
 encodeRequest(Hello) = Json.obj(("op", Json.str("version")))
 encodeRequest(Restart) = Json.obj(("op", Json.str("restart")))
 encodeRequest(Rerun(id)) = Json.obj(("op", Json.str("rerun")), ("id", Json.num(id)))
+encodeRequest(PauseQueue) = Json.obj(("op", Json.str("pause")))
+encodeRequest(ResumeQueue) = Json.obj(("op", Json.str("resume")))
+encodeRequest(PauseJob(id)) = Json.obj(("op", Json.str("pause")), ("id", Json.num(id)))
+encodeRequest(ResumeJob(id)) = Json.obj(("op", Json.str("resume")), ("id", Json.num(id)))
+encodeRequest(Hold(id)) = Json.obj(("op", Json.str("hold")), ("id", Json.num(id)))
+encodeRequest(Release(id)) = Json.obj(("op", Json.str("release")), ("id", Json.num(id)))
+encodeRequest(Prioritize(id, Level(n))) = Json.obj(("op", Json.str("priority")), ("id", Json.num(id)), ("priority", Json.num(n)))
+encodeRequest(Prioritize(id, Urgent)) = Json.obj(("op", Json.str("priority")), ("id", Json.num(id)), ("priority", Json.str("urgent")))
+encodeRequest(Watch(source, _, mode, since, sinceId)) = Json.obj(
+    ("op", Json.str("watch")), ("cond", Json.str(source)), ("mode", Json.str(modeWord(mode))),
+    ("since", since.map(n -> Json.num(n)).getOrElse(Json.Null)),
+    ("since_id", sinceId.map(n -> Json.num(n)).getOrElse(Json.Null)))
+
+private modeWord(m: Mode) -> string
+modeWord(Once) = "once"
+modeWord(Past) = "past"
+modeWord(Follow) = "follow"
+
+// Whether a request is a watch, answered with a stream rather than one reply.
+watching(r: Request) -> bool
+watching(Watch(_, _, _, _, _)) = true
+watching(_) = false
+
+private decodeWatch(j: Json) -> Result[Request, string]
+    val source = field(j, "cond", v -> v.asString(), "a string")?
+    val cond = parseCondition(source).mapErr(e -> s"bad condition: $e")?
+    val mode = field(j, "mode", v -> v.asString(), "a string")? match
+        "once" -> Once
+        "past" -> Past
+        "follow" -> Follow
+        other -> return Err(s"`mode` is not once, past or follow: `$other`")
+    if mode != Once && parseFilter(source).isErr() then return Err("bad condition: events takes an event filter, not `idle` or `job=`")
+    Ok(Watch(source, cond, mode, optional(j, "since", someLong, "a whole number", None)?, optional(j, "since_id", someLong, "a whole number", None)?))
 
 private longs(xs: Vector[long]) -> Json = Json.Arr(xs.map(x -> Json.num(x)))
 
@@ -180,6 +255,7 @@ encodeSpec(s: JobSpec) -> Json = Json.obj(
     ("deadline_ms", s.deadlineMs.map(d -> Json.num(d)).getOrElse(Json.Null)),
     ("cmd", strings(s.cmd)),
     ("env", Json.Obj(s.env.map(e -> (e.0, Json.str(e.1))))),
+    ("urgent", Json.Bool(s.urgent)),
     ("after", longs(s.after)),
     ("after_any", Json.Bool(s.afterAny)),
     ("retries", Json.num(s.retries)),
@@ -197,6 +273,7 @@ decodeSpec(j: Json) -> Result[JobSpec, string]
         optional(j, "deadline_ms", someLong, "a whole number", None)?,
         cmd,
         optional(j, "env", stringPairs, "an object of strings", Vector[(string, string)]())?,
+        optional(j, "urgent", v -> v.asBool(), "a bool", false)?,
         optional(j, "after", longVector, "an array of job ids", Vector[long]())?,
         optional(j, "after_any", v -> v.asBool(), "a bool", false)?,
         optional(j, "retries", v -> v.asInt(), "an int", 0)?,
@@ -249,7 +326,18 @@ decodeRequest(text: string) -> Result[Request, string]
         "version" -> Ok(Hello)
         "restart" -> Ok(Restart)
         "rerun" -> Ok(Rerun(field(j, "id", v -> v.asLong(), "a whole number")?))
+        "pause" -> if j.has("id") then Ok(PauseJob(field(j, "id", v -> v.asLong(), "a whole number")?)) else Ok(PauseQueue)
+        "resume" -> if j.has("id") then Ok(ResumeJob(field(j, "id", v -> v.asLong(), "a whole number")?)) else Ok(ResumeQueue)
+        "hold" -> Ok(Hold(field(j, "id", v -> v.asLong(), "a whole number")?))
+        "release" -> Ok(Release(field(j, "id", v -> v.asLong(), "a whole number")?))
+        "priority" -> Ok(Prioritize(field(j, "id", v -> v.asLong(), "a whole number")?, field(j, "priority", priorityOf, "a whole number or \"urgent\"")?))
+        "watch" -> decodeWatch(j)
         other -> Err(s"no such request: `$other`")
+
+private priorityOf(j: Json) -> Option[Priority] = j.asString() match
+    Some("urgent") -> Some(Urgent)
+    Some(_) -> None
+    None -> j.asInt().map(n -> Level(n))
 
 // Outcomes.
 
@@ -292,7 +380,11 @@ encodeJob(i: JobInfo) -> Json = Json.obj(
     ("rss", Json.num(i.rss)),
     ("peak_rss", Json.num(i.peakRss)),
     ("started_at", Json.num(i.startedAt)),
-    ("holds", longs(i.holds)),
+    ("held", Json.Bool(i.held)),
+    ("priority", Json.num(i.priority)),
+    ("urgent", Json.Bool(i.urgent)),
+    ("paused", Json.Bool(i.paused)),
+    ("after", longs(i.after)),
     ("attempt", Json.num(i.attempt)))
 
 decodeJob(j: Json) -> Result[JobInfo, string]
@@ -316,12 +408,16 @@ decodeJob(j: Json) -> Result[JobInfo, string]
         field(j, "deadline_ms", v -> v.asLong(), "a whole number")?,
         field(j, "log", v -> v.asString(), "a string")?,
         optional(j, "sample", v -> v.asString().map(s -> Some(s)), "a string", None)?,
-        // absent from what marshal wrote before it measured memory
+        // absent from what marshal wrote before it measured memory, or held and ordered jobs
         optional(j, "rss", wholeNumber, "a whole number", 0)?,
         optional(j, "peak_rss", wholeNumber, "a whole number", 0)?,
         optional(j, "started_at", wholeNumber, "a whole number", 0)?,
-        // absent from what marshal wrote before it held and retried jobs
-        optional(j, "holds", longVector, "an array of job ids", Vector[long]())?,
+        optional(j, "held", v -> v.asBool(), "a bool", false)?,
+        optional(j, "priority", v -> v.asInt(), "an int", 0)?,
+        optional(j, "urgent", v -> v.asBool(), "a bool", false)?,
+        optional(j, "paused", v -> v.asBool(), "a bool", false)?,
+        // absent from what marshal wrote before jobs waited for others and retried
+        optional(j, "after", longVector, "an array of job ids", Vector[long]())?,
         optional(j, "attempt", v -> v.asInt(), "an int", 1)?))
 
 encodeTakeSlot(t: TakeSlotUse) -> Json = Json.obj(
@@ -349,6 +445,7 @@ statusJson(u: Usage, jobs: Vector[JobInfo]) -> Json = Json.obj(
     ("machine_mem", Json.num(u.machineMemory)),
     ("landing", u.landing.map(id -> Json.num(id)).getOrElse(Json.Null)),
     ("take_slot", u.takeSlot.map(encodeTakeSlot).getOrElse(Json.Null)),
+    ("queue_held", Json.Bool(u.queueHeld)),
     ("running", Json.Arr(jobs.filter(j -> j.state == "running").map(encodeJob))),
     ("queued", Json.Arr(jobs.filter(j -> j.state == "queued").map(encodeJob))))
 
@@ -367,9 +464,12 @@ encodeReply(Using(u)) = Json.obj(
     ("running", Json.num(u.running)),
     ("queued", Json.num(u.queued)),
     ("landing", u.landing.map(id -> Json.num(id)).getOrElse(Json.Null)),
-    ("take_slot", u.takeSlot.map(encodeTakeSlot).getOrElse(Json.Null)))
+    ("take_slot", u.takeSlot.map(encodeTakeSlot).getOrElse(Json.Null)),
+    ("queue_held", Json.Bool(u.queueHeld)))
 encodeReply(Viewed(o)) = Json.obj(("ok", Json.Bool(true)), ("snapshot", encodeOverview(o)))
 encodeReply(Hi(version, pid)) = Json.obj(("ok", Json.Bool(true)), ("version", Json.str(version)), ("pid", Json.num(pid)))
+encodeReply(Streamed(event)) = Json.obj(("ok", Json.Bool(true)), ("event", event))
+encodeReply(Replayed(events)) = Json.obj(("ok", Json.Bool(true)), ("events", Json.Arr(events)))
 encodeReply(Done) = Json.obj(("ok", Json.Bool(true)))
 encodeReply(Failed(message)) = Json.obj(("ok", Json.Bool(false)), ("error", Json.str(message)))
 
@@ -379,6 +479,8 @@ decodeReply(text: string) -> Result[Reply, string]
         Err(e) -> return Err(s"not JSON: $e")
     if !field(j, "ok", v -> v.asBool(), "a bool")?
         return Ok(Failed(field(j, "error", v -> v.asString(), "a string")?))
+    if j.has("event") then return Ok(Streamed(j("event")))
+    if j.has("events") then return Ok(Replayed(field(j, "events", v -> v.asVector(), "an array")?))
     if j.has("snapshot") then return Ok(Viewed(decodeOverview(j("snapshot"))?))
     if j.has("job") then return Ok(Ended(decodeJob(j("job"))?))
     if j.has("jobs")
@@ -397,7 +499,8 @@ decodeReply(text: string) -> Result[Reply, string]
             optional(j, "landing", someLong, "a whole number", None)?,
             decodeTakeSlot(j.get("take_slot").getOrElse(Json.Null))?,
             optional(j, "rss", wholeNumber, "a whole number", 0)?,
-            optional(j, "machine_mem", wholeNumber, "a whole number", 0)?)))
+            optional(j, "machine_mem", wholeNumber, "a whole number", 0)?,
+            optional(j, "queue_held", v -> v.asBool(), "a bool", false)?)))
     if j.has("version") then return Ok(Hi(field(j, "version", v -> v.asString(), "a string")?, field(j, "pid", v -> v.asLong(), "a whole number")?))
     if j.has("id") then return Ok(Submitted(field(j, "id", v -> v.asLong(), "a whole number")?, field(j, "log", v -> v.asString(), "a string")?))
     Ok(Done)
@@ -412,6 +515,8 @@ whyWord(LaneBusy) = "lane"
 whyWord(ForTakeSlot) = "take-slot"
 whyWord(Behind(_)) = "behind"
 whyWord(Starting) = "starting"
+whyWord(Held) = "held"
+whyWord(QueueHeld) = "queue-held"
 
 private encodeQueued(q: QueuedJob) -> Json
     val extra = q.why match
@@ -427,6 +532,8 @@ private decodeWhy(j: Json) -> Result[Why, string]
         "take-slot" -> Ok(ForTakeSlot)
         "behind" -> Ok(Behind(field(j, "behind", v -> v.asLong(), "a whole number")?))
         "starting" -> Ok(Starting)
+        "held" -> Ok(Held)
+        "queue-held" -> Ok(QueueHeld)
         other -> Err(s"no such reason to wait: `$other`")
 
 private decodeQueued(j: Json) -> Result[QueuedJob, string] =
@@ -441,11 +548,12 @@ encodeOverview(o: Overview) -> Json = Json.obj(
     ("machine_mem", Json.num(o.usage.machineMemory)),
     ("landing", o.usage.landing.map(id -> Json.num(id)).getOrElse(Json.Null)),
     ("take_slot", o.usage.takeSlot.map(encodeTakeSlot).getOrElse(Json.Null)),
+    ("queue_held", Json.Bool(o.usage.queueHeld)),
     ("uptime_ms", Json.num(o.uptimeMs)),
     ("running", Json.Arr(o.running.map(encodeJob))),
     ("queued", Json.Arr(o.queued.map(encodeQueued))),
     ("recent", Json.Arr(o.recent.map(encodeJob))),
-    ("held", Json.Arr(o.held.map(encodeJob))))
+    ("waiting", Json.Arr(o.waiting.map(encodeJob))))
 
 private each[T](j: Json, key: string, read: (Json) -> Result[T, string]) -> Result[Vector[T], string]
     val items = field(j, key, v -> v.asVector(), "an array")?
@@ -467,9 +575,10 @@ decodeOverview(j: Json) -> Result[Overview, string]
             optional(j, "landing", someLong, "a whole number", None)?,
             decodeTakeSlot(j.get("take_slot").getOrElse(Json.Null))?,
             optional(j, "rss", wholeNumber, "a whole number", 0)?,
-            optional(j, "machine_mem", wholeNumber, "a whole number", 0)?),
+            optional(j, "machine_mem", wholeNumber, "a whole number", 0)?,
+            optional(j, "queue_held", v -> v.asBool(), "a bool", false)?),
         field(j, "uptime_ms", v -> v.asLong(), "a whole number")?,
         running,
         queued,
         each(j, "recent", decodeJob)?,
-        if j.has("held") then each(j, "held", decodeJob)? else Vector[JobInfo]()))
+        if j.has("waiting") then each(j, "waiting", decodeJob)? else Vector[JobInfo]()))

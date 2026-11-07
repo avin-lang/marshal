@@ -1,0 +1,447 @@
+module dev.avinlang.marshal
+
+// Job types. A type is a kind of work written as data, in a `.job` file: the parameters it takes,
+// the lane, units, memory and deadline its runs get, and the steps it runs in order, each a program
+// with a success test and what follows when it passes and when it fails. Marshal runs a type as one
+// job; docs/jobs.md is the reference for the file.
+//
+// A `.job` file is a JSON object. A line whose first characters, past spaces, are `//` is a comment
+// and reads as an empty line, so a parse error's line number is still the file's.
+import json
+import json.Json
+
+// One parameter of a type. Every value is held as text: an `int` as its digits, a `bool` as `true`
+// or `false`. A repeatable parameter takes any number of values (`--branch a --branch b`); the
+// positional one, at most one per type, also takes the words that are not options. `defaults` are
+// the values when none is given; `choices`, where there are any, are the only values allowed.
+data Param(
+    name: string,
+    kind: string,
+    repeat: bool,
+    required: bool,
+    positional: bool,
+    defaults: Vector[string],
+    choices: Vector[string],
+    about: string)
+
+// Which exit codes pass a step's success test.
+data Exits
+    AnyExit
+    Codes(codes: Vector[int])
+
+// One step. `run` is the program and its arguments, `dir` where it runs (the job's directory where
+// None), `env` variables set for it, `when` text that skips the step where it comes to nothing,
+// `false` or `0`; `exits` and `result` its success test (a `=== RESULT green` line required where
+// `result`); `deadline` how long it may run; `onSuccess` and `onFailure` what follows. Every text
+// but the name may hold `${name}` references, expanded when the step runs.
+data Step(
+    name: string,
+    run: Vector[string],
+    dir: Option[string],
+    env: Vector[(string, string)],
+    when: Option[string],
+    exits: Exits,
+    result: bool,
+    deadline: Option[string],
+    onSuccess: string,
+    onFailure: string)
+
+// A type as its file gives it. `steps` are the gate; `land` the steps a gate that says `land` goes
+// on to; `failMap` a step run after a red gate that names the branch behind each failure;
+// `cleanup` the steps that end every pass, whatever came of it; `bisect` the repeatable parameter
+// whose values a red gate is bisected over.
+data JobType(
+    name: string,
+    file: string,
+    about: string,
+    params: Vector[Param],
+    kind: string,
+    landing: bool,
+    units: int,
+    memory: long,
+    deadlineMs: Option[long],
+    bisect: Option[string],
+    steps: Vector[Step],
+    land: Vector[Step],
+    failMap: Option[Step],
+    cleanup: Vector[Step])
+
+// What may follow a step that passed, and one that failed.
+val OnSuccess: Vector[string] = ["next", "land", "report", "stop"]
+val OnFailure: Vector[string] = ["next", "report", "bisect", "stop"]
+
+// What may follow a step that is not one of the gate's: those steps neither land nor bisect.
+val AfterGate: Vector[string] = ["next", "report", "stop"]
+
+// The names a step's text may use besides the type's parameters: the job's directory, the pass's
+// own scratch directory, the run's, the last commit a step of the pass reported, and the pass's
+// number.
+val Builtins: Vector[string] = ["dir", "work", "run_dir", "head", "pass"]
+
+// The options `run-type` keeps for itself, which no parameter may be named.
+val JobOptions: Vector[string] = ["dir", "deadline", "units", "mem", "help", "submit"]
+
+private val TypeKeys: Vector[string] = ["about", "kind", "lane", "units", "mem", "deadline", "params", "bisect", "steps", "land", "fail_map", "cleanup"]
+private val ParamKeys: Vector[string] = ["type", "repeat", "required", "positional", "default", "choices", "about"]
+private val StepKeys: Vector[string] = ["name", "run", "dir", "env", "when", "exit", "result", "deadline", "on_success", "on_failure"]
+
+// Text with its comment lines made empty.
+uncommented(text: string) -> string =
+    text.split("\n").map(l -> if l.trim().startsWith("//") then "" else l).mkString("\n")
+
+// Whether `name` is a name a parameter or step may have: a lowercase letter, then lowercase
+// letters, digits, `-` and `_`.
+validName(name: string) -> bool =
+    name.nonEmpty() && 'a' <= name.head() <= 'z' && name.chars().forall(c -> 'a' <= c <= 'z' || '0' <= c <= '9' || c == '-' || c == '_')
+
+// The type in `text`, read from `file` and called `name`, or why it is not one.
+parseJobType(name: string, file: string, text: string) -> Result[JobType, string]
+    val j = json.parse(uncommented(text)) match
+        Ok(v) -> v
+        Err(e) -> return Err(s"not JSON: $e")
+    if j.asMembers().isEmpty() then return Err("a type is a JSON object")
+    onlyKeys(j, "the type", TypeKeys)?
+    val about = optText(j, "about", "the type")?.getOrElse("")
+    val kind = optText(j, "kind", "the type")?.getOrElse(name)
+    if kind.isEmpty() then return Err("`kind` is a word, not empty")
+    val landing = optText(j, "lane", "the type")?.getOrElse("dev") match
+        "dev" -> false
+        "landing" -> true
+        other -> return Err(s"`lane` is \"dev\" or \"landing\", not \"$other\"")
+    val units = j.get("units") match
+        None -> 1
+        Some(v) -> v.asInt().filter(n -> n >= 0) match
+            Some(n) -> n
+            None -> return Err("`units` is a whole number, 0 or more")
+    val memory = j.get("mem") match
+        None -> long(0)
+        Some(v) -> v.asString().flatMap(parseSize).orElse(v.asLong().filter(n -> n >= 0)) match
+            Some(n) -> n
+            None -> return Err("`mem` is a size such as \"29G\" or a number of bytes")
+    val deadline = j.get("deadline") match
+        None -> None
+        Some(v) -> v.asString().flatMap(parseDeadline) match
+            Some(ms) -> Some(ms)
+            None -> return Err("`deadline` is a deadline such as \"90s\", \"30m\" or \"2h\"")
+    val params = parseParams(j.get("params"))?
+    val bisect = j.get("bisect") match
+        None -> None
+        Some(v) -> v.asString() match
+            Some(b) -> params.find(p -> p.name == b) match
+                Some(p) if p.repeat -> Some(b)
+                Some(_) -> return Err(s"`bisect` names `$b`, which is not repeatable: a bisection splits one parameter's values")
+                None -> return Err(s"`bisect` names `$b`, which is not a parameter")
+            None -> return Err("`bisect` is the name of a parameter")
+    val steps = stepList(j, "steps")?
+    if steps.isEmpty() then return Err("`steps` is missing: a type runs at least one step")
+    val land = stepList(j, "land")?
+    val cleanup = stepList(j, "cleanup")?
+    val failMap = j.get("fail_map") match
+        None -> None
+        Some(v) -> Some(parseStep(v, "`fail_map`")?)
+    val all = steps ++ land ++ failMap.toVector() ++ cleanup
+    for i in all.indices()
+        if all.take(i).exists(s -> s.name == all(i).name) then return Err(s"two steps are named `${all(i).name}`")
+    val names = params.map(p -> p.name) ++ Builtins
+    for s in all do checkReferences(s, names)?
+    for s in steps
+        checkTransition(s, s.onSuccess, "on_success", OnSuccess, land.nonEmpty(), bisect.isDefined())?
+        checkTransition(s, s.onFailure, "on_failure", OnFailure, land.nonEmpty(), bisect.isDefined())?
+    for s in land ++ failMap.toVector() ++ cleanup
+        checkTransition(s, s.onSuccess, "on_success", AfterGate, false, false)?
+        checkTransition(s, s.onFailure, "on_failure", AfterGate, false, false)?
+    Ok(JobType(name, file, about, params, kind, landing, units, memory, deadline, bisect, steps, land, failMap, cleanup))
+
+// Refuses a key of the object `j` that is not among `keys`, which is most often a misspelling.
+private onlyKeys(j: Json, what: string, keys: Vector[string]) -> Result[unit, string]
+    for key in j.keys()
+        if !keys.contains(key) then return Err(s"$what has no field `$key`; its fields are ${keys.mkString(", ")}")
+    Ok(())
+
+private optText(j: Json, key: string, what: string) -> Result[Option[string], string] = j.get(key) match
+    None -> Ok(None)
+    Some(v) -> v.asString() match
+        Some(s) -> Ok(Some(s))
+        None -> Err(s"$what: `$key` is text")
+
+private optBool(j: Json, key: string, what: string) -> Result[bool, string] = j.get(key) match
+    None -> Ok(false)
+    Some(v) -> v.asBool() match
+        Some(b) -> Ok(b)
+        None -> Err(s"$what: `$key` is true or false")
+
+// The parameters, in the order the file gives them.
+private parseParams(spec: Option[Json]) -> Result[Vector[Param], string]
+    val members = spec match
+        None -> return Ok([])
+        Some(v) -> v.asMembers() match
+            Some(ms) -> ms
+            None -> return Err("`params` is an object of parameters by name")
+    val out = Buffer[Param]()
+    for (name, p) in members
+        out += parseParam(name, p)?
+    val params = out.toVector()
+    if params.count(p -> p.positional) > 1 then return Err("only one parameter is positional")
+    Ok(params)
+
+private parseParam(name: string, j: Json) -> Result[Param, string]
+    val what = s"parameter `$name`"
+    if !validName(name) then return Err(s"$what: a name is a lowercase letter, then lowercase letters, digits, `-` and `_`")
+    if JobOptions.contains(name) then return Err(s"$what: `--$name` is an option of run-type itself")
+    if Builtins.contains(name) then return Err(s"$what: `$name` is a name marshal gives every step")
+    if j.asMembers().isEmpty() then return Err(s"$what is an object")
+    onlyKeys(j, what, ParamKeys)?
+    val kind = optText(j, "type", what)?.getOrElse("string")
+    if !["string", "int", "bool"].contains(kind) then return Err(s"$what: `type` is \"string\", \"int\" or \"bool\", not \"$kind\"")
+    val repeat = optBool(j, "repeat", what)?
+    val required = optBool(j, "required", what)?
+    val positional = optBool(j, "positional", what)?
+    val about = optText(j, "about", what)?.getOrElse("")
+    if kind == "bool" && (repeat || positional) then return Err(s"$what: a bool is a flag, neither repeatable nor positional")
+    if kind == "bool" && required then return Err(s"$what: a bool is never required: it is false unless given")
+    val choices = j.get("choices") match
+        None -> Vector[string]()
+        Some(v) -> v.asVector().filter(xs -> xs.nonEmpty() && xs.forall(x -> x.asString().isDefined())) match
+            Some(xs) -> xs.map(x -> x.asString().get())
+            None -> return Err(s"$what: `choices` is a list of text, not empty")
+    if choices.nonEmpty() && kind != "string" then return Err(s"$what: only a string has choices")
+    val defaults = j.get("default") match
+        None -> if kind == "bool" then ["false"] else Vector[string]()
+        Some(v) ->
+            if required then return Err(s"$what: a required parameter has no default")
+            val items = if repeat then v.asVector() match
+                Some(xs) -> xs
+                None -> return Err(s"$what: the default of a repeatable parameter is a list")
+            else [v]
+            items.map(x -> defaultText(kind, x)) match
+                xs if xs.forall(x -> x.isDefined()) -> xs.map(x -> x.get())
+                _ -> return Err(s"$what: its default is not $kind")
+    for d in defaults
+        if choices.nonEmpty() && !choices.contains(d) then return Err(s"$what: its default \"$d\" is not one of its choices")
+    if !required && !repeat && defaults.isEmpty() then return Err(s"$what: a parameter that is neither required nor repeatable needs a default")
+    Ok(Param(name, kind, repeat, required, positional, defaults, choices, about))
+
+// A default as text, where it is of the parameter's kind.
+private defaultText(kind: string, v: Json) -> Option[string] = kind match
+    "string" -> v.asString()
+    "int" -> v.asLong().map(n -> n.toString())
+    _ -> v.asBool().map(b -> b.toString())
+
+private stepList(j: Json, key: string) -> Result[Vector[Step], string]
+    val items = j.get(key) match
+        None -> return Ok([])
+        Some(v) -> v.asVector() match
+            Some(xs) -> xs
+            None -> return Err(s"`$key` is a list of steps")
+    val out = Buffer[Step]()
+    for i in items.indices() do out += parseStep(items(i), s"`$key` step ${i + 1}")?
+    Ok(out.toVector())
+
+private parseStep(j: Json, where: string) -> Result[Step, string]
+    if j.asMembers().isEmpty() then return Err(s"$where is an object")
+    val name = optText(j, "name", where)? match
+        Some(n) -> n
+        None -> return Err(s"$where has no `name`")
+    val what = s"step `$name`"
+    if !validName(name) then return Err(s"$what: a name is a lowercase letter, then lowercase letters, digits, `-` and `_`")
+    onlyKeys(j, what, StepKeys)?
+    val run = j.get("run").flatMap(v -> v.asVector()).filter(xs -> xs.forall(x -> x.asString().isDefined())) match
+        Some(xs) if xs.nonEmpty() -> xs.map(x -> x.asString().get())
+        _ -> return Err(s"$what: `run` is the program and its arguments, a list of text, not empty")
+    val env = j.get("env") match
+        None -> Vector[(string, string)]()
+        Some(v) -> v.asMembers().filter(ms -> ms.forall(m -> m.1.asString().isDefined())) match
+            Some(ms) -> ms.map(m -> (m.0, m.1.asString().get()))
+            None -> return Err(s"$what: `env` is an object of text")
+    val exits = j.get("exit") match
+        None -> Codes([0])
+        Some(v) -> v.asString() match
+            Some("any") -> AnyExit
+            Some(_) -> return Err(s"$what: `exit` is a code, a list of codes, or \"any\"")
+            None -> v.asInt() match
+                Some(n) -> Codes([n])
+                None -> v.asVector().filter(xs -> xs.nonEmpty() && xs.forall(x -> x.asInt().isDefined())) match
+                    Some(xs) -> Codes(xs.map(x -> x.asInt().get()))
+                    None -> return Err(s"$what: `exit` is a code, a list of codes, or \"any\"")
+    val deadline = optText(j, "deadline", what)?
+    for d in deadline
+        if !d.contains("${") && parseDeadline(d).isEmpty() then return Err(s"$what: `deadline` is a deadline such as \"90s\", \"30m\" or \"2h\"")
+    Ok(Step(
+        name,
+        run,
+        optText(j, "dir", what)?,
+        env,
+        optText(j, "when", what)?,
+        exits,
+        optBool(j, "result", what)?,
+        deadline,
+        optText(j, "on_success", what)?.getOrElse("next"),
+        optText(j, "on_failure", what)?.getOrElse("stop")))
+
+// Every text of a step that may hold references, with what it is for the error messages.
+stepTexts(s: Step) -> Vector[(string, string)] =
+    s.run.map(w -> ("run", w)) ++ s.dir.toVector().map(d -> ("dir", d)) ++ s.env.map(e -> (s"env `${e.0}`", e.1))
+        ++ s.when.toVector().map(w -> ("when", w)) ++ s.deadline.toVector().map(d -> ("deadline", d))
+        ++ [("on_success", s.onSuccess), ("on_failure", s.onFailure)]
+
+private checkReferences(s: Step, names: Vector[string]) -> Result[unit, string]
+    for (field, text) in stepTexts(s)
+        for piece in pieces(text).mapErr(e -> s"step `${s.name}`: `$field`: $e")?
+            piece match
+                Ref(n) if !names.contains(n) -> return Err(s"step `${s.name}`: `$field` names `$n`, which is neither a parameter nor one of ${Builtins.mkString(", ")}")
+                _ -> ()
+    Ok(())
+
+// A transition written as a word is checked now; one that is a reference is checked once the
+// parameters are bound (`checkBound`).
+private checkTransition(s: Step, word: string, field: string, allowed: Vector[string], hasLand: bool, hasBisect: bool) -> Result[unit, string]
+    if word.contains("${") then return Ok(())
+    if !allowed.contains(word) then return Err(s"step `${s.name}`: `$field` is one of ${allowed.mkString(", ")}, not \"$word\"")
+    if word == "land" && !hasLand then return Err(s"step `${s.name}`: `$field` is `land`, but the type has no `land` steps")
+    if word == "bisect" && !hasBisect then return Err(s"step `${s.name}`: `$field` is `bisect`, but the type names no `bisect` parameter")
+    Ok(())
+
+// Text and `${name}` references. `$${` is a literal `${`.
+data Piece
+    Lit(text: string)
+    Ref(name: string)
+
+// The pieces of `word`, or why it cannot be read.
+pieces(word: string) -> Result[Vector[Piece], string]
+    val out = Buffer[Piece]()
+    var lit = ""
+    var i = 0
+    loop
+        val p = word.indexOf("${", i)
+        if p < 0
+            lit += word.slice(i, word.byteLength())
+            break
+        if word.slice(i, p).endsWith("$")
+            lit += word.slice(i, p - 1) + "${"
+            i = p + 2
+            continue
+        lit += word.slice(i, p)
+        val end = word.indexOf("}", p + 2)
+        if end < 0 then return Err(s"`$${` is not closed in \"$word\"")
+        if lit.nonEmpty()
+            out += Lit(lit)
+            lit = ""
+        out += Ref(word.slice(p + 2, end))
+        i = end + 1
+    if lit.nonEmpty() then out += Lit(lit)
+    Ok(out.toVector())
+
+// The arguments `word` stands for: a word that is a single reference is one argument per value
+// (none for a repeatable parameter given none); any other word is one argument, each reference's
+// values joined by spaces. Names `vars` does not hold expand to nothing.
+expandWord(word: string, vars: Map[string, Vector[string]]) -> Vector[string] = pieces(word).getOrElse([Lit(word)]) match
+    [Ref(n)] -> vars.getOrElse(n, [])
+    ps -> [joined(ps, vars)]
+
+// `text` with each reference replaced by its values joined by spaces.
+expandText(text: string, vars: Map[string, Vector[string]]) -> string = joined(pieces(text).getOrElse([Lit(text)]), vars)
+
+private joined(ps: Vector[Piece], vars: Map[string, Vector[string]]) -> string = ps.map(p -> p match
+    Lit(t) -> t
+    Ref(n) -> vars.getOrElse(n, []).mkString(" ")).mkString("")
+
+// Whether a step's `when` lets it run: it does where there is none, and where its text comes to
+// anything but nothing, `false` or `0`.
+runs(s: Step, vars: Map[string, Vector[string]]) -> bool = s.when match
+    None -> true
+    Some(w) -> !["", "false", "0"].contains(expandText(w, vars).trim())
+
+// The values a command line gives a type's parameters, every parameter present: those not given
+// take their defaults. `args` are what follows the type's name, the options of run-type itself
+// already taken out.
+bindParams(t: JobType, args: Vector[string]) -> Result[Map[string, Vector[string]], string]
+    val given = Buffer[(string, string)]()
+    var i = 0
+    var options = true
+    while i < args.length()
+        val word = args(i)
+        i += 1
+        if options && word == "--"
+            options = false
+            continue
+        if options && word.startsWith("--")
+            val eq = word.indexOf("=")
+            val name = if eq < 0 then word.drop(2) else word.slice(2, eq)
+            val p = t.params.find(x -> x.name == name) match
+                Some(x) -> x
+                None -> return Err(s"${t.name} has no parameter `--$name`")
+            if eq >= 0
+                given += (name, word.drop(eq + 1))
+            elif p.kind == "bool"
+                given += (name, "true")
+            elif i < args.length()
+                given += (name, args(i))
+                i += 1
+            else
+                return Err(s"`--$name` needs a value")
+            continue
+        t.params.find(x -> x.positional) match
+            Some(p) -> given += (p.name, word)
+            None -> return Err(s"${t.name} takes no words but its options, and `$word` is not one")
+    val out = Buffer[(string, Vector[string])]()
+    for p in t.params
+        val values = given.filter(g -> g.0 == p.name).map(g -> g.1).toVector()
+        if values.length() > 1 && !p.repeat then return Err(s"`--${p.name}` is given ${values.length()} times, and takes one value")
+        if values.isEmpty() && p.required then return Err(s"`--${p.name}` is required: ${p.about}")
+        for v in values do checkValue(p, v)?
+        out += (p.name, if values.isEmpty() then p.defaults else values)
+    Ok(out.toVector().toMap())
+
+private checkValue(p: Param, v: string) -> Result[unit, string]
+    if p.kind == "int" && v.toLongOption().isEmpty() then return Err(s"`--${p.name} $v`: it takes a whole number")
+    if p.kind == "bool" && v != "true" && v != "false" then return Err(s"`--${p.name}=$v`: it is true or false")
+    if p.choices.nonEmpty() && !p.choices.contains(v) then return Err(s"`--${p.name} $v`: it is one of ${p.choices.mkString(", ")}")
+    Ok(())
+
+// Checks what can be checked of a type only once its parameters are bound: transitions and
+// deadlines written as references.
+checkBound(t: JobType, vars: Map[string, Vector[string]]) -> Result[unit, string]
+    for s in t.steps
+        transitionOf(s.onSuccess, vars, OnSuccess, s.name, t)?
+        transitionOf(s.onFailure, vars, OnFailure, s.name, t)?
+    for s in t.land ++ t.failMap.toVector() ++ t.cleanup
+        transitionOf(s.onSuccess, vars, AfterGate, s.name, t)?
+        transitionOf(s.onFailure, vars, AfterGate, s.name, t)?
+    for s in t.steps ++ t.land ++ t.failMap.toVector() ++ t.cleanup
+        for d in s.deadline
+            val text = expandText(d, vars)
+            if parseDeadline(text).isEmpty() then return Err(s"step `${s.name}`: its deadline \"$text\" is not one such as \"90s\", \"30m\" or \"2h\"")
+    Ok(())
+
+// The transition `word` comes to with `vars`, where it is one of `allowed`.
+transitionOf(word: string, vars: Map[string, Vector[string]], allowed: Vector[string], step: string, t: JobType) -> Result[string, string]
+    val w = expandText(word, vars)
+    if !allowed.contains(w) then return Err(s"step `$step`: \"$w\" is not one of ${allowed.mkString(", ")}")
+    if w == "land" && t.land.isEmpty() then return Err(s"step `$step`: `land`, but the type has no `land` steps")
+    if w == "bisect" && t.bisect.isEmpty() then return Err(s"step `$step`: `bisect`, but the type names no `bisect` parameter")
+    Ok(w)
+
+// The name of the variable a step finds a parameter's values in, one value to a line:
+// `MARSHAL_PARAM_` and the name in capitals, `-` written `_`.
+paramVariable(name: string) -> string = "MARSHAL_PARAM_" + name.toUpperCase().replace("-", "_")
+
+// What `marshal run-type <type> --help` prints.
+typeHelp(t: JobType) -> string
+    val lines = Buffer[string]()
+    val positional = t.params.find(p -> p.positional).map(p -> s" [<${p.name}>...]").getOrElse("")
+    lines += s"usage: marshal run-type ${t.name} [options]$positional"
+    if t.about.nonEmpty() then lines += "\n" + t.about
+    lines += s"\nFrom ${t.file}. Runs as a job of kind `${t.kind}` in the ${if t.landing then "landing lane" else s"development lane, ${t.units} units"}."
+    if t.params.nonEmpty() then lines += "\nParameters:"
+    for p in t.params
+        val value = if p.kind == "bool" then "" else s" <${p.kind}>"
+        val notes = Buffer[string]()
+        if p.required then notes += "required"
+        if p.repeat then notes += "repeatable"
+        if p.positional then notes += "also given as words"
+        if p.choices.nonEmpty() then notes += "one of " + p.choices.mkString(", ")
+        if !p.required && p.kind != "bool" then notes += "default: " + (if p.defaults.isEmpty() then "none" else p.defaults.map(d -> if d.isEmpty() then "\"\"" else d).mkString(" "))
+        val note = if notes.isEmpty() then "" else s" (${notes.mkString("; ")})"
+        lines += s"  --${p.name}$value".padEnd(28, ' ') + p.about + note
+    lines += "\nOptions of run-type: --dir <d>, --deadline <t>, --units <n>, --mem <size>, --submit (print the job's id and do not wait)."
+    lines.mkString("\n")

@@ -2,14 +2,16 @@ module dev.avinlang.marshal
 
 // The event log, `events.jsonl`: one JSON object per line, appended as jobs move. Each event holds
 // the whole job as a listing shows it (the fields of `encodeJob`) and, before them, `ts` (the wall
-// clock in milliseconds since 1970) and `event`, one of `submitted`, `released`, `started`,
-// `retry`, `finished`, `timeout`, `killed`, `cancelled` and `lost`; the last five end a job.
+// clock in milliseconds since 1970) and `event`, one of `submitted`, `ready` (a job that waited
+// for others joins the queue), `held`, `released` (a hold by hand begins and ends), `prioritized`,
+// `started`, `paused`, `resumed`, `retry`, `finished`, `timeout`, `killed`, `cancelled` and `lost`;
+// the last five end a job.
 // An ending event adds `run_ms` and `exit` (the status `wait` exits with), and `started` adds
 // `pgid`, the job's process group. An ending event's `peak_rss` is the most memory the job's
 // process tree was measured holding, in bytes: what a kind's memory can be learned from.
 // `submitted` adds `spec`, the job's whole specification, which `rerun` submits again. A job that
-// is retried ends each attempt with an ending event and then records `retry`, so its last event is
-// an ending only once its last attempt has ended.
+// is retried ends each attempt with an ending event that adds `"retrying": true`, and then records
+// `retry`, so its last event is an ending only once its last attempt has ended.
 import avin.collections.mutable.{Map as MutableMap}
 import json
 import json.Json
@@ -83,7 +85,11 @@ lostLine(ts: long, ev: Json, groupAlive: bool) -> Option[string] = decodeJob(ev)
     Err(_) -> None
 
 // Job `j` as its `lost` event describes it.
-asLost(j: JobInfo) -> JobInfo = JobInfo(j.id, j.kind, j.units, j.memory, j.landing, j.dir, j.cmd, "done", Some(Lost), j.killed, j.queuedMs, j.elapsedMs, j.deadlineMs, j.log, j.sample, 0, j.peakRss, j.startedAt, [], j.attempt)
+asLost(j: JobInfo) -> JobInfo = JobInfo(j.id, j.kind, j.units, j.memory, j.landing, j.dir, j.cmd, "done", Some(Lost), j.killed, j.queuedMs, j.elapsedMs, j.deadlineMs, j.log, j.sample, 0, j.peakRss, j.startedAt, j.held, j.priority, j.urgent, false, [], j.attempt)
+
+// Whether an event ends its job for good: an ending, and not one of an attempt that runs again.
+endsJob(ev: Json) -> bool =
+    endings.contains(ev.get("event").flatMap(v -> v.asString()).getOrElse("")) && ev.get("retrying").flatMap(v -> v.asBool()) != Some(true)
 
 // The specification job `id` was submitted with, as its `submitted` event records it; None when the
 // log has no such event or it records none.
@@ -96,13 +102,14 @@ specOf(lines: Iterable[string], id: long) -> Option[JobSpec]
             _ -> ()
     None
 
-// The last event that ended job `id`, or None while the log has none.
+// The last event that ended job `id` for good, or None while the log has none: the ending of an
+// attempt that runs again does not end it.
 endOf(lines: Iterable[string], id: long) -> Option[Json]
     var found: Option[Json] = None
     for line in lines
         if !line.contains("\"id\":" + id.toString()) then continue
         json.parse(line) match
-            Ok(ev) if ev.get("id").flatMap(v -> v.asLong()) == Some(id) && endings.contains(ev.get("event").flatMap(v -> v.asString()).getOrElse("")) ->
+            Ok(ev) if ev.get("id").flatMap(v -> v.asLong()) == Some(id) && endsJob(ev) ->
                 found = Some(ev)
             _ -> ()
     found

@@ -1,0 +1,259 @@
+module dev.avinlang.marshal
+
+// Accounting: what `marshal history` and `marshal stats` print, all of it read from the event log.
+// A `Ledger` takes the log one line at a time, so a log of any size is streamed through it and never
+// held whole; it keeps one small `EndedJob` per job the log saw end.
+import avin.collections.mutable.{Map as MutableMap}
+import json
+import json.Json
+
+// One job the log saw end, as its last ending event describes it.
+// - `how`: `ok` (exit 0), `failed` (any other exit), `signal`, `killed` (stopped by `kill`),
+//   `timeout`, `cancelled` (never started, by `kill` or because a job it waited for failed) or
+//   `lost`.
+// - `exit`: the status `wait` would have exited with.
+// - `runMs`: how long it ran; 0 for a job cancelled before it started.
+// - `endedAt`: when it ended, wall clock milliseconds since 1970.
+// - `peakRss`: the most memory its process tree held, in bytes; 0 where the event does not say.
+data EndedJob(id: long, kind: string, landing: bool, how: string, exit: int, runMs: long, endedAt: long, deadlineMs: long, peakRss: long)
+
+// The word an outcome is listed under.
+howWord(o: Outcome, killed: bool) -> string
+howWord(Exited(0), _) = "ok"
+howWord(Exited(_), _) = "failed"
+howWord(Signalled(_), true) = "killed"
+howWord(Signalled(_), _) = "signal"
+howWord(TimedOut, _) = "timeout"
+howWord(Cancelled, _) = "cancelled"
+howWord(Lost, _) = "lost"
+howWord(DependencyFailed(_), _) = "cancelled"
+
+// Reads an event log line by line.
+class Ledger()
+    val ends = Buffer[EndedJob]()
+    val position = MutableMap[long, int]()
+    var unreadable = 0
+
+    // Takes one line of the log. Blank lines are nothing; a line that is not an event, or an ending
+    // event that does not describe a job, is counted unreadable; other events are ignored, and so is
+    // the ending of an attempt that runs again. A job's last ending event stands.
+    add(line: string)
+        if line.trim().isEmpty() then return
+        val ev = json.parse(line) match
+            Ok(j) -> j
+            Err(_) ->
+                unreadable += 1
+                return
+        val named = (ev.get("ts").flatMap(v -> v.asLong()), ev.get("event").flatMap(v -> v.asString()))
+        val (ts, name) = named match
+            (Some(t), Some(n)) -> (t, n)
+            _ ->
+                unreadable += 1
+                return
+        if !endsJob(ev) then return
+        val job = decodeJob(ev) match
+            Ok(j) -> j
+            Err(_) ->
+                unreadable += 1
+                return
+        val outcome = job.outcome.getOrElse(Lost)
+        val run = if outcome == Cancelled then long(0) else ev.get("run_ms").flatMap(v -> v.asLong()).getOrElse(job.elapsedMs)
+        val peak = ev.get("peak_rss").flatMap(v -> v.asLong()).getOrElse(0)
+        val e = EndedJob(job.id, job.kind, job.landing, howWord(outcome, job.killed), exitCode(outcome), run, ts, job.deadlineMs, peak)
+        position.get(job.id) match
+            Some(p) -> ends(p) = e
+            None ->
+                position(job.id) = ends.length()
+                ends += e
+
+// Which jobs a query asks for.
+data HistoryFilter(kind: Option[string], since: Option[long], failed: bool)
+
+matches(f: HistoryFilter, e: EndedJob) -> bool =
+    f.kind.forall(k -> k == e.kind) && f.since.forall(s -> e.endedAt >= s) && (!f.failed || e.how != "ok")
+
+// The jobs `history` lists: those that match, newest first, at most `limit` of them.
+selectEnded(ledger: Ledger, f: HistoryFilter, limit: int) -> Vector[EndedJob]
+    val hits = ledger.ends.toVector().filter(e -> matches(f, e))
+    hits.sortWith((a, b) -> if a.endedAt != b.endedAt then (if a.endedAt > b.endedAt then -1 else 1) elif a.id != b.id then (if a.id > b.id then -1 else 1) else 0).take(limit)
+
+// The value at percentile `p` of `xs`, which must not be empty: the nearest rank, the smallest value
+// that at least p percent of the values do not exceed. One value is every percentile; of two, the
+// median is the lesser.
+percentile(xs: Vector[long], p: int) -> long
+    val s = xs.sorted()
+    val n = s.length()
+    val rank = (p * n + 99) / 100
+    s(if rank < 1 then 0 else rank - 1)
+
+// One line of `stats`: a history key (a kind, with `+landing` for landing runs) and what its jobs did.
+// Durations and peaks are None where no job has one.
+data KindStats(key: string, count: int, ok: int, timeouts: int, p50: Option[long], p90: Option[long], max: Option[long], deadlineMs: long, peakP50: Option[long], peakMax: Option[long])
+
+private someIfAny(xs: Vector[long], f: (Vector[long]) -> long) -> Option[long] = if xs.isEmpty() then None else Some(f(xs))
+
+// The statistics of each history key among the jobs that match, in the order keys first ended. The
+// learned deadline is the one the daemon would give the next job of the key: learned from every
+// successful run in the log, whatever the filter.
+kindStats(ledger: Ledger, f: HistoryFilter, learning: Learning = defaultLearning) -> Vector[KindStats]
+    val order = Buffer[string]()
+    val groups = MutableMap[string, Buffer[EndedJob]]()
+    for e in ledger.ends.toVector().filter(e -> matches(f, e))
+        val key = historyKey(e.kind, e.landing)
+        groups.get(key) match
+            Some(b) -> b += e
+            None ->
+                order += key
+                val b = Buffer[EndedJob]()
+                b += e
+                groups(key) = b
+    order.toVector().map(key ->
+        val es = groups(key).toVector()
+        val timed = es.filter(e -> e.how != "cancelled").map(e -> e.runMs)
+        val peaks = es.filter(e -> e.peakRss > 0).map(e -> e.peakRss)
+        val first = es(0)
+        val past = ledger.ends.toVector().filter(e -> e.how == "ok" && historyKey(e.kind, e.landing) == key).map(e -> e.runMs)
+        KindStats(key, es.length(), es.filter(e -> e.how == "ok").length(), es.filter(e -> e.how == "timeout").length(),
+            someIfAny(timed, xs -> percentile(xs, 50)), someIfAny(timed, xs -> percentile(xs, 90)), someIfAny(timed, xs -> xs.max()),
+            deadlineMs(learning, first.kind, first.landing, past),
+            someIfAny(peaks, xs -> percentile(xs, 50)), someIfAny(peaks, xs -> xs.max())))
+
+// Time.
+
+// The day number (days since 1970-01-01) of a calendar date in the proleptic Gregorian calendar.
+private daysFromCivil(year: long, month: long, day: long) -> long
+    val y = if month <= 2 then year - 1 else year
+    val era = (if y >= 0 then y else y - 399) / 400
+    val yoe = y - era * 400
+    val doy = (153 * (if month > 2 then month - 3 else month + 9) + 2) / 5 + day - 1
+    val doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
+    era * 146097 + doe - 719468
+
+// The calendar date `(year, month, day)` of a day number.
+private civilFromDays(days: long) -> (long, long, long)
+    val z = days + 719468
+    val era = (if z >= 0 then z else z - 146096) / 146097
+    val doe = z - era * 146097
+    val yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+    val doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
+    val mp = (5 * doy + 2) / 153
+    val day = doy - (153 * mp + 2) / 5 + 1
+    val month = if mp < 10 then mp + 3 else mp - 9
+    (yoe + era * 400 + (if month <= 2 then 1 else 0), month, day)
+
+private two(n: long) -> string = if n < 10 then s"0$n" else n.toString()
+
+// A wall clock time as the listings show it: `2026-11-07 14:03:22`, in UTC.
+formatWhen(ms: long) -> string
+    val seconds = ms / 1000
+    val day = if seconds >= 0 then seconds / 86400 else (seconds - 86399) / 86400
+    val inDay = seconds - day * 86400
+    val (y, mo, d) = civilFromDays(day)
+    s"$y-${two(mo)}-${two(d)} ${two(inDay / 3600)}:${two(inDay / 60 % 60)}:${two(inDay % 60)}"
+
+private isDigits(text: string) -> bool = text.nonEmpty() && text.chars().forall(c -> '0' <= c <= '9')
+
+private daysIn(year: long, month: long) -> long
+    if month == 2 then (if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) then 29 else 28)
+    elif month == 4 || month == 6 || month == 9 || month == 11 then 30
+    else 31
+
+// The cutoff of `--since`, in wall clock milliseconds, given the time `nowMs`. Either a length of
+// time back from now: a whole number and `s`, `m`, `h`, `d` or `w`; or a date in UTC, `YYYY-MM-DD`
+// (its midnight) or `YYYY-MM-DDTHH:MM`. None for anything else.
+parseEndedSince(text: string, nowMs: long) -> Option[long]
+    if text.isEmpty() then return None
+    val unit: long = text.last() match
+        's' -> 1000
+        'm' -> 60000
+        'h' -> 3600000
+        'd' -> 86400000
+        'w' -> 604800000
+        _ -> 0
+    if unit > 0
+        val digits = text.dropRight(1)
+        if !isDigits(digits) then return None
+        return digits.toLongOption() match
+            Some(n) if 0 < n <= nowMs / unit -> Some(nowMs - n * unit)
+            _ -> None
+    val parts = text.split("T")
+    if parts.length() > 2 then return None
+    val ymd = parts(0).split("-")
+    if ymd.length() != 3 || ymd(0).charCount() != 4 || ymd(1).charCount() != 2 || ymd(2).charCount() != 2 then return None
+    if !ymd.forall(isDigits) then return None
+    val (y, mo, d) = (ymd(0).toLong(), ymd(1).toLong(), ymd(2).toLong())
+    if !(1 <= mo <= 12) || !(1 <= d <= daysIn(y, mo)) then return None
+    var clock: long = 0
+    if parts.length() == 2
+        val hm = parts(1).split(":")
+        if hm.length() != 2 || hm(0).charCount() != 2 || hm(1).charCount() != 2 || !hm.forall(isDigits) then return None
+        val (h, mi) = (hm(0).toLong(), hm(1).toLong())
+        if h > 23 || mi > 59 then return None
+        clock = (h * 60 + mi) * 60000
+    Some(daysFromCivil(y, mo, d) * 86400000 + clock)
+
+// Printing.
+
+private dash(v: Option[long], f: (long) -> string) -> string = v.map(f).getOrElse("-")
+
+private table(rows: Vector[Vector[string]]) -> string
+    val cols = rows(0).length()
+    val widths = (0..<cols).map(c -> rows.map(r -> r(c).charCount()).max())
+    rows.map(r -> (0..<cols).map(c -> r(c).padEnd(widths(c), ' ')).mkString("  ").trim()).mkString("\n")
+
+// The table `history` prints, or a line saying nothing matched.
+historyListing(jobs: Vector[EndedJob]) -> string
+    if jobs.isEmpty() then return "marshal: no ended jobs match"
+    table([["ID", "KIND", "OUTCOME", "EXIT", "DURATION", "ENDED (UTC)"]] ++ jobs.map(e -> [
+        e.id.toString(),
+        if e.landing then e.kind + "*" else e.kind,
+        e.how,
+        e.exit.toString(),
+        formatMillis(e.runMs),
+        formatWhen(e.endedAt)]))
+
+// The table `stats` prints, or a line saying nothing matched.
+statsListing(rows: Vector[KindStats]) -> string
+    if rows.isEmpty() then return "marshal: no ended jobs match"
+    table([["KIND", "COUNT", "OK", "P50", "P90", "MAX", "TIMEOUTS", "DEADLINE", "PEAK P50", "PEAK MAX"]] ++ rows.map(r -> [
+        r.key,
+        r.count.toString(),
+        s"${r.ok * 100 / r.count}%",
+        dash(r.p50, formatMillis),
+        dash(r.p90, formatMillis),
+        dash(r.max, formatMillis),
+        r.timeouts.toString(),
+        formatMillis(r.deadlineMs),
+        dash(r.peakP50, formatSize),
+        dash(r.peakMax, formatSize)]))
+
+private optNum(v: Option[long]) -> Json = v.map(n -> Json.num(n)).getOrElse(Json.Null)
+
+// `history --json`: one object, `jobs` newest first, and how many log lines were skipped.
+historyJson(jobs: Vector[EndedJob], unreadable: int) -> Json = Json.obj(
+    ("jobs", Json.Arr(jobs.map(e -> Json.obj(
+        ("id", Json.num(e.id)),
+        ("kind", Json.str(e.kind)),
+        ("landing", Json.Bool(e.landing)),
+        ("outcome", Json.str(e.how)),
+        ("exit", Json.num(e.exit)),
+        ("duration_ms", Json.num(e.runMs)),
+        ("ended_at", Json.num(e.endedAt)),
+        ("peak_rss", optNum(if e.peakRss > 0 then Some(e.peakRss) else None)))))),
+    ("unreadable", Json.num(unreadable)))
+
+// `stats --json`: one object, `kinds` with a member per history key, and how many lines were skipped.
+statsJson(rows: Vector[KindStats], unreadable: int) -> Json = Json.obj(
+    ("kinds", Json.Arr(rows.map(r -> Json.obj(
+        ("kind", Json.str(r.key)),
+        ("count", Json.num(r.count)),
+        ("ok", Json.num(r.ok)),
+        ("success_pct", Json.num(r.ok * 100 / r.count)),
+        ("timeouts", Json.num(r.timeouts)),
+        ("p50_ms", optNum(r.p50)),
+        ("p90_ms", optNum(r.p90)),
+        ("max_ms", optNum(r.max)),
+        ("deadline_ms", Json.num(r.deadlineMs)),
+        ("peak_p50", optNum(r.peakP50)),
+        ("peak_max", optNum(r.peakMax)))))),
+    ("unreadable", Json.num(unreadable)))

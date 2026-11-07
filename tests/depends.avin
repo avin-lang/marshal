@@ -1,6 +1,6 @@
 module tests
 
-// Jobs held for others and jobs retried, without a daemon: their fields cross the protocol, the
+// Jobs waiting for others and jobs retried, without a daemon: their fields cross the protocol, the
 // restart state and the event log; the command line reads their options; listings and `top` show
 // them; and an outcome says whether it succeeded and whether another attempt may mend it.
 import json
@@ -11,38 +11,38 @@ import dev.avinlang.marshal.top
 import dev.avinlang.marshal.top.{ShowAll, ShowQueued, ShowRunning, ShowFinished}
 import dev.avinlang.marshal.{JobInfo, JobSpec, Outcome, Overview, Reply, Request, SavedJob, SavedState, Usage}
 
-val heldSpec: JobSpec = JobSpec("test", 2, 0, false, "/w", Some(60000), ["make", "check"], [("A", "1")], [3, 4], false, 2, 30000)
+val afterSpec: JobSpec = JobSpec("test", 2, 0, false, "/w", Some(60000), ["make", "check"], [("A", "1")], after = [3, 4], retries = 2, retryDelayMs = 30000)
 
-heldInfo(id: long, state: string = "held", holds: Vector[long] = [], attempt: int = 1, outcome: Option[Outcome] = None) -> JobInfo =
-    JobInfo(id, "build", 1, 0, false, "/d", ["make"], state, outcome, false, 0, 0, 60000, s"/h/jobs/$id.log", None, holds = holds, attempt = attempt)
+waitingInfo(id: long, state: string = "waiting", after: Vector[long] = [], attempt: int = 1, outcome: Option[Outcome] = None, held: bool = false) -> JobInfo =
+    JobInfo(id, "build", 1, 0, false, "/d", ["make"], state, outcome, false, 0, 0, 60000, s"/h/jobs/$id.log", None, held = held, after = after, attempt = attempt)
 
-@test("a job's holds, outcome mode and retries cross the protocol and read back as themselves")
+@test("a job's dependencies, outcome mode and retries cross the protocol and read back as themselves")
 dependsProtocol()
-    for s in [heldSpec, JobSpec("b", 1, 0, true, "/", None, ["x"], [], [1], true, 0, 0), JobSpec("b", 1, 0, false, "/", None, ["x"], [], [], false, 1000000, long.MaxValue)]
+    for s in [afterSpec, JobSpec("b", 1, 0, true, "/", None, ["x"], [], true, [1], true, 0, 0), JobSpec("b", 1, 0, false, "/", None, ["x"], [], false, [], false, 1000000, long.MaxValue)]
         assertEq(marshal.decodeRequest(marshal.encodeRequest(Request.Submit(s)).render()), Ok(Request.Submit(s)))
     for id in [long(1), long.MaxValue]
         assertEq(marshal.decodeRequest(marshal.encodeRequest(Request.Rerun(id)).render()), Ok(Request.Rerun(id)))
-    for j in [heldInfo(5, holds = [3, 4]), heldInfo(5, "retrying", attempt = 3), heldInfo(5, "done", outcome = Some(Outcome.DependencyFailed(3)))]
+    for j in [waitingInfo(5, after = [3, 4]), waitingInfo(5, "retrying", attempt = 3), waitingInfo(5, "done", outcome = Some(Outcome.DependencyFailed(3)))]
         assertEq(marshal.decodeReply(marshal.encodeReply(Reply.Ended(j)).render()), Ok(Reply.Ended(j)))
-    val o = Overview(Usage(0, 12, 0, 0, 0, 0, None, None), 0, [], [], [], [heldInfo(5, holds = [3]), heldInfo(6, "retrying", attempt = 2)])
+    val o = Overview(Usage(0, 12, 0, 0, 0, 0, None, None), 0, [], [], [], [waitingInfo(5, after = [3]), waitingInfo(6, "retrying", attempt = 2)])
     assertEq(marshal.decodeReply(marshal.encodeReply(Reply.Viewed(o)).render()), Ok(Reply.Viewed(o)))
 
-@test("a submit, job or snapshot without the new fields reads with none held, no retries and attempt 1")
+@test("a submit, job or snapshot without the new fields reads with no dependencies, no retries and attempt 1")
 dependsProtocolDefaults()
     val text = "{\"op\": \"submit\", \"kind\": \"x\", \"units\": 1, \"mem\": 0, \"dir\": \"/\", \"cmd\": [\"a\"]}"
-    assertEq(marshal.decodeRequest(text), Ok(Request.Submit(JobSpec("x", 1, 0, false, "/", None, ["a"], [], [], false, 0, 0))))
+    assertEq(marshal.decodeRequest(text), Ok(Request.Submit(JobSpec("x", 1, 0, false, "/", None, ["a"], [], false, [], false, 0, 0))))
     val nulls = "{\"op\": \"submit\", \"kind\": \"x\", \"units\": 1, \"mem\": 0, \"dir\": \"/\", \"cmd\": [\"a\"], \"after\": null, \"after_any\": null, \"retries\": null, \"retry_delay_ms\": null}"
     assertEq(marshal.decodeRequest(nulls), Ok(Request.Submit(JobSpec("x", 1, 0, false, "/", None, ["a"], []))))
     val job = "{\"id\":7,\"kind\":\"b\",\"units\":1,\"mem\":0,\"landing\":false,\"dir\":\"/\",\"cmd\":[\"a\"],\"state\":\"queued\",\"outcome\":null,\"killed\":false,\"queued_ms\":0,\"elapsed_ms\":0,\"deadline_ms\":1,\"log\":\"/l\"}"
     val read = marshal.decodeJob(json.parse(job).ok().get()).ok().get()
-    assertEq(read.holds, [])
+    assertEq(read.after, [])
     assertEq(read.attempt, 1)
     val snap = "{\"ok\":true,\"snapshot\":{\"units\":0,\"unit_budget\":12,\"mem\":0,\"mem_budget\":0,\"landing\":null,\"take_slot\":null,\"uptime_ms\":0,\"running\":[],\"queued\":[],\"recent\":[]}}"
     assertEq(marshal.decodeReply(snap).map(r -> r match
-        Reply.Viewed(ov) -> ov.held.length()
+        Reply.Viewed(ov) -> ov.waiting.length()
         _ -> -1), Ok(0))
 
-@test("holds and retries of the wrong type are refused with a reason")
+@test("dependencies and retries of the wrong type are refused with a reason")
 dependsProtocolRefusals()
     val head = "{\"op\": \"submit\", \"kind\": \"x\", \"units\": 1, \"mem\": 0, \"dir\": \"/\", \"cmd\": [\"a\"], "
     val cases = [
@@ -70,67 +70,75 @@ dependsOutcomes()
         assert(!marshal.retryable(o, false), s"$o")
     assertEq(marshal.exitCode(Outcome.DependencyFailed(4)), 126)
 
-@test("a held job's and a retried job's fields cross the restart state; an older state reads with defaults")
+@test("a waiting job's and a retried job's fields cross the restart state; an older state reads with defaults")
 dependsState()
-    val held = SavedJob(12, heldSpec, "held", 1, 2, 0, 0, 60000, 50000, "/h/jobs/12.log", 0, 0, None, false, false, None, 0, 0)
-    val retrying = SavedJob(13, heldSpec, "retrying", 1, 2, 3, 4, 60000, 50000, "/h/jobs/13.log", 0, 0, None, false, false, None, 0, 4096, 3, 1_762_000_030_000)
-    val ended = SavedJob(11, heldSpec, "done", 1, 2, 3, 4, 5, 6, "/h/jobs/11.log", 0, 0, Some(Outcome.DependencyFailed(9)), false, false, None, 0, 0, 2, 0)
-    val s = SavedState("0.1.0", 501, 1, 2, 14, [], [], [ended], None, [held, retrying])
+    val waits = SavedJob(12, afterSpec, "waiting", 1, 2, 0, 0, 60000, 50000, "/h/jobs/12.log", 0, 0, None, false, false, None, 0, 0, held = true)
+    val retrying = SavedJob(13, afterSpec, "retrying", 1, 2, 3, 4, 60000, 50000, "/h/jobs/13.log", 0, 0, None, false, false, None, 0, 4096, priority = 3, urgentAt = 1_762_000_000_000_000, attempt = 3, retryAt = 1_762_000_030_000)
+    val ended = SavedJob(11, afterSpec, "done", 1, 2, 3, 4, 5, 6, "/h/jobs/11.log", 0, 0, Some(Outcome.DependencyFailed(9)), false, false, None, 0, 0, attempt = 2)
+    val s = SavedState("0.1.0", 501, 1, 2, 14, [], [], [ended], None, true, [waits, retrying])
     assertEq(marshal.decodeState(marshal.encodeState(s).render()), Ok(s))
     val old = "{\"version\":\"0.1.0\",\"pid\":1,\"saved_at\":2,\"began_at\":3,\"next_id\":4,\"queue\":[{\"id\":3,\"spec\":{\"kind\":\"b\",\"units\":1,\"mem\":0,\"dir\":\"/\",\"cmd\":[\"a\"]},\"state\":\"queued\",\"submitted_at\":1,\"arrived\":2,\"started_at\":0,\"ended_at\":0,\"deadline_ms\":5,\"expected_ms\":6,\"log\":\"/l\",\"pid\":0,\"pgid\":0,\"outcome\":null,\"killed\":false,\"timed_out\":false,\"sample\":null}],\"running\":[],\"ended\":[],\"ticket\":null}"
     val read = marshal.decodeState(old).ok().get()
-    assertEq(read.held, [])
+    assertEq(read.waiting, [])
+    assertEq(read.queueHeld, false)
     assertEq(read.queue(0).attempt, 1)
     assertEq(read.queue(0).retryAt, 0)
     assertEq(read.queue(0).spec.after, [])
     assertEq(read.queue(0).spec.retries, 0)
-    assert(marshal.decodeState(old.replace("\"ticket\":null", "\"ticket\":null,\"held\":3")).isErr())
+    assert(marshal.decodeState(old.replace("\"ticket\":null", "\"ticket\":null,\"waiting\":3")).isErr())
 
 @test("the event log keeps a job's spec for rerun, a retried job stays open between attempts, and cancelled ends a job")
 dependsEvents()
-    val sub = (id: long) -> marshal.eventLine(1, "submitted", heldInfo(id), [("spec", marshal.encodeSpec(heldSpec))])
-    val noSpec = marshal.eventLine(1, "submitted", heldInfo(70), [])
-    assertEq(marshal.specOf([sub(7), sub(70)], 7), Some(heldSpec))
+    val sub = (id: long) -> marshal.eventLine(1, "submitted", waitingInfo(id), [("spec", marshal.encodeSpec(afterSpec))])
+    val noSpec = marshal.eventLine(1, "submitted", waitingInfo(70), [])
+    assertEq(marshal.specOf([sub(7), sub(70)], 7), Some(afterSpec))
     assertEq(marshal.specOf([noSpec, sub(7)], 70), None)
     assertEq(marshal.specOf([sub(70)], 7), None)
     assertEq(marshal.specOf([], 7), None)
-    val done = heldInfo(5, "done", outcome = Some(Outcome.Exited(1)))
-    val retrying = [sub(5), marshal.eventLine(2, "started", heldInfo(5, "running"), []), marshal.eventLine(3, "finished", done, []), marshal.eventLine(4, "retry", heldInfo(5, "queued", attempt = 2), [])]
+    val done = waitingInfo(5, "done", outcome = Some(Outcome.Exited(1)))
+    val attemptEnd = marshal.eventLine(3, "finished", done, [("retrying", Json.Bool(true))])
+    val retrying = [sub(5), marshal.eventLine(2, "started", waitingInfo(5, "running"), []), attemptEnd, marshal.eventLine(4, "retry", waitingInfo(5, "queued", attempt = 2), [])]
     val r = marshal.recover(retrying)
     assertEq(r.open.length(), 1)
     assertEq(r.ended, [])
-    // the ending of the first attempt is what an earlier daemon's job answers until the next one ends
-    assert(marshal.endOf(retrying, 5).isDefined())
-    val cancelled = marshal.recover([sub(6), marshal.eventLine(2, "cancelled", heldInfo(6, "done", outcome = Some(Outcome.DependencyFailed(5))), [])])
+    // the ending of an attempt that runs again does not end the job; the last attempt's does
+    assertEq(marshal.endOf(retrying, 5), None)
+    assert(!marshal.endsJob(json.parse(attemptEnd).ok().get()))
+    val last = marshal.eventLine(6, "finished", waitingInfo(5, "done", attempt = 2, outcome = Some(Outcome.Exited(0))), [])
+    assertEq(marshal.endOf(retrying ++ [last], 5).flatMap(e -> e.get("ts")).flatMap(v -> v.asLong()), Some(long(6)))
+    val cancelled = marshal.recover([sub(6), marshal.eventLine(2, "cancelled", waitingInfo(6, "done", outcome = Some(Outcome.DependencyFailed(5))), [])])
     assertEq(cancelled.open, [])
     assertEq(cancelled.ended.map(j -> j.outcome), [Some(Outcome.DependencyFailed(5))])
 
-@test("ls shows a held job with what it waits for, a retrying one with its attempt, and a cascade's cause")
+@test("ls shows a waiting job with what it waits for, a retrying one with its attempt, and a cascade's cause")
 dependsListing()
-    assertEq(marshal.stateColumn(heldInfo(5, holds = [3, 4])), "held 3,4")
-    assertEq(marshal.stateColumn(heldInfo(5, holds = [3])), "held 3")
-    assertEq(marshal.stateColumn(heldInfo(5, "retrying", attempt = 2)), "retry 2")
-    assertEq(marshal.stateColumn(heldInfo(5, "done", outcome = Some(Outcome.DependencyFailed(3)))), "dep 3 failed")
-    assertEq(marshal.resultLine(heldInfo(5, "done", outcome = Some(Outcome.DependencyFailed(3)))), "marshal: job 5 cancelled before it started: job 3, which it was held for, did not succeed; log /h/jobs/5.log")
-    assertEq(marshal.resultLine(heldInfo(5, "done", attempt = 3, outcome = Some(Outcome.Exited(0)))), "marshal: job 5 exited 0 after 0ms (attempt 3); log /h/jobs/5.log")
-    assertEq(marshal.resultLine(heldInfo(5, "done", outcome = Some(Outcome.Exited(0)))), "marshal: job 5 exited 0 after 0ms; log /h/jobs/5.log")
-    val rows = marshal.listing([heldInfo(5, holds = [3, 4])]).lines().toVector()
-    assertEq(rows(1).split("  ").filter(c -> c.nonEmpty())(1).trim(), "held 3,4")
+    assertEq(marshal.stateColumn(waitingInfo(5, after = [3, 4])), "after 3,4")
+    assertEq(marshal.stateColumn(waitingInfo(5, after = [3])), "after 3")
+    assertEq(marshal.stateColumn(waitingInfo(5, after = [3], held = true)), "held after 3")
+    assertEq(marshal.stateColumn(waitingInfo(5, "retrying", attempt = 2, held = true)), "held")
+    assertEq(marshal.stateColumn(waitingInfo(5, "queued", held = true)), "held")
+    assertEq(marshal.stateColumn(waitingInfo(5, "retrying", attempt = 2)), "retry 2")
+    assertEq(marshal.stateColumn(waitingInfo(5, "done", outcome = Some(Outcome.DependencyFailed(3)))), "dep 3 failed")
+    assertEq(marshal.resultLine(waitingInfo(5, "done", outcome = Some(Outcome.DependencyFailed(3)))), "marshal: job 5 cancelled before it started: job 3, which it waited for, did not succeed; log /h/jobs/5.log")
+    assertEq(marshal.resultLine(waitingInfo(5, "done", attempt = 3, outcome = Some(Outcome.Exited(0)))), "marshal: job 5 exited 0 after 0ms (attempt 3); log /h/jobs/5.log")
+    assertEq(marshal.resultLine(waitingInfo(5, "done", outcome = Some(Outcome.Exited(0)))), "marshal: job 5 exited 0 after 0ms; log /h/jobs/5.log")
+    val rows = marshal.listing([waitingInfo(5, after = [3, 4])]).lines().toVector()
+    assertEq(rows(1).split("  ").filter(c -> c.nonEmpty())(1).trim(), "after 3,4")
 
-@test("top lists held jobs after the queued ones, under all and queued, with their state and deadline")
+@test("top lists waiting jobs after the queued ones, under all and queued, with their state and deadline")
 dependsTop()
-    val o = Overview(Usage(0, 12, 0, 0, 0, 0, None, None), 0, [heldInfo(1, "running")], [], [heldInfo(2, "done", outcome = Some(Outcome.Exited(0)))], [heldInfo(5, holds = [1]), heldInfo(6, "retrying", attempt = 2)])
+    val o = Overview(Usage(0, 12, 0, 0, 0, 0, None, None), 0, [waitingInfo(1, "running")], [], [waitingInfo(2, "done", outcome = Some(Outcome.Exited(0)))], [waitingInfo(5, after = [1]), waitingInfo(6, "retrying", attempt = 2)])
     assertEq(top.lines(o, ShowAll).map(l -> l.job.id), [long(1), long(5), long(6), long(2)])
     assertEq(top.lines(o, ShowQueued).map(l -> l.job.id), [long(5), long(6)])
     assertEq(top.lines(o, ShowRunning).map(l -> l.job.id), [long(1)])
     assertEq(top.lines(o, ShowFinished).map(l -> l.job.id), [long(2)])
     val ls = top.lines(o, ShowQueued)
-    assertEq(top.stateOf(ls(0)).0, "held 1")
+    assertEq(top.stateOf(ls(0)).0, "after 1")
     assertEq(top.stateOf(ls(1)).0, "retry 2")
     assertEq(top.deadlineOf(ls(0), 0).0, "1:00")
-    assertEq(top.stateOf(top.Line(heldInfo(7, "done", outcome = Some(Outcome.DependencyFailed(5))), None)).0, "dep 5 failed")
+    assertEq(top.stateOf(top.Line(waitingInfo(7, "done", outcome = Some(Outcome.DependencyFailed(5))), None)).0, "dep 5 failed")
 
-@test("--after, --after-ok and --after-any hold a job, --retries and --retry-delay retry it, and bad values are refused")
+@test("--after, --after-ok and --after-any make a job wait, --retries and --retry-delay retry it, and bad values are refused")
 dependsOptions()
     val parse = (args: Vector[string]) -> cli.parseSubmission(args, "/w", [])
     assertEq(parse(["--after", "3", "--", "a"]).map(s -> (s.after, s.afterAny)), Ok(([long(3)], false)))
@@ -157,3 +165,14 @@ dependsOptions()
         parse(args) match
             Err(e) -> assert(e.contains(why), s"$args: $e")
             Ok(s) -> fail(s"$args read as $s")
+
+@test("history lists a retried job once, by its last attempt, and a job whose dependency failed as cancelled")
+dependsHistory()
+    val l = marshal.Ledger()
+    l.add(marshal.eventLine(1, "finished", waitingInfo(5, "done", outcome = Some(Outcome.Exited(1))), [("run_ms", Json.num(10)), ("exit", Json.num(1)), ("retrying", Json.Bool(true))]))
+    assertEq(l.ends.length(), 0)
+    l.add(marshal.eventLine(2, "retry", waitingInfo(5, "queued", attempt = 2), []))
+    l.add(marshal.eventLine(3, "finished", waitingInfo(5, "done", attempt = 2, outcome = Some(Outcome.Exited(0))), [("run_ms", Json.num(20)), ("exit", Json.num(0))]))
+    l.add(marshal.eventLine(4, "cancelled", waitingInfo(6, "done", outcome = Some(Outcome.DependencyFailed(4))), [("run_ms", Json.num(0)), ("exit", Json.num(126))]))
+    assertEq(l.ends.toVector().map(e -> (e.id, e.how, e.exit, e.runMs)), [(long(5), "ok", 0, long(20)), (long(6), "cancelled", 126, long(0))])
+    assertEq(l.unreadable, 0)

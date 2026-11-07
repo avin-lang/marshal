@@ -1,0 +1,294 @@
+module tests
+
+// Accounting: the ledger an event log is read into, the filters, the statistics, the times, the
+// options and what `history` and `stats` print.
+import avin.fs
+import json
+import json.Json
+import dev.avinlang.marshal
+import dev.avinlang.marshal.cli
+import dev.avinlang.marshal.{EndedJob, HistoryFilter, JobInfo, Ledger, Outcome}
+
+val Minute: long = 60000
+val Everything: HistoryFilter = HistoryFilter(None, None, false)
+
+// An ending event of job `id` at wall clock `ts`.
+endLine(ts: long, id: long, how: Outcome = Outcome.Exited(0), kind: string = "test", run: long = 1000, landing: bool = false, killed: bool = false, extra: Vector[(string, Json)] = [], event: string = "finished") -> string =
+    val j = JobInfo(id, kind, 4, 0, landing, "/d", ["make"], "done", Some(how), killed, 5, run, 60000, s"/h/jobs/$id.log", None)
+    marshal.eventLine(ts, event, j, [("run_ms", Json.num(run)), ("exit", Json.num(marshal.exitCode(how)))] ++ extra)
+
+ledgerOf(lines: Vector[string]) -> Ledger
+    val l = Ledger()
+    for line in lines do l.add(line)
+    l
+
+ids(jobs: Vector[EndedJob]) -> Vector[long] = jobs.map(e -> e.id)
+
+@test("an empty log lists nothing, and says so")
+historyEmptyLog()
+    val l = ledgerOf([])
+    assertEq(l.unreadable, 0)
+    assertEq(marshal.selectEnded(l, Everything, 20), [])
+    assertEq(marshal.kindStats(l, Everything), [])
+    assertEq(marshal.historyListing([]), "marshal: no ended jobs match")
+    assertEq(marshal.statsListing([]), "marshal: no ended jobs match")
+    assertEq(marshal.historyJson([], 0).render(), "{\"jobs\":[],\"unreadable\":0}")
+    assertEq(marshal.statsJson([], 0).render(), "{\"kinds\":[],\"unreadable\":0}")
+
+@test("blank lines are nothing, a corrupt line is skipped and counted, and the others are read")
+corruptLines()
+    val l = ledgerOf(["", "   ", "not json at all", "{\"ts\":1", endLine(1000, 1), "[1,2]", "{\"event\":\"finished\"}", "{\"ts\":5,\"id\":2}", endLine(2000, 3)])
+    assertEq(l.unreadable, 5)
+    assertEq(ids(marshal.selectEnded(l, Everything, 20)), [long(3), long(1)])
+
+@test("an ending event that does not describe a job is unreadable; events that are not endings are ignored")
+undescribedAndOtherEvents()
+    val l = ledgerOf([
+        "{\"ts\":5,\"event\":\"finished\",\"id\":9}",
+        endLine(10, 1, event = "submitted"), endLine(11, 1, event = "started")])
+    assertEq(l.unreadable, 1)
+    assertEq(marshal.selectEnded(l, Everything, 20), [])
+
+@test("every kind of ending is listed, with the word, the exit status and the duration")
+historyEndings()
+    val l = ledgerOf([
+        endLine(1, 1), endLine(2, 2, Outcome.Exited(3)), endLine(3, 3, Outcome.Signalled(9)),
+        endLine(4, 4, Outcome.Signalled(15), killed = true, event = "killed"),
+        endLine(5, 5, Outcome.TimedOut, event = "timeout", run = 7000), endLine(6, 6, Outcome.Cancelled, event = "killed", run = 99),
+        endLine(7, 7, Outcome.Lost, event = "lost")])
+    val got = marshal.selectEnded(l, Everything, 20).reverse().map(e -> (e.how, e.exit, e.runMs))
+    assertEq(got, [("ok", 0, long(1000)), ("failed", 3, long(1000)), ("signal", 137, long(1000)), ("killed", 143, long(1000)), ("timeout", 124, long(7000)), ("cancelled", 143, long(0)), ("lost", 125, long(1000))])
+
+@test("a job with several ending events is listed once, as its last")
+lastEndingStands()
+    val l = ledgerOf([endLine(1, 1, Outcome.TimedOut, event = "timeout"), endLine(2, 2), endLine(3, 1, Outcome.Lost, event = "lost")])
+    val jobs = marshal.selectEnded(l, Everything, 20)
+    assertEq(jobs.length(), 2)
+    assertEq(jobs.find(e -> e.id == 1).get().how, "lost")
+
+@test("history is newest first, ties by the higher id, and --limit keeps the newest")
+newestFirst()
+    val l = ledgerOf([endLine(300, 1), endLine(100, 2), endLine(300, 3), endLine(200, 4)])
+    assertEq(ids(marshal.selectEnded(l, Everything, 20)), [long(3), long(1), long(4), long(2)])
+    assertEq(ids(marshal.selectEnded(l, Everything, 2)), [long(3), long(1)])
+    assertEq(ids(marshal.selectEnded(l, Everything, 1)), [long(3)])
+
+@test("real wall clock times and the largest ids sort without overflow")
+newestFirstAtScale()
+    val big: long = 9000000000000000000
+    val l = ledgerOf([endLine(1794061800000, 5), endLine(1794061801000, 4), endLine(1794061801000, big), endLine(long.MaxValue, 2), endLine(0, 3)])
+    assertEq(ids(marshal.selectEnded(l, Everything, 20)), [long(2), big, long(4), long(5), long(3)])
+
+@test("the filters: --kind, --since, --failed, and all three together")
+historyFilters()
+    val l = ledgerOf([
+        endLine(1000, 1, kind = "build"), endLine(2000, 2, Outcome.Exited(1), kind = "test"), endLine(3000, 3, kind = "test"),
+        endLine(4000, 4, Outcome.TimedOut, kind = "build", event = "timeout"), endLine(5000, 5, Outcome.Exited(2), kind = "test")])
+    assertEq(ids(marshal.selectEnded(l, HistoryFilter(Some("build"), None, false), 20)), [long(4), long(1)])
+    assertEq(ids(marshal.selectEnded(l, HistoryFilter(Some("none"), None, false), 20)), [])
+    assertEq(ids(marshal.selectEnded(l, HistoryFilter(None, Some(3000), false), 20)), [long(5), long(4), long(3)])
+    assertEq(ids(marshal.selectEnded(l, HistoryFilter(None, Some(3001), false), 20)), [long(5), long(4)])
+    assertEq(ids(marshal.selectEnded(l, HistoryFilter(None, Some(9000), false), 20)), [])
+    assertEq(ids(marshal.selectEnded(l, HistoryFilter(None, None, true), 20)), [long(5), long(4), long(2)])
+    assertEq(ids(marshal.selectEnded(l, HistoryFilter(Some("test"), Some(2500), true), 20)), [long(5)])
+    assertEq(ids(marshal.selectEnded(l, HistoryFilter(Some("test"), Some(2500), true), 0)), [])
+
+@test("a landing job is marked with a star in the listing")
+landingStar()
+    val text = marshal.historyListing(marshal.selectEnded(ledgerOf([endLine(1, 1, landing = true), endLine(2, 2)]), Everything, 20))
+    assert(text.contains("test*"), text)
+    assertEq(text.lines().length(), 3)
+
+@test("percentiles are nearest-rank: one value, two values, many values")
+percentiles()
+    assertEq(marshal.percentile([long(7)], 50), 7)
+    assertEq(marshal.percentile([long(7)], 90), 7)
+    assertEq(marshal.percentile([long(7)], 100), 7)
+    assertEq(marshal.percentile([long(9), long(3)], 50), 3)
+    assertEq(marshal.percentile([long(9), long(3)], 90), 9)
+    val hundred = (1..100).map(n -> long(n)).toVector().reverse()
+    assertEq(marshal.percentile(hundred, 50), 50)
+    assertEq(marshal.percentile(hundred, 90), 90)
+    assertEq(marshal.percentile(hundred, 100), 100)
+    val ten = (1..10).map(n -> long(n)).toVector()
+    assertEq(marshal.percentile(ten, 50), 5)
+    assertEq(marshal.percentile(ten, 90), 9)
+    assertEq(marshal.percentile([long(5), long(5), long(5)], 90), 5)
+
+@test("stats: one row per kind, with count, success rate, percentiles, timeouts and the learned deadline")
+statsRows()
+    val l = ledgerOf([
+        endLine(1, 1, run = 10 * Minute), endLine(2, 2, run = 20 * Minute), endLine(3, 3, run = 30 * Minute),
+        endLine(4, 4, Outcome.Exited(1), run = 2 * Minute), endLine(5, 5, Outcome.TimedOut, event = "timeout", run = 40 * Minute),
+        endLine(6, 6, kind = "build", run = 1000)])
+    val rows = marshal.kindStats(l, Everything)
+    assertEq(rows.map(r -> r.key), ["test", "build"])
+    val t = rows(0)
+    assertEq((t.count, t.ok, t.timeouts), (5, 3, 1))
+    assertEq(t.p50, Some(20 * Minute))
+    assertEq(t.p90, Some(40 * Minute))
+    assertEq(t.max, Some(40 * Minute))
+    assertEq(t.deadlineMs, 40 * Minute)
+    val b = rows(1)
+    assertEq((b.count, b.ok, b.timeouts), (1, 1, 0))
+    assertEq((b.p50, b.p90, b.max), (Some(long(1000)), Some(long(1000)), Some(long(1000))))
+    assertEq(b.deadlineMs, 20 * Minute)
+    val text = marshal.statsListing(rows)
+    assert(text.contains("60%"), text)
+    assert(text.contains("100%"), text)
+
+@test("stats: landing runs are a row of their own; the deadline is learned whatever the filter; cancelled jobs have no duration")
+statsLandingAndFilters()
+    val l = ledgerOf([
+        endLine(100, 1, run = 10 * Minute), endLine(200, 2, run = 10 * Minute), endLine(300, 3, run = 10 * Minute),
+        endLine(400, 4, landing = true, run = Minute), endLine(500, 5, Outcome.Cancelled, event = "killed", run = 0)])
+    val all = marshal.kindStats(l, Everything)
+    assertEq(all.map(r -> r.key), ["test", "test+landing"])
+    assertEq(all(0).deadlineMs, 20 * Minute)
+    assertEq(all(0).count, 4)
+    assertEq((all(0).p50, all(0).max), (Some(10 * Minute), Some(10 * Minute)))
+    val late = marshal.kindStats(l, HistoryFilter(Some("test"), Some(250), false))
+    assertEq(late.length(), 2)
+    assertEq(late(0).count, 2)
+    assertEq(late(0).deadlineMs, 20 * Minute)
+    val cancelled = marshal.kindStats(ledgerOf([endLine(1, 1, Outcome.Cancelled, event = "killed", run = 0)]), Everything)
+    assertEq((cancelled(0).count, cancelled(0).p50, cancelled(0).max), (1, None, None))
+    assert(marshal.statsListing(cancelled).contains("-"))
+
+@test("stats: peak memory is read where the events have it and is - where they do not")
+statsPeak()
+    val l = ledgerOf([
+        endLine(1, 1, extra = [("peak_rss", Json.num(long(100)))]), endLine(2, 2, extra = [("peak_rss", Json.num(long(300)))]),
+        endLine(3, 3, extra = [("peak_rss", Json.num(long(200)))]), endLine(4, 4), endLine(5, 5, extra = [("peak_rss", Json.num(long(0)))]),
+        endLine(6, 6, kind = "old")])
+    val rows = marshal.kindStats(l, Everything)
+    assertEq((rows(0).peakP50, rows(0).peakMax), (Some(long(200)), Some(long(300))))
+    assertEq((rows(1).peakP50, rows(1).peakMax), (None, None))
+    val text = marshal.statsListing(rows)
+    assert(text.lines().toVector()(2).startsWith("old") && text.lines().toVector()(2).trim().endsWith("-"), text)
+
+@test("the json of history and of stats has its fields, with null where unknown")
+jsonShape()
+    val l = ledgerOf([endLine(1000, 7, Outcome.Exited(3), kind = "build", run = 4200, extra = [("peak_rss", Json.num(long(512)))]), endLine(2000, 8, landing = true), "junk"])
+    val h = json.parse(marshal.historyJson(marshal.selectEnded(l, Everything, 20), l.unreadable).render()).ok().get()
+    assertEq(h("unreadable").asLong(), Some(long(1)))
+    val jobs = h("jobs").asVector().get()
+    assertEq(jobs.length(), 2)
+    val first = jobs(0)
+    assertEq(first.keys(), ["id", "kind", "landing", "outcome", "exit", "duration_ms", "ended_at", "peak_rss"])
+    assertEq(first("id").asLong(), Some(long(8)))
+    assertEq(first("landing").asBool(), Some(true))
+    assertEq(first("peak_rss"), Json.Null)
+    val second = jobs(1)
+    assertEq(second("outcome").asString(), Some("failed"))
+    assertEq(second("exit").asLong(), Some(long(3)))
+    assertEq(second("duration_ms").asLong(), Some(long(4200)))
+    assertEq(second("ended_at").asLong(), Some(long(1000)))
+    assertEq(second("peak_rss").asLong(), Some(long(512)))
+    val s = json.parse(marshal.statsJson(marshal.kindStats(l, Everything), l.unreadable).render()).ok().get()
+    assertEq(s("unreadable").asLong(), Some(long(1)))
+    val kinds = s("kinds").asVector().get()
+    val k = kinds(0)
+    assertEq(k.keys(), ["kind", "count", "ok", "success_pct", "timeouts", "p50_ms", "p90_ms", "max_ms", "deadline_ms", "peak_p50", "peak_max"])
+    assertEq(k("kind").asString(), Some("build"))
+    assertEq(k("success_pct").asLong(), Some(long(0)))
+    assertEq(k("peak_max").asLong(), Some(long(512)))
+    assertEq(kinds(1)("peak_max"), Json.Null)
+    assertEq(kinds(1)("kind").asString(), Some("test+landing"))
+
+@test("wall clock times are listed in UTC across leap days and the epoch")
+formatWhen()
+    assertEq(marshal.formatWhen(0), "1970-01-01 00:00:00")
+    assertEq(marshal.formatWhen(999), "1970-01-01 00:00:00")
+    assertEq(marshal.formatWhen(86399000), "1970-01-01 23:59:59")
+    assertEq(marshal.formatWhen(1709164800000), "2024-02-29 00:00:00")
+    assertEq(marshal.formatWhen(951868800000 + 3661000), "2000-03-01 01:01:01")
+    assertEq(marshal.formatWhen(1794061800000), "2026-11-07 14:30:00")
+
+@test("--since reads a length back from now, or a UTC date, or a date and minute")
+parseSince()
+    val now: long = 1794061800000
+    assertEq(marshal.parseEndedSince("90s", now), Some(now - 90000))
+    assertEq(marshal.parseEndedSince("90m", now), Some(now - 90 * Minute))
+    assertEq(marshal.parseEndedSince("2h", now), Some(now - 7200000))
+    assertEq(marshal.parseEndedSince("3d", now), Some(now - 3 * 86400000))
+    assertEq(marshal.parseEndedSince("1w", now), Some(now - 604800000))
+    assertEq(marshal.parseEndedSince("1970-01-01", now), Some(long(0)))
+    assertEq(marshal.parseEndedSince("2026-11-07", now).map(marshal.formatWhen), Some("2026-11-07 00:00:00"))
+    assertEq(marshal.parseEndedSince("2026-11-07T14:30", now), Some(now))
+    assertEq(marshal.parseEndedSince("2024-02-29", now).map(marshal.formatWhen), Some("2024-02-29 00:00:00"))
+    assertEq(marshal.parseEndedSince("2026-11-07T00:00", now).map(marshal.formatWhen), Some("2026-11-07 00:00:00"))
+
+@test("--since refuses what is not a time")
+parseSinceRefuses()
+    val now: long = 1794061800000
+    for bad in ["", "5", "h", "0h", "-2h", "2x", "1.5h", "2h30m", "x", "2026", "2026-11", "2026-1-07", "2026-13-01", "2026-00-10", "2026-02-30", "2025-02-29", "2026-11-00", "2026-11-07T", "2026-11-07T25:00", "2026-11-07T10:60", "2026-11-07T1:30", "2026-11-07T10", "2026-11-07T10:30:00", "2026-11-07T10:30T", "abcd-ef-gh", "99999999999999999999h", "999999999999999h"] do
+        assert(marshal.parseEndedSince(bad, now).isEmpty(), bad)
+
+@test("the options of history: each one, and what they default to")
+parseHistoryOptions()
+    val now: long = 1794061800000
+    val none = cli.parseQuery("history", [], now).ok().get()
+    assertEq(none.filter, Everything)
+    assertEq(none.limit, 20)
+    assert(!none.json)
+    val all = cli.parseQuery("history", ["--kind", "build", "--since", "1h", "--failed", "--limit", "3", "--json"], now).ok().get()
+    assertEq(all.filter, HistoryFilter(Some("build"), Some(now - 3600000), true))
+    assertEq(all.limit, 3)
+    assert(all.json)
+
+@test("the options of stats take no --failed or --limit")
+parseStatsOptions()
+    val now: long = 1794061800000
+    val q = cli.parseQuery("stats", ["--json", "--kind", "test"], now).ok().get()
+    assertEq(q.filter, HistoryFilter(Some("test"), None, false))
+    assert(q.json)
+    assert(cli.parseQuery("stats", ["--failed"], now).isErr())
+    assert(cli.parseQuery("stats", ["--limit", "3"], now).isErr())
+
+@test("bad options are refused with a sentence")
+parseRefusals()
+    val now: long = 1794061800000
+    for args in [["--kind"], ["--kind", ""], ["--since"], ["--since", "soon"], ["--limit"], ["--limit", "0"], ["--limit", "-1"], ["--limit", "x"], ["--limit", "2.5"], ["--bogus"], ["7"], ["--kind", "a", "--json", "extra"]] do
+        val r = cli.parseQuery("history", args, now)
+        assert(r.isErr(), args.mkString(" "))
+        assert(r.err().get().startsWith("marshal: "), args.mkString(" "))
+
+@test("a log is streamed from its file a line at a time: a quarter of a million lines, one of them corrupt")
+hugeLog()
+    val dir = fs.createTempDir("marshal-history-").ok().get()
+    val log = dir + "/events.jsonl"
+    val f = fs.create(log).ok().get()
+    val n = 250000
+    for i in 1..n
+        val id = long(i)
+        f.writeText(endLine(1000 + id, id, kind = if i % 2 == 0 then "build" else "test", run = id) + "\n")
+        if i == 1000 then f.writeText("{\"ts\":oops\n")
+    f.close()
+    val l = cli.readLedger(log).ok().get()
+    assertEq(l.unreadable, 1)
+    assertEq(l.ends.length(), n)
+    assertEq(ids(marshal.selectEnded(l, Everything, 3)), [long(250000), long(249999), long(249998)])
+    val rows = marshal.kindStats(l, Everything)
+    assertEq(rows.map(r -> r.count), [125000, 125000])
+    fs.removeDirAll(dir)
+
+@test("a log that is not there is an empty ledger, and a directory is an error")
+missingLog()
+    val dir = fs.createTempDir("marshal-history-").ok().get()
+    val l = cli.readLedger(dir + "/events.jsonl").ok().get()
+    assertEq(l.ends.length(), 0)
+    assert(cli.readLedger(dir).isErr())
+    fs.removeDirAll(dir)
+
+@test("history and stats have their own help, with the options")
+help()
+    for name in ["history", "stats"] do
+        val text = cli.commandHelp(name).get()
+        for flag in ["--kind", "--since", "--json"] do assert(text.contains(flag), s"$name $flag")
+    assert(cli.commandHelp("history").get().contains("--limit"))
+    assert(cli.commandHelp("history").get().contains("--failed"))
+    assert(cli.usage.contains("marshal history [options]"))
+    assert(cli.usage.contains("marshal stats [options]"))
+    assert(cli.asksHelp("history", ["--help"]))
+    assert(cli.asksHelp("stats", ["-h"]))

@@ -13,13 +13,14 @@ resultLine(j: JobInfo) -> string
             s"timed out after $took (deadline ${formatMillis(j.deadlineMs)})$sample"
         Some(Cancelled) -> "cancelled before it started"
         Some(Lost) -> "lost: the daemon stopped while it was queued or running"
-        Some(DependencyFailed(after)) -> s"cancelled before it started: job $after, which it was held for, did not succeed"
+        Some(DependencyFailed(after)) -> s"cancelled before it started: job $after, which it waited for, did not succeed"
         None -> s"is ${j.state}"
     val attempts = if j.attempt > 1 && j.outcome.isDefined() then s" (attempt ${j.attempt})" else ""
     s"marshal: job ${j.id} $how$attempts; log ${j.log}"
 
-// A job's state as a listing's column shows it: a held job's with the jobs it waits for, and a job
-// waiting to retry with the attempt it will make.
+// A job's state as a listing's column shows it: a job waiting for others with the jobs it waits
+// for (`after 3,4`), a job waiting to retry with the attempt it will make, and a job held by hand
+// as `held`.
 stateColumn(j: JobInfo) -> string = j.outcome match
     Some(Exited(code)) -> s"exit $code"
     Some(Signalled(sig)) -> if j.killed then "killed" else s"signal $sig"
@@ -27,10 +28,14 @@ stateColumn(j: JobInfo) -> string = j.outcome match
     Some(Cancelled) -> "cancelled"
     Some(Lost) -> "lost"
     Some(DependencyFailed(after)) -> s"dep $after failed"
-    None -> j.state match
-        "held" -> "held " + j.holds.map(id -> id.toString()).mkString(",")
-        "retrying" -> s"retry ${j.attempt}"
-        other -> other
+    None ->
+        val waits = "after " + j.after.map(id -> id.toString()).mkString(",")
+        if j.held then (if j.state == "waiting" then "held " + waits else "held")
+        elif j.paused then "paused"
+        else j.state match
+            "waiting" -> waits
+            "retrying" -> s"retry ${j.attempt}"
+            other -> other
 
 // The listing `ls` prints: a header, then one row per job.
 listing(jobs: Vector[JobInfo]) -> string
@@ -50,4 +55,5 @@ usageLine(u: Usage) -> string
     val memory = if u.memoryBudget == long.MaxValue then formatSize(u.memory) else s"${formatSize(u.memory)}/${formatSize(u.memoryBudget)}"
     val lane = u.landing.map(id -> s"job $id").getOrElse("free")
     val outside = u.takeSlot.map(t -> s"; take-slot holds ${t.units} units, ${t.waiting} waiting" + (if t.landing then ", the landing lane" else "")).getOrElse("")
-    s"units ${u.units}/${u.unitBudget}, memory $memory, ${u.running} running, ${u.queued} queued, landing lane $lane$outside"
+    val held = if u.queueHeld then "; the queue is held: nothing new starts" else ""
+    s"units ${u.units}/${u.unitBudget}, memory $memory, ${u.running} running, ${u.queued} queued, landing lane $lane$outside$held"

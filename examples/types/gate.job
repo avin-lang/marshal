@@ -1,0 +1,18 @@
+// An example type: builds and tests the working tree as it is, in the development lane, and lands
+// nothing. Copy it to your project's `.marshal/types/` (or to ~/.marshal/types/) and change the
+// commands; then `marshal run-type gate`.
+{
+  "about": "Builds and tests the working tree, with a deadline on each.",
+  "kind": "gate",
+  "lane": "dev",
+  "units": 4,
+  "params": {
+    "build": {"default": "make", "about": "the build command, run by sh"},
+    "test": {"default": "make test", "about": "the test command, run by sh"},
+    "after-failed-build": {"default": "report", "choices": ["report", "next"], "about": "`next` runs the tests even when the build fails"}
+  },
+  "steps": [
+    {"name": "build", "run": ["sh", "-c", "${build}"], "deadline": "30m", "on_failure": "${after-failed-build}"},
+    {"name": "test", "run": ["sh", "-c", "${test}"], "deadline": "1h", "on_failure": "report"}
+  ]
+}

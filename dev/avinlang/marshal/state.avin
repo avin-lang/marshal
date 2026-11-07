@@ -8,7 +8,12 @@ import json
 import json.Json
 
 // One job as the daemon holds it. `arrived` is its arrival on the wall clock in microseconds, which
-// orders it against take-slot's waiters; `pid` and `pgid` are 0 until it starts.
+// orders it against take-slot's waiters; `pid` and `pgid` are 0 until it starts. `held`,
+// `priority` and `urgentAt` (when it joined the urgent band, wall-clock microseconds, 0 outside
+// it) are a queued job's, and a state saved without them reads as false, 0 and 0. `pausedMs` is how
+// long a running job's earlier pauses lasted and `pausedAt` when its current pause began (wall
+// clock, milliseconds; 0 while it is not paused), 0 when absent. `attempt` counts its runs from 1
+// (1 when absent), and `retryAt` is when a job waiting to retry queues again (0 otherwise).
 data SavedJob(
     id: long,
     spec: JobSpec,
@@ -28,13 +33,18 @@ data SavedJob(
     sample: Option[string],
     rss: long,
     peakRss: long,
+    held: bool = false,
+    priority: int = 0,
+    urgentAt: long = 0,
+    pausedMs: long = 0,
+    pausedAt: long = 0,
     attempt: int = 1,
     retryAt: long = 0)
 
 // The whole daemon: the version and process that saved it, when, when the daemon first began, the
 // next job id, the queue in order, the running jobs, the jobs that ended last (oldest first), the
-// name of its waiting ticket in take-slot's directory, and the jobs held for others or waiting to
-// retry, oldest first.
+// name of its waiting ticket in take-slot's directory, whether the queue is held (false when the
+// state does not say), and the jobs waiting for others or waiting to retry, oldest first.
 data SavedState(
     version: string,
     pid: long,
@@ -45,7 +55,8 @@ data SavedState(
     running: Vector[SavedJob],
     ended: Vector[SavedJob],
     ticket: Option[string],
-    held: Vector[SavedJob] = [])
+    queueHeld: bool = false,
+    waiting: Vector[SavedJob] = [])
 
 private orNull[T](o: Option[T], f: (T) -> Json) -> Json = o.map(f).getOrElse(Json.Null)
 
@@ -68,6 +79,11 @@ encodeSavedJob(j: SavedJob) -> Json = Json.obj(
     ("sample", orNull(j.sample, s -> Json.str(s))),
     ("rss", Json.num(j.rss)),
     ("peak_rss", Json.num(j.peakRss)),
+    ("held", Json.Bool(j.held)),
+    ("priority", Json.num(j.priority)),
+    ("urgent_at", Json.num(j.urgentAt)),
+    ("paused_ms", Json.num(j.pausedMs)),
+    ("paused_at", Json.num(j.pausedAt)),
     ("attempt", Json.num(j.attempt)),
     ("retry_at", Json.num(j.retryAt)))
 
@@ -87,6 +103,17 @@ private text(j: Json, key: string) -> Result[string, string] = j.get(key).flatMa
 private truth(j: Json, key: string) -> Result[bool, string] = j.get(key).flatMap(v -> v.asBool()) match
     Some(b) -> Ok(b)
     None -> Err(s"`$key` is not a bool")
+
+// A field a state saved before it existed lacks: absent or null reads as `absent`.
+private truthOr(j: Json, key: string, absent: bool) -> Result[bool, string] = j.get(key) match
+    None | Some(Json.Null) -> Ok(absent)
+    Some(_) -> truth(j, key)
+
+private intOr(j: Json, key: string, absent: int) -> Result[int, string] = j.get(key) match
+    None | Some(Json.Null) -> Ok(absent)
+    Some(v) -> v.asInt() match
+        Some(n) -> Ok(n)
+        None -> Err(s"`$key` is not an int")
 
 private maybeText(j: Json, key: string) -> Result[Option[string], string] = j.get(key) match
     None | Some(Json.Null) -> Ok(None)
@@ -119,7 +146,12 @@ decodeSavedJob(j: Json) -> Result[SavedJob, string]
         maybeText(j, "sample")?,
         wholeOrZero(j, "rss")?,
         wholeOrZero(j, "peak_rss")?,
-        if j.has("attempt") then int(whole(j, "attempt")?) else 1,
+        truthOr(j, "held", false)?,
+        intOr(j, "priority", 0)?,
+        wholeOrZero(j, "urgent_at")?,
+        wholeOrZero(j, "paused_ms")?,
+        wholeOrZero(j, "paused_at")?,
+        intOr(j, "attempt", 1)?,
         wholeOrZero(j, "retry_at")?))
 
 encodeState(s: SavedState) -> Json = Json.obj(
@@ -132,7 +164,8 @@ encodeState(s: SavedState) -> Json = Json.obj(
     ("running", Json.Arr(s.running.map(encodeSavedJob))),
     ("ended", Json.Arr(s.ended.map(encodeSavedJob))),
     ("ticket", orNull(s.ticket, t -> Json.str(t))),
-    ("held", Json.Arr(s.held.map(encodeSavedJob))))
+    ("queue_held", Json.Bool(s.queueHeld)),
+    ("waiting", Json.Arr(s.waiting.map(encodeSavedJob))))
 
 private savedJobs(j: Json, key: string) -> Result[Vector[SavedJob], string]
     val items = j.get(key).flatMap(v -> v.asVector()) match
@@ -158,4 +191,5 @@ decodeState(saved: string) -> Result[SavedState, string]
         savedJobs(j, "running")?,
         savedJobs(j, "ended")?,
         maybeText(j, "ticket")?,
-        if j.has("held") then savedJobs(j, "held")? else Vector[SavedJob]()))
+        truthOr(j, "queue_held", false)?,
+        if j.has("waiting") then savedJobs(j, "waiting")? else Vector[SavedJob]()))

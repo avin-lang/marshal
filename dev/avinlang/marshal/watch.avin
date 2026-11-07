@@ -1,0 +1,160 @@
+module dev.avinlang.marshal
+
+// Following the event log as it grows: the conditions `wait --until` blocks on, the filters
+// `events` shows, and how an event is tested against one. docs/protocol.md describes the grammar.
+import json
+import json.Json
+
+// Which events a condition lets through. Every field narrows: `names` are the event names allowed
+// (all when empty), `kind` the job's kind, `outcome` how the job ended (`ok`, `failed`, `timeout`,
+// `killed`, `cancelled` or `lost`; only an ending event has one), `landing` a landing-lane job
+// only, and `notOk` an ending that is not `ok`.
+data Filter(names: Vector[string], kind: Option[string], outcome: Option[string], landing: bool, notOk: bool)
+
+// What a watcher waits for: nothing running, queued, waiting for other jobs or waiting to retry;
+// every one of some jobs ended for good; or an event the filter lets through.
+data Condition
+    IsIdle
+    JobsEnded(ids: Vector[long])
+    Matching(filter: Filter)
+
+// How a watch answers: `Once`, the first matching event and then the end; `Past`, the matching
+// events already in the log and then the end; `Follow`, those and every one after, until the
+// client leaves.
+data Mode
+    Once
+    Past
+    Follow
+
+val Outcomes: Vector[string] = ["ok", "failed", "timeout", "killed", "cancelled", "lost"]
+
+val Grammar: string = """
+Conditions of wait --until, and filters of events:
+  idle                 nothing running, queued or waiting (wait only; at once if already so)
+  job=<id>[,<id>...]   every one of those jobs has ended, its last attempt too (wait only; at once if all have)
+  ended                a job ended, however (an attempt that is retried too)
+  failed               a job ended any way but ok
+  landing-done         a landing-lane job ended
+  started              a job started
+  submitted            a job was submitted
+  ready                a job that waited for others (--after) joined the queue
+  retry                a job that failed is to run again (--retries)
+  held, released       a job was held, or released, by hand
+  paused, resumed      a running job was paused, or resumed
+  prioritized          a queued job was given a priority
+  any                  any event (events only)
+Narrow any of these but idle and job= with filters after a colon, separated by commas: kind=<k>,
+and, for ended, failed, landing-done and any, outcome=<ok|failed|timeout|killed|cancelled|lost>.
+--since <t> also looks at the events already logged: t is a job id (the events of that job and later
+ones), a time ago such as 90s, 10m, 2h or 1d, or @<milliseconds since 1970>. Without it, a wait for
+an event sees only events that happen after it asks.
+  marshal wait --until ended:kind=build,outcome=failed --timeout 30m\
+"""
+
+// The outcome word of an event: `ok` for a job that exited 0, `failed` for one that ended any other
+// way of exiting, and the event's own name for `timeout`, `killed`, `cancelled` and `lost`; None for
+// an event that is not an ending.
+outcomeOf(ev: Json) -> Option[string]
+    val name = ev.get("event").flatMap(v -> v.asString()).getOrElse("")
+    if !endings.contains(name) then return None
+    name match
+        "finished" -> ev.get("exit").flatMap(v -> v.asLong()) match
+            Some(code) -> Some(if code == 0 then "ok" else "failed")
+            None -> None
+        other -> Some(other)
+
+// Whether the filter lets the event through.
+admits(f: Filter, ev: Json) -> bool
+    val name = ev.get("event").flatMap(v -> v.asString()).getOrElse("")
+    if f.names.nonEmpty() && !f.names.contains(name) then return false
+    if f.kind.exists(k -> ev.get("kind").flatMap(v -> v.asString()) != Some(k)) then return false
+    if f.landing && ev.get("landing").flatMap(v -> v.asBool()) != Some(true) then return false
+    val outcome = outcomeOf(ev)
+    if f.outcome.exists(o -> outcome != Some(o)) then return false
+    !(f.notOk && outcome.forall(o -> o == "ok"))
+
+private val EndingNames: Vector[string] = ["finished", "timeout", "killed", "cancelled", "lost"]
+
+// The events that are filters of their own name, beside `started` and `submitted`.
+private val Named: Vector[string] = ["ready", "retry", "held", "released", "paused", "resumed", "prioritized"]
+
+private baseFilter(name: string) -> Option[Filter]
+baseFilter("ended") = Some(Filter(EndingNames, None, None, false, false))
+baseFilter("failed") = Some(Filter(EndingNames, None, None, false, true))
+baseFilter("landing-done") = Some(Filter(EndingNames, None, None, true, false))
+baseFilter("started") = Some(Filter(["started"], None, None, false, false))
+baseFilter("submitted") = Some(Filter(["submitted"], None, None, false, false))
+baseFilter("any") = Some(Filter([], None, None, false, false))
+baseFilter(name) = if Named.contains(name) then Some(Filter([name], None, None, false, false)) else None
+
+// A condition as `wait --until` takes it, or why it is not one.
+parseCondition(text: string) -> Result[Condition, string]
+    val t = text.trim()
+    if t.isEmpty() then return Err("the condition is empty")
+    if t == "idle" then return Ok(IsIdle)
+    if t == "job" || t.startsWith("job=") then return jobsCondition(t)
+    val (name, rest) = t.indexOf(":") match
+        i if i >= 0 -> (t.slice(0, i), Some(t.slice(i + 1, t.byteLength())))
+        _ -> (t, None)
+    if name == "idle" then return Err("`idle` takes no filters")
+    var filter = baseFilter(name) match
+        Some(f) -> f
+        None -> return Err(s"`$name` is not a condition: idle, job=<id>,..., ended, failed, landing-done, started, submitted, ${Named.mkString(", ")} or any")
+    for part in rest.map(r -> r.split(",")).getOrElse([])
+        val eq = part.indexOf("=")
+        if eq <= 0 || eq == part.byteLength() - 1 then return Err(s"`$part` is not a filter: kind=<k> or outcome=<o>")
+        val key = part.slice(0, eq)
+        val value = part.slice(eq + 1, part.byteLength())
+        key match
+            "kind" ->
+                if filter.kind.isDefined() then return Err("`kind` is given twice")
+                filter = Filter(filter.names, Some(value), filter.outcome, filter.landing, filter.notOk)
+            "outcome" ->
+                if filter.outcome.isDefined() then return Err("`outcome` is given twice")
+                if !Outcomes.contains(value) then return Err(s"`$value` is not an outcome: ${Outcomes.mkString(", ")}")
+                if value == "ok" && filter.notOk then return Err("`failed` never ends ok")
+                if name != "ended" && name != "failed" && name != "landing-done" && name != "any"
+                    return Err(s"`$name` has no outcome: only an ending does")
+                filter = Filter(filter.names, filter.kind, Some(value), filter.landing, filter.notOk)
+            other -> return Err(s"`$other` is not a filter: kind=<k> or outcome=<o>")
+    Ok(Matching(filter))
+
+private jobsCondition(t: string) -> Result[Condition, string]
+    if !t.startsWith("job=") || t.byteLength() == 4 then return Err("`job` takes ids: job=<id>[,<id>...]")
+    val ids = Buffer[long]()
+    for word in t.slice(4, t.byteLength()).split(",")
+        word.toLongOption() match
+            Some(n) if n >= 1 -> if !ids.contains(n) then ids += n
+            _ -> return Err(s"`$word` is not a job id")
+    Ok(JobsEnded(ids.toVector()))
+
+// A condition for `events`, which shows events and so takes a filter, not `idle` or `job=`.
+parseFilter(text: string) -> Result[Filter, string] = parseCondition(text)? match
+    Matching(f) -> Ok(f)
+    _ -> Err(s"`$text` is not an event filter: events takes ended, failed, landing-done, started, submitted, ${Named.mkString(", ")} or any")
+
+// Where `events --since` starts, as the daemon takes it: from a time (milliseconds since 1970), from
+// a job (the events of job ids from it on), or both.
+data Since(ms: Option[long], id: Option[long])
+
+// `--since` as typed: a bare number is a job id, a number with `s`, `m`, `h` or `d` that long before
+// `now` (milliseconds since 1970), and `@` and a number a time of day in milliseconds since 1970.
+parseSince(text: string, now: long) -> Result[Since, string]
+    val bad = Err(s"`$text` is not a time: a job id, a number with s, m, h or d, or @<milliseconds since 1970>")
+    if text.isEmpty() then return bad
+    if text.startsWith("@")
+        return text.drop(1).toLongOption() match
+            Some(n) if n >= 0 -> Ok(Since(Some(n), None))
+            _ -> bad
+    val scale: long = text.last() match
+        's' -> 1000
+        'm' -> 60000
+        'h' -> 3600000
+        'd' -> 86400000
+        _ -> 0
+    val digits = if scale == 0 then text else text.dropRight(1)
+    if digits.isEmpty() || !digits.chars().forall(c -> '0' <= c <= '9') then return bad
+    digits.toLongOption() match
+        Some(n) if scale == 0 -> Ok(Since(None, Some(n)))
+        Some(n) if n <= long.MaxValue / scale -> Ok(Since(Some(if now - n * scale < 0 then 0 else now - n * scale), None))
+        _ -> bad
