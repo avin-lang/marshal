@@ -10,8 +10,8 @@ module dev.avinlang.marshal
 //   learn_window    how many recent runs of a kind learning reads (20)
 //   learn_min_runs  how many runs a kind needs before its deadline is learned (3)
 //   take_slot       take-slot.zsh's lock directory, whose budget and landing lane marshal shares;
-//                   "" shares none. By default the sysl repository's `.git` when it exists, and
-//                   `MARSHAL_TAKE_SLOT_DIR` overrides both (see `takeSlotDir`)
+//                   "" or no setting shares none, and `MARSHAL_TAKE_SLOT_DIR` overrides it
+//                   (see `takeSlotDir`)
 import json
 import json.Json
 

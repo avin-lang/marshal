@@ -1,0 +1,441 @@
+module tests
+
+// The stock train against throwaway repositories: a bare one standing for the remote and a clone of
+// it, with branches pushed to it. Each git rule the land and teardown steps keep is tried, with the
+// refusal that keeps it: a fast-forward only, nothing torn down after a push that failed, `-d` and
+// never `-D`, a worktree with changes kept, and the remote's copy of a branch deleted only where
+// what landed contains it. Then job types run through the daemon: `run-type` and `train`.
+import avin.fs
+import avin.process
+import avin.process.{Command, ExitStatus}
+import avin.threads
+import avin.threads.Atomic
+import avin.time.millis
+import json
+import json.Json
+import dev.avinlang.marshal
+
+// Who commits, and no configuration of the machine's own: the user's hooks, signing and templates
+// stay out of the throwaway repositories.
+val gitEnv: Vector[(string, string)] = [
+    ("GIT_AUTHOR_NAME", "marshal test"), ("GIT_AUTHOR_EMAIL", "test@example.com"),
+    ("GIT_COMMITTER_NAME", "marshal test"), ("GIT_COMMITTER_EMAIL", "test@example.com"),
+    ("GIT_CONFIG_GLOBAL", "/dev/null"), ("GIT_CONFIG_NOSYSTEM", "1")]
+
+gitCommand(dir: string, args: Vector[string]) -> Command
+    var c = Command("git", args*).inDir(dir)
+    for (k, v) in gitEnv do c = c.withEnv(k, v)
+    c
+
+// git's output in `dir`, trimmed; the test fails where git does.
+g(dir: string, args: string*) -> string = gitCommand(dir, args.toVector()).output() match
+    Ok(t) -> t.trim()
+    Err(e) -> fail(s"git ${args.mkString(" ")} in $dir: ${e.message()}")
+
+// The remote, a clone with `main` checked out, and the marshal home the runs use.
+data Repo(home: string, origin: string, clone: string)
+
+newRepo() -> Repo
+    val home = newHome()
+    val origin = home + "/origin.git"
+    val clone = home + "/repo"
+    g(home, "init", "-q", "--bare", "-b", "main", origin)
+    g(home, "clone", "-q", origin, clone)
+    fs.writeText(clone + "/README", "base\n").ok().get()
+    g(clone, "add", "README")
+    g(clone, "commit", "-q", "-m", "base")
+    g(clone, "push", "-q", "origin", "main")
+    Repo(home, origin, clone)
+
+// Pushes a branch `name` off main holding `files`, and goes back to main.
+branch(r: Repo, name: string, files: Vector[(string, string)])
+    g(r.clone, "switch", "-q", "-c", name, "main")
+    for (file, text) in files
+        fs.writeText(r.clone + "/" + file, text).ok().get()
+        g(r.clone, "add", file)
+    g(r.clone, "commit", "-q", "-m", name)
+    g(r.clone, "push", "-q", "-u", "origin", name)
+    g(r.clone, "switch", "-q", "main")
+
+// The branches of a repository.
+branchesOf(dir: string) -> Vector[string] =
+    g(dir, "for-each-ref", "--format=%(refname:short)", "refs/heads").lines().filter(l -> l.nonEmpty()).toVector()
+
+tipOf(dir: string, ref: string) -> string = g(dir, "rev-parse", ref)
+
+stock() -> string = process.env("MARSHAL_STOCK").getOrElse(fail("MARSHAL_STOCK names marshal's own steps and types; scripts/test.sh sets it"))
+
+val runs: Atomic[int] = Atomic(0)
+
+// A train's run, its output and its report.
+data TrainRun(code: int, out: string, report: Json)
+
+// The stock train with `args`, run by `run-steps` in the clone as a job of the repo's home would be.
+train(r: Repo, args: string*) -> TrainRun
+    val job = s"t${runs.add(1)}"
+    val out = s"${r.home}/$job.out"
+    var c = Command(bin(), (["run-steps", stock() + "/types/train.job"] ++ args.toVector())*).inDir(r.clone)
+    for (k, v) in gitEnv do c = c.withEnv(k, v)
+    c = c.withEnv("MARSHAL_HOME", r.home).withEnv("MARSHAL_JOB", job)
+    val code = c.toFile(out).errorsToOutput().run().ok().get() match
+        ExitStatus.Exited(n) -> n
+        ExitStatus.Signalled(s) -> 128 + s
+        ExitStatus.TimedOut -> 124
+    val text = fs.readText(out).getOrElse("")
+    val report = fs.readText(s"${r.home}/runs/$job/report.json").ok().flatMap(t -> json.parse(t).ok()).getOrElse(Json.Null)
+    TrainRun(code, text, report)
+
+strings(j: Json) -> Vector[string] = j.asVector().getOrElse([]).map(x -> x.asString().getOrElse("?"))
+
+@test("a green train lands its branches on the target and tears each one down")
+trainGreen()
+    val r = newRepo()
+    branch(r, "a", [("a.txt", "a\n")])
+    branch(r, "b", [("b.txt", "b\n")])
+    // b has a worktree, which goes with it
+    g(r.clone, "worktree", "add", "-q", r.home + "/repo-b", "b")
+    val t = train(r, "--test", "test -f a.txt && test -f b.txt", "a", "b")
+    assertEq(t.code, 0)
+    assertEq(t.report("result").asString(), Some("green"))
+    assertEq(strings(t.report("landed")), ["a", "b"])
+    val head = t.report("head").asString().get()
+    assertEq(tipOf(r.origin, "main"), head)
+    assertEq(tipOf(r.clone, "main"), head)
+    assert(fs.isFile(r.clone + "/a.txt") && fs.isFile(r.clone + "/b.txt"))
+    assertEq(branchesOf(r.origin), ["main"])
+    assertEq(branchesOf(r.clone), ["main"])
+    assert(!fs.exists(r.home + "/repo-b"))
+    // the integration tree is gone, and so is git's record of it
+    assert(!fs.exists(s"${r.home}/runs/t${runs.load()}/pass-1/tree"))
+    assert(!g(r.clone, "worktree", "list").contains("pass-1"))
+    cleanUp(r.home)
+
+@test("a red train lands nothing and tears nothing down")
+trainRed()
+    val r = newRepo()
+    branch(r, "a", [("a.txt", "a\n")])
+    branch(r, "b", [("bad", "b\n")])
+    val before = tipOf(r.origin, "main")
+    val t = train(r, "--test", "test ! -e bad", "a", "b")
+    assertEq(t.code, 1)
+    assertEq(t.report("result").asString(), Some("red"))
+    assertEq(t.report("step").asString(), Some("test"))
+    assertEq(strings(t.report("landed")), [])
+    assertEq(strings(t.report("culprits")), [])
+    assertEq(tipOf(r.origin, "main"), before)
+    assertEq(branchesOf(r.origin), ["a", "b", "main"])
+    assertEq(branchesOf(r.clone), ["a", "b", "main"])
+    assert(t.out.contains("marshal: train red at step test"), t.out)
+    cleanUp(r.home)
+
+@test("a red train names the branch its failures blame, directly or through the failure map")
+trainBlames()
+    val r = newRepo()
+    branch(r, "a", [("a.txt", "a\n")])
+    branch(r, "b", [("bad", "b")])
+    val named = train(r, "--test", "if [ -e bad ]; then echo \"=== FAIL t1 $(cat bad)\"; exit 1; fi", "a", "b")
+    assertEq(strings(named.report("culprits")), ["b"])
+    assertEq(named.report("fails")(0)("test").asString(), Some("t1"))
+    // the test names only the test; the map, given the failures, names the branch
+    val mapped = train(r, "--test", "[ -e bad ] && echo '=== FAIL t9' && exit 1; true",
+        "--fail-map", "printf '%s\\n' \"$MARSHAL_FAILS\" | while read t; do echo \"=== FAIL $t $(cat bad)\"; done", "a", "b")
+    assertEq(mapped.code, 1)
+    assertEq(strings(mapped.report("culprits")), ["b"])
+    assertEq(branchesOf(r.origin), ["a", "b", "main"])
+    cleanUp(r.home)
+
+@test("a bisected train of three with one bad lands the other two and blames the bad one")
+trainBisect()
+    val r = newRepo()
+    branch(r, "a", [("a.txt", "a\n")])
+    branch(r, "b", [("bad", "b\n")])
+    branch(r, "c", [("c.txt", "c\n")])
+    val t = train(r, "--test", "test ! -e bad", "--on-red", "bisect", "a", "b", "c")
+    assertEq(t.code, 1)
+    assertEq(strings(t.report("culprits")), ["b"])
+    assertEq(t.report("together").asBool(), Some(false))
+    assertEq(strings(t.report("landed")), ["a", "c"])
+    assertEq(tipOf(r.origin, "main"), t.report("head").asString().get())
+    assertEq(branchesOf(r.origin), ["b", "main"])
+    assertEq(branchesOf(r.clone), ["b", "main"])
+    assert(fs.isFile(r.clone + "/a.txt") && fs.isFile(r.clone + "/c.txt") && !fs.exists(r.clone + "/bad"))
+    // the first pass, a, b c, b, c, and the last over a c
+    assertEq(fs.listDir(s"${r.home}/runs/t${runs.load()}").ok().get().filter(n -> n.startsWith("pass-")).length(), 6)
+    cleanUp(r.home)
+
+@test("a branch that does not merge is blamed by name, without a bisection, and the rest land")
+trainConflict()
+    val r = newRepo()
+    branch(r, "a", [("same.txt", "from a\n")])
+    branch(r, "b", [("same.txt", "from b\n")])
+    val t = train(r, "--test", "true", "--on-red", "bisect", "a", "b")
+    assertEq(strings(t.report("culprits")), ["b"])
+    assertEq(strings(t.report("landed")), ["a"])
+    assertEq(t.report("step").asString(), Some("merge"))
+    assertEq(fs.listDir(s"${r.home}/runs/t${runs.load()}").ok().get().filter(n -> n.startsWith("pass-")).length(), 2)
+    assertEq(branchesOf(r.origin), ["b", "main"])
+    cleanUp(r.home)
+
+@test("a target that moved on the remote after the merge is not landed: the push would not be a fast-forward")
+trainRefusedFastForward()
+    val r = newRepo()
+    branch(r, "a", [("a.txt", "a\n")])
+    val other = r.home + "/other"
+    g(r.home, "clone", "-q", r.origin, other)
+    // someone lands on main while the train builds
+    val moved = s"git -C $other commit -q --allow-empty -m moved && git -C $other push -q origin main"
+    val t = train(r, "--build", moved, "--test", "true", "a")
+    assertEq(t.code, 1)
+    assertEq(t.report("step").asString(), Some("land"))
+    assertEq(strings(t.report("landed")), [])
+    assert(t.out.contains("would not be a fast-forward"), t.out)
+    assertEq(tipOf(r.origin, "main"), tipOf(other, "main"))
+    assertEq(branchesOf(r.origin), ["a", "main"])
+    assertEq(branchesOf(r.clone), ["a", "main"])
+    cleanUp(r.home)
+
+@test("a push the remote refuses lands nothing, and nothing is torn down")
+trainFailedPush()
+    val r = newRepo()
+    branch(r, "a", [("a.txt", "a\n")])
+    val hook = r.origin + "/hooks/pre-receive"
+    fs.writeText(hook, "#!/bin/sh\nwhile read old new ref; do [ \"$ref\" = refs/heads/main ] && exit 1; done\nexit 0\n").ok().get()
+    Command("chmod", "+x", hook).run().ok().get()
+    val before = tipOf(r.origin, "main")
+    val t = train(r, "--test", "true", "a")
+    assertEq(t.code, 1)
+    assertEq(t.report("step").asString(), Some("land"))
+    assert(t.out.contains("the push was refused"), t.out)
+    assert(!t.out.contains("step teardown"), t.out)
+    assertEq(tipOf(r.origin, "main"), before)
+    assertEq(branchesOf(r.origin), ["a", "main"])
+    assertEq(branchesOf(r.clone), ["a", "main"])
+    cleanUp(r.home)
+
+@test("a branch amended on the remote after the merge keeps its remote copy; the others are torn down")
+trainAmendedBranch()
+    val r = newRepo()
+    branch(r, "a", [("a.txt", "a\n")])
+    branch(r, "b", [("b.txt", "b\n")])
+    val other = r.home + "/other"
+    g(r.home, "clone", "-q", "-b", "b", r.origin, other)
+    val amend = s"git -C $other commit -q --amend -m amended && git -C $other push -q -f origin b"
+    val t = train(r, "--build", amend, "--test", "true", "a", "b")
+    assertEq(t.code, 1)
+    assertEq(t.report("step").asString(), Some("teardown"))
+    // what merged landed; b's amended copy is not in it, so it stays
+    assertEq(strings(t.report("landed")), ["a", "b"])
+    assertEq(tipOf(r.origin, "main"), t.report("head").asString().get())
+    assertEq(branchesOf(r.origin), ["b", "main"])
+    assertEq(tipOf(r.origin, "b"), tipOf(other, "b"))
+    assert(t.out.contains("kept b: origin/b has commits that did not land"), t.out)
+    cleanUp(r.home)
+
+@test("a local branch with commits that did not land is kept: -d refuses it, and it is never forced")
+trainBranchNotMerged()
+    val r = newRepo()
+    branch(r, "a", [("a.txt", "a\n")])
+    g(r.clone, "switch", "-q", "a")
+    fs.writeText(r.clone + "/later.txt", "later\n").ok().get()
+    g(r.clone, "add", "later.txt")
+    g(r.clone, "commit", "-q", "-m", "not pushed")
+    val unpushed = tipOf(r.clone, "a")
+    g(r.clone, "switch", "-q", "main")
+    val t = train(r, "--test", "true", "a")
+    assertEq(t.code, 1)
+    assertEq(t.report("step").asString(), Some("teardown"))
+    assert(t.out.contains("kept a: git would not delete the branch with -d"), t.out)
+    assertEq(tipOf(r.clone, "a"), unpushed)
+    // the remote's copy was in what landed, so it went
+    assertEq(branchesOf(r.origin), ["main"])
+    cleanUp(r.home)
+
+@test("a branch whose worktree has changes is kept, worktree, remote copy and all")
+trainDirtyWorktree()
+    val r = newRepo()
+    branch(r, "a", [("a.txt", "a\n")])
+    val tree = r.home + "/repo-a"
+    g(r.clone, "worktree", "add", "-q", tree, "a")
+    fs.writeText(tree + "/work-in-progress.txt", "mine\n").ok().get()
+    val t = train(r, "--test", "true", "a")
+    assertEq(t.code, 1)
+    assert(t.out.contains("kept a: its worktree"), t.out)
+    assert(fs.isFile(tree + "/work-in-progress.txt"))
+    assertEq(branchesOf(r.origin), ["a", "main"])
+    assertEq(branchesOf(r.clone), ["a", "main"])
+    cleanUp(r.home)
+
+@test("a local target that has diverged is left where it is, the remote landed, and said")
+trainLocalTargetDiverged()
+    val r = newRepo()
+    branch(r, "a", [("a.txt", "a\n")])
+    g(r.clone, "commit", "-q", "--allow-empty", "-m", "local only")
+    val local = tipOf(r.clone, "main")
+    val t = train(r, "--test", "true", "a")
+    assertEq(tipOf(r.origin, "main"), t.report("head").asString().get())
+    assertEq(tipOf(r.clone, "main"), local)
+    assert(t.out.contains("warning: the local `main` is not an ancestor"), t.out)
+    cleanUp(r.home)
+
+@test("a target given by name is landed on, whatever the remote's HEAD names")
+trainNamedTarget()
+    val r = newRepo()
+    g(r.clone, "push", "-q", "origin", "main:release")
+    branch(r, "a", [("a.txt", "a\n")])
+    // the clone works on release, which follows what lands, so `-d` finds a merged there
+    g(r.clone, "switch", "-q", "-c", "release", "--track", "origin/release")
+    val t = train(r, "--target", "release", "--test", "true", "a")
+    assertEq(t.code, 0)
+    val head = t.report("head").asString().get()
+    assertEq(tipOf(r.origin, "release"), head)
+    assertEq(tipOf(r.clone, "release"), head)
+    assert(tipOf(r.origin, "main") != head)
+    assertEq(branchesOf(r.clone), ["main", "release"])
+    cleanUp(r.home)
+
+@test("a branch not in the checked-out branch that landed elsewhere is kept by -d, and said")
+trainDeleteChecksHead()
+    val r = newRepo()
+    g(r.clone, "push", "-q", "origin", "main:release")
+    branch(r, "a", [("a.txt", "a\n")])
+    // main is checked out, and does not take what lands on release: -d refuses a
+    val t = train(r, "--target", "release", "--test", "true", "a")
+    assertEq(t.code, 1)
+    assertEq(t.report("step").asString(), Some("teardown"))
+    assertEq(strings(t.report("landed")), ["a"])
+    assert(t.out.contains("kept a: git would not delete the branch with -d"), t.out)
+    assertEq(branchesOf(r.clone), ["a", "main"])
+    cleanUp(r.home)
+
+@test("a branch the remote does not have is blamed by the merge")
+trainMissingBranch()
+    val r = newRepo()
+    val t = train(r, "--test", "true", "nope")
+    assertEq(t.code, 1)
+    assertEq(t.report("step").asString(), Some("merge"))
+    assertEq(strings(t.report("culprits")), ["nope"])
+    cleanUp(r.home)
+
+@test("marshal train runs through the daemon as one landing job, and prints the run's report")
+trainThroughDaemon()
+    val r = newRepo()
+    branch(r, "a", [("a.txt", "a\n")])
+    branch(r, "b", [("b.txt", "b\n")])
+    val ran = mWith(r.home, gitEnv, "train", "--dir", r.clone, "--test", "test -f a.txt", "a", "b")
+    assertEq(ran.code, 0)
+    assert(ran.out.contains("job 1: train, log "), ran.out)
+    assert(ran.out.contains("job 1 exited 0"), ran.out)
+    assert(ran.out.contains("marshal: train green\n  landed a b as "), ran.out)
+    val started = events(r.home).find(e -> e("event").asString() == Some("started")).get()
+    assertEq(started("kind").asString(), Some("train"))
+    assertEq(started("landing").asBool(), Some(true))
+    assertEq(branchesOf(r.origin), ["main"])
+    cleanUp(r.home)
+
+// A project of its own with the type `name` in its `.marshal/types`.
+projectWithType(name: string, text: string) -> (string, string)
+    val home = newHome()
+    val project = home + "/project"
+    fs.createDirAll(project + "/.marshal/types").ok().get()
+    fs.writeText(s"$project/.marshal/types/$name.job", text).ok().get()
+    (home, project)
+
+val sayingType: string = """
+{
+  "about": "Says things.",
+  "kind": "sayer",
+  "units": 2,
+  "params": {
+    "word": {"required": true, "about": "what to say"},
+    "then": {"default": "report", "choices": ["report", "next"]}
+  },
+  "steps": [
+    {"name": "first", "run": ["sh", "-c", "echo said $0 $MARSHAL_PARAM_WORD; echo '=== HEAD abcd1234'; exit $1", "${word}", "${word}"], "exit": [0, 7], "on_failure": "${then}"},
+    {"name": "second", "run": ["sh", "-c", "echo head $MARSHAL_HEAD in $MARSHAL_STEP; echo '=== RESULT green'"], "result": true}
+  ]
+}"""
+
+@test("run-type runs a project's type as one job of its kind, with its parameters, and exits with the run")
+runTypeProject()
+    val (home, project) = projectWithType("say", sayingType)
+    val ran = m(home, "run-type", "--dir", project, "say", "--word", "0")
+    assertEq(ran.code, 0)
+    assert(ran.out.contains("marshal: say green"), ran.out)
+    val log = fs.readText(home + "/jobs/1.log").ok().get()
+    assert(log.contains("said 0 0"), log)
+    assert(log.contains("head abcd1234 in second"), log)
+    val started = events(home).find(e -> e("event").asString() == Some("started")).get()
+    assertEq(started("kind").asString(), Some("sayer"))
+    assertEq(started("units").asInt(), Some(2))
+    assertEq(started("landing").asBool(), Some(false))
+    // a code the step does not allow fails it, and report makes the run red there
+    val red = m(home, "run-type", "--dir", project, "say", "--word", "3")
+    assertEq(red.code, 1)
+    assert(red.out.contains("marshal: say red at step first"), red.out)
+    // and next goes on past it
+    assertEq(m(home, "run-type", "--dir", project, "say", "--word", "3", "--then", "next").code, 0)
+    cleanUp(home)
+
+@test("run-type refuses a type or parameters that are wrong before submitting anything")
+runTypeRefusals()
+    val (home, project) = projectWithType("say", sayingType)
+    val missing = m(home, "run-type", "--dir", project, "say")
+    assertEq(missing.code, 2)
+    assert(missing.out.contains("`--word` is required"), missing.out)
+    val bad = m(home, "run-type", "--dir", project, "say", "--word", "x", "--then", "land")
+    assertEq(bad.code, 2)
+    assert(bad.out.contains("`--then land`: it is one of report, next"), bad.out)
+    val unknown = m(home, "run-type", "--dir", project, "nope")
+    assertEq(unknown.code, 2)
+    assert(unknown.out.contains("no type `nope`"), unknown.out)
+    assertEq(m(home, "run-type").code, 2)
+    fs.writeText(project + "/.marshal/types/broken.job", "{\"steps\": [{\"name\": \"a\"}]}").ok().get()
+    val broken = m(home, "run-type", "--dir", project, "broken")
+    assertEq(broken.code, 2)
+    assert(broken.out.contains("broken.job: step `a`: `run` is the program"), broken.out)
+    // nothing was submitted, so no daemon was started
+    assert(!fs.exists(home + "/sock"))
+    fs.removeDirAll(home)
+
+@test("a type's --help lists its parameters; run-type --help describes the command")
+runTypeHelp()
+    val (home, project) = projectWithType("say", sayingType)
+    val help = m(home, "run-type", "--dir", project, "say", "--help")
+    assertEq(help.code, 0)
+    assert(help.out.contains("usage: marshal run-type say [options]"), help.out)
+    assert(help.out.contains("--word <string>"), help.out)
+    assert(help.out.contains("Says things."), help.out)
+    val train = m(home, "train", "--help")
+    assertEq(train.code, 0)
+    assert(train.out.contains("usage: marshal run-type train [options] [<branch>...]"), train.out)
+    val command = m(home, "run-type", "--help")
+    assertEq(command.code, 0)
+    assert(command.out.contains("usage: marshal run-type <type> [parameters]"), command.out)
+    assert(!fs.exists(home + "/sock"))
+    fs.removeDirAll(home)
+
+@test("killing a type's job stops the step it is running, which runs in a group of its own")
+runTypeKill()
+    val (home, project) = projectWithType("slow", "{\"steps\": [{\"name\": \"sleep\", \"run\": [\"sh\", \"-c\", \"echo $$ > step.pid; sleep 300 & sleep 301 & wait\"]}]}")
+    val id = m(home, "run-type", "--submit", "--dir", project, "slow").out.trim().toLong()
+    var tries = 0
+    while !fs.exists(project + "/step.pid") && tries < 200
+        threads.sleep(millis(50))
+        tries += 1
+    threads.sleep(millis(200))
+    val pgid = fs.readText(project + "/step.pid").ok().get().trim().toLong()
+    assert(process.signal(-pgid, 0).isOk())
+    assertEq(m(home, "kill", id.toString()).code, 0)
+    assertEq(m(home, "wait", id.toString()).code, 143)
+    threads.sleep(millis(500))
+    assert(process.signal(-pgid, 0).isErr(), "the step's group outlived its job")
+    cleanUp(home)
+
+@test("a step past its deadline in a run is stopped and fails the run at that step")
+runTypeStepDeadline()
+    val (home, project) = projectWithType("slow", "{\"steps\": [{\"name\": \"sleep\", \"run\": [\"sleep\", \"300\"], \"deadline\": \"1s\", \"on_failure\": \"report\"}]}")
+    val ran = m(home, "run-type", "--dir", project, "slow")
+    assertEq(ran.code, 1)
+    assert(ran.out.contains("marshal: slow red at step sleep"), ran.out)
+    assert(fs.readText(home + "/jobs/1.log").ok().get().contains("passed its deadline of 1.0s"))
+    cleanUp(home)

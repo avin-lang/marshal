@@ -23,6 +23,8 @@ import json.Json
 val Commands: Vector[(string, string)] = [
     ("submit [options] -- <command...>", "queue a job; prints its id"),
     ("run [options] -- <command...>", "submit and wait: prints the log's path, then the result; exits with the job's status"),
+    ("run-type <type> [parameters]", "runs a job type's steps as one job and waits; <type> --help lists its parameters"),
+    ("train [parameters] <branch...>", "run-type train: merges the branches, builds and tests them, lands them when green"),
     ("wait <id> | --until <cond> [--timeout <t>] [--since <t>]", "waits for the job, prints one result line, exits with its status; or waits for an event, prints it, exits 0 (124 on timeout)"),
     ("events [--follow] [--since <t>] [<filter>]", "the logged events as JSON lines; --follow goes on streaming them until killed"),
     ("ls", "jobs queued, running and recently ended"),
@@ -78,6 +80,8 @@ private isHelp(word: string) -> bool = word == "--help" || word == "-h"
 // argument before a `--`.
 asksHelp(command: string, args: Vector[string]) -> bool
 asksHelp("submit" | "run", args) = optionsAskHelp(args, 0)
+// a type's run reads `--help` itself: after the type's name it is the type's help
+asksHelp("run-type" | "train", args) = false
 asksHelp(_, args) = args.takeWhile(a -> a != "--").exists(isHelp)
 
 private optionsAskHelp(args: Vector[string], i: int) -> bool
@@ -105,6 +109,9 @@ main(args: Vector[string]) -> int
     args(0) match
         "submit" -> submit(rest, false)
         "run" -> submit(rest, true)
+        "run-type" -> runType(rest, None)
+        "train" -> runType(rest, Some("train"))
+        "run-steps" -> runSteps(rest)
         "wait" -> if rest.contains("--until") then waitUntil(rest) else withId(rest, id -> waitFor(id))
         "events" -> events(rest)
         "kill" -> withId(rest, id -> simple(Request.Kill(id), s"marshal: job $id is being stopped"))

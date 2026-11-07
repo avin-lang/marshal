@@ -4,13 +4,146 @@ marshal runs the heavy commands of building, testing and releasing on one machin
 fighting over it. Each command is a **job** with a weight in **units** and an amount of **memory**;
 a daemon starts jobs while they fit a budget, keeps the rest in a first-come queue, gives the
 **landing lane** to the one job everyone is waiting for, and stops any job that runs far past how
-long jobs of its kind normally take. Written in Avin.
+long jobs of its kind normally take.
+
+Work that takes several steps (merge some branches, build, test, land them, clean up) is written
+as a **job type**: a small data file naming the steps, which marshal runs as one job. marshal ships
+one type, **train**, which gates a batch of git branches together and lands them; your project can
+add its own. marshal is written in [Avin](https://github.com/avin-lang/avin).
+
+## Install
+
+With Homebrew:
+
+```
+brew install avin-lang/tap/marshal
+```
+
+From source, with an Avin compiler on your `PATH`:
+
+```
+git clone https://github.com/avin-lang/marshal
+cd marshal
+avin build . -o marshal
+```
+
+Put `marshal` on your `PATH`, and the `stock` directory at `share/marshal` beside the directory that
+holds it (`/usr/local/bin/marshal` and `/usr/local/share/marshal/`), or name it with
+`$MARSHAL_STOCK`. marshal's own steps are Avin programs, compiled the first time a type uses them, so
+running the `train` type needs an Avin compiler too (`$AVIN`, or `avin` on the `PATH`).
+
+## A first job
+
+```
+$ marshal run -- make test
+marshal: job 1: log /Users/me/.marshal/jobs/1.log
+marshal: job 1 exited 0 after 2m12s; log /Users/me/.marshal/jobs/1.log
+```
+
+The first command starts the daemon. `marshal run` waits and exits with the job's own status;
+`marshal submit` queues the job and prints its id, for `marshal wait <id>` later. `marshal top`
+shows what runs and waits, live.
+
+## A first train
+
+The train merges branches onto a target branch, as the remote has them, in a worktree of its own;
+runs a build command and a test command there; and, when both pass, pushes the merged commit to the
+target and tears each branch down. A throwaway repository shows the whole of it:
+
+```
+git init -q --bare -b main /tmp/demo.git
+git clone -q /tmp/demo.git /tmp/demo
+cd /tmp/demo
+printf 'test:\n\ttest ! -e broken\n' > Makefile
+git add Makefile
+git commit -q -m start
+git push -q origin main
+git switch -q -c one
+echo 1 > one.txt
+git add one.txt
+git commit -q -m one
+git push -q -u origin one
+git switch -q -c two main
+echo 2 > two.txt
+git add two.txt
+git commit -q -m two
+git push -q -u origin two
+git switch -q main
+marshal train --test "make test" one two
+```
+
+```
+marshal: job 1: train, log /Users/me/.marshal/jobs/1.log
+marshal: job 1 exited 0 after 2.1s; log /Users/me/.marshal/jobs/1.log
+marshal: train green
+  landed one two as 3f0c…
+```
+
+`main` on the remote is now the merge of both branches, your own `main` has followed it, and the
+branches are gone, locally and on the remote. Had `make test` failed, nothing would have landed and
+nothing would have been torn down. `marshal train --help` lists every parameter:
+
+| Parameter | Meaning |
+| --- | --- |
+| `<branch>...` / `--branch` | the branches to batch, in order, as the remote has them |
+| `--test <command>` | the test command, run by `sh` in the merged tree (required) |
+| `--build <command>` | a build command run before it (none by default) |
+| `--remote <name>` | the remote (default `origin`) |
+| `--target <branch>` | the branch to land on (default: the one the remote's HEAD names) |
+| `--on-red bisect` | on red, find the branches to blame and land the rest (default `report`) |
+| `--fail-map <command>` | a command that names the branch behind each failing test |
+| `--step-deadline <t>` | how long the build and the test may each run (default `12h`) |
+
+The train keeps git's safety rules, and refuses rather than forces: it lands only a fast-forward of
+the target as the remote has it at that moment, and pushes that very commit; it tears nothing down
+unless the push succeeded; it deletes a branch with `git branch -d`, never `-D`; it removes a
+branch's worktree without `--force`, so one with changes is kept; and it deletes the remote's copy
+of a branch only where what landed contains it, so a branch amended or pushed again after the merge
+is kept. Whatever it keeps, it says, and the run is then red.
+
+A test command that knows which branch broke a test says `=== FAIL <test> <branch>` on its output;
+the train then blames that branch without bisecting. See [the step protocol](docs/protocol.md#the-step-protocol).
+
+## Job types
+
+A type is a `.job` file. `marshal run-type <name>` looks for it in the project's
+`.marshal/types/<name>.job`, then `~/.marshal/types/<name>.job`, then marshal's own types; a path
+names a file directly. `marshal run-type <name> --help` describes it. This one builds and tests the
+working tree (it is [examples/types/gate.job](examples/types/gate.job)):
+
+```
+{
+  "about": "Builds and tests the working tree, with a deadline on each.",
+  "lane": "dev",
+  "units": 4,
+  "params": {
+    "build": {"default": "make", "about": "the build command, run by sh"},
+    "test": {"default": "make test", "about": "the test command, run by sh"}
+  },
+  "steps": [
+    {"name": "build", "run": ["sh", "-c", "${build}"], "deadline": "30m"},
+    {"name": "test", "run": ["sh", "-c", "${test}"], "deadline": "1h", "on_failure": "report"}
+  ]
+}
+```
+
+```
+marshal run-type gate --test "make check"
+```
+
+A step is any program: a shell command, a script, an Avin program (`avin:steps/check.avin`, compiled
+once and cached). It gets its parameters as arguments (`${name}`) and as variables
+(`$MARSHAL_PARAM_NAME`), and talks to marshal with lines on its output, such as `=== HEAD <sha>` and
+`=== FAIL <test> <branch>`. [docs/jobs.md](docs/jobs.md) is the reference for the file, and
+[docs/protocol.md](docs/protocol.md#the-step-protocol) for the lines.
 
 ## Commands
 
 ```
 marshal submit [options] -- <command...>   queue a job; prints its id
 marshal run [options] -- <command...>      submit and wait: prints the log's path, then the result; exits with the job's status
+marshal run-type <type> [parameters]       runs a job type's steps as one job and waits; <type> --help lists its parameters
+marshal train [parameters] <branch...>     run-type train: merges the branches, builds and tests them, lands them when green
 marshal wait <id> | --until <cond> [--timeout <t>] [--since <t>]  waits for the job, prints one result line, exits with its status; or waits for an event, prints it, exits 0 (124 on timeout)
 marshal events [--follow] [--since <t>] [<filter>]  the logged events as JSON lines; --follow goes on streaming them until killed
 marshal ls                                 jobs queued, running and recently ended
@@ -45,21 +178,19 @@ Options of `submit` and `run`:
 | `--dir <d>` | Where it runs, relative to the current directory. Default: the current directory. |
 | `--deadline <t>` | Stops it after `t`: a number of minutes, or `90s`, `30m`, `2h`. Default: learned for its kind. |
 
-A job runs with the caller's environment, in a process group of its own, under `nice -n 15` unless it
-is a landing job, with its standard output and error in `~/.marshal/jobs/<id>.log`.
+`run-type` and `train` take `--dir`, `--deadline`, `--units` and `--mem` too, which override the
+type's own, and `--submit`, which prints the job's id instead of waiting. A type's parameters may not
+use those names.
+
+A job runs with the caller's environment, plus `MARSHAL_JOB` (its id) and `MARSHAL_HOME`, in a
+process group of its own, under `nice -n 15` unless it is a landing job, with its standard output
+and error in `~/.marshal/jobs/<id>.log`.
 
 **Exit statuses.** `wait` and `run` exit with the job's own code; 128 + the signal for a job ended by
 a signal (143 for `kill`); 124 for a job stopped at its deadline; 143 for a job cancelled before it
-started; 125 for a job lost when a daemon died. marshal's own failures (a bad command line, an unknown
-job, no daemon) exit 2.
-
-```
-$ marshal run --kind test -- sysl test compiler --timeout 1800
-marshal: job 14: log /Users/me/.marshal/jobs/14.log
-marshal: job 14 exited 0 after 18m12s; log /Users/me/.marshal/jobs/14.log
-$ id=$(marshal submit --landing -- ./scripts/train.sh)
-$ marshal wait $id
-```
+started; 125 for a job lost when a daemon died. A type's run exits 0 when it is green, 1 when it is
+red and 2 when its type or parameters are wrong. marshal's own failures (a bad command line, an
+unknown job, no daemon) exit 2.
 
 ## Waking on events
 
@@ -116,10 +247,12 @@ ends: nothing polls.
   the head could start, so it never delays the head.
 - **Deadlines.** A kind's deadline is twice the median of its last 20 successful runs, never under 5
   minutes; until it has 3 runs it is 20 minutes for a build, 45 for a test, 30 for anything else and
-  120 for a landing job. A job past its deadline has its busiest process sampled (`sample`, 5
-  seconds, to `jobs/<id>.sample.txt`), then its group gets TERM and, 5 seconds later, KILL.
+  120 for a landing job. A job past its deadline has its busiest process sampled (where the system
+  has `sample`, 5 seconds, to `jobs/<id>.sample.txt`), then its group gets TERM and, 5 seconds later,
+  KILL.
 - **Events.** `events.jsonl` records every job's `submitted`, `held`, `released`, `prioritized`,
-  `started`, `paused`, `resumed` and ending (`finished`, `timeout`, `killed`, `lost`), each with the time, the job, and its durations and exit status.
+  `started`, `paused`, `resumed` and ending (`finished`, `timeout`, `killed`, `lost`), each with the
+  time, the job, and its durations and exit status.
   Deadlines are learned from it, and a daemon that starts after one died records the jobs that
   were left open as `lost`.
 - **Pausing a job.** `marshal pause <id>` sends STOP to a running job's whole process group and
@@ -168,9 +301,10 @@ them.
 
 ## Sharing the machine with take-slot.zsh
 
-While scripts move to marshal one at a time, sysl's agents keep running heavy commands through
-`take-slot.zsh`. The two share **one unit budget and one landing lane** through take-slot's own lock
-directory, with no change to take-slot:
+marshal can share one unit budget and one landing lane with `take-slot.zsh`, a lock-directory script
+some projects use for the same purpose, through take-slot's own lock directory and with no change to
+take-slot. It is off unless configured: `take_slot` in `config.json` names the directory, and
+`$MARSHAL_TAKE_SLOT_DIR` overrides it (empty for none).
 
 - **marshal counts take-slot's runs.** A live `slot-units/<pid>` file counts its units, and an old
   `build*.lock` slot held by a live process counts 4. take-slot's waiters (`slot-waiting/<time>-<pid>`)
@@ -187,9 +321,7 @@ directory, with no change to take-slot:
   one died removes what that one left (its ticket, and its lost jobs' files).
 
 take-slot does not tell marshal when its runs end, so while jobs wait the daemon reads the
-directory every 3 seconds; take-slot itself looks every 10 (20 for a landing). The directory is
-`take_slot` in `config.json` (`""` for none), overridden by `$MARSHAL_TAKE_SLOT_DIR` (empty for
-none); by default it is `/Users/ed/dev/sysl-lang/sysl/.git` when that exists. Keep take-slot's
+directory every 3 seconds; take-slot itself looks every 10 (20 for a landing). Keep take-slot's
 `SLOT_BUDGET` and marshal's `units` equal (12 both by default): each side measures the other's use
 against its own budget. `marshal status` shows what take-slot holds.
 
@@ -222,8 +354,9 @@ against its own budget. `marshal status` shows what take-slot holds.
 - **No daemon**: top does not start one by itself. It says there is none, looks again every second,
   and `s` starts one. A daemon older than the `snapshot` request is named as such.
 
-The protocol between the command line and the daemon is in [docs/protocol.md](docs/protocol.md),
-and the choices behind the design in [docs/decisions.md](docs/decisions.md).
+The protocol between the command line and the daemon, and the step protocol, are in
+[docs/protocol.md](docs/protocol.md); the `.job` file in [docs/jobs.md](docs/jobs.md); the choices
+behind the design in [docs/decisions.md](docs/decisions.md).
 
 ## Building and testing
 
@@ -236,9 +369,11 @@ marshal depends on [tui](https://github.com/avin-lang/tui), fetched at the commi
 and needs an Avin with `process.exec` and `process.waitPid`.
 
 `scripts/test.sh` builds marshal and runs the unit tests (scheduler, deadlines, protocol, event log,
-settings, take-slot's format, top's screen and keys, the state a restart hands over) and the end-to-end tests, among them `top`
-under `script` in a pseudo-terminal, which start real daemons in temporary homes,
-each with a take-slot directory of its own, and run the real `take-slot.zsh` against it (`$TAKE_SLOT`
-names the script). `$AVIN` names the compiler. The restart tests point the daemon at another program
-with `$MARSHAL_RESTART_PROGRAM`, and stand in for a newer marshal with `$MARSHAL_TEST_VERSION`, the
-version the daemon then reports.
+settings, take-slot's format, top's screen and keys, the state a restart hands over, `.job` files,
+the step protocol, transitions and bisection) and the end-to-end tests, among them `top` under
+`script` in a pseudo-terminal, and the train against throwaway git repositories. The end-to-end tests
+start real daemons in temporary homes, each with a take-slot directory of its own, and run the real
+`take-slot.zsh` against it (`$TAKE_SLOT` names the script). `$AVIN` names the compiler, which also
+compiles marshal's own steps from `stock/` (`$MARSHAL_STOCK`). The restart tests point the daemon at
+another program with `$MARSHAL_RESTART_PROGRAM`, and stand in for a newer marshal with
+`$MARSHAL_TEST_VERSION`, the version the daemon then reports.
