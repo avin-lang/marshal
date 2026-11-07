@@ -663,19 +663,21 @@ with the user: hold applying to waiting jobs, and priority staying for queued jo
 
 ## Local time in `history` and `stats` (branch `local-history`)
 
-- **Proposed: `history` prints ENDED in the caller's local zone and `--since` dates are read
+**Settled on the user's delegation 2026-11-07.** Review with the user: the fold and gap conventions.
+
+- **`history` prints ENDED in the caller's local zone and `--since` dates are read
   there, the zone being `TZ`, else the host's, as the STARTED column does.** The heading is `ENDED`
   (it was `ENDED (UTC)`); the format is still `YYYY-MM-DD hh:mm:ss`. `--json` is unchanged: `ended_at`
   is an instant in milliseconds. Why: a person reading `ls`, `top` and `history` side by side should
   see one clock, and avin now has zones. Alternatives: keep UTC (the first proposal: the same text on
   every machine, but a different clock from `ls`); print an offset on every row (wide, and still
   two clocks).
-- **Proposed: a `--since` date without an offset is local; a date and minute ending in `Z` or
+- **a `--since` date without an offset is local; a date and minute ending in `Z` or
   `+hh:mm`/`-hh:mm` is taken as that instant.** Why: bare is what a person types, and an explicit
   offset is how a script or a pasted log timestamp stays exact whatever `TZ` is. A date-only form
   takes no offset (`2026-11-07Z` is refused): its offset would be ambiguous with the date's dashes.
   Alternatives: a `Z` for UTC only; no offsets at all.
-- **Proposed: a local reading that occurs twice (clocks going back) is the first occurrence, and one
+- **a local reading that occurs twice (clocks going back) is the first occurrence, and one
   that never occurs (clocks going forward) is read with the offset in force before the change,
   so it falls just after the gap.** Why: a `--since` bound must be one instant, and these are the
   usual conventions. Alternative: refuse the date.
