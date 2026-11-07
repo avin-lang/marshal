@@ -11,7 +11,8 @@ long jobs of its kind normally take. Written in Avin.
 ```
 marshal submit [options] -- <command...>   queue a job; prints its id
 marshal run [options] -- <command...>      submit and wait: prints the log's path, then the result; exits with the job's status
-marshal wait <id>                          waits for the job; prints one result line; exits with the job's status
+marshal wait <id> | --until <cond> [--timeout <t>] [--since <t>]  waits for the job, prints one result line, exits with its status; or waits for an event, prints it, exits 0 (124 on timeout)
+marshal events [--follow] [--since <t>] [<filter>]  the logged events as JSON lines; --follow goes on streaming them until killed
 marshal ls                                 jobs queued, running and recently ended
 marshal kill <id>                          stops the job's whole process tree (a queued job is cancelled)
 marshal hold <id>                          keeps a queued job from starting; it keeps its place
@@ -59,6 +60,49 @@ marshal: job 14 exited 0 after 18m12s; log /Users/me/.marshal/jobs/14.log
 $ id=$(marshal submit --landing -- ./scripts/train.sh)
 $ marshal wait $id
 ```
+
+## Waking on events
+
+A program that wants to resume when something happens runs one blocking command, in the
+background, and is resumed when it exits. Nothing polls: the daemon answers from the message that
+ends a job.
+
+```
+$ marshal wait --until idle
+$ marshal wait --until job=14,15
+$ marshal wait --until ended:kind=gate,outcome=failed --timeout 30m
+$ marshal events --follow failed
+```
+
+| Condition | Met when |
+| --- | --- |
+| `idle` | nothing is running and nothing is queued; at once if that is already so |
+| `job=<id>[,<id>...]` | every one of those jobs has ended; at once if all have |
+| `ended` | a job ended, however |
+| `failed` | a job ended any way but `ok` |
+| `landing-done` | a landing-lane job ended |
+| `started`, `submitted` | a job started, or was queued |
+
+`ended`, `failed`, `landing-done`, `started`, `submitted` and `any` take filters after a colon,
+joined by commas: `kind=<k>` and `outcome=<ok|failed|timeout|killed|lost>`, as in
+`ended:kind=avin-gate,outcome=failed`. The outcome of a job that exited 0 is `ok`; of one that exited
+any other way or was ended by a signal, `failed`.
+
+`wait --until` prints the event that met the condition as one JSON line (the line the event log
+holds; for `idle`, `{"ts":...,"event":"idle","running":0,"queued":0}`; for `job=`, the ending event of
+the job that ended last) and exits 0. It exits 124 when `--timeout` (minutes, or `90s`, `30m`, `2h`)
+comes first, 2 for a condition that is not one or names no job, and 1 when no daemon can be reached.
+A wait for an event sees events that happen after it asks, unless `--since` looks back: a job id
+(that job's events and later ones), a time ago (`90s`, `10m`, `2h`, `1d`) or `@<milliseconds since
+1970>`. No event is missed between asking and the daemon's registering the wait: the daemon looks at the
+log and registers on its own thread. A wait goes on across `marshal restart`: the command connects
+again and asks again, and the daemon looks for what happened while it handed over.
+
+`events` prints the logged events the filter lets through (all of them without one) and exits;
+with `--follow` it goes on, printing each as it is logged, until killed. A reader that falls behind
+is dropped, never waited for: its stream ends with the line `{"ok":false,"error":"events were
+dropped: ..."}` (on standard error, with exit 1, from the command), and `--since` sees what it
+missed. The protocol is in `docs/protocol.md`.
 
 ## The daemon
 

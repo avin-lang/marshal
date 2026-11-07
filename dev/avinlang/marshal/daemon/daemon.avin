@@ -38,6 +38,7 @@ import dev.avinlang.marshal.{Submitted, Ended, Jobs, Using, Viewed, Hi, Done, Fa
 import dev.avinlang.marshal.{Overview, QueuedJob, SavedJob, SavedState}
 import dev.avinlang.marshal.{Cancelled, TimedOut}
 import dev.avinlang.marshal.Resident
+import dev.avinlang.marshal.{Condition, Mode, IsIdle, JobsEnded, Matching, Once, Past, Follow, Watch, Streamed, Replayed}
 
 // `Written` follows each reply the daemon gave, once its connection has written it.
 data Message
@@ -51,6 +52,20 @@ data Message
     Sample
     // The resident bytes of each job's process tree, by job id.
     Measured(sizes: Vector[(long, long)])
+    // The client of a watch has gone: the stream it was read from.
+    Unwatch(out: Channel[Reply])
+
+// How many replies a watch's stream holds for a reader that has not taken them yet, unless
+// `$MARSHAL_TEST_WATCH_BUFFER` names another, which is how the tests make a reader fall behind
+// without writing hundreds of events.
+watchBuffer() -> int = process.env("MARSHAL_TEST_WATCH_BUFFER").flatMap(t -> t.toIntOption()).filter(n -> n >= 1).getOrElse(256)
+
+// A client following events. `out` is its bounded stream, written only by the daemon's thread and
+// read by the client's connection. For a `JobsEnded` condition `pending` holds the jobs not yet
+// ended and `last` the latest ending seen.
+class Watcher(val cond: Condition, val mode: Mode, val out: Channel[Reply])
+    var pending: Vector[long] = []
+    var last: Option[Json] = None
 
 // How long a job's processes have between TERM and KILL.
 val Grace: long = 5000
@@ -127,6 +142,10 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
     var termed = false
     // While the queue is held, nothing new starts in either lane.
     var queueHeld = false
+    // The clients following events.
+    val watchers = Buffer[Watcher]()
+    // Whether any client has asked to follow events, so a stop gives their streams time to be written.
+    var watched = false
 
     now() -> long = time.monotonic().toMillis()
 
@@ -136,7 +155,9 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         reply.send(answer)
 
     record(event: string, job: Job, extra: Vector[(string, Json)] = [])
-        fs.appendText(home + "/events.jsonl", marshal.eventLine(time.now().epochMillis(), event, job.info(now()), extra) + "\n")
+        val line = marshal.eventLine(time.now().epochMillis(), event, job.info(now()), extra)
+        fs.appendText(home + "/events.jsonl", line + "\n")
+        if watchers.nonEmpty() then json.parse(line).ok().foreach(ev -> publish(ev))
 
     history(spec: JobSpec) -> Vector[long] =
         histories.get(marshal.historyKey(spec.kind, spec.landing)).map(b -> b.toVector()).getOrElse([])
@@ -155,6 +176,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
                 Tick -> if queue.nonEmpty() then schedule()
                 Sample -> measure()
                 Measured(sizes) -> measured(sizes)
+                Unwatch(out) -> unwatch(out)
                 Terminate ->
                     eprintln("marshal: TERM received: stopping, killing what runs")
                     stop(true, false, None)
@@ -184,6 +206,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             Request.Hold(id) -> give(reply, hold(id, true))
             Request.Release(id) -> give(reply, hold(id, false))
             Request.Prioritize(id, p) -> give(reply, prioritize(id, p))
+            Watch(_, _, _, _, _) -> watch(request, reply)
 
     submit(spec: JobSpec) -> Reply
         if stopping || draining then return Failed("the daemon is stopping and takes no new jobs")
@@ -481,6 +504,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         for w in job.waiters do give(w, Ended(info))
         job.waiters.clear()
         schedule()
+        settled()
 
     // Measures the running jobs' process trees on a thread of its own, one measurement at a time.
     measure()
@@ -495,6 +519,122 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         measuring = false
         for (id, bytes) in sizes
             jobs.get(id).foreach(job -> if job.state == "running" then job.resident = job.resident.measured(bytes))
+
+    // A client asks to follow events. Everything is decided here, on the daemon's thread, which is
+    // also the only one that appends to the log: what the log already holds is read and the watcher
+    // registered with no event between, so none is missed or seen twice.
+    watch(request: Request, out: Channel[Reply])
+        request match
+            Watch(_, cond, mode, since, sinceId) -> subscribe(Watcher(cond, mode, out), since, sinceId)
+            _ -> ()
+
+    subscribe(w: Watcher, since: Option[long], sinceId: Option[long])
+        watched = true
+        if stopping
+            refuse(w.out, "the daemon is stopping")
+            return
+        w.cond match
+            IsIdle ->
+                if running.isEmpty() && queue.isEmpty() then answerWith(w, idleEvent()) else watchers += w
+            JobsEnded(ids) ->
+                for id in ids
+                    if id < 1 || id >= nextId
+                        refuse(w.out, s"no job $id")
+                        return
+                val text = fs.readText(home + "/events.jsonl").getOrElse("")
+                val pending = Buffer[long]()
+                for id in ids
+                    marshal.endOf(text.lines(), id) match
+                        Some(ev) -> noteEnding(w, ev)
+                        None -> pending += id
+                w.pending = pending.toVector()
+                if w.pending.isEmpty() then answerWith(w, w.last.get()) else watchers += w
+            Matching(filter) ->
+                val replay = w.mode == Past || since.isDefined() || sinceId.isDefined()
+                val back = Buffer[Json]()
+                if replay
+                    val text = fs.readText(home + "/events.jsonl").getOrElse("")
+                    for line in text.lines()
+                        if line.isEmpty() then continue
+                        val ev = json.parse(line).ok() match
+                            Some(e) -> e
+                            None -> continue
+                        if ev.get("ts").flatMap(v -> v.asLong()).getOrElse(0) < since.getOrElse(0) then continue
+                        if ev.get("id").flatMap(v -> v.asLong()).getOrElse(0) < sinceId.getOrElse(0) then continue
+                        if marshal.admits(filter, ev) then back += ev
+                w.mode match
+                    Once -> if back.nonEmpty() then answerWith(w, back(0)) else watchers += w
+                    Past ->
+                        w.out.trySend(Replayed(back.toVector()))
+                        w.out.close()
+                    Follow ->
+                        if back.nonEmpty() then w.out.trySend(Replayed(back.toVector()))
+                        watchers += w
+
+    // `ev` ends one of the jobs a watcher waits for; `last` keeps the latest ending.
+    noteEnding(w: Watcher, ev: Json)
+        val ts = ev.get("ts").flatMap(v -> v.asLong()).getOrElse(0)
+        if w.last.forall(l -> l.get("ts").flatMap(v -> v.asLong()).getOrElse(0) <= ts) then w.last = Some(ev)
+
+    // The event a watcher for `idle` is answered with.
+    idleEvent() -> Json = Json.obj(("ts", Json.num(time.now().epochMillis())), ("event", Json.str("idle")), ("running", Json.num(0)), ("queued", Json.num(0)))
+
+    // A watcher that gets one answer: it is sent, and the stream ends.
+    answerWith(w: Watcher, ev: Json)
+        remove(w)
+        w.out.trySend(Streamed(ev))
+        w.out.close()
+
+    // A request the daemon will not stream: the reason is the stream's one reply.
+    refuse(out: Channel[Reply], why: string)
+        out.trySend(Failed(why))
+        out.close()
+
+    remove(w: Watcher)
+        val at = watchers.indexOf(w)
+        if at >= 0 then watchers.remove(at)
+
+    // Offers an event just logged to every watcher.
+    publish(ev: Json)
+        for w in watchers.toVector()
+            if w.out.isClosed()
+                remove(w)
+                continue
+            w.cond match
+                IsIdle -> ()
+                JobsEnded(_) ->
+                    val id = ev.get("id").flatMap(v -> v.asLong()).getOrElse(0)
+                    if marshal.endings.contains(ev.get("event").flatMap(v -> v.asString()).getOrElse("")) && w.pending.contains(id)
+                        noteEnding(w, ev)
+                        w.pending = w.pending.filter(p -> p != id)
+                        if w.pending.isEmpty() then answerWith(w, w.last.get())
+                Matching(filter) ->
+                    if marshal.admits(filter, ev)
+                        if w.mode == Once then answerWith(w, ev) else offer(w, Streamed(ev))
+
+    // Puts a reply in a watcher's buffer. A reader whose buffer is full is dropped, not waited for:
+    // the daemon never blocks on a client. Its stream loses its oldest reply, ends with a reply that
+    // says so, and closes.
+    offer(w: Watcher, reply: Reply)
+        if w.out.trySend(reply) then return
+        remove(w)
+        w.out.tryReceive()
+        w.out.trySend(Failed("events were dropped: the reader did not keep up with the daemon; ask again with --since to see what it missed"))
+        w.out.close()
+        eprintln("marshal: a client following events fell behind and was dropped")
+
+    // The state changed in a way that may answer a watcher of `idle`.
+    settled()
+        if watchers.isEmpty() || !running.isEmpty() || !queue.isEmpty() then return
+        for w in watchers.toVector()
+            if w.cond == IsIdle then answerWith(w, idleEvent())
+
+    // A watcher's client has gone.
+    unwatch(out: Channel[Reply])
+        for w in watchers.toVector()
+            if w.out === out
+                remove(w)
+                out.close()
 
     listing() -> Vector[JobInfo]
         val t = now()
@@ -577,10 +717,17 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         for ts in slots
             ticket.foreach(name -> ts.removeTicket(name))
         for r in stopReplies do give(r, Done)
+        if watchers.nonEmpty()
+            for w in watchers.toVector()
+                remove(w)
+                refuse(w.out, "the daemon stopped")
+        // the streams' threads write what they hold within one look, as the poll in `stream` is
+        // 50 ms: a client told the daemon stopped is not left to guess it from a closed connection
+        if watched then threads.sleep(millis(150))
         while unwritten > 0
             events.receive() match
                 Some(Written) -> unwritten -= 1
-                Some(FromClient(_, r)) -> give(r, Failed("the daemon is stopping"))
+                Some(FromClient(request, r)) -> if marshal.watching(request) then refuse(r, "the daemon is stopping") else give(r, Failed("the daemon is stopping"))
                 Some(_) -> ()
                 None -> break
         eprintln(s"marshal: daemon ${process.pid()} stopped")
@@ -654,6 +801,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             Some(Tick) -> ()
             Some(Sample) -> ()
             Some(Measured(sizes)) -> measured(sizes)
+            Some(Unwatch(out)) -> unwatch(out)
             None -> ()
 
     // The daemon's state, as the next image reads it.
@@ -744,6 +892,9 @@ connection(conn: UnixStream, events: Channel[Message])
             Ok(Some(l)) -> l
             _ -> break
         val request = marshal.decodeRequest(line)
+        if request.map(marshal.watching).getOrElse(false)
+            stream(conn, events, request.ok().get())
+            return
         val reply = request match
             Ok(r) ->
                 val back = Channel[Reply]()
@@ -758,6 +909,34 @@ connection(conn: UnixStream, events: Channel[Message])
         if request.isOk() then events.send(Written)
         if stopped || wrote.isErr() then break
     conn.close()
+
+// Serves a watch on its client's connection, which it ends: the daemon writes replies into a
+// bounded stream and this thread writes them out, so a client that reads slowly holds up only its
+// own thread. A connection belongs to one thread, so the client's leaving is noticed between
+// writes by a read that waits briefly and finds the end.
+stream(conn: UnixStream, events: Channel[Message], request: Request)
+    val back = Channel[Reply](watchBuffer())
+    events.send(FromClient(request, back))
+    var gone = false
+    while !gone
+        // closed before the replies are taken, so every reply sent before it is among them
+        val ended = back.isClosed()
+        conn.setTimeout(millis(0))
+        loop
+            val reply = back.tryReceive() match
+                Some(r) -> r
+                None -> break
+            if conn.writeText(marshal.encodeReply(reply).render() + "\n").isErr()
+                gone = true
+                break
+        if ended || gone then break
+        conn.setTimeout(millis(50))
+        conn.read(1) match
+            Ok(bytes) -> if bytes.length() == 0 then gone = true
+            Err(IoError.TimedOut) -> ()
+            Err(_) -> gone = true
+    conn.close()
+    events.send(Unwatch(back))
 
 // The machine's memory in bytes, or 0 where it cannot be asked.
 machineMemory() -> long = process.totalMemory().getOrElse(0)

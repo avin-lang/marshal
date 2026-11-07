@@ -26,6 +26,8 @@ thread of its own, so a client blocked in `wait` holds up nobody else.
 | `priority` | `id`, `priority` (an int, or `"urgent"`) | `{"ok":true}`; the queued job is placed in its lane. A number takes it out of the urgent band and places it among the jobs not urgent: higher first, equal ones by arrival. `"urgent"` moves it to the back of the lane's urgent band, which goes ahead of every job not urgent and keeps its jobs in the order they joined it. Refused for a job that runs or has ended |
 | `restart` | | no reply when the daemon restarts: the connection closes as it replaces its program, and the client connects again and asks `version`, whose `pid` is the same; `{"ok":false,"error":...}` when it could not, and it goes on as it was |
 
+| `watch` | `cond` (string, the grammar below), `mode` (`once`, `past` or `follow`), `since` (milliseconds since 1970 or null), `since_id` (job id or null) | a stream: see below |
+
 Any request may be refused: `{"ok":false,"error":"<a sentence>"}`, for a request that is not JSON,
 lacks a field or has one of the wrong type, names no job, or asks for a job that can never fit.
 
@@ -84,6 +86,49 @@ refuses it with `no such request: `snapshot``.
 1970) and `event`: `submitted`, `held`, `released` and `prioritized` (a queued job's), `paused` and `resumed` (a running job's), `started` (adds `pgid` and `pid`, the job's main process), and one ending, `finished`, `timeout`,
 `killed` or `lost`, which adds `run_ms` and `exit`, the status `wait` exits with. `lost` also adds
 `pgid` and `group_alive`, whether the job's processes were still running when the new daemon looked.
+
+## Watching events
+
+`watch` is the one request answered by a stream: the daemon writes lines until the watch ends and
+then closes the connection, which serves nothing else. A line is `{"ok":true,"event":EVENT}` (one
+event, as the log holds it), `{"ok":true,"events":[EVENT...]}` (the events already logged that the
+request asked for, together), or `{"ok":false,"error":"..."}`, the last line of a stream that ends
+badly. `mode` says how it goes:
+
+| `mode` | Answers |
+| --- | --- |
+| `once` | the first event the condition is met by, one `event` line, then the end; the end of a `since` that finds one at once |
+| `past` | one `events` line with every logged event the condition lets through (from `since` and `since_id` on), then the end |
+| `follow` | the same `events` line when `since` or `since_id` asks for one, then an `event` line for each matching event as it is logged, until the client leaves |
+
+`since` is inclusive; `since_id` keeps the events of jobs numbered from it on. Without either, `once`
+and `follow` see only events logged after the daemon registers them, and `past` all of them.
+
+A condition `cond` is one of
+
+```
+idle
+job=<id>[,<id>...]
+<name>[:<filter>[,<filter>...]]
+```
+
+where `<name>` is `ended` (any ending event: `finished`, `timeout`, `killed`, `lost`), `failed`
+(an ending whose outcome is not `ok`), `landing-done` (an ending of a landing job), `started`,
+`submitted` or `any`, and a `<filter>` is `kind=<k>` or `outcome=<o>`, each at most once. An event's
+outcome is `ok` for `finished` with `exit` 0, `failed` for `finished` with any other `exit`, and the
+event's name for `timeout`, `killed` and `lost`; other events have none. `idle` and `job=` are
+conditions of state and so only for `once`: `idle` is met when nothing runs and nothing is queued,
+at once when it already is, and answered with `{"ts":T,"event":"idle","running":0,"queued":0}`;
+`job=` when every job has ended, at once when all have, and answered with the ending event of the
+job that ended last. A job id the daemon has not numbered is refused (`no job N`), and so is a
+condition that does not parse (`bad condition: ...`).
+
+The daemon never waits for a reader. Each stream holds 256 replies; a reader that lets it fill is
+dropped: its oldest reply is removed, its last line is `{"ok":false,"error":"events were dropped:
+..."}` and the connection closes. A daemon that stops ends its streams with `"the daemon stopped"`;
+one that restarts closes them without a last line, and the client connects again and asks with `since`
+(the time the wait began, or of the last event it saw), which finds what happened while the daemon
+handed over.
 
 ## The restart state
 
