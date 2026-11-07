@@ -715,23 +715,25 @@ with the user: hold applying to waiting jobs, and priority staying for queued jo
 
 ## `top` hides the selection highlight when idle (branch `top-idle-highlight`)
 
-- **Proposed: the selected row's highlight hides after 5 seconds without a key** (`IdleHideMs`),
+**Settled on the user's delegation 2026-11-07.** Review with the user: the 5 s delay, and the first key only revealing.
+
+- **the selected row's highlight hides after 5 seconds without a key** (`IdleHideMs`),
   and `top` starts with it hidden. Why: `top` is mostly glanced at for progress, and the highlighted
   row reads as something to look at; it matters only when someone is about to act on a job.
   Alternatives: a longer or configurable delay (a knob to document for a cosmetic detail; the
   constant is one line to change), leaving it always on (the request this answers), dimming the
   row instead of hiding it (still draws the eye).
-- **Proposed: the selected job is kept while hidden, and the first selecting key (Up, Down, PgUp,
+- **the selected job is kept while hidden, and the first selecting key (Up, Down, PgUp,
   PgDn, Home, End, Enter, `l`) only shows the highlight again, without moving or opening.**
   Why: the selection stays where the person left it, and a key pressed blind never moves to a job
   or opens a log they cannot see. Other keys (`q`, `h`, `f`, `k`, `s`, Esc) act at once and count as
   activity: they do not depend on seeing the row. Alternatives: every key only reveals (a `q` that
   needs two presses), the first key also moving (the highlight would reappear on a job the person
   did not choose).
-- **Proposed: the highlight never hides while the log pane, the kill confirmation or the help is
+- **the highlight never hides while the log pane, the kill confirmation or the help is
   showing.** Why: there the selection is the subject of what is on screen. When one closes, the
   delay counts from that key. A resize or a snapshot is not activity.
-- **Proposed: the clock is passed in** (`handle(e, now)`, `draw(g, since, now)`, milliseconds) so
+- **the clock is passed in** (`handle(e, now)`, `draw(g, since, now)`, milliseconds) so
   the state can be tested with no sleeps; `MARSHAL_TEST_TOP_IDLE_MS` sets the delay for the
   pseudo-terminal test and is not documented for users. The loop redraws at least once a second,
   so the highlight hides within a second after the delay.
