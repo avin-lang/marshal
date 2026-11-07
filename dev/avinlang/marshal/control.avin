@@ -1,0 +1,66 @@
+module dev.avinlang.marshal
+
+// Holding and ordering the queue: what the daemon decides when a job, or the whole queue, is held,
+// and where a job's priority places it.
+//
+// - A held job stays in the queue, in its place, and the scheduler does not see it: it neither
+//   starts nor blocks the jobs behind it.
+// - A held queue starts nothing in either lane, the landing lane included; running jobs go on.
+// - Each lane's queue begins with its urgent band: the urgent jobs, first come first served, in the
+//   order they became urgent. Behind it come the other jobs by priority, the highest first, and
+//   jobs of equal priority by arrival. Priority orders marshal's own jobs; take-slot's waiters keep
+//   their places by arrival.
+
+// Where a queued job goes: `urgent` is 0 for a job outside the urgent band, and otherwise when it
+// joined the band, larger for a later one; `priority` places the jobs outside the band, and
+// `arrived`, when it was submitted, those of equal priority.
+data Place(urgent: long, priority: int, arrived: long)
+
+// How two places order their jobs in the queue: negative when the job at `a` goes first.
+placeOrder(a: Place, b: Place) -> int
+    if a.urgent > 0 && b.urgent > 0 then return compareLongs(a.urgent, b.urgent)
+    if a.urgent > 0 then return -1
+    if b.urgent > 0 then return 1
+    val byPriority = priorityOrder(a.priority, b.priority)
+    if byPriority != 0 then byPriority else compareLongs(a.arrived, b.arrived)
+
+// How two priorities order their jobs: negative when the job of `a` goes first.
+priorityOrder(a: int, b: int) -> int
+priorityOrder(a, b) | a > b = -1
+priorityOrder(a, b) | a < b = 1
+priorityOrder(_, _) = 0
+
+private compareLongs(a: long, b: long) -> int
+compareLongs(a, b) | a < b = -1
+compareLongs(a, b) | a > b = 1
+compareLongs(_, _) = 0
+
+// The mark of a job joining the urgent band now, at `now` on the wall clock in microseconds: later
+// than every mark in `band`, the urgent jobs already queued, so it goes behind them all even when
+// the clock has stepped back.
+urgentMark(now: long, band: Vector[long]) -> long
+    val last = band.maxOption().getOrElse(0)
+    if now > last then now else last + 1
+
+// Each queued job's place in its lane's queue (from 1, held jobs counted) and why it waits, in the
+// order of `queue`: `Held` for a job in `held`, `QueueHeld` for any other while the queue is held,
+// and otherwise what the scheduler makes of the jobs not held.
+queueWaits(budget: Budget, running: Vector[Started], queue: Vector[Waiting], held: Vector[long], queueHeld: bool, now: long, outside: Outside = NoOutside) -> Vector[(long, int, Why)]
+    val decided = if queueHeld then Vector[(long, int, Why)]() else waits(budget, running, queue.filter(w -> !held.contains(w.id)), now, outside)
+    var landings = 0
+    var others = 0
+    val out = Buffer[(long, int, Why)]()
+    for w in queue
+        val position = if w.landing
+            landings += 1
+            landings
+        else
+            others += 1
+            others
+        out += (w.id, position, whyWaits(w.id, held, queueHeld, decided))
+    out.toVector()
+
+private whyWaits(id: long, held: Vector[long], queueHeld: bool, decided: Vector[(long, int, Why)]) -> Why
+    if held.contains(id) then Held
+    elif queueHeld then QueueHeld
+    else decided.find(d -> d.0 == id).map(d -> d.2).getOrElse(Starting)

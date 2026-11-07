@@ -110,7 +110,7 @@ overview(running: Vector[JobInfo], queued: Vector[QueuedJob], recent: Vector[Job
          takeSlot: Option[marshal.TakeSlotUse] = None) -> Overview =
     Overview(Usage(5, 12, 1024, 4096, running.length(), queued.length(), landing, takeSlot), 3723000, running, queued, recent)
 
-val everyWhy: Vector[Why] = [Why.NoUnits, Why.NoMemory, Why.LaneBusy, Why.ForTakeSlot, Why.Behind(3), Why.Behind(long.MaxValue), Why.Starting]
+val everyWhy: Vector[Why] = [Why.NoUnits, Why.NoMemory, Why.LaneBusy, Why.ForTakeSlot, Why.Behind(3), Why.Behind(long.MaxValue), Why.Starting, Why.Held, Why.QueueHeld]
 
 // A running job measured at `rss` with a peak of `peak`, started at `at`.
 measuredJob(rss: long, peak: long, at: long = 1762521060000) -> JobInfo =

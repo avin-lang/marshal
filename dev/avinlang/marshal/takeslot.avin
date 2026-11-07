@@ -18,19 +18,14 @@ import avin.process
 import avin.threads
 import avin.time.millis
 
-// Where take-slot's files are when nothing says: the sysl repository's git directory.
-val DefaultTakeSlotDir: string = "/Users/ed/dev/sysl-lang/sysl/.git"
-
 // The second line of marshal's tickets, which take-slot never reads.
 val TicketMark: string = "marshal"
 
 // The take-slot directory to share, if any. `MARSHAL_TAKE_SLOT_DIR` (`env`) wins over config.json's
-// `take_slot` (`configured`); empty text in either turns sharing off; with neither, the default is
-// used when it exists (`defaultExists`).
-takeSlotDir(env: Option[string], configured: Option[string], defaultExists: bool) -> Option[string] =
-    env.orElse(configured) match
-        Some(dir) -> if dir.isEmpty() then None else Some(dir)
-        None -> if defaultExists then Some(DefaultTakeSlotDir) else None
+// `take_slot` (`configured`); empty text in either turns sharing off, and with neither nothing is
+// shared: sharing is off unless it is configured.
+takeSlotDir(env: Option[string], configured: Option[string]) -> Option[string] =
+    env.orElse(configured).filter(dir -> dir.nonEmpty())
 
 // A waiter's ticket name as take-slot writes it: `<seconds>.<six digits>-<pid>`.
 ticketName(arrivedMicros: long, pid: long) -> string =

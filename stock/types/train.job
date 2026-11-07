@@ -1,0 +1,49 @@
+// The stock train: gates a batch of branches together and lands them.
+//
+// It merges the branches, as the remote has them, onto the target branch as the remote has it, in
+// the order given, in a worktree of its own; runs the build command and the test command there; and
+// when both pass, pushes the merged commit to the target (a fast-forward only), moves the
+// repository's own target branch on to it, and tears each branch down: its worktree, the remote's
+// copy (only where what landed contains it) and the branch (`git branch -d`).
+//
+// A red batch is reported with the branches the failures name. With `--on-red bisect`, the branches
+// to blame are found, by the failures that name a branch where they all do and by bisection where
+// they do not, and the rest are gated again and landed.
+//
+// A test command that knows which branch broke a test says so with `=== FAIL <test> <branch>`; one
+// that knows only the test says `=== FAIL <test>`, and `--fail-map` can name the branch from that
+// (it runs in the merged tree with the failing tests in $MARSHAL_FAILS, one to a line).
+{
+  "about": "Merges branches onto the target branch, builds and tests them together, and lands them when green.",
+  "kind": "train",
+  "lane": "landing",
+  "params": {
+    "branch": {"repeat": true, "required": true, "positional": true, "about": "a branch to batch, as the remote has it"},
+    "remote": {"default": "origin", "about": "the remote the branches come from and the target is landed on"},
+    "target": {"default": "", "about": "the branch to land on; by default the one the remote's HEAD names"},
+    "build": {"default": "", "about": "the build command, run by sh in the merged tree; none by default"},
+    "test": {"required": true, "about": "the test command, run by sh in the merged tree"},
+    "fail-map": {"default": "", "about": "a command, run by sh, that says `=== FAIL <test> <branch>` for the failing tests in $MARSHAL_FAILS"},
+    "on-red": {"default": "report", "choices": ["report", "bisect"], "about": "what a red batch does: report it, or bisect it and land the branches that pass"},
+    "step-deadline": {"default": "12h", "about": "how long the build and the test may each run"}
+  },
+  "bisect": "branch",
+  "steps": [
+    {"name": "merge", "run": ["stock:git", "merge", "--remote", "${remote}", "--target", "${target}", "--tree", "${work}/tree", "${branch}"],
+     "on_failure": "${on-red}"},
+    {"name": "build", "when": "${build}", "dir": "${work}/tree", "run": ["sh", "-c", "${build}"],
+     "deadline": "${step-deadline}", "on_failure": "${on-red}"},
+    {"name": "test", "dir": "${work}/tree", "run": ["sh", "-c", "${test}"],
+     "deadline": "${step-deadline}", "on_success": "land", "on_failure": "${on-red}"}
+  ],
+  "fail_map": {"name": "fail-map", "when": "${fail-map}", "dir": "${work}/tree", "run": ["sh", "-c", "${fail-map}"]},
+  "land": [
+    {"name": "land", "run": ["stock:git", "land", "--remote", "${remote}", "--target", "${target}", "--head", "${head}"],
+     "on_failure": "report"},
+    {"name": "teardown", "run": ["stock:git", "teardown", "--remote", "${remote}", "--head", "${head}", "${branch}"],
+     "on_failure": "report"}
+  ],
+  "cleanup": [
+    {"name": "cleanup", "run": ["stock:git", "cleanup", "--tree", "${work}/tree"], "on_failure": "next"}
+  ]
+}

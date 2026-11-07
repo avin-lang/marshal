@@ -251,32 +251,306 @@ Known gaps in Avin, left for it to fix rather than worked around here:
   renamed. Only the program the daemon becomes reads it, after the write has finished, so this
   matters only to a daemon killed mid-write, which leaves a partial file that nothing reads.
 
-## Accounting: `history` and `stats`
+## Accounting: `history` and `stats` (branch `history`)
 
-- **Proposed: both commands read `events.jsonl` in the client, streamed line by line, and never ask
+**Settled on the user's delegation 2026-11-07.** Review with the user: `--since` dates and printed
+times in UTC (to become local time now that avin has zones), a bare number refused, and `--limit`
+defaulting to 20.
+
+- **both commands read `events.jsonl` in the client, streamed line by line, and never ask
   the daemon.** Why: the log is the record, they work with no daemon (and after a crash), and a huge
   log never goes through the socket or into memory whole; only one small record per ended job is
   kept. Alternative: a daemon request (needs a running, new-enough daemon and a new reply shape).
-- **Proposed: a job that has several ending events is listed once, as its last one**, as the
+- **a job that has several ending events is listed once, as its last one**, as the
   restart recovery does.
-- **Proposed: outcomes are listed as `ok`, `failed`, `signal`, `killed`, `timeout`, `cancelled`,
+- **outcomes are listed as `ok`, `failed`, `signal`, `killed`, `timeout`, `cancelled`,
   `lost`; `--failed` means "did not exit 0", so a kill, a timeout, a cancel and a loss all count.**
   Why: one rule with no judgement about whose fault an end was, and it matches what learning
   counts as a success. Alternative: only `failed`, `signal` and `timeout`.
-- **Proposed: percentiles are nearest-rank** (the value at rank ceil(p*n/100)). Why: it always
+- **percentiles are nearest-rank** (the value at rank ceil(p*n/100)). Why: it always
   names a run that happened, and is defined for one sample (every percentile) and two (p50 is the
   lesser, p90 the greater). Alternative: interpolation, which invents durations.
-- **Proposed: durations in `stats` cover every job that started** (cancelled jobs have none);
+- **durations in `stats` cover every job that started** (cancelled jobs have none);
   the success rate is over all of a kind's jobs, and `stats` rows are per history key, so landing
   runs are a separate `kind+landing` row. The deadline shown is the one the daemon would give the
   next job, learned from the whole log whatever `--kind`/`--since` select.
-- **Proposed: `--since` takes a length back from now (`s m h d w`) or a UTC date or date and
+- **`--since` takes a length back from now (`s m h d w`) or a UTC date or date and
   minute; times are listed in UTC.** Why: no time zone data in the library, and logs compare across
   machines. A bare number is refused, as it is ambiguous (the `--deadline` option reads it as
   minutes). Alternative: local time.
-- **Proposed: `history` lists 20 jobs unless `--limit` says otherwise**; `--limit 0` is refused.
+- **`history` lists 20 jobs unless `--limit` says otherwise**; `--limit 0` is refused.
   `--json` is one object on one line, like `status --json`, not a line per job.
-- **Proposed: peak memory is read from `peak_rss` on ending events when it is present and above
+- **peak memory is read from `peak_rss` on ending events when it is present and above
   zero; otherwise `-` (null in JSON).** `history` does not show it.
-- **Proposed: lines that are not events (or ending events that do not describe a job) are
+- **lines that are not events (or ending events that do not describe a job) are
   skipped, counted in `unreadable`, and reported on standard error; the exit status stays 0.**
+
+## Pausing jobs, holding and ordering the queue (branch `pause-resume`)
+
+**Settled on the user's delegation 2026-11-07.** Review with the user: a paused job keeping its
+units (freeing them is the alternative, for jobs that declare no memory). Pausing a job-types run
+stops only the runner's group until avin can list a process's descendants.
+
+- **`marshal pause <id>` sends STOP to a running job's whole process group, and `resume <id>`
+  sends CONT** (`avin.signal.Stop` and `Continue`, numbered per platform). The group, not the main
+  process, so a test runner's workers stop with it. Alternatives: the main process only (its
+  children go on using the machine); TSTP (a program may catch it and refuse to stop).
+- **A paused job keeps its units and its memory.** Why: a stopped process still holds its memory,
+  so giving its share to another job could overcommit the machine, and it may be resumed at any
+  moment. Alternative: freeing its units while it is paused and making `resume` wait until they
+  fit again (lets other work use the processors, at the risk of memory pressure and of a resumed
+  job queued behind what started meanwhile); worth revisiting for jobs that declare no memory.
+- **A paused job's deadline clock stops**: the job keeps `pausedMs` (its earlier pauses) and
+  `pausedAt` (when its current one began), its run time is its wall time less those, and the
+  deadline counts run time. Its `elapsed_ms`, its run time in the event log and the history its
+  kind's deadline is learned from leave pauses out too. The deadline's sleeper is re-armed on each
+  resume, and one armed before a pause is made stale by a generation number rather than
+  cancelled. Alternative: wall time (a long pause would end the job at its resume).
+- **`kill` of a paused job, `stop --force` and a TERM to the daemon send CONT before TERM**, so
+  the job can act on the TERM instead of waiting for the KILL 5 seconds later; the pause ends there.
+  When a paused job's main process ends, whatever is left of its group gets TERM then CONT.
+- **A paused job stays paused across `marshal restart`**, its processes stopped and its clock with
+  them: `paused_ms` and `paused_at` (wall clock) are in `state.json`.
+- **`pause` of a job that is queued, ended, being stopped or already paused, and `resume` of one
+  not paused, are refused** (exit 2). `stop --wait` is refused while a job is paused, as while one
+  is held: it would wait for ever.
+- **`pause` and `resume` with an id act on that job, and without one on the queue.** Alternative:
+  separate commands for the queue (two words for two kinds of the same act).
+
+- **`marshal pause` and `resume` with no id hold and release the whole queue, both lanes.** Running
+  jobs go on; nothing new starts, landing jobs included, until `resume`. Why: holding the machine
+  for a moment (a benchmark, a hand-run release step) means nothing new at all, and the landing
+  job is the heaviest. Alternatives: holding the development lane only (a landing job would still
+  start under someone who asked for quiet); a separate `hold-queue` command (the words `pause` and
+  `resume` are freed for one job by giving it an id).
+- **A held queue keeps no take-slot ticket**, so take-slot's runs are not kept waiting behind jobs
+  that cannot start. The queue's jobs keep their arrival times and take their places again on
+  `resume`. Alternative: keeping the ticket (take-slot would wait on marshal for as long as the
+  queue is held).
+- **`pause` of a held queue and `resume` of one not held are refused** (exit 2), as are `hold` of a
+  held job and `release` of one not held. Why: a script learns its view of the daemon was wrong.
+  Alternative: both idempotent and silent (two people holding the queue would not learn that the
+  first `resume` released it for both).
+- **A held job keeps its place in the queue and the scheduler does not see it**: the jobs behind it
+  start as if it were not there, and none waits behind it as the head. Alternative: a held job
+  stays the head and blocks its lane (that is `pause`).
+- **Holding and priority are for queued jobs only**; a running or ended job is refused, naming its
+  state. `kill` cancels a held job like any other queued one.
+- **Priority is an int, 0 by default; higher goes first in its lane, equal ones by arrival.** The
+  queue is kept in that order, so `ls`, `top` and `status --json` list it as it will run. Why: a
+  number covers "this one first" and "this one last" alike and is easy to script. Alternatives:
+  moving a job to a position (positions shift as jobs start, so a script cannot name one reliably);
+  a few named classes (no room between them).
+- **Urgent is a band, not a priority number.** Settled on the user's delegation 2026-11-07. Each
+  lane's queue begins with its urgent band, ahead of every job not urgent whatever its priority,
+  and the band is first come, first served: a job joins it at the back, behind every urgent job
+  already queued (held ones included), and is never in front of an earlier one. `submit --urgent`
+  and `run --urgent` (as take-slot's `-u`) queue a job there; `priority <id> --urgent` moves a
+  queued job to the back of the band, even from within it; `priority <id> <n>` takes a job out of
+  the band and places it by `n`. It is still the normal queue: landing jobs have a lane of their
+  own, which always goes first and has its own band. The band is kept as each job's mark of when
+  it joined (`urgent_at`, wall-clock microseconds, 0 outside it; a mark is always later than every
+  mark queued, so a clock stepping back cannot reorder the band), sorted before priority, and the
+  mark is in `state.json`, so the band keeps its order across a restart. Why the mark over a
+  reserved priority level: a level would need arrival order inside it, which arrival cannot give
+  for a job moved into the band later, and it would take a range of priorities away from users.
+  Alternatives: max + 1 over the priorities queued (the shape first built: a later urgent job went
+  in front of an earlier one, and it ran out at the highest int); a fixed urgent level (two urgent
+  jobs tie, and the tie falls back to arrival, not to when they became urgent).
+- **Priority orders marshal's own jobs; take-slot's waiters keep their places by arrival.** An
+  urgent job does not pass a take-slot run that arrived before it, and marshal's ticket in
+  take-slot's directory is its first eligible job's arrival. Why: take-slot orders its waiters by
+  arrival alone and cannot be told of a priority. Alternative: the ticket taking the earliest
+  arrival of any queued job (take-slot's later runs would wait behind a job that is not first).
+- **`stop --wait` is refused while the queue, or a queued job, is held** and anything is queued,
+  since it would wait for ever; `--force` still stops. Holding a job while the daemon drains is
+  refused for the same reason.
+- **The held queue, held jobs and priorities go into `state.json`** (`queue_held`, and `held` and
+  `priority` on each job), so a restart keeps them; a state from before reads as nothing held,
+  every priority 0. Jobs carry `held`, `priority` and `urgent` in the protocol and the event log, and the
+  log records `held`, `released` and `prioritized`. Holding the queue is not a job's event, and
+  goes to the daemon's log.
+
+## Job types and the train (branch `job-types`)
+
+**Settled on the user's delegation 2026-11-07**; each says why and what else was weighed. Review
+with the user: take-slot sharing off unless configured; a type's run being one job; a diverged
+local target branch left with a warning. The FNV-1a step-cache digest is temporary, until avin's
+library has a content digest. The user approved the design (types as
+data, steps as any program, a line protocol, marshal core without git, stock steps in Avin) on
+2026-11-07; these are the choices it left open. Review with the user: the take-slot default
+(first), a type's run being one job, and the local target branch left behind as a warning.
+
+- **Sharing take-slot's directory is off unless configured.** The default was the sysl
+  repository's `.git` on this machine; marshal names no path of any machine now. A machine that
+  shares it sets `"take_slot": "<dir>"` in `config.json` (or `$MARSHAL_TAKE_SLOT_DIR`). Why: the
+  brief's "nothing names a path from this machine" and "off unless configured". Alternative: keep
+  the default where the directory exists (a stranger's machine never has it, but the code would
+  still name it).
+- **A `.job` file is JSON, with `//` comment lines.** Why: a step's `run` is an exact argument
+  list with no quoting rules to learn, marshal already reads and writes JSON, and a misspelt field
+  is refused by name. Alternatives: HOCON (Avin has no reader for it), a line format of our own
+  (quoting rules for arguments), TOML (no reader either). Comment lines read as empty lines so a
+  parse error's line number is still the file's.
+- **A type's run is one job, whose command is marshal's own `run-steps`**; the steps run inside it,
+  one at a time, each in a process group of its own. Why: the lane, units and deadline hold for the
+  whole run, so a train keeps the landing lane from merge to teardown; the daemon stays as it was,
+  with no step state, no git and nothing new in `state.json` (a restart does not touch a running
+  type: the runner is just a job's process). Alternatives: the daemon runs the steps itself (its
+  state, and `state.json`, would carry every run's place in its steps and bisection); the command
+  line submits each step as a job (the lane is let go between steps, and the run dies with the
+  command line). So no job field was added, and the restart state is unchanged.
+- **Every job gets `MARSHAL_JOB` and `MARSHAL_HOME`** in its environment, so a run keeps its files in
+  `<home>/runs/<id>`, where `run-type` finds its report.
+- **A step's group is its own, so the runner forwards a stop**: on TERM it sends TERM to the step's
+  group, KILL 4 seconds later, and exits 143, inside the daemon's 5-second grace. A runner killed
+  outright with KILL leaves the step's group running; `process.groupMembers`, coming in Avin, would
+  let the daemon stop a job's whole tree, groups of its own included.
+- **Fetching the base is the train's first step, not marshal's.** The brief lists "fetching the
+  base at job start" among marshal's machinery, but fetching is git, and marshal core knows none;
+  `stock:git merge` fetches as it starts. Alternative: a generic "run this before the job" hook (a
+  second way to say what a step says).
+- **Transitions:** `next` goes on (after a failure, the failure is let go); `land` is allowed only
+  on success and only in the gate; `bisect` only on failure and only in the gate; `report` ends the
+  steps as the step came out; `stop` ends the run. Defaults: `next` on success, `stop` on failure.
+  A transition written as a reference is checked once the parameters are bound, before anything
+  runs. Alternative: one more word for "fail but go on" (what `next` on failure already says).
+- **The success test:** the exit code `exit` allows (`0` by default, a list, or `"any"`), no
+  `RESULT red`, and a last `RESULT green` where `result` is set. `=== EXIT` overrides the process's
+  code, the last one counting, for wrappers whose own status means nothing.
+- **A malformed line of a kind marshal knows is not read, and the log says why; a kind it does not
+  know is the step's own output.** Why: `=== RUN TestX` (a common test runner's) or a ruler of
+  `=====` must not fail a step. Alternative: failing the step on a malformed line (stricter, but a
+  step's output is not marshal's to police).
+- **Bisection halves the values**, searches each half that fails alone, and blames a set whose
+  halves both pass alone as failing together. Failures that all name a value blame those without
+  bisecting; one that names none means a bisection. Then one last pass over the rest, which lands
+  them; the run is red, since not everything landed. The bisection's passes never land. Why: few
+  passes for the common case of one bad branch (four extra passes for three branches, one bad).
+  Alternatives: each branch alone (N passes, and misses failures that need two branches); leaving
+  each one out in turn (N passes of nearly the whole batch).
+- **The first `land` step is the one that lands**: where a later land step fails (a teardown that
+  keeps a branch), the run is red at that step but reports the values as landed. Alternative: a
+  protocol line saying "landed" (one more kind for something the order already says).
+- **`run-type`'s own options** (`--dir`, `--deadline`, `--units`, `--mem`, `--submit`, `--help`)
+  may stand anywhere before `--`, so `marshal train --dir x …` works; a type's parameters may not
+  take those names.
+- **Types are looked for in the project's `.marshal/types`, then `<home>/types`, then marshal's
+  own**, so a project overrides the stock train by copying it under the same name. marshal's own
+  are `$MARSHAL_STOCK`, or `share/marshal` beside the executable's directory, as an install lays
+  them out.
+- **A stock step is an Avin package** (`stock/steps/git`, with its own `avin.hocon`), not a file:
+  inside marshal's package, a lone `.avin` file is taken for one of marshal's modules. One program
+  holds `merge`, `land`, `teardown` and `cleanup`, so they share their git helpers and compile once.
+- **Compiled steps are cached at `<home>/steps/<name>-<hash>`**, the hash of the compiler's
+  `--version` and the source (every file of a package, by path), so a new compiler or a changed
+  source compiles again and old builds stay for runs that want them. Concurrent runs compile once:
+  the one that makes `<program>.lock` (holding its pid) compiles; a lock whose pid is dead is taken
+  over, with any half-written program. The hash is FNV-1a, 64 bits: a cache name, not a security
+  check. Avin's library has no content digest (a gap, below).
+- **The train merges the remote's copy of each branch**, as pushed, never the local one: what was
+  pushed is what lands, and a commit not pushed never lands. A branch that does not merge is
+  blamed by name (`=== FAIL merge <branch>`): the later of the two that conflict.
+- **The integration tree is a worktree in the pass's directory**, removed by `cleanup` by deleting
+  the directory and `git worktree prune`, not `git worktree remove --force`: it is the run's own
+  scratch, made by `merge`, and holds nobody's work; a user's worktree is never forced. Alternative:
+  a shared clone (no worktree record in the repository, but its branches would have to be fetched
+  across).
+- **`land`** fetches the target, refuses unless the merged commit contains the remote's target as it
+  is now (a fast-forward), pushes that very commit (`<sha>:refs/heads/<target>`), and checks with
+  `ls-remote` that the remote has it. It then moves the repository's own target branch on, a
+  fast-forward only (`merge --ff-only` in the worktree that has it checked out, `push .` where none
+  does). **A local target that has diverged is left where it is, with a warning, and the land step
+  passes**: the remote landed, and the teardown's checks do not depend on the local branch.
+  Alternative: failing the land step (the run would then not tear down branches that did land).
+- **`teardown`** fetches with `--prune` first, then for each branch: removes its worktree without
+  `--force` (one with changes keeps the branch, remote copy and all); deletes the remote's copy only
+  where the landed commit contains it (`merge-base --is-ancestor`), and that push must succeed;
+  deletes the branch with `-d`. What it keeps it names (`=== FAIL teardown <branch>`), and the step
+  fails. A branch pushed again between the fetch and the delete is the window this leaves;
+  `--force-with-lease` on the delete would close it, and was left out because the rule is "never
+  force" and a lease reads as one. Review with the user if that window matters.
+- **Portable calls**: the machine's memory comes from `process.totalMemory()` rather than `sysctl
+  hw.memsize`. What is left macOS-only is the stack sample of a job at its deadline (`sample`): where
+  the program is missing the job is stopped unsampled. `pgrep -g` and `ps -o pid=,time=` are POSIX.
+
+Gaps in Avin met here, left for Avin to close:
+
+- No content digest (SHA-256 or the like) in the library: the step cache hashes with FNV-1a,
+  written in marshal.
+- `avin.fs` has no rename (coming): a compiled step is written in place under its lock rather than
+  built aside and renamed, so a reader must wait for the lock to go.
+- A process's descendants in groups of their own cannot be listed (`process.groupMembers`, coming):
+  a runner killed outright leaves its step's group behind.
+
+## Waiting on events (branch `wait-until`)
+
+All **settled on the user's delegation 2026-11-07**. Review with the user: `--since` on `wait`
+(added beyond the request), and `job=a,b` answering with one event rather than an aggregate. The
+50 ms connection poll is an avin gap (no wait on a channel and a socket together).
+
+- **the daemon subscribes, on its own thread; a client never tails the log.** A `watch`
+  request is handled in the daemon's message loop, which is also the only code that appends to
+  `events.jsonl`: it reads what the log holds (for `--since`) and registers the watcher with no
+  append between, so an event is neither missed nor seen twice. Alternatives: tailing the file from
+  the client (misses events written between a stat and the open; polls); an event id the client
+  resumes from (needs ids on every line and a ring buffer in the daemon).
+- **each watcher has a bounded stream (256 replies), and a reader that fills it is dropped.**
+  The daemon uses `trySend`, never `send`: it must not block on a client. The dropped watcher's oldest
+  reply is removed to make room for a last reply saying events were dropped, and its stream closes;
+  the command prints that on standard error and exits 1, and `--since` recovers what was missed.
+  Alternatives: an unbounded buffer (a stopped reader grows the daemon without limit); blocking the
+  daemon (one stopped `events --follow` would freeze every job). `$MARSHAL_TEST_WATCH_BUFFER` sets the
+  size so a test can make a reader fall behind with a handful of events.
+- **a wait for an event condition sees only events after it asks, unless `--since` looks
+  back.** `ended` means "the next job to end", while `job=<id>` and `idle` are about state and are met
+  at once when already true. Why: otherwise `wait --until ended` would return immediately whenever
+  anything had ever ended. Alternative: replaying the last event by default (answers a different
+  question each time, depending on history).
+- **`job=<id>,<id>` answers with the ending event of the job that ended last**, one line like
+  the others, rather than an aggregate object. For jobs all ended before the wait, that is the latest
+  of their ending events in the log. Unknown ids are refused (exit 2): a wait for a job that was never
+  numbered would otherwise never end.
+- **`idle` is answered with a synthetic event** `{"ts":...,"event":"idle","running":0,"queued":0}`,
+  since no logged event says it. The daemon looks again after each job ends, once the scheduler has
+  started whatever could start, so a job ending as the next starts does not answer it.
+- **the outcome words** are `ok` (finished with exit 0), `failed` (finished with any other
+  exit status, or by a signal that was not `kill`), `timeout`, `killed` and `lost`, as the event names
+  say; `failed` as a condition is every ending but `ok`. `outcome=ok` with `failed` is refused as a
+  contradiction, and an outcome filter on `started` or `submitted` is refused, since only an ending
+  has an outcome.
+- **a restart is survived by asking again with `since`.** The connection closes without a
+  final reply when the daemon execs; the client connects again (never starting a daemon, unlike
+  `wait <id>`: a watch has nothing to ask of a daemon that was stopped) and asks with `since` set to
+  when the wait began, or to the time of the last event printed for `events --follow`, where a line
+  already printed at that time is not printed twice. Alternatives: the daemon carrying watchers in
+  `state.json` (a socket cannot be handed to the next image; the client has to reconnect anyway).
+- **exit statuses of `wait --until`**: 0 met, 124 timeout, 2 for a bad condition or an
+  unknown job, 1 for no daemon, a daemon that stopped, or a dropped reader. 124 is take-slot's and the
+  job timeout's too, which reads the same for a caller: the wait gave up.
+- **the stream's end of life is noticed by polling the connection.** A connection belongs
+  to one thread, so the thread writing a watch's replies cannot also wait for the client to leave;
+  it reads with a 50 ms timeout between writes, and a read that finds the end ends the watch. An
+  event therefore reaches a client up to 50 ms after it is logged. Alternative: a second thread
+  reading the connection, which Avin does not allow (see below).
+
+Known gap in Avin, left for it to fix rather than worked around here:
+
+- A thread cannot wait for a channel and a socket at once, and a connection cannot be read on one
+  thread while another writes it, so a daemon cannot be told promptly that a streaming client has
+  gone, nor can it sleep until either an event or that. `Channel` has no receive with a timeout and
+  `UnixStream` no poll; a `select` over both would remove the 50 ms wakeups.
+
+## A job's start time across a restart (branch `started-at-restart`)
+
+**Settled on the user's delegation 2026-11-07.**
+
+- **A job's wall-clock start (`started_at`) is stored once, when it starts, and saved and restored
+  as that exact number.** The daemon used to save `wall(startedMs)`, re-deriving the wall time from
+  its monotonic clock and an offset sampled at save time, so the value read back could differ by a
+  millisecond from the one reported before the restart. Now the saved value is the stored one, and
+  the monotonic `startedMs` (used only for elapsed time and the scheduler) is derived from it on
+  restore. A job cancelled while queued has no start time (0), and restores its `startedMs` from its
+  end. Why: a reported timestamp must not change because the daemon restarted. Alternatives: round
+  the derived value to the second (hides the drift, still wrong); keep only the monotonic clock and
+  report offsets (a restart loses the wall time).

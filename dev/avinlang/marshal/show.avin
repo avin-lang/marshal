@@ -23,7 +23,7 @@ stateColumn(j: JobInfo) -> string = j.outcome match
     Some(TimedOut) -> "timeout"
     Some(Cancelled) -> "cancelled"
     Some(Lost) -> "lost"
-    None -> j.state
+    None -> if j.held then "held" elif j.paused then "paused" else j.state
 
 // The listing `ls` prints: a header, then one row per job.
 listing(jobs: Vector[JobInfo]) -> string
@@ -43,4 +43,5 @@ usageLine(u: Usage) -> string
     val memory = if u.memoryBudget == long.MaxValue then formatSize(u.memory) else s"${formatSize(u.memory)}/${formatSize(u.memoryBudget)}"
     val lane = u.landing.map(id -> s"job $id").getOrElse("free")
     val outside = u.takeSlot.map(t -> s"; take-slot holds ${t.units} units, ${t.waiting} waiting" + (if t.landing then ", the landing lane" else "")).getOrElse("")
-    s"units ${u.units}/${u.unitBudget}, memory $memory, ${u.running} running, ${u.queued} queued, landing lane $lane$outside"
+    val held = if u.queueHeld then "; the queue is held: nothing new starts" else ""
+    s"units ${u.units}/${u.unitBudget}, memory $memory, ${u.running} running, ${u.queued} queued, landing lane $lane$outside$held"
