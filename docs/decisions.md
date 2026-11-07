@@ -169,7 +169,8 @@ user: tui pinned by commit until it has a tag, and `top` never starting a daemon
 
 ## Measured memory (branch `top-columns`)
 
-**Proposed**; each says what else was weighed.
+**Settled on the user's delegation 2026-11-07**; each says what else was weighed. Listing a group's
+members with `pgrep -g` is temporary, until avin binds Sysl's `group_members`.
 
 - **A job's tree is its process group**, listed by `pgrep -g` (the same listing the deadline's
   stack sampler already used) and each member's `residentBytes` summed; a member gone since it was
