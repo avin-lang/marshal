@@ -127,7 +127,7 @@ decodeState(saved: string) -> Result[SavedState, string]
     val j = json.parse(saved) match
         Ok(v) -> v
         Err(e) -> return Err(s"not JSON: $e")
-    if j.asMembers().isEmpty() then return Err("the state is a JSON object")
+    if j.asMembers().isEmpty() then return Err("the state is not a JSON object")
     Ok(SavedState(
         text(j, "version")?,
         whole(j, "pid")?,

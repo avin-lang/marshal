@@ -16,6 +16,8 @@ thread of its own, so a client blocked in `wait` holds up nobody else.
 | `status` | | `{"ok":true,"units":U,"unit_budget":B,"mem":M,"mem_budget":MB,"running":R,"queued":Q,"landing":id or null,"take_slot":{"dir":D,"units":TU,"waiting":TW,"landing":bool} or null}` |
 | `snapshot` | | `{"ok":true,"snapshot":{...}}`: the fields of the `status` reply but `running` and `queued`, then `uptime_ms` (how long the daemon has run), `running` (jobs), `queued` (jobs in queue order, each with `position` and `waits`, below) and `recent` (the last ten jobs that ended, earlier daemons' included, the latest first) |
 | `stop` | `force` (bool), `wait` (bool) | `{"ok":true}` once the daemon has removed its socket; refused while jobs run unless one of the two is true |
+| `version` | | `{"ok":true,"version":"<marshal's version>","pid":P}`, the daemon's process |
+| `restart` | | no reply when the daemon restarts: the connection closes as it replaces its program, and the client connects again and asks `version`, whose `pid` is the same; `{"ok":false,"error":...}` when it could not, and it goes on as it was |
 
 Any request may be refused: `{"ok":false,"error":"<a sentence>"}`, for a request that is not JSON,
 lacks a field or has one of the wrong type, names no job, or asks for a job that can never fit.
@@ -47,6 +49,12 @@ jobs queue apart), and `waits`, why it has not started:
 | `behind` | it fits, but starting it would delay the job at the head of the queue, whose id is `behind` |
 | `starting` | it starts at the daemon's next look |
 
+**Across a restart.** The daemon writes every reply it has given before it restarts, and carries
+out no request that arrives while it hands over: those connections close unanswered. So a
+connection that closes before its reply means the request was not carried out, and the client
+connects again and asks again; marshal's command line does so for up to 30 seconds. A `wait` goes on
+waiting across a restart that way, and is answered by the new program.
+
 A client asks for a snapshot without knowing the daemon's age: a daemon older than the request
 refuses it with `no such request: `snapshot``.
 
@@ -56,3 +64,15 @@ refuses it with `no such request: `snapshot``.
 1970) and `event`: `submitted`, `started` (adds `pgid` and `pid`, the job's main process), and one ending, `finished`, `timeout`,
 `killed` or `lost`, which adds `run_ms` and `exit`, the status `wait` exits with. `lost` also adds
 `pgid` and `group_alive`, whether the job's processes were still running when the new daemon looked.
+
+## The restart state
+
+`state.json` in marshal's home is what a restarting daemon hands to the program it becomes, which
+reads and removes it. It is one JSON object: `version` and `pid` of the daemon that wrote it,
+`saved_at`, `began_at` (when the daemon first started), `next_id`, `queue` (in order), `running`,
+`ended` (the last ten, oldest first) and `ticket` (its waiting ticket in take-slot's directory, or
+null). Each job holds `id`, `spec` (the fields of a `submit` request but `op`), `state`,
+`submitted_at`, `arrived` (microseconds, take-slot's order), `started_at`, `ended_at`, `deadline_ms`,
+`expected_ms`, `log`, `pid`, `pgid`, `outcome`, `killed`, `timed_out` and `sample`. Times are
+milliseconds since 1970, and a time that has not come yet is 0. A file written by another process
+than the one reading it is not taken over.

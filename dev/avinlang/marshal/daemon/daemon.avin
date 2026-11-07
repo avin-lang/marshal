@@ -139,7 +139,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             Status -> give(reply, Using(usage()))
             Request.Snapshot -> give(reply, Viewed(overview()))
             Stop(force, drain) -> stop(force, drain, Some(reply))
-            Request.Hello -> give(reply, Hi(marshal.Version, process.pid()))
+            Request.Hello -> give(reply, Hi(reportedVersion(), process.pid()))
             Request.Restart -> restart(reply)
 
     submit(spec: JobSpec) -> Reply
@@ -476,7 +476,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             if j.state == "queued" then 0 else wall(j.startedMs),
             if j.state == "done" then wall(j.endedMs) else 0,
             j.deadlineMs, j.expectedMs, j.log, j.pid, j.pgid, j.outcome, j.killed, j.timedOut, j.sample)
-        SavedState(marshal.Version, process.pid(), wallNow, wall(began), nextId,
+        SavedState(reportedVersion(), process.pid(), wallNow, wall(began), nextId,
             queue.map(saved).toVector(), running.map(saved).toVector(), ended.takeRight(Recent).map(saved).toVector(), ticket)
 
     // Takes over what an earlier image of this daemon saved: its jobs, queue and ticket. The
@@ -563,6 +563,10 @@ connection(conn: UnixStream, events: Channel[Message])
 machineMemory() -> long = Command("sysctl", "-n", "hw.memsize").output() match
     Ok(text) -> text.trim().toLongOption().getOrElse(0)
     Err(_) -> 0
+
+// The version this daemon reports and saves: marshal's own, unless `$MARSHAL_TEST_VERSION` names
+// another, which is how the tests stand in for a newer marshal without building a second one.
+reportedVersion() -> string = process.env("MARSHAL_TEST_VERSION").getOrElse(marshal.Version)
 
 // The state an earlier image of this daemon saved in `file` before it became this one, which is
 // removed once read; None, with the reason on standard error, when it cannot be read.
@@ -669,7 +673,7 @@ run(home: string, resume: Option[string] = None) -> int
     val daemon = Daemon(home, config, events, recovered.nextId, histories, slots, earlier)
     for s in saved
         daemon.restore(s)
-        val upgrade = if s.version == marshal.Version then s"version ${s.version}" else s"version ${s.version} to ${marshal.Version}"
+        val upgrade = if s.version == reportedVersion() then s"version ${s.version}" else s"version ${s.version} to ${reportedVersion()}"
         eprintln(s"marshal: daemon ${process.pid()} restarted ($upgrade), taking over ${s.running.length()} running and ${s.queue.length()} queued jobs")
     daemon.serve()
     0

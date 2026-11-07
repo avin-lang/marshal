@@ -166,3 +166,59 @@ user: tui pinned by commit until it has a tag, and `top` never starting a daemon
 - **Colours**: running green, queued yellow, exit 0 green, a failure red, a timeout red reversed,
   killed magenta, lost magenta reversed, cancelled grey; time left yellow under a quarter or five
   minutes, red under a tenth or one minute.
+
+## Restart (branch `exec-upgrade`)
+
+**Proposed**, awaiting the user; each says why and what else was weighed. Review with the user: the
+restart taking the program at the daemon's own path, and the test-only `$MARSHAL_TEST_VERSION`.
+
+- **A restart replaces the daemon's program in place (`process.exec`), keeping its process.** Its
+  jobs stay its children, so the new program waits for them by pid and gets their real exit status.
+  Why: only a parent can learn how its child ended; a new process could only watch the old jobs'
+  pids and would record each as lost. Alternatives: `stop --wait` then start (waits out every
+  job, perhaps an hour of tests); a separate long-lived supervisor owning the jobs (a second
+  daemon to install and upgrade).
+- **Jobs are detached as they start and always waited for by pid**, in either program, so nothing
+  about waiting for a job depends on which image started it.
+- **The state goes through `<home>/state.json`, its path given as `daemon --resume <file>`.** The
+  new program reads it, checks it was written by its own pid, and removes it. Why: a file can be
+  read back and inspected when a restart goes wrong; Avin closes every descriptor on exec, so a pipe
+  cannot be carried across. Alternatives: rebuilding from `events.jsonl` (has no deadline left,
+  kill mark, queue order or take-slot ticket); the state in an environment variable (size-limited,
+  and visible to the jobs started later).
+- **Saved times are on the wall clock**, converted from the monotonic clock on save and back on
+  load, so the file means the same to any reader. A clock step during the instant of a restart
+  shifts deadlines by that step. Alternative: monotonic times (the process keeps its clock across
+  exec, but a value in a file would then mean nothing outside it).
+- **The program is the one at the daemon's own path** (`process.executable()`), so `brew upgrade`
+  followed by `marshal restart` runs the new one; `$MARSHAL_RESTART_PROGRAM`, in the daemon's
+  environment, names another (the tests use it). Alternative: the path of the `restart` command's
+  own program, sent in the request (a client from another install could swap the daemon for it).
+- **While it hands over, the daemon carries out nothing new**: it starts no job, writes every reply
+  it has given, records every job that has ended, and holds requests unanswered; their connections
+  close at exec and their clients connect again for up to 30 seconds and ask again. Why: a client
+  that saw no reply then knows its request was not carried out, so asking again never submits a
+  job twice. Alternative: answering "restarting" and having clients retry on that (one more reply
+  every client must know, and a `wait` would still need to reconnect).
+- **A restart that cannot exec leaves the daemon as it was**: the state file is removed, held
+  requests are carried out, and `restart` exits 2 saying why. A TERM arriving during the hand-over
+  stops the daemon as TERM always does, instead of restarting.
+- **`restart` is refused while the daemon is stopping or draining**; with no daemon it prints so
+  and exits 0, starting none. `version` never starts a daemon either.
+- **A job being killed or timed out when the daemon restarts is sent TERM again by the new program**,
+  whose grace period then starts afresh, since the thread that would send the KILL went with the
+  old image. So its KILL can come up to 5 seconds later than it would have.
+- **`$MARSHAL_TEST_VERSION` sets the version the daemon reports and saves**, so the tests can
+  restart into a "newer" marshal and check that `version` and `restart` report the change.
+  Alternative: building a second marshal with another version inside the test (a minute of build
+  per run, and a second copy of the build's rules in the test).
+- **The test of a daemon killed outright now runs**: Avin closes descriptors on exec, so a killed
+  daemon's socket no longer stays open in its jobs, and the next daemon records them as `lost`.
+
+Known gaps in Avin, left for it to fix rather than worked around here:
+
+- A job that ends in the milliseconds between the daemon's last look and its exec is reaped by the
+  old image, so the new one cannot learn how it ended and records it `lost` (exit 125).
+- `avin.fs` has no rename, so `state.json` is written in place rather than written aside and
+  renamed. Only the program the daemon becomes reads it, after the write has finished, so this
+  matters only to a daemon killed mid-write, which leaves a partial file that nothing reads.
