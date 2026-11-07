@@ -169,8 +169,9 @@ user: tui pinned by commit until it has a tag, and `top` never starting a daemon
 
 ## Restart (branch `exec-upgrade`)
 
-**Proposed**, awaiting the user; each says why and what else was weighed. Review with the user: the
-restart taking the program at the daemon's own path, and the test-only `$MARSHAL_TEST_VERSION`.
+**Settled on the user's delegation 2026-11-07**; each says why and what else was weighed. Review
+with the user: the restart taking the program at the daemon's own path (so an install must replace
+that file, built to `.new` and moved over it), and the test-only `$MARSHAL_TEST_VERSION`.
 
 - **A restart replaces the daemon's program in place (`process.exec`), keeping its process.** Its
   jobs stay its children, so the new program waits for them by pid and gets their real exit status.
