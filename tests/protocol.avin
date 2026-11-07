@@ -112,6 +112,39 @@ overview(running: Vector[JobInfo], queued: Vector[QueuedJob], recent: Vector[Job
 
 val everyWhy: Vector[Why] = [Why.NoUnits, Why.NoMemory, Why.LaneBusy, Why.ForTakeSlot, Why.Behind(3), Why.Behind(long.MaxValue), Why.Starting, Why.Held, Why.QueueHeld]
 
+// A running job measured at `rss` with a peak of `peak`, started at `at`.
+measuredJob(rss: long, peak: long, at: long = 1762521060000) -> JobInfo =
+    JobInfo(7, "build", 1, 0, false, "/d", ["make"], "running", None, false, 12, 3400, 1200000, "/h/jobs/7.log", None, rss, peak, at)
+
+@test("a job's memory as measured and its start read back, from none to the largest")
+measuredReplies()
+    for (rss, peak) in [(long(0), long(0)), (long(1), long(1)), (long(500), long(812) * 1024 * 1024), (long.MaxValue, long.MaxValue)]
+        replyRoundTrip(Reply.Ended(measuredJob(rss, peak)))
+        replyRoundTrip(Reply.Jobs([measuredJob(rss, peak), job("queued", None)]))
+    val j = marshal.encodeJob(measuredJob(4096, 8192))
+    assertEq(j("rss").asLong(), Some(long(4096)))
+    assertEq(j("peak_rss").asLong(), Some(long(8192)))
+    assertEq(j("started_at").asLong(), Some(long(1762521060000)))
+    // a queued job has not started and holds nothing
+    val q = marshal.encodeJob(job("queued", None))
+    assertEq((q("rss").asLong(), q("peak_rss").asLong(), q("started_at").asLong()), (Some(long(0)), Some(long(0)), Some(long(0))))
+
+@test("the budget's measured memory and the machine's read back in status and snapshot replies")
+measuredUsage()
+    val u = Usage(8, 12, 30, 64, 3, 2, Some(5), None, long(9) * 1024 * 1024 * 1024, long(64) * 1024 * 1024 * 1024)
+    replyRoundTrip(Reply.Using(u))
+    replyRoundTrip(Reply.Viewed(Overview(Usage(1, 12, 0, long.MaxValue, 1, 0, None, None, 123456789, 0), 0, [measuredJob(123456789, 223456789)], [], [])))
+    val status = marshal.statusJson(u, [measuredJob(100, 200), job("queued", None)])
+    assertEq(status("rss").asLong(), Some(9 * long(1024) * 1024 * 1024))
+    assertEq(status("machine_mem").asLong(), Some(64 * long(1024) * 1024 * 1024))
+    val running = status("running").asVector().get()(0)
+    assertEq(running("rss").asLong(), Some(long(100)))
+    assertEq(running("peak_rss").asLong(), Some(long(200)))
+    assertEq(status("queued").asVector().get()(0)("peak_rss").asLong(), Some(long(0)))
+    // a reply from a daemon that measured nothing reads as none measured and the machine unknown
+    assertEq(marshal.decodeReply("{\"ok\":true,\"units\":0,\"unit_budget\":12,\"mem\":0,\"mem_budget\":0,\"running\":0,\"queued\":0,\"landing\":null,\"take_slot\":null}"),
+             Ok(Reply.Using(Usage(0, 12, 0, 0, 0, 0, None, None))))
+
 @test("the snapshot request reads back as itself and is written as op snapshot")
 snapshotRequest()
     roundTrip(Request.Snapshot)

@@ -4,7 +4,7 @@ module dev.avinlang.marshal.top
 // tui grid from a daemon's snapshot, and every key is an event handed to `App.handle`. The loop
 // that reads the terminal and asks the daemon is the command line's (`cli/top.avin`).
 import dev.avinlang.marshal
-import dev.avinlang.marshal.{JobInfo, Overview, QueuedJob, Why}
+import dev.avinlang.marshal.{JobInfo, Overview, QueuedJob, Usage, Why}
 import dev.avinlang.marshal.{NoUnits, NoMemory, LaneBusy, ForTakeSlot, Behind, Starting, Held, QueueHeld}
 import dev.avinlang.marshal.{Exited, Signalled, TimedOut, Cancelled, Lost}
 import dev.avinlang.tui.{Black, Bold, BrightBlack, Char, Column, Ctrl, Cyan, Dim, Down, End, Enter, Escape, Event,
@@ -112,7 +112,9 @@ val columns: Vector[Column] = [
     Column("STATE", 14),
     Column("KIND", 8),
     Column("UNITS", 5, 1),
-    Column("MEM", 6, 1),
+    Column("RESV", 6, 1),
+    Column("RSS", 5, 1),
+    Column("PEAK", 5, 1),
     Column("ELAPSED", 8, 1),
     Column("DEADLINE", 8, 1),
     Column("COMMAND", 0)
@@ -120,7 +122,10 @@ val columns: Vector[Column] = [
 
 // The column of STATE and of DEADLINE, which are drawn again in colour over the table's plain text.
 val StateColumn: int = 1
-val DeadlineColumn: int = 6
+val DeadlineColumn: int = 8
+
+// A measured size for the RSS and PEAK columns: `-` where nothing was measured.
+measuredText(bytes: long) -> string = if bytes <= 0 then "-" else marshal.roundSize(bytes)
 
 // The text of a line's cells.
 cells(l: Line, since: long) -> Vector[string]
@@ -131,6 +136,8 @@ cells(l: Line, since: long) -> Vector[string]
         if j.landing then j.kind + "*" else j.kind,
         j.units.toString(),
         if j.memory == 0 then "-" else marshal.formatSize(j.memory),
+        measuredText(if j.state == "running" then j.rss else 0),
+        measuredText(j.peakRss),
         clock(elapsedOf(l, since)),
         deadlineOf(l, since).0,
         j.cmd.mkString(" ")
@@ -405,7 +412,7 @@ val helpLines: Vector[string] = [
 // The header, three lines and a blank one, and the first row under it.
 //   marshal  up 1:02:03   3 running  2 queued   landing: job 7            filter: all
 //   units [██████▒▒▒·······]  5 + take-slot 4 / 12, 1 waiting
-//   mem   [███·············]  12.0G / 56.0G
+//   mem   [███·············]  12G / 56G   rss 9.4G   machine 64G
 drawHeader(g: Grid, o: Overview, since: long, f: Filter) -> int
     val u = o.usage
     var x = g.text(0, 0, "marshal", Style.plain().with(Bold))
@@ -434,8 +441,13 @@ drawHeader(g: Grid, o: Overview, since: long, f: Filter) -> int
     g.meter(7, 2, barWidth, if fraction > 1.0 then 1.0 else fraction, Style.fg(Cyan), Style.fg(BrightBlack))
     g.text(7 + barWidth, 2, "]")
     val mem = if bounded then s"${marshal.formatSize(u.memory)} / ${marshal.formatSize(u.memoryBudget)}" else marshal.formatSize(u.memory)
-    g.text(6 + barWidth + 3, 2, mem)
+    g.text(6 + barWidth + 3, 2, mem + memoryText(u))
     4
+
+// What the header says after the memory the running jobs reserve: what they hold, as last measured,
+// and the memory the machine has, where it is known.
+memoryText(u: Usage) -> string =
+    s"   rss ${marshal.roundSize(u.rss)}" + (if u.machineMemory > 0 then s"   machine ${marshal.roundSize(u.machineMemory)}" else "")
 
 // Who holds the landing lane, as the header says it.
 laneText(o: Overview) -> (string, Style)

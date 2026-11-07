@@ -25,8 +25,10 @@ savedJob(
     outcome: Option[Outcome] = None,
     killed: bool = false,
     timedOut: bool = false,
-    sample: Option[string] = None) -> SavedJob =
-    SavedJob(id, spec, state, submittedAt, arrived, startedAt, endedAt, deadlineMs, expectedMs, log, pid, pgid, outcome, killed, timedOut, sample)
+    sample: Option[string] = None,
+    rss: long = 0,
+    peakRss: long = 0) -> SavedJob =
+    SavedJob(id, spec, state, submittedAt, arrived, startedAt, endedAt, deadlineMs, expectedMs, log, pid, pgid, outcome, killed, timedOut, sample, rss, peakRss)
 
 val savedQueued: SavedJob = savedJob()
 
@@ -36,7 +38,7 @@ savedRunningJob(id: long = 8, pid: long = 4242, killed: bool = false, timedOut: 
 val savedRunning: SavedJob = savedRunningJob()
 
 savedEndedJob(id: long = 7, outcome: Outcome = Outcome.Exited(3), killed: bool = false, timedOut: bool = false, sample: Option[string] = None) -> SavedJob =
-    SavedJob(id, savedSpec, "done", 1, 2, 3, 4, 5, 6, "/h/jobs/7.log", 70, 71, Some(outcome), killed, timedOut, sample)
+    SavedJob(id, savedSpec, "done", 1, 2, 3, 4, 5, 6, "/h/jobs/7.log", 70, 71, Some(outcome), killed, timedOut, sample, 0, 912_000_000)
 
 val savedEnded: SavedJob = savedEndedJob()
 
@@ -73,9 +75,35 @@ savedBeingStopped()
 
 @test("every number a job holds keeps its value, the largest and negative ones included")
 savedNumbers()
-    val big = SavedJob(long.MaxValue, savedSpec, "running", long.MaxValue, long.MaxValue, long.MaxValue, long.MaxValue, long.MaxValue, long.MaxValue, "l", long.MaxValue, long.MaxValue, None, false, false, None)
+    val big = SavedJob(long.MaxValue, savedSpec, "running", long.MaxValue, long.MaxValue, long.MaxValue, long.MaxValue, long.MaxValue, long.MaxValue, "l", long.MaxValue, long.MaxValue, None, false, false, None, long.MaxValue, long.MaxValue)
     stateRoundTrip(SavedState("v", long.MaxValue, long.MaxValue, long.MaxValue, long.MaxValue, [], [big], [], None))
     stateRoundTrip(stateOf([], [savedJob(id = 1, state = "running", startedAt = -5, deadlineMs = -1, pid = -1)], []))
+
+@test("a running job's memory, now and at its peak, and its start time read back")
+savedMemory()
+    stateRoundTrip(stateOf([], [savedRunningJob(), savedJob(id = 3, state = "running", startedAt = 1_762_000_000_002, pid = 9, pgid = 9, rss = 123_456_789, peakRss = 987_654_321)], []))
+    stateRoundTrip(stateOf([], [savedJob(id = 4, state = "running", startedAt = 1, rss = 0, peakRss = 5)], [savedEnded]))
+    val read = marshal.decodeState(marshal.encodeState(stateOf([], [savedJob(id = 3, state = "running", startedAt = 77, rss = 5, peakRss = 9)], [])).render())
+    assertEq(read.ok().map(s -> (s.running(0).startedAt, s.running(0).rss, s.running(0).peakRss)), Some((long(77), long(5), long(9))))
+
+@test("state saved before memory was measured, with no rss or peak_rss, reads with both 0")
+savedWithoutMemory()
+    val full = marshal.encodeSavedJob(savedRunningJob()).render()
+    assert(full.contains("\"rss\":0"), full)
+    val old = full.replace(",\"rss\":0,\"peak_rss\":0", "")
+    assert(!old.contains("rss"), old)
+    val text = s"{\"version\": \"0.1.0\", \"pid\": 1, \"saved_at\": 2, \"began_at\": 3, \"next_id\": 4, \"queue\": [], \"running\": [$old], \"ended\": []}"
+    assertEq(marshal.decodeState(text), Ok(SavedState("0.1.0", 1, 2, 3, 4, [], [savedRunning], [], None)))
+    val nulls = full.replace("\"rss\":0,\"peak_rss\":0", "\"rss\":null,\"peak_rss\":null")
+    assertEq(marshal.decodeState(text.replace(old, nulls)), Ok(SavedState("0.1.0", 1, 2, 3, 4, [], [savedRunning], [], None)))
+
+@test("a memory figure that is not a whole number is refused naming the field")
+savedBadMemory()
+    val head = "\"version\": \"0.1.0\", \"pid\": 1, \"saved_at\": 2, \"began_at\": 3, \"next_id\": 4"
+    val good = marshal.encodeSavedJob(savedEnded).render()
+    val withJob = (j: string) -> s"{$head, \"queue\": [], \"running\": [], \"ended\": [$j]}"
+    stateRefused(withJob(good.replace("\"peak_rss\":912000000", "\"peak_rss\":\"big\"")), "`peak_rss` is not a whole number")
+    stateRefused(withJob(good.replace("\"rss\":0", "\"rss\":1.5")), "`rss` is not a whole number")
 
 @test("a job's words, environment, log and the ticket keep quotes, new lines, empty text and characters beyond ASCII")
 savedAwkwardText()
@@ -97,10 +125,10 @@ savedNulls()
 
 @test("a held queue, held jobs and priorities read back as themselves, the extremes included")
 savedQueueControl()
-    val held = SavedJob(9, savedSpec, "queued", 1, 2, 0, 0, 5, 6, "/l", 0, 0, None, false, false, None, true, 7)
+    val held = SavedJob(9, savedSpec, "queued", 1, 2, 0, 0, 5, 6, "/l", 0, 0, None, false, false, None, 0, 0, true, 7)
     stateRoundTrip(SavedState("0.1.0", 1, 2, 3, 4, [held], [], [], None, true))
     for p in [0, 1, -1, int.MaxValue, int.MinValue]
-        val j = SavedJob(9, savedSpec, "queued", 1, 2, 0, 0, 5, 6, "/l", 0, 0, None, false, false, None, false, p)
+        val j = SavedJob(9, savedSpec, "queued", 1, 2, 0, 0, 5, 6, "/l", 0, 0, None, false, false, None, 0, 0, false, p)
         stateRoundTrip(stateOf([j], [], []))
     stateRoundTrip(SavedState("0.1.0", 1, 2, 3, 4, [], [], [], None, false))
 

@@ -28,6 +28,33 @@ hugeSizes()
     assertEq(marshal.parseSize("8388608T"), None)
     assertEq(marshal.parseSize("8388607T"), Some(long(8388607) * 1024 * G))
 
+@test("a measured size is rounded: one decimal under ten of its unit, whole from there, never over five characters")
+roundedSizes()
+    val K: long = 1024
+    val M = K * K
+    assertEq(marshal.roundSize(0), "0")
+    assertEq(marshal.roundSize(-5), "0")
+    assertEq(marshal.roundSize(1), "1")
+    assertEq(marshal.roundSize(1023), "1023")
+    assertEq(marshal.roundSize(1024), "1.0K")
+    assertEq(marshal.roundSize(1536), "1.5K")
+    // 9.96K rounds to ten, which is whole
+    assertEq(marshal.roundSize(10199), "10K")
+    assertEq(marshal.roundSize(10 * K), "10K")
+    assertEq(marshal.roundSize(812 * M + 300 * K), "812M")
+    assertEq(marshal.roundSize(812 * M + 600 * K), "813M")
+    // what rounds up to 1024 of a unit is 1.0 of the next
+    assertEq(marshal.roundSize(1023 * M + 600 * K), "1.0G")
+    assertEq(marshal.roundSize(1023 * M + 400 * K), "1023M")
+    assertEq(marshal.roundSize(1024 * K - 1), "1.0M")
+    assertEq(marshal.roundSize(9 * G + 400 * M), "9.4G")
+    assertEq(marshal.roundSize(64 * G), "64G")
+    assertEq(marshal.roundSize(3072 * G), "3.0T")
+    assertEq(marshal.roundSize(1024 * 1023 * G + 900 * G), "1024T")
+    assertEq(marshal.roundSize(long.MaxValue), "8388608T")
+    for n in [long(1), long(1023), K, 999 * K, 1023 * K + 1023, 1023 * M + 999 * K, 99 * G, long(9999) * 1024 * G]
+        assert(marshal.roundSize(n).charCount() <= 5, s"$n: ${marshal.roundSize(n)}")
+
 @test("a size is shown in the largest unit that divides it")
 formattedSizes()
     assertEq(marshal.formatSize(0), "0")

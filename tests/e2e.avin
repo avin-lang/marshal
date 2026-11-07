@@ -988,6 +988,80 @@ statusJson()
     assertEq(m(home, "status", "--yaml").code, 2)
     cleanUp(home)
 
+// `status --json` of `home`, parsed.
+statusOf(home: string) -> Json = json.parse(m(home, "status", "--json").out).ok().get()
+
+@test("the daemon measures a running job's whole tree: rss and peak in status --json and the snapshot, the peak in its ending event")
+measuredMemory()
+    val home = newHome("{\"units\": 4}")
+    val before = time.now().epochMillis()
+    // a shell, a shell under it, and a sleep under each
+    val id = submitted(home, "--units", "4", "--", "sh", "-c", "sh -c 'sleep 30 & wait' & sleep 31 & wait")
+    val waiting = submitted(home, "--", "sleep", "1")
+    val job = () -> statusOf(home)("running").asVector().get().find(x -> x("id").asLong() == Some(id))
+    assert(within(5000, () -> job().exists(x -> x("rss").asLong().exists(n -> n > 0))), "no measurement of the running job")
+    val after = time.now().epochMillis()
+    val status = statusOf(home)
+    val j = status("running").asVector().get()(0)
+    val rss = j("rss").asLong().get()
+    // the tree is four processes, each a megabyte or more
+    assert(rss > long(4) * 1024 * 1024, s"$rss")
+    assert(j("peak_rss").asLong().get() >= rss)
+    assert(before <= j("started_at").asLong().get() <= after, j.render())
+    assert(status("rss").asLong().get() > 0)
+    assertEq(status("machine_mem").asLong(), process.totalMemory().ok())
+    // the queued job has not started and holds nothing
+    val q = status("queued").asVector().get()(0)
+    assertEq((q("id").asLong(), q("rss").asLong(), q("peak_rss").asLong(), q("started_at").asLong()), (Some(waiting), Some(long(0)), Some(long(0)), Some(long(0))))
+    // snapshot after snapshot, the peak never goes down and is never below what is held now
+    var peak: long = 0
+    for _ in 0 ..< 4
+        val o = snapshotOf(home)
+        val r = o.running.find(x -> x.id == id).get()
+        assert(r.peakRss >= peak && r.peakRss >= r.rss && r.rss > 0, s"${r.rss} ${r.peakRss} after $peak")
+        assertEq(o.usage.rss, r.rss)
+        assertEq(Some(o.usage.machineMemory), process.totalMemory().ok())
+        peak = r.peakRss
+        threads.sleep(millis(600))
+    assertEq(m(home, "kill", id.toString()).code, 0)
+    m(home, "wait", id.toString())
+    val ending = events(home).find(e -> e("id").asLong() == Some(id) && e("event").asString() == Some("killed")).get()
+    assert(ending("peak_rss").asLong().get() >= peak, ending.render())
+    assertEq(ending("rss").asLong(), Some(long(0)))
+    // an ended job is shown with its peak and nothing held
+    val ended = snapshotOf(home).recent.find(x -> x.id == id).get()
+    assertEq((ended.rss, ended.peakRss), (long(0), ending("peak_rss").asLong().get()))
+    assertEq(m(home, "wait", waiting.toString()).code, 0)
+    val finished = events(home).find(e -> e("id").asLong() == Some(waiting) && e("event").asString() == Some("finished")).get()
+    assert(finished.has("peak_rss"), finished.render())
+    cleanUp(home)
+
+@test("a job's peak memory and start time survive a restart, and the restarted daemon goes on measuring it")
+measuredMemorySurvivesRestart()
+    val home = newHome("{\"units\": 4}")
+    // one sleep under the shell for five seconds, then four: the tree grows after the restart
+    val id = submitted(home, "--", "sh", "-c", "sleep 40 & sleep 5; sleep 41 & sleep 42 & sleep 43 & wait")
+    val job = () -> statusOf(home)("running").asVector().get().find(x -> x("id").asLong() == Some(id))
+    assert(within(5000, () -> job().exists(x -> x("rss").asLong().exists(n -> n > 0))), "no measurement of the running job")
+    val first = job().get()
+    val startedAt = first("started_at").asLong().get()
+    val peakBefore = first("peak_rss").asLong().get()
+    assert(peakBefore > 0, first.render())
+    assertEq(m(home, "restart").code, 0)
+    // at once after the restart the job has what it had: its start and a peak no lower
+    val resumed = job().get()
+    assertEq(resumed("started_at").asLong(), Some(startedAt))
+    assert(resumed("peak_rss").asLong().get() >= peakBefore, resumed.render())
+    // and the new image measures it: the peak rises as the tree grows
+    assert(within(12000, () -> job().exists(x -> x("peak_rss").asLong().exists(n -> n > peakBefore))), s"the peak stayed at $peakBefore: ${job().map(x -> x.render())}")
+    assert(job().get()("rss").asLong().get() > 0)
+    assertEq(m(home, "kill", id.toString()).code, 0)
+    m(home, "wait", id.toString())
+    val ending = events(home).find(e -> e("id").asLong() == Some(id) && e("event").asString() == Some("killed")).get()
+    assert(ending("peak_rss").asLong().get() > peakBefore, ending.render())
+    assertEq(snapshotOf(home).recent.find(x -> x.id == id).get().startedAt, startedAt)
+    cleanUp(home)
+
 @test("a take-slot directory that is not one keeps the daemon from starting")
 missingTakeSlotDir()
     val home = newHome()

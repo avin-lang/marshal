@@ -13,7 +13,7 @@ import dev.avinlang.marshal.top
 // `budget`, `hour`, `dev`, `land` and `roundTrip` are the scheduler's and the protocol's tests'.
 
 private infoOf(id: long, held: bool = false, priority: int = 0) -> JobInfo =
-    JobInfo(id, "build", 1, 0, false, "/d", ["make"], "queued", None, false, 0, 0, 60000, s"/h/jobs/$id.log", None, held, priority)
+    JobInfo(id, "build", 1, 0, false, "/d", ["make"], "queued", None, false, 0, 0, 60000, s"/h/jobs/$id.log", None, held = held, priority = priority)
 
 private refused(text: string, why: string) = marshal.decodeRequest(text) match
     Err(e) -> assert(e.contains(why), s"$text: $e")
@@ -63,13 +63,13 @@ jobFields()
 @test("status and snapshot replies say whether the queue is held, and an older reply reads as not held")
 usageQueueHeld()
     for held in [true, false]
-        val u = Usage(1, 12, 0, 64, 1, 2, None, None, held)
+        val u = Usage(1, 12, 0, 64, 1, 2, None, None, queueHeld = held)
         assertEq(marshal.decodeReply(marshal.encodeReply(Reply.Using(u)).render()), Ok(Reply.Using(u)))
-        val o = Overview(Usage(1, 12, 0, 64, 0, 1, None, None, held), 5, [], [QueuedJob(infoOf(1), 1, if held then QueueHeld else Starting)], [])
+        val o = Overview(Usage(1, 12, 0, 64, 0, 1, None, None, queueHeld = held), 5, [], [QueuedJob(infoOf(1), 1, if held then QueueHeld else Starting)], [])
         assertEq(marshal.decodeReply(marshal.encodeReply(Reply.Viewed(o)).render()), Ok(Reply.Viewed(o)))
         assertEq(marshal.statusJson(u, [])("queue_held").asBool(), Some(held))
     assertEq(marshal.decodeReply("{\"ok\":true,\"units\":0,\"unit_budget\":12,\"mem\":0,\"mem_budget\":0,\"running\":0,\"queued\":0,\"landing\":null,\"take_slot\":null}"),
-        Ok(Reply.Using(Usage(0, 12, 0, 0, 0, 0, None, None, false))))
+        Ok(Reply.Using(Usage(0, 12, 0, 0, 0, 0, None, None))))
 
 @test("higher priorities go first, equal ones keep their order, the extremes included")
 priorityOrdering()
@@ -133,7 +133,7 @@ shownHeld()
     assertEq(marshal.stateColumn(infoOf(1, true)), "held")
     assertEq(marshal.stateColumn(infoOf(1)), "queued")
     assert(marshal.listing([infoOf(1, true)]).contains("held"))
-    assertEq(marshal.usageLine(Usage(0, 12, 0, long.MaxValue, 0, 2, None, None, true)), "units 0/12, memory 0, 0 running, 2 queued, landing lane free; the queue is held: nothing new starts")
+    assertEq(marshal.usageLine(Usage(0, 12, 0, long.MaxValue, 0, 2, None, None, queueHeld = true)), "units 0/12, memory 0, 0 running, 2 queued, landing lane free; the queue is held: nothing new starts")
     assertEq(top.whyText(Held), "held")
     assertEq(top.whyText(QueueHeld), "queue held")
 

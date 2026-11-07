@@ -167,6 +167,33 @@ user: tui pinned by commit until it has a tag, and `top` never starting a daemon
   killed magenta, lost magenta reversed, cancelled grey; time left yellow under a quarter or five
   minutes, red under a tenth or one minute.
 
+## Measured memory (branch `top-columns`)
+
+**Settled on the user's delegation 2026-11-07**; each says what else was weighed. Listing a group's
+members with `pgrep -g` is temporary, until avin binds Sysl's `group_members`.
+
+- **A job's tree is its process group**, listed by `pgrep -g` (the same listing the deadline's
+  stack sampler already used) and each member's `residentBytes` summed; a member gone since it was
+  listed counts 0. Why: every job runs in a group of its own that its programs join, the group is
+  what `kill` stops, and avin has no call that lists a group's or a process's children. Review:
+  replace `groupMembers` with avin's own listing once it has one; a program that leaves the group
+  (`setsid`) is not counted, as it is not killed. Alternatives: the job's main process alone (a
+  `sysl test` holds little itself; its workers hold the memory); walking parent ids from `ps`.
+- **Measured every second on a thread of its own**, which sends the sizes back to the daemon's
+  thread; one measurement at a time, and nothing measured while nothing runs. Why: a `pgrep` and a
+  call per process cost little, a second is what top refreshes at, and the daemon's thread never
+  waits on a child. Alternatives: measuring on each `snapshot` or `status` (no peak between
+  requests, and the request waits); a configurable period (no one has needed one).
+- **RSS is shown only while a job runs, PEAK always**: an ended job holds nothing; its peak is what
+  a kind's memory can be learned from, so every event carries `peak_rss` and an ending event's is
+  final. Sizes there are rounded (`812M`, `9.4G`), where RESV keeps the exact form `--mem` takes.
+  Alternatives: one `RSS/PEAK` column (narrower, harder to read); keeping the last measurement of an
+  ended job as its RSS.
+- **`ls` calls the declared memory RESV too**, as top does, so one word means one thing.
+- **The header's memory line adds `rss` and `machine`** after the reservation and budget, the
+  machine's memory left out where it is unknown; its bar stays the reservation against the budget,
+  since that is what the scheduler decides by.
+
 ## Restart (branch `exec-upgrade`)
 
 **Settled on the user's delegation 2026-11-07**; each says why and what else was weighed. Review
