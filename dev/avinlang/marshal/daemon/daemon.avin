@@ -560,9 +560,7 @@ connection(conn: UnixStream, events: Channel[Message])
     conn.close()
 
 // The machine's memory in bytes, or 0 where it cannot be asked.
-machineMemory() -> long = Command("sysctl", "-n", "hw.memsize").output() match
-    Ok(text) -> text.trim().toLongOption().getOrElse(0)
-    Err(_) -> 0
+machineMemory() -> long = process.totalMemory().getOrElse(0)
 
 // The version this daemon reports and saves: marshal's own, unless `$MARSHAL_TEST_VERSION` names
 // another, which is how the tests stand in for a newer marshal without building a second one.
@@ -612,7 +610,7 @@ run(home: string, resume: Option[string] = None) -> int
             listener.close()
             fs.remove(home + "/sock")
             return 1
-    val takeSlot = marshal.takeSlotDir(process.env("MARSHAL_TAKE_SLOT_DIR"), config.takeSlot, fs.isDir(marshal.DefaultTakeSlotDir))
+    val takeSlot = marshal.takeSlotDir(process.env("MARSHAL_TAKE_SLOT_DIR"), config.takeSlot)
     for dir in takeSlot
         if !fs.isDir(dir)
             eprintln(s"marshal: the take-slot directory $dir is not a directory")

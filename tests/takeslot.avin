@@ -3,16 +3,16 @@ module tests
 // The take-slot format: which directory is shared, and the waiters' ticket names.
 import dev.avinlang.marshal
 
-@test("the environment wins over config.json, empty text in either shares nothing, and neither leaves the default")
+@test("the environment wins over config.json, empty text in either shares nothing, and neither shares nothing")
 takeSlotDirs()
-    assertEq(marshal.takeSlotDir(None, None, true), Some(marshal.DefaultTakeSlotDir))
-    assertEq(marshal.takeSlotDir(None, None, false), None)
-    assertEq(marshal.takeSlotDir(None, Some("/c"), true), Some("/c"))
-    assertEq(marshal.takeSlotDir(None, Some("/c"), false), Some("/c"))
-    assertEq(marshal.takeSlotDir(Some("/e"), Some("/c"), true), Some("/e"))
-    assertEq(marshal.takeSlotDir(Some(""), Some("/c"), true), None)
-    assertEq(marshal.takeSlotDir(None, Some(""), true), None)
-    assertEq(marshal.takeSlotDir(Some("/e"), Some(""), false), Some("/e"))
+    assertEq(marshal.takeSlotDir(None, None), None)
+    assertEq(marshal.takeSlotDir(None, Some("/c")), Some("/c"))
+    assertEq(marshal.takeSlotDir(Some("/e"), Some("/c")), Some("/e"))
+    assertEq(marshal.takeSlotDir(Some("/e"), None), Some("/e"))
+    assertEq(marshal.takeSlotDir(Some(""), Some("/c")), None)
+    assertEq(marshal.takeSlotDir(None, Some("")), None)
+    assertEq(marshal.takeSlotDir(Some(""), None), None)
+    assertEq(marshal.takeSlotDir(Some("/e"), Some("")), Some("/e"))
 
 @test("a ticket is named as take-slot names one: seconds, six digits of fraction, the pid")
 ticketNames()

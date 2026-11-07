@@ -1,0 +1,324 @@
+module tests
+
+// Reading `.job` files: what a type holds, each default, every way a file can be refused and the
+// reason given, binding a command line to a type's parameters, and expanding `${name}` references.
+import dev.avinlang.marshal
+import dev.avinlang.marshal.{AnyExit, Codes, JobType, Lit, Param, Ref, Step}
+
+parsed(text: string) -> JobType = marshal.parseJobType("t", "/types/t.job", text) match
+    Ok(t) -> t
+    Err(e) -> fail(s"$text: $e")
+
+refused(text: string, why: string) = marshal.parseJobType("t", "/types/t.job", text) match
+    Err(e) -> assert(e.contains(why), s"$text: $e")
+    Ok(t) -> fail(s"$text read as $t")
+
+// A type of one step around `rest`, a JSON fragment of more fields.
+withSteps(steps: string, rest: string = "") -> string = s"{\"steps\": [$steps]${if rest.isEmpty() then "" else ", " + rest}}"
+
+// A type with the parameters `params` (a JSON object's members) and one step.
+withParams(params: string, rest: string = "") -> string = withSteps("{\"name\": \"a\", \"run\": [\"true\"]}", s"\"params\": {$params}${if rest.isEmpty() then "" else ", " + rest}")
+
+val train: string = """
+// a comment line, as is the next
+   // indented
+{
+  "about": "Gate and land",
+  "kind": "trains",
+  "lane": "landing",
+  "units": 3,
+  "mem": "2G",
+  "deadline": "2h",
+  "params": {
+    "branch": {"repeat": true, "required": true, "positional": true, "about": "a branch"},
+    "remote": {"default": "origin"},
+    "jobs": {"type": "int", "default": 4},
+    "verbose": {"type": "bool"},
+    "on-red": {"default": "report", "choices": ["report", "bisect"]},
+    "extra": {"repeat": true, "default": ["x", "y"]}
+  },
+  "bisect": "branch",
+  "steps": [
+    {"name": "merge", "run": ["stock:git", "merge", "${branch}"], "on_failure": "${on-red}"},
+    {"name": "test", "run": ["sh", "-c", "make -j${jobs}"], "dir": "${work}/tree", "env": {"V": "${verbose}"},
+     "when": "${remote}", "exit": [0, 3], "result": true, "deadline": "30m", "on_success": "land", "on_failure": "bisect"}
+  ],
+  "fail_map": {"name": "map", "run": ["sh", "-c", "true"]},
+  "land": [{"name": "land", "run": ["stock:git", "land", "--head", "${head}"], "on_failure": "report"}],
+  "cleanup": [{"name": "clean", "run": ["rm", "-rf", "${work}"], "exit": "any"}]
+}
+"""
+
+@test("a type reads with every field it gives, comment lines and all")
+typeFields()
+    val t = parsed(train)
+    assertEq(t.name, "t")
+    assertEq(t.file, "/types/t.job")
+    assertEq(t.about, "Gate and land")
+    assertEq(t.kind, "trains")
+    assert(t.landing)
+    assertEq(t.units, 3)
+    assertEq(t.memory, long(2) * 1024 * 1024 * 1024)
+    assertEq(t.deadlineMs, Some(long(7200000)))
+    assertEq(t.bisect, Some("branch"))
+    assertEq(t.params.map(p -> p.name), ["branch", "remote", "jobs", "verbose", "on-red", "extra"])
+    assertEq(t.params(0), Param("branch", "string", true, true, true, [], [], "a branch"))
+    assertEq(t.params(1), Param("remote", "string", false, false, false, ["origin"], [], ""))
+    assertEq(t.params(2), Param("jobs", "int", false, false, false, ["4"], [], ""))
+    assertEq(t.params(3), Param("verbose", "bool", false, false, false, ["false"], [], ""))
+    assertEq(t.params(4).choices, ["report", "bisect"])
+    assertEq(t.params(5).defaults, ["x", "y"])
+    assertEq(t.steps.map(s -> s.name), ["merge", "test"])
+    assertEq(t.steps(1), Step("test", ["sh", "-c", "make -j${jobs}"], Some("${work}/tree"), [("V", "${verbose}")], Some("${remote}"), Codes([0, 3]), true, Some("30m"), "land", "bisect"))
+    assertEq(t.failMap.map(s -> s.name), Some("map"))
+    assertEq(t.land.map(s -> s.name), ["land"])
+    assertEq(t.cleanup(0).exits, AnyExit)
+
+@test("a type of one bare step takes every default")
+typeDefaults()
+    val t = parsed(withSteps("{\"name\": \"only\", \"run\": [\"make\"]}"))
+    assertEq(t.kind, "t")
+    assert(!t.landing)
+    assertEq(t.units, 1)
+    assertEq(t.memory, 0)
+    assertEq(t.deadlineMs, None)
+    assertEq(t.about, "")
+    assertEq(t.params, [])
+    assertEq(t.bisect, None)
+    assertEq(t.steps, [Step("only", ["make"], None, [], None, Codes([0]), false, None, "next", "stop")])
+    assertEq(t.land, [])
+    assertEq(t.failMap, None)
+    assertEq(t.cleanup, [])
+    assertEq(parsed(withSteps("{\"name\": \"a\", \"run\": [\"x\"], \"exit\": 2}")).steps(0).exits, Codes([2]))
+    assertEq(parsed(withSteps("{\"name\": \"a\", \"run\": [\"x\"]}", "\"mem\": 1024, \"units\": 0, \"lane\": \"dev\"")).memory, 1024)
+
+@test("text that is not a type object is refused")
+typeNotObject()
+    refused("", "not JSON")
+    refused("{", "not JSON")
+    refused("[]", "a type is a JSON object")
+    refused("// only a comment", "not JSON")
+    refused("{}", "`steps` is missing")
+    refused("{\"steps\": []}", "`steps` is missing")
+    refused("{\"steps\": {}}", "`steps` is a list of steps")
+    refused(withSteps("{\"name\": \"a\", \"run\": [\"x\"]}", "\"step\": []"), "the type has no field `step`")
+
+@test("each field of a type of the wrong shape is refused, naming it")
+typeBadFields()
+    val one = "{\"name\": \"a\", \"run\": [\"x\"]}"
+    refused(withSteps(one, "\"about\": 1"), "`about` is text")
+    refused(withSteps(one, "\"kind\": \"\""), "`kind` is a word")
+    refused(withSteps(one, "\"kind\": 5"), "`kind` is text")
+    refused(withSteps(one, "\"lane\": \"fast\""), "`lane` is \"dev\" or \"landing\", not \"fast\"")
+    refused(withSteps(one, "\"units\": -1"), "`units` is a whole number")
+    refused(withSteps(one, "\"units\": \"4\""), "`units` is a whole number")
+    refused(withSteps(one, "\"mem\": \"lots\""), "`mem` is a size")
+    refused(withSteps(one, "\"mem\": -5"), "`mem` is a size")
+    refused(withSteps(one, "\"deadline\": \"soon\""), "`deadline` is a deadline")
+    refused(withSteps(one, "\"deadline\": 30"), "`deadline` is a deadline")
+    refused(withSteps(one, "\"params\": []"), "`params` is an object")
+    refused(withSteps(one, "\"land\": {}"), "`land` is a list of steps")
+    refused(withSteps(one, "\"cleanup\": 1"), "`cleanup` is a list of steps")
+    refused(withSteps(one, "\"fail_map\": []"), "`fail_map` is an object")
+
+@test("a parameter of the wrong shape is refused, naming it")
+paramErrors()
+    refused(withParams("\"Branch\": {}"), "parameter `Branch`: a name is a lowercase letter")
+    refused(withParams("\"9x\": {}"), "parameter `9x`")
+    refused(withParams("\"a b\": {}"), "parameter `a b`")
+    refused(withParams("\"dir\": {\"default\": \"\"}"), "`--dir` is an option of run-type itself")
+    refused(withParams("\"submit\": {\"default\": \"\"}"), "`--submit` is an option of run-type itself")
+    refused(withParams("\"work\": {\"default\": \"\"}"), "`work` is a name marshal gives every step")
+    refused(withParams("\"head\": {\"default\": \"\"}"), "`head` is a name marshal gives every step")
+    refused(withParams("\"x\": 5"), "parameter `x` is an object")
+    refused(withParams("\"x\": {\"kind\": \"int\"}"), "parameter `x` has no field `kind`")
+    refused(withParams("\"x\": {\"type\": \"real\", \"default\": 1}"), "`type` is \"string\", \"int\" or \"bool\", not \"real\"")
+    refused(withParams("\"x\": {\"repeat\": \"yes\"}"), "`repeat` is true or false")
+    refused(withParams("\"x\": {\"type\": \"bool\", \"repeat\": true}"), "a bool is a flag")
+    refused(withParams("\"x\": {\"type\": \"bool\", \"positional\": true}"), "a bool is a flag")
+    refused(withParams("\"x\": {\"type\": \"bool\", \"required\": true}"), "a bool is never required")
+    refused(withParams("\"x\": {\"default\": \"a\", \"choices\": []}"), "`choices` is a list of text, not empty")
+    refused(withParams("\"x\": {\"default\": \"a\", \"choices\": [1]}"), "`choices` is a list of text")
+    refused(withParams("\"x\": {\"type\": \"int\", \"default\": 1, \"choices\": [\"1\"]}"), "only a string has choices")
+    refused(withParams("\"x\": {\"required\": true, \"default\": \"a\"}"), "a required parameter has no default")
+    refused(withParams("\"x\": {\"repeat\": true, \"default\": \"a\"}"), "the default of a repeatable parameter is a list")
+    refused(withParams("\"x\": {\"type\": \"int\", \"default\": \"4\"}"), "its default is not int")
+    refused(withParams("\"x\": {\"type\": \"bool\", \"default\": \"no\"}"), "its default is not bool")
+    refused(withParams("\"x\": {\"default\": 4}"), "its default is not string")
+    refused(withParams("\"x\": {\"repeat\": true, \"default\": [\"a\", 1]}"), "its default is not string")
+    refused(withParams("\"x\": {\"default\": \"c\", \"choices\": [\"a\", \"b\"]}"), "its default \"c\" is not one of its choices")
+    refused(withParams("\"x\": {}"), "neither required nor repeatable needs a default")
+    refused(withParams("\"x\": {\"repeat\": true, \"positional\": true}, \"y\": {\"required\": true, \"positional\": true}"), "only one parameter is positional")
+
+@test("bisect names a repeatable parameter")
+bisectErrors()
+    refused(withParams("\"x\": {\"default\": \"a\"}", "\"bisect\": \"x\""), "`bisect` names `x`, which is not repeatable")
+    refused(withParams("\"x\": {\"repeat\": true}", "\"bisect\": \"y\""), "`bisect` names `y`, which is not a parameter")
+    refused(withParams("\"x\": {\"repeat\": true}", "\"bisect\": [\"x\"]"), "`bisect` is the name of a parameter")
+    assertEq(parsed(withParams("\"x\": {\"repeat\": true}", "\"bisect\": \"x\"")).bisect, Some("x"))
+
+@test("a step of the wrong shape is refused, naming it")
+stepErrors()
+    refused(withSteps("5"), "`steps` step 1 is an object")
+    refused(withSteps("{\"run\": [\"x\"]}"), "`steps` step 1 has no `name`")
+    refused(withSteps("{\"name\": \"a\", \"run\": [\"x\"]}, {\"run\": [\"y\"]}"), "`steps` step 2 has no `name`")
+    refused(withSteps("{\"name\": \"A\", \"run\": [\"x\"]}"), "step `A`: a name is")
+    refused(withSteps("{\"name\": \"a\", \"run\": [\"x\"], \"command\": 1}"), "step `a` has no field `command`")
+    refused(withSteps("{\"name\": \"a\"}"), "step `a`: `run` is the program")
+    refused(withSteps("{\"name\": \"a\", \"run\": []}"), "step `a`: `run` is the program")
+    refused(withSteps("{\"name\": \"a\", \"run\": \"make test\"}"), "step `a`: `run` is the program")
+    refused(withSteps("{\"name\": \"a\", \"run\": [\"make\", 1]}"), "step `a`: `run` is the program")
+    refused(withSteps("{\"name\": \"a\", \"run\": [\"x\"], \"env\": {\"A\": 1}}"), "step `a`: `env` is an object of text")
+    refused(withSteps("{\"name\": \"a\", \"run\": [\"x\"], \"env\": []}"), "step `a`: `env` is an object of text")
+    refused(withSteps("{\"name\": \"a\", \"run\": [\"x\"], \"exit\": \"none\"}"), "`exit` is a code, a list of codes, or \"any\"")
+    refused(withSteps("{\"name\": \"a\", \"run\": [\"x\"], \"exit\": []}"), "`exit` is a code")
+    refused(withSteps("{\"name\": \"a\", \"run\": [\"x\"], \"exit\": [0, \"1\"]}"), "`exit` is a code")
+    refused(withSteps("{\"name\": \"a\", \"run\": [\"x\"], \"exit\": 0.5}"), "`exit` is a code")
+    refused(withSteps("{\"name\": \"a\", \"run\": [\"x\"], \"result\": 1}"), "step `a`: `result` is true or false")
+    refused(withSteps("{\"name\": \"a\", \"run\": [\"x\"], \"dir\": 1}"), "step `a`: `dir` is text")
+    refused(withSteps("{\"name\": \"a\", \"run\": [\"x\"], \"when\": true}"), "step `a`: `when` is text")
+    refused(withSteps("{\"name\": \"a\", \"run\": [\"x\"], \"deadline\": \"later\"}"), "step `a`: `deadline` is a deadline")
+    refused(withSteps("{\"name\": \"a\", \"run\": [\"x\"], \"deadline\": 5}"), "step `a`: `deadline` is text")
+    refused(withSteps("{\"name\": \"a\", \"run\": [\"x\"]}, {\"name\": \"a\", \"run\": [\"y\"]}"), "two steps are named `a`")
+    refused(withSteps("{\"name\": \"a\", \"run\": [\"x\"]}", "\"cleanup\": [{\"name\": \"a\", \"run\": [\"y\"]}]"), "two steps are named `a`")
+
+@test("a reference to a name that is neither a parameter nor marshal's is refused, wherever it is")
+referenceErrors()
+    refused(withSteps("{\"name\": \"a\", \"run\": [\"echo\", \"${nope}\"]}"), "step `a`: `run` names `nope`")
+    refused(withSteps("{\"name\": \"a\", \"run\": [\"x\"], \"dir\": \"${nope}/x\"}"), "`dir` names `nope`")
+    refused(withSteps("{\"name\": \"a\", \"run\": [\"x\"], \"env\": {\"E\": \"${nope}\"}}"), "`env `E`` names `nope`")
+    refused(withSteps("{\"name\": \"a\", \"run\": [\"x\"], \"when\": \"${nope}\"}"), "`when` names `nope`")
+    refused(withSteps("{\"name\": \"a\", \"run\": [\"x\"], \"deadline\": \"${nope}\"}"), "`deadline` names `nope`")
+    refused(withSteps("{\"name\": \"a\", \"run\": [\"x\"], \"on_failure\": \"${nope}\"}"), "`on_failure` names `nope`")
+    refused(withSteps("{\"name\": \"a\", \"run\": [\"echo\", \"${open\"]}"), "`run`: `${` is not closed")
+    refused(withSteps("{\"name\": \"a\", \"run\": [\"x\"]}", "\"land\": [{\"name\": \"b\", \"run\": [\"${nope}\"]}]"), "step `b`: `run` names `nope`")
+    // marshal's own names, and an escaped `$${`, are not refused
+    parsed(withSteps("{\"name\": \"a\", \"run\": [\"${dir}\", \"${work}\", \"${run_dir}\", \"${head}\", \"${pass}\", \"$${HOME}\"]}"))
+
+@test("a transition that cannot follow where it is written is refused")
+transitionErrors()
+    val step = (fields: string) -> withSteps(s"{\"name\": \"a\", \"run\": [\"x\"], $fields}")
+    refused(step("\"on_success\": \"bisect\""), "step `a`: `on_success` is one of next, land, report, stop, not \"bisect\"")
+    refused(step("\"on_failure\": \"land\""), "step `a`: `on_failure` is one of next, report, bisect, stop, not \"land\"")
+    refused(step("\"on_success\": \"onward\""), "not \"onward\"")
+    refused(step("\"on_success\": \"land\""), "the type has no `land` steps")
+    refused(step("\"on_failure\": \"bisect\""), "the type names no `bisect` parameter")
+    refused(step("\"on_success\": 1"), "`on_success` is text")
+    val after = (fields: string) -> withSteps("{\"name\": \"a\", \"run\": [\"x\"]}", s"\"land\": [{\"name\": \"b\", \"run\": [\"x\"], $fields}]")
+    refused(after("\"on_success\": \"land\""), "step `b`: `on_success` is one of next, report, stop")
+    refused(after("\"on_failure\": \"bisect\""), "step `b`: `on_failure` is one of next, report, stop")
+    refused(withSteps("{\"name\": \"a\", \"run\": [\"x\"]}", "\"cleanup\": [{\"name\": \"c\", \"run\": [\"x\"], \"on_success\": \"land\"}]"), "step `c`")
+    refused(withSteps("{\"name\": \"a\", \"run\": [\"x\"]}", "\"fail_map\": {\"name\": \"m\", \"run\": [\"x\"], \"on_failure\": \"bisect\"}"), "step `m`")
+    // each of the others is accepted where it may stand
+    for w in ["next", "report", "stop"]
+        parsed(step(s"\"on_success\": \"$w\", \"on_failure\": \"$w\""))
+        parsed(after(s"\"on_success\": \"$w\", \"on_failure\": \"$w\""))
+
+@test("references split into text and names, `$${` reads as a literal")
+referencePieces()
+    assertEq(marshal.pieces(""), Ok([]))
+    assertEq(marshal.pieces("plain"), Ok([Lit("plain")]))
+    assertEq(marshal.pieces("${a}"), Ok([Ref("a")]))
+    assertEq(marshal.pieces("x${a}y${b}"), Ok([Lit("x"), Ref("a"), Lit("y"), Ref("b")]))
+    assertEq(marshal.pieces("$${a}"), Ok([Lit("${a}")]))
+    assertEq(marshal.pieces("$ {a} $"), Ok([Lit("$ {a} $")]))
+    assertEq(marshal.pieces("é${ü}日"), Ok([Lit("é"), Ref("ü"), Lit("日")]))
+    assert(marshal.pieces("${a").isErr())
+    assert(marshal.pieces("x ${").isErr())
+
+@test("a word of one reference is an argument per value; any other joins the values with spaces")
+expansion()
+    val vars = [("branch", ["a", "b"]), ("none", Vector[string]()), ("one", ["x y"])].toMap()
+    assertEq(marshal.expandWord("${branch}", vars), ["a", "b"])
+    assertEq(marshal.expandWord("${none}", vars), [])
+    assertEq(marshal.expandWord("${one}", vars), ["x y"])
+    assertEq(marshal.expandWord("-b${branch}", vars), ["-ba b"])
+    assertEq(marshal.expandWord("${none}-", vars), ["-"])
+    assertEq(marshal.expandWord("plain", vars), ["plain"])
+    assertEq(marshal.expandWord("$${branch}", vars), ["${branch}"])
+    assertEq(marshal.expandText("${branch}/${one}", vars), "a b/x y")
+    assertEq(marshal.expandText("${missing}", vars), "")
+
+@test("a step runs unless its `when` comes to nothing, false or 0")
+whenSkips()
+    val step = (w: Option[string]) -> Step("s", ["x"], None, [], w, Codes([0]), false, None, "next", "stop")
+    val vars = [("empty", [""]), ("off", ["false"]), ("zero", ["0"]), ("on", ["make"]), ("none", Vector[string]())].toMap()
+    assert(marshal.runs(step(None), vars))
+    assert(marshal.runs(step(Some("${on}")), vars))
+    assert(marshal.runs(step(Some("true")), vars))
+    for w in ["${empty}", "${off}", "${zero}", "${none}", "", " ", "false"]
+        assert(!marshal.runs(step(Some(w)), vars), w)
+
+bound(t: JobType, args: string*) -> Map[string, Vector[string]] = marshal.bindParams(t, args.toVector()) match
+    Ok(v) -> v
+    Err(e) -> fail(s"$args: $e")
+
+unbound(t: JobType, why: string, args: string*) = marshal.bindParams(t, args.toVector()) match
+    Err(e) -> assert(e.contains(why), s"$args: $e")
+    Ok(v) -> fail(s"$args bound as $v")
+
+@test("a command line binds options, flags, words and defaults to the parameters")
+binding()
+    val t = parsed(train)
+    val v = bound(t, "--branch", "a", "b", "--remote=up", "--verbose", "c", "--jobs", "8")
+    assertEq(v("branch"), ["a", "b", "c"])
+    assertEq(v("remote"), ["up"])
+    assertEq(v("verbose"), ["true"])
+    assertEq(v("jobs"), ["8"])
+    assertEq(v("on-red"), ["report"])
+    assertEq(v("extra"), ["x", "y"])
+    val d = bound(t, "only")
+    assertEq(d("remote"), ["origin"])
+    assertEq(d("verbose"), ["false"])
+    assertEq(d("jobs"), ["4"])
+    assertEq(bound(t, "a", "--extra", "z")("extra"), ["z"])
+    assertEq(bound(t, "a", "--verbose=false")("verbose"), ["false"])
+    // after `--` every word is a value, even one that looks like an option
+    assertEq(bound(t, "a", "--", "--remote")("branch"), ["a", "--remote"])
+    assertEq(bound(t, "--remote", "", "a")("remote"), [""])
+
+@test("a command line that does not fit the parameters is refused, saying how")
+bindingErrors()
+    val t = parsed(train)
+    unbound(t, "`--branch` is required: a branch")
+    unbound(t, "`--branch` is required", "--remote", "x")
+    unbound(t, "t has no parameter `--nope`", "a", "--nope", "1")
+    unbound(t, "`--remote` needs a value", "a", "--remote")
+    unbound(t, "`--remote` is given 2 times", "a", "--remote", "x", "--remote", "y")
+    unbound(t, "`--jobs four`: it takes a whole number", "a", "--jobs", "four")
+    unbound(t, "`--verbose=yes`: it is true or false", "a", "--verbose=yes")
+    unbound(t, "`--on-red retry`: it is one of report, bisect", "a", "--on-red", "retry")
+    val flat = parsed(withParams("\"x\": {\"default\": \"\"}"))
+    unbound(flat, "t takes no words but its options, and `w` is not one", "w")
+    assertEq(bound(flat)("x"), [""])
+
+@test("transitions and deadlines written as references are checked once bound")
+boundChecks()
+    val t = parsed(train)
+    assertEq(marshal.checkBound(t, bound(t, "a")), Ok(()))
+    assertEq(marshal.checkBound(t, bound(t, "a", "--on-red", "bisect")), Ok(()))
+    val open = parsed(withParams("\"then\": {\"default\": \"next\"}, \"limit\": {\"default\": \"5m\"}", "\"cleanup\": [{\"name\": \"c\", \"run\": [\"x\"], \"on_success\": \"${then}\", \"deadline\": \"${limit}\"}]"))
+    assertEq(marshal.checkBound(open, bound(open)), Ok(()))
+    for (args, why) in [(["--then", "land"], "step `c`: \"land\" is not one of next, report, stop"), (["--limit", "soon"], "step `c`: its deadline \"soon\" is not one")]
+        marshal.checkBound(open, bound(open, args*)) match
+            Err(e) -> assert(e.contains(why), e)
+            Ok(_) -> fail(s"$args passed")
+
+@test("a parameter's variable is its name in capitals, `-` as `_`")
+paramVariables()
+    assertEq(marshal.paramVariable("branch"), "MARSHAL_PARAM_BRANCH")
+    assertEq(marshal.paramVariable("fail-map"), "MARSHAL_PARAM_FAIL_MAP")
+    assertEq(marshal.paramVariable("a_b-c9"), "MARSHAL_PARAM_A_B_C9")
+
+@test("a type's help names its file, its lane and every parameter")
+typeHelpText()
+    val h = marshal.typeHelp(parsed(train))
+    assert(h.startsWith("usage: marshal run-type t [options] [<branch>...]"), h)
+    assert(h.contains("Gate and land"), h)
+    assert(h.contains("From /types/t.job"), h)
+    assert(h.contains("landing lane"), h)
+    assert(h.contains("--branch <string>"), h)
+    assert(h.contains("required; repeatable; also given as words"), h)
+    assert(h.contains("one of report, bisect"), h)
+    assert(h.contains("default: x y"), h)
+    assert(h.contains("--verbose "), h)
