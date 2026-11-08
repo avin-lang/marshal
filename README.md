@@ -148,7 +148,7 @@ marshal wait <id> | --until <cond> [--timeout <t>] [--since <t>]  waits for the 
 marshal events [--follow] [--since <t>] [<filter>]  the logged events as JSON lines; --follow goes on streaming them until killed
 marshal ls                                 jobs queued, running and recently ended
 marshal kill <id>                          stops the job's whole process tree (a queued or waiting job is cancelled)
-marshal rerun <id>                         submits an ended job again: its command, directory, environment, kind and resources; prints the new id
+marshal rerun <id>                         submits an ended job again: its command, directory, environment, kind, label and resources; prints the new id
 marshal clean [--older-than <t>] [--keep <n>] [--dry-run]  removes the logs of ended jobs (never a job that is not over), stale run directories and unused compiled steps; prints what went and the bytes freed; --dry-run only lists them
 marshal hold <id>                          keeps a queued job from starting; it keeps its place
 marshal release <id>                       lets a held job start again
@@ -157,7 +157,7 @@ marshal pause [<id>]                       stops a running job's processes, keep
 marshal resume [<id>]                      continues a paused job; with no id, releases the queue
 marshal tail <id> [-f] [-n <lines>]        the job's log; -f follows it until the job ends
 marshal status [--json]                    the budget in use; --json: one JSON object with the running and queued jobs
-marshal history [options]                  ended jobs from the event log, newest first: id, kind, outcome, exit code, duration, when
+marshal history [options]                  ended jobs from the event log, newest first: id, kind, outcome, exit code, duration, when, label
 marshal stats [options]                    per kind from the event log: count, success rate, p50/p90/max duration, timeouts, deadline, peak memory
 marshal top                                a live view of the budget, the jobs and their logs; h lists its keys
 marshal stop [--wait | --force]            stops the daemon; refused while jobs run unless it may wait for them or kill them
@@ -186,6 +186,7 @@ Options of `submit` and `run`:
 | `--after-any <ids>` | Waits until they have ended, then queues it however they ended. |
 | `--retries <n>` | Runs it again, up to `n` times, when it exits nonzero, is ended by a signal it was not sent by `kill`, or passes its deadline. Default 0. |
 | `--retry-delay <t>` | Waits `t` before each retry. Default: none. |
+| `--label <text>` | A note to find the job by, such as `train 209`: one line of 1 to 80 characters, no control characters (newline, tab), no space at either end; a longer or malformed label is refused, not cut. It shows in `ls`, `history`, `top` (a LABEL column when a listed job has one; the whole label beside the kind in the log pane) and `status --json`, and is in the events. `rerun` keeps it; `run-type` and `train` take `--label` too. Default: none. |
 
 **Accounting.** `history` and `stats` read `events.jsonl` directly, a line at a time, so they answer
 with no daemon running and change nothing. Lines that are not events are skipped and counted on
@@ -194,6 +195,7 @@ standard error.
 | Option | Meaning |
 | --- | --- |
 | `--kind <k>` | Only jobs of this kind. |
+| `--label <text>` | Only jobs whose label contains `text` (case as written). `history` adds a LABEL column, last, when a listed job has a label. |
 | `--since <t>` | Only jobs that ended in the last `t` (`90m`, `2h`, `3d`, `1w`; `s` too) or since a date on the caller's local clock (`2026-11-07`, `2026-11-07T14:30`; `TZ`, else the host's zone), or since a date and minute that ends in `Z` or an offset (`2026-11-07T14:30Z`, `2026-11-07T14:30+02:00`), which is taken as that instant. |
 | `--json` | One JSON object on one line. |
 | `--failed` | `history` only: jobs that did not exit 0, whatever the cause. |
@@ -278,7 +280,9 @@ $ marshal events --follow failed
 
 Every condition but `idle` and `job=` takes filters after a colon, joined by commas: `kind=<k>`, and
 for `ended`, `failed`, `landing-done` and `any` `outcome=<ok|failed|timeout|killed|cancelled|lost>`, as in
-`ended:kind=avin-gate,outcome=failed`. The outcome of a job that exited 0 is `ok`; of one that exited
+`ended:kind=avin-gate,outcome=failed`. `label=<text>` keeps the jobs whose label contains `text`; it is
+written last and takes the rest of the filter, commas included (`ended:kind=test,label=train 209`).
+The outcome of a job that exited 0 is `ok`; of one that exited
 any other way or was ended by a signal, `failed`.
 
 `wait --until` prints the event that met the condition as one JSON line (the line the event log

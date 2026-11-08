@@ -29,7 +29,7 @@ val Commands: Vector[(string, string)] = [
     ("events [--follow] [--since <t>] [<filter>]", "the logged events as JSON lines; --follow goes on streaming them until killed"),
     ("ls", "jobs queued, running and recently ended"),
     ("kill <id>", "stops the job's whole process tree (a queued or waiting job is cancelled)"),
-    ("rerun <id>", "submits an ended job again: its command, directory, environment, kind and resources; prints the new id"),
+    ("rerun <id>", "submits an ended job again: its command, directory, environment, kind, label and resources; prints the new id"),
     ("clean [--older-than <t>] [--keep <n>] [--dry-run]", "removes the logs of ended jobs (never a job that is not over), stale run directories and unused compiled steps; prints what went and the bytes freed; --dry-run only lists them"),
     ("hold <id>", "keeps a queued job from starting; it keeps its place"),
     ("release <id>", "lets a held job start again"),
@@ -38,7 +38,7 @@ val Commands: Vector[(string, string)] = [
     ("resume [<id>]", "continues a paused job; with no id, releases the queue"),
     ("tail <id> [-f] [-n <lines>]", "the job's log; -f follows it until the job ends"),
     ("status [--json]", "the budget in use; --json: one JSON object with the running and queued jobs"),
-    ("history [options]", "ended jobs from the event log, newest first: id, kind, outcome, exit code, duration, when"),
+    ("history [options]", "ended jobs from the event log, newest first: id, kind, outcome, exit code, duration, when, label"),
     ("stats [options]", "per kind from the event log: count, success rate, p50/p90/max duration, timeouts, deadline, peak memory"),
     ("top", "a live view of the budget, the jobs and their logs; h lists its keys"),
     ("stop [--wait | --force]", "stops the daemon; refused while jobs run unless it may wait for them or kill them"),
@@ -62,6 +62,8 @@ Options of submit and run:
   --after-any <ids> wait until they have ended, then run it however they ended
   --retries <n>     run it again, up to n times, when it fails or times out (default: 0)
   --retry-delay <t> wait t before each retry: 90s, 30m, 2h (default: none)
+  --label <text>    a note to find the job by, shown in ls, history and top: one line of at most 80
+                    characters, no control characters (default: none; run-type and train take it too)
   --                the command begins after this; nothing after it is an option\
 """
 
@@ -69,6 +71,7 @@ Options of submit and run:
 val Queries: string = """
 Options of history and stats (both read events.jsonl; no daemon is needed):
   --kind <k>        only jobs of this kind
+  --label <text>    only jobs whose label contains text (upper and lower case count)
   --since <t>       only jobs that ended in the last t (90m, 2h, 3d, 1w) or since a date (2026-11-07 or 2026-11-07T14:30 on your local clock, or ending in Z or an offset such as +02:00)
   --json            one JSON object on one line
   --failed          history only: jobs that did not exit 0 (failed, signal, killed, timeout, cancelled, lost)
@@ -221,6 +224,7 @@ parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]
     var afterMode: Option[string] = None
     var retries = 0
     var retryDelay: long = 0
+    var label = ""
     var i = 0
     while i < args.length()
         val word = args(i)
@@ -265,13 +269,14 @@ parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]
             "--retry-delay" -> marshal.parseDeadline(value) match
                 Some(ms) -> retryDelay = ms
                 None -> return Err(s"`--retry-delay $value`: a delay is minutes, or a number with s, m or h, such as 90s")
+            "--label" -> label = marshal.checkLabel(value).mapErr(e -> s"`--label`: $e")?
             _ -> return Err(s"no option `$word`")
         i += 2
     val cmd = args.drop(i)
     if cmd.isEmpty() then return Err("no command to run: give it after `--`")
     val k = kind.getOrElse(if cmd.exists(w -> w == "test") then "test" else "build")
     Ok(JobSpec(k, units.getOrElse(marshal.defaultUnits(k)), memory, landing, workDir, deadline, cmd, env, urgent,
-        after.toVector().distinct(), afterMode == Some("--after-any"), retries, retryDelay, memoryGiven))
+        after.toVector().distinct(), afterMode == Some("--after-any"), retries, retryDelay, memoryGiven, label))
 
 // Job ids separated by commas, such as `3,4`.
 parseIds(text: string) -> Result[Vector[long], string]

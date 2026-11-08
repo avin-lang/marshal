@@ -144,7 +144,7 @@ class Job(val id: long, val spec: JobSpec, val submittedMs: long, var arrived: l
         val rss = if state == "running" then resident.now else 0
         // a waiting job that asked to be urgent joins the urgent band once it queues
         val urgent = urgentAt > 0 || (state == "waiting" && spec.urgent)
-        JobInfo(id, spec.kind, spec.units, spec.memory, spec.landing, spec.dir, spec.cmd, state, outcome, killed, queued, elapsed, deadlineMs, log, sample, rss, resident.peak, startedAt, held, priority, urgent, paused, after, attempt, reserved, learnedMem)
+        JobInfo(id, spec.kind, spec.units, spec.memory, spec.landing, spec.dir, spec.cmd, state, outcome, killed, queued, elapsed, deadlineMs, log, sample, rss, resident.peak, startedAt, held, priority, urgent, paused, after, attempt, reserved, learnedMem, spec.label)
 
 // The daemon's state, owned by its own thread.
 // `slots` is the take-slot directory it shares, if any; `ticket` the name of its waiting ticket there.
@@ -308,7 +308,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         Submitted(id, job.log)
 
     // `rerun`: job `id`, ended, submitted again with the same command, directory, environment, kind,
-    // resources, deadline, urgency and retries, but waiting for nothing.
+    // resources, deadline, urgency, retries and label, but waiting for nothing.
     rerun(id: long) -> Reply
         val spec = jobs.get(id) match
             Some(j) if j.state != "done" -> return Failed(s"job $id is ${j.state}: only a job that has ended runs again")
@@ -319,7 +319,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
                 marshal.specOf(text.lines(), id) match
                     Some(s) -> s
                     None -> return Failed(s"job $id's command is not in the event log")
-        submit(JobSpec(spec.kind, spec.units, spec.memory, spec.landing, spec.dir, spec.deadlineMs, spec.cmd, spec.env, spec.urgent, [], false, spec.retries, spec.retryDelayMs, spec.memoryGiven), [("rerun_of", Json.num(id))])
+        submit(JobSpec(spec.kind, spec.units, spec.memory, spec.landing, spec.dir, spec.deadlineMs, spec.cmd, spec.env, spec.urgent, [], false, spec.retries, spec.retryDelayMs, spec.memoryGiven, spec.label), [("rerun_of", Json.num(id))])
 
     // How job `id` ended: None while it has not, and an error when there is no such job or its end
     // cannot be read.

@@ -8,8 +8,8 @@ import json.Json
 // Which events a condition lets through. Every field narrows: `names` are the event names allowed
 // (all when empty), `kind` the job's kind, `outcome` how the job ended (`ok`, `failed`, `timeout`,
 // `killed`, `cancelled` or `lost`; only an ending event has one), `landing` a landing-lane job
-// only, and `notOk` an ending that is not `ok`.
-data Filter(names: Vector[string], kind: Option[string], outcome: Option[string], landing: bool, notOk: bool)
+// only, and `notOk` an ending that is not `ok`; `label` text the job's label contains.
+data Filter(names: Vector[string], kind: Option[string], outcome: Option[string], landing: bool, notOk: bool, label: Option[string] = None)
 
 // What a watcher waits for: nothing running, queued, waiting for other jobs or waiting to retry;
 // every one of some jobs ended for good; or an event the filter lets through.
@@ -44,6 +44,7 @@ Conditions of wait --until, and filters of events:
   prioritized          a queued job was given a priority
   any                  any event (events only)
 Narrow any of these but idle and job= with filters after a colon, separated by commas: kind=<k>,
+label=<text> (the job's label contains text; last, and it takes the rest, commas too),
 and, for ended, failed, landing-done and any, outcome=<ok|failed|timeout|killed|cancelled|lost>.
 --since <t> also looks at the events already logged: t is a job id (the events of that job and later
 ones), a time ago such as 90s, 10m, 2h or 1d, or @<milliseconds since 1970>. Without it, a wait for
@@ -63,11 +64,20 @@ outcomeOf(ev: Json) -> Option[string]
             None -> None
         other -> Some(other)
 
+// Where in `text` (filters joined by commas) a `label=` filter begins, if one does.
+private labelStart(text: string) -> Option[int]
+    var at = 0
+    for part in text.split(",")
+        if part.startsWith("label=") then return Some(at)
+        at += part.byteLength() + 1
+    None
+
 // Whether the filter lets the event through.
 admits(f: Filter, ev: Json) -> bool
     val name = ev.get("event").flatMap(v -> v.asString()).getOrElse("")
     if f.names.nonEmpty() && !f.names.contains(name) then return false
     if f.kind.exists(k -> ev.get("kind").flatMap(v -> v.asString()) != Some(k)) then return false
+    if f.label.exists(l -> !ev.get("label").flatMap(v -> v.asString()).getOrElse("").contains(l)) then return false
     if f.landing && ev.get("landing").flatMap(v -> v.asBool()) != Some(true) then return false
     val outcome = outcomeOf(ev)
     if f.outcome.exists(o -> outcome != Some(o)) then return false
@@ -100,23 +110,34 @@ parseCondition(text: string) -> Result[Condition, string]
     var filter = baseFilter(name) match
         Some(f) -> f
         None -> return Err(s"`$name` is not a condition: idle, job=<id>,..., ended, failed, landing-done, started, submitted, ${Named.mkString(", ")} or any")
-    for part in rest.map(r -> r.split(",")).getOrElse([])
+    // `label=` takes the rest of the text, commas and all, so it is cut off before the filters are split
+    val body = rest.getOrElse("")
+    val cut = labelStart(body)
+    val labelText = cut.map(c -> body.slice(c + 6, body.byteLength()))
+    val head = cut match
+        Some(c) -> if c == 0 then "" else body.slice(0, c - 1)
+        None -> body
+    val parts: Vector[string] = if rest.isEmpty() || cut == Some(0) then [] else head.split(",").toVector()
+    for text in labelText
+        if text.isEmpty() then return Err("`label` needs some text: label=<text>")
+        filter = Filter(filter.names, filter.kind, filter.outcome, filter.landing, filter.notOk, Some(text))
+    for part in parts
         val eq = part.indexOf("=")
-        if eq <= 0 || eq == part.byteLength() - 1 then return Err(s"`$part` is not a filter: kind=<k> or outcome=<o>")
+        if eq <= 0 || eq == part.byteLength() - 1 then return Err(s"`$part` is not a filter: kind=<k>, outcome=<o> or label=<text>")
         val key = part.slice(0, eq)
         val value = part.slice(eq + 1, part.byteLength())
         key match
             "kind" ->
                 if filter.kind.isDefined() then return Err("`kind` is given twice")
-                filter = Filter(filter.names, Some(value), filter.outcome, filter.landing, filter.notOk)
+                filter = Filter(filter.names, Some(value), filter.outcome, filter.landing, filter.notOk, filter.label)
             "outcome" ->
                 if filter.outcome.isDefined() then return Err("`outcome` is given twice")
                 if !Outcomes.contains(value) then return Err(s"`$value` is not an outcome: ${Outcomes.mkString(", ")}")
                 if value == "ok" && filter.notOk then return Err("`failed` never ends ok")
                 if name != "ended" && name != "failed" && name != "landing-done" && name != "any"
                     return Err(s"`$name` has no outcome: only an ending does")
-                filter = Filter(filter.names, filter.kind, Some(value), filter.landing, filter.notOk)
-            other -> return Err(s"`$other` is not a filter: kind=<k> or outcome=<o>")
+                filter = Filter(filter.names, filter.kind, Some(value), filter.landing, filter.notOk, filter.label)
+            other -> return Err(s"`$other` is not a filter: kind=<k>, outcome=<o> or label=<text>")
     Ok(Matching(filter))
 
 private jobsCondition(t: string) -> Result[Condition, string]

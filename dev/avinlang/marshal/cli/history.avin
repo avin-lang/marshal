@@ -14,18 +14,19 @@ val DefaultLimit: int = 20
 // What the options of `history` and `stats` asked for.
 data Query(filter: HistoryFilter, limit: int, json: bool)
 
-// Reads `[--kind k] [--since t] [--failed] [--limit n] [--json]`; `stats` takes no `--failed` or
+// Reads `[--kind k] [--label text] [--since t] [--failed] [--limit n] [--json]`; `stats` takes no `--failed` or
 // `--limit`.
 parseQuery(command: string, args: Vector[string], nowMs: long, zone: time.Zone) -> Result[Query, string]
     var kind: Option[string] = None
     var since: Option[long] = None
+    var label: Option[string] = None
     var failed = false
     var limit = DefaultLimit
     var json = false
     var i = 0
     while i < args.length()
         val word = args(i)
-        val takes = word == "--kind" || word == "--since" || (word == "--limit" && command == "history")
+        val takes = word == "--kind" || word == "--since" || word == "--label" || (word == "--limit" && command == "history")
         if takes
             i += 1
             if i >= args.length() then return Err(s"marshal: $word needs a value")
@@ -34,6 +35,9 @@ parseQuery(command: string, args: Vector[string], nowMs: long, zone: time.Zone) 
                 "--kind" ->
                     if value.isEmpty() then return Err("marshal: --kind needs a kind")
                     kind = Some(value)
+                "--label" ->
+                    if value.isEmpty() then return Err("marshal: --label needs some text")
+                    label = Some(value)
                 "--since" -> marshal.parseEndedSince(value, nowMs, zone) match
                     Some(t) -> since = Some(t)
                     None -> return Err(s"marshal: `$value` is not a time: give a length such as 90m, 2h, 3d or 1w, or a date such as 2026-11-07 or 2026-11-07T14:30, in local time or ending in Z or an offset such as +02:00")
@@ -44,7 +48,7 @@ parseQuery(command: string, args: Vector[string], nowMs: long, zone: time.Zone) 
         elif word == "--failed" && command == "history" then failed = true
         else return Err(s"marshal: $command: no option `$word`")
         i += 1
-    Ok(Query(HistoryFilter(kind, since, failed), limit, json))
+    Ok(Query(HistoryFilter(kind, since, failed, label), limit, json))
 
 // The ledger of the log at `log`: empty where there is no log.
 readLedger(log: string) -> Result[Ledger, string]

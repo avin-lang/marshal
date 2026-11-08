@@ -16,7 +16,8 @@ import json.Json
 // - `runMs`: how long it ran; 0 for a job cancelled before it started.
 // - `endedAt`: when it ended, wall clock milliseconds since 1970.
 // - `peakRss`: the most memory its process tree held, in bytes; 0 where the event does not say.
-data EndedJob(id: long, kind: string, landing: bool, how: string, exit: int, runMs: long, endedAt: long, deadlineMs: long, peakRss: long)
+// - `label`: the text its submitter gave it; "" for none.
+data EndedJob(id: long, kind: string, landing: bool, how: string, exit: int, runMs: long, endedAt: long, deadlineMs: long, peakRss: long, label: string = "")
 
 // The word an outcome is listed under.
 howWord(o: Outcome, killed: bool) -> string
@@ -60,18 +61,18 @@ class Ledger()
         val outcome = job.outcome.getOrElse(Lost)
         val run = if outcome == Cancelled then long(0) else ev.get("run_ms").flatMap(v -> v.asLong()).getOrElse(job.elapsedMs)
         val peak = ev.get("peak_rss").flatMap(v -> v.asLong()).getOrElse(0)
-        val e = EndedJob(job.id, job.kind, job.landing, howWord(outcome, job.killed), exitCode(outcome), run, ts, job.deadlineMs, peak)
+        val e = EndedJob(job.id, job.kind, job.landing, howWord(outcome, job.killed), exitCode(outcome), run, ts, job.deadlineMs, peak, job.label)
         position.get(job.id) match
             Some(p) -> ends(p) = e
             None ->
                 position(job.id) = ends.length()
                 ends += e
 
-// Which jobs a query asks for.
-data HistoryFilter(kind: Option[string], since: Option[long], failed: bool)
+// Which jobs a query asks for. A `label` matches the jobs whose label contains it, case as written.
+data HistoryFilter(kind: Option[string], since: Option[long], failed: bool, label: Option[string] = None)
 
 matches(f: HistoryFilter, e: EndedJob) -> bool =
-    f.kind.forall(k -> k == e.kind) && f.since.forall(s -> e.endedAt >= s) && (!f.failed || e.how != "ok")
+    f.kind.forall(k -> k == e.kind) && f.since.forall(s -> e.endedAt >= s) && (!f.failed || e.how != "ok") && f.label.forall(l -> e.label.contains(l))
 
 // The jobs `history` lists: those that match, newest first, at most `limit` of them.
 selectEnded(ledger: Ledger, f: HistoryFilter, limit: int) -> Vector[EndedJob]
@@ -216,13 +217,15 @@ private table(rows: Vector[Vector[string]]) -> string
 // The table `history` prints, its times on the clocks of `zone`, or a line saying nothing matched.
 historyListing(jobs: Vector[EndedJob], zone: time.Zone) -> string
     if jobs.isEmpty() then return "marshal: no ended jobs match"
-    table([["ID", "KIND", "OUTCOME", "EXIT", "DURATION", "ENDED"]] ++ jobs.map(e -> [
+    // the LABEL column, last because it is free text, only when some listed job has a label
+    val labelled = jobs.exists(e -> e.label.nonEmpty())
+    table([["ID", "KIND", "OUTCOME", "EXIT", "DURATION", "ENDED"] ++ (if labelled then ["LABEL"] else [])] ++ jobs.map(e -> [
         e.id.toString(),
         if e.landing then e.kind + "*" else e.kind,
         e.how,
         e.exit.toString(),
         formatMillis(e.runMs),
-        formatWhen(e.endedAt, zone)]))
+        formatWhen(e.endedAt, zone)] ++ (if labelled then [e.label] else [])))
 
 // The table `stats` prints, or a line saying nothing matched.
 statsListing(rows: Vector[KindStats]) -> string
@@ -243,7 +246,7 @@ private optNum(v: Option[long]) -> Json = v.map(n -> Json.num(n)).getOrElse(Json
 
 // `history --json`: one object, `jobs` newest first, and how many log lines were skipped.
 historyJson(jobs: Vector[EndedJob], unreadable: int) -> Json = Json.obj(
-    ("jobs", Json.Arr(jobs.map(e -> Json.obj(
+    ("jobs", Json.Arr(jobs.map(e -> Json.Obj(Json.obj(
         ("id", Json.num(e.id)),
         ("kind", Json.str(e.kind)),
         ("landing", Json.Bool(e.landing)),
@@ -251,7 +254,7 @@ historyJson(jobs: Vector[EndedJob], unreadable: int) -> Json = Json.obj(
         ("exit", Json.num(e.exit)),
         ("duration_ms", Json.num(e.runMs)),
         ("ended_at", Json.num(e.endedAt)),
-        ("peak_rss", optNum(if e.peakRss > 0 then Some(e.peakRss) else None)))))),
+        ("peak_rss", optNum(if e.peakRss > 0 then Some(e.peakRss) else None))).asMembers().get() ++ (if e.label.isEmpty() then [] else [("label", Json.str(e.label))]))))),
     ("unreadable", Json.num(unreadable)))
 
 // `stats --json`: one object, `kinds` with a member per history key, and how many lines were skipped.

@@ -443,5 +443,5 @@ typeHelp(t: JobType) -> string
         if !p.required && p.kind != "bool" then notes += "default: " + (if p.defaults.isEmpty() then "none" else p.defaults.map(d -> if d.isEmpty() then "\"\"" else d).mkString(" "))
         val note = if notes.isEmpty() then "" else s" (${notes.mkString("; ")})"
         lines += s"  --${p.name}$value".padEnd(28, ' ') + p.about + note
-    lines += "\nOptions of run-type: --dir <d>, --deadline <t>, --units <n>, --mem <size>, --submit (print the job's id and do not wait)."
+    lines += "\nOptions of run-type: --dir <d>, --deadline <t>, --units <n>, --mem <size>, --label <text>, --submit (print the job's id and do not wait)."
     lines.mkString("\n")

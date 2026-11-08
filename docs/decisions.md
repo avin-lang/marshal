@@ -937,3 +937,40 @@ step started but not yet recorded misses one STOP.
   today).
 - **The stack sample takes the busiest process of all the job's groups**, so a run's sample is of
   the step's busy process, not of the idle runner.
+
+## Job labels (branch `job-labels`)
+
+**Proposed.** Review with the user: the 80-character limit and the LABEL column's cap in `top`.
+
+- **A label is free text of 1 to 80 characters, and a longer one is refused, not truncated.** The
+  message says the length it had. Why: a silently cut label would no longer be the text the
+  submitter chose to find the job by, and `history --label` could not find it again. Alternatives:
+  truncate (loses text unseen), no limit (a screenful in one `ls` row).
+- **Allowed characters: any printable text, Unicode included; control characters (newline, tab,
+  escape, DEL and the C1 range) are refused, and so is a space at either end; an empty label is
+  refused.** Why: a label is one line in every listing and a terminal escape in it would act on the
+  reader's screen; an empty `--label ""` is more likely a shell mistake than a request for none (a
+  job with no label simply omits the option). Alternatives: trim spaces silently, accept empty as
+  none.
+- **The label is part of the job's spec**, so it rides in `submitted`'s `spec`, every event's job
+  fields (hence the ending event `history` reads), the saved state and `rerun`. In JSON the member is
+  left out for no label, so nothing written for an unlabelled job differs from before and an old
+  reader or file means no label. A label already in the log is read as found, whatever the limits are
+  now. Alternative: always write `"label":""` (changes every line of every log).
+- **`history --label` and `events` `label=` match a part of the label, case as written.** Why: labels
+  are written as `train 209`, `release 0.2.4`, and the useful question is "every train"; an exact
+  match would need the whole text. Alternatives: exact match, case-insensitive match (a label's case
+  can carry meaning; a user can add a second filter). In an `events` filter `label=` takes the rest of
+  the filter text, commas included, so it is written last; otherwise a label with a comma could not
+  be searched for.
+- **`ls` and `history` get a LABEL column only when some listed job has a label**, so listings of
+  unlabelled jobs are byte for byte as before. In `ls` it stands before COMMAND (which is free text
+  too and stays last); in `history` it is last. Neither elides: plain output is for reading and for
+  pipes. Alternative: a column always (changes every existing listing).
+- **`top` draws LABEL before COMMAND only when a shown job has a label and the screen leaves COMMAND
+  at least 20 cells**; it is as wide as the longest shown label, at least 5 cells and at most 24, and
+  a longer label ends in an ellipsis there. It is dropped on a narrower screen. The log pane's header
+  shows the whole label after the kind on the kind's line (`kind    build   label  train 209`), wrapped
+  under where it began, never elided, since the column often elides it; the line is the one there
+  always was for a job without a label. Alternatives: a fixed column (costs every screen the cells),
+  eliding in the header (hides what the column already hides).

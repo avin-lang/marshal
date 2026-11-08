@@ -13,7 +13,8 @@ val Version: string = "0.2.3"
 // waits for: it queues once they have all ended, and with `afterAny` false only if each of them
 // succeeded. `retries` is how many times more it runs after failing or timing out, `retryDelayMs`
 // after how long. `memoryGiven` says the memory was given (`--mem`), so `--mem 0` opts out of the
-// reservation learned from the kind's peaks; a memory above 0 counts as given either way.
+// reservation learned from the kind's peaks; a memory above 0 counts as given either way. `label`
+// is free text the submitter gave the job to find it by ("" for none; see `checkLabel`).
 data JobSpec(
     kind: string,
     units: int,
@@ -28,7 +29,21 @@ data JobSpec(
     afterAny: bool = false,
     retries: int = 0,
     retryDelayMs: long = 0,
-    memoryGiven: bool = false)
+    memoryGiven: bool = false,
+    label: string = "")
+
+// The longest label, in characters.
+val MaxLabel: int = 80
+
+// A label as a job may carry it: `text` itself when it is one, or why it is not. A label is one line
+// of 1 to `MaxLabel` characters with no control characters (a newline, a tab) and no space at either
+// end; a longer one is refused, not cut.
+checkLabel(text: string) -> Result[string, string]
+    if text.isEmpty() then return Err("a label is text, not empty")
+    if text.chars().exists(c -> c < ' ' || '\u{7f}' <= c <= '\u{9f}') then return Err("a label is one line of printable text: no newline, tab or other control character")
+    if text.trim() != text then return Err("a label does not begin or end with a space")
+    if text.charCount() > MaxLabel then return Err(s"a label is at most $MaxLabel characters, not ${text.charCount()}")
+    Ok(text)
 
 data Request
     Submit(spec: JobSpec)
@@ -117,6 +132,7 @@ retryable(_, _) = false
 // `after` is what a waiting job still waits for, the jobs that have not ended yet; `attempt` counts
 // its runs from 1. `reserved` is the memory the scheduler counts for it, its effective reservation:
 // the memory it declared, or, with `reservedLearned`, what its kind's peaks taught (memory.avin).
+// `label` is the text its submitter gave it, "" for none.
 data JobInfo(
     id: long,
     kind: string,
@@ -143,7 +159,8 @@ data JobInfo(
     after: Vector[long] = [],
     attempt: int = 1,
     reserved: long = 0,
-    reservedLearned: bool = false)
+    reservedLearned: bool = false,
+    label: string = "")
 
 // The memory a listing shows for a job: its reservation, `~` before one learned from its kind's
 // peaks; `-` for none. A job that says no reservation shows the memory it declared.
@@ -271,7 +288,7 @@ private decodeWatch(j: Json) -> Result[Request, string]
 private longs(xs: Vector[long]) -> Json = Json.Arr(xs.map(x -> Json.num(x)))
 
 // A job's specification, as a submit request carries it after its `op`.
-encodeSpec(s: JobSpec) -> Json = Json.obj(
+encodeSpec(s: JobSpec) -> Json = Json.Obj(Json.obj(
     ("kind", Json.str(s.kind)),
     ("units", Json.num(s.units)),
     ("mem", Json.num(s.memory)),
@@ -285,7 +302,18 @@ encodeSpec(s: JobSpec) -> Json = Json.obj(
     ("after_any", Json.Bool(s.afterAny)),
     ("retries", Json.num(s.retries)),
     ("retry_delay_ms", Json.num(s.retryDelayMs)),
-    ("mem_given", Json.Bool(s.memoryGiven)))
+    ("mem_given", Json.Bool(s.memoryGiven))).asMembers().get() ++ labelMember(s.label))
+
+// A label's member of an object: none for no label, so what marshal wrote before labels and what it
+// writes for a job without one are the same.
+private labelMember(label: string) -> Vector[(string, Json)] = if label.isEmpty() then [] else [("label", Json.str(label))]
+
+// A label read from an object: "" where it is absent, an error where it is not a label.
+private labelOf(j: Json) -> Result[string, string] = j.get("label") match
+    None | Some(Json.Null) -> Ok("")
+    Some(v) -> v.asString() match
+        Some(s) -> checkLabel(s).mapErr(e -> s"`label`: $e")
+        None -> Err("`label` is not a string")
 
 decodeSpec(j: Json) -> Result[JobSpec, string]
     val cmd = field(j, "cmd", stringVector, "an array of strings")?
@@ -304,7 +332,8 @@ decodeSpec(j: Json) -> Result[JobSpec, string]
         optional(j, "after_any", v -> v.asBool(), "a bool", false)?,
         optional(j, "retries", v -> v.asInt(), "an int", 0)?,
         optional(j, "retry_delay_ms", v -> v.asLong(), "a whole number", long(0))?,
-        optional(j, "mem_given", v -> v.asBool(), "a bool", false)?))
+        optional(j, "mem_given", v -> v.asBool(), "a bool", false)?,
+        labelOf(j)?))
 
 private field[T](j: Json, key: string, read: (Json) -> Option[T], what: string) -> Result[T, string] =
     j.get(key) match
@@ -394,7 +423,7 @@ decodeOutcome(j: Json) -> Result[Outcome, string]
 
 // Replies.
 
-encodeJob(i: JobInfo) -> Json = Json.obj(
+encodeJob(i: JobInfo) -> Json = Json.Obj(Json.obj(
     ("id", Json.num(i.id)),
     ("kind", Json.str(i.kind)),
     ("units", Json.num(i.units)),
@@ -420,7 +449,7 @@ encodeJob(i: JobInfo) -> Json = Json.obj(
     ("after", longs(i.after)),
     ("attempt", Json.num(i.attempt)),
     ("resv", Json.num(i.reserved)),
-    ("resv_learned", Json.Bool(i.reservedLearned)))
+    ("resv_learned", Json.Bool(i.reservedLearned))).asMembers().get() ++ labelMember(i.label))
 
 decodeJob(j: Json) -> Result[JobInfo, string]
     val outcome = j.get("outcome") match
@@ -457,7 +486,9 @@ decodeJob(j: Json) -> Result[JobInfo, string]
         optional(j, "attempt", v -> v.asInt(), "an int", 1)?,
         // absent from what marshal wrote before it learned reservations: the declared memory
         optional(j, "resv", wholeNumber, "a whole number", memory)?,
-        optional(j, "resv_learned", v -> v.asBool(), "a bool", false)?))
+        optional(j, "resv_learned", v -> v.asBool(), "a bool", false)?,
+        // absent from what marshal wrote before labels: no label; one already logged is read as it is
+        optional(j, "label", v -> v.asString(), "a string", "")?))
 
 encodeTakeSlot(t: TakeSlotUse) -> Json = Json.obj(
     ("dir", Json.str(t.dir)),

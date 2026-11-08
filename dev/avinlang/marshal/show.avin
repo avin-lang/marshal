@@ -51,20 +51,22 @@ startedShort(j: JobInfo, zone: time.Zone, today: string) -> string
     val at = time.epochMillis(j.startedAt).atZone(zone)
     if at.format("YYYY-MM-DD") == today then at.format("hh:mm") else at.format("MM-DD hh:mm")
 
-// The listing `ls` prints: a header, then one row per job.
+// The listing `ls` prints: a header, then one row per job. A LABEL column stands before COMMAND, and
+// only when some listed job has a label, so a listing of unlabelled jobs is as it always was.
 listing(jobs: Vector[JobInfo]) -> string
     val zone = time.localZone()
-    val rows = [["ID", "STATE", "KIND", "UNITS", "RESV", "STARTED", "ELAPSED", "COMMAND"]] ++ jobs.map(j -> [
+    val labelled = jobs.exists(j -> j.label.nonEmpty())
+    val rows = [["ID", "STATE", "KIND", "UNITS", "RESV", "STARTED", "ELAPSED"] ++ (if labelled then ["LABEL"] else []) ++ ["COMMAND"]] ++ jobs.map(j -> [
         j.id.toString(),
         stateColumn(j),
         if j.landing then j.kind + "*" else j.kind,
         j.units.toString(),
         reservedText(j),
         startedColumn(j, zone),
-        formatMillis(j.elapsedMs),
-        j.cmd.mkString(" ")])
-    val widths = (0..<7).map(c -> rows.map(r -> r(c).charCount()).max())
-    rows.map(r -> (0..<7).map(c -> r(c).padEnd(widths(c), ' ')).mkString("  ") + "  " + r(7)).mkString("\n")
+        formatMillis(j.elapsedMs)] ++ (if labelled then [j.label] else []) ++ [j.cmd.mkString(" ")])
+    val last = rows(0).length() - 1
+    val widths = (0..<last).map(c -> rows.map(r -> r(c).charCount()).max())
+    rows.map(r -> (0..<last).map(c -> r(c).padEnd(widths(c), ' ')).mkString("  ") + "  " + r(last)).mkString("\n")
 
 // The line `status` prints.
 usageLine(u: Usage) -> string
