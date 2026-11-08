@@ -19,9 +19,13 @@ import dev.avinlang.tui.Terminal
 // How often the view asks for a snapshot.
 val Every: time.Duration = millis(1000)
 
+// How top opens the terminal: without mouse reporting, since top reads no mouse events, so a drag
+// selects text for copying as it does at the shell.
+val TopOptions: tui.Options = tui.Options(mouse = false)
+
 top(args: Vector[string]) -> int
     if args.nonEmpty() then return complain("marshal: top takes no arguments")
-    Terminal.use(tui.Options(), watch) match
+    Terminal.use(TopOptions, watch) match
         Ok(()) -> 0
         Err(e) -> complain(s"marshal: top: ${e.message()}")
 

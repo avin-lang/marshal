@@ -5,12 +5,19 @@ module tests
 import avin.time
 import dev.avinlang.marshal
 import dev.avinlang.marshal.{JobInfo, Outcome, Overview, QueuedJob, TakeSlotUse, Usage, Why}
+import dev.avinlang.marshal.cli
 import dev.avinlang.marshal.top
 import dev.avinlang.marshal.top.{App, IdleHideMs,KillJob, Quit, StartDaemon, Stay, ShowAll, ShowRunning, ShowQueued, ShowFinished}
 import dev.avinlang.tui.{BrightBlack, Char, Ctrl, Down, End, Enter, Escape, Event, Green, Grid, Home, Key, KeyPress, Magenta,
                          PageDown, PageUp, Red, Resize, Reverse, Stop, Up, Yellow}
 
 val minuteMs: long = 60000
+
+@test("top opens the terminal without mouse reporting, so a drag selects text, and keeps bracketed paste")
+topLeavesTheMouseToTheTerminal()
+    assert(!cli.TopOptions.mouse)
+    assert(cli.TopOptions.paste)
+    assert(cli.TopOptions.colors.isEmpty())
 
 // A job as a snapshot gives it.
 snapJob(id: long, state: string = "running", outcome: Option[Outcome] = None, elapsed: long = minuteMs, deadline: long = 20 * minuteMs,

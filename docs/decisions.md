@@ -907,7 +907,8 @@ passes it, and two builds peaking at 25–35G each were admitted together on a 6
 
 ## Every action on a run reaches its step (branch `steps-pause-kill`)
 
-**Proposed.**
+**Settled on the user's delegation 2026-11-08.** Review with the user: the remaining race, in which a
+step started but not yet recorded misses one STOP.
 
 - **The runner records the running step's process group in `runs/<job>/step.pgid`, and the daemon
   signals and measures the job's group and that one.** A run-type job's step runs in a group of its
