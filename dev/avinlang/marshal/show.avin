@@ -59,7 +59,7 @@ listing(jobs: Vector[JobInfo]) -> string
         stateColumn(j),
         if j.landing then j.kind + "*" else j.kind,
         j.units.toString(),
-        if j.memory == 0 then "-" else formatSize(j.memory),
+        reservedText(j),
         startedColumn(j, zone),
         formatMillis(j.elapsedMs),
         j.cmd.mkString(" ")])

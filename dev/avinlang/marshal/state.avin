@@ -14,6 +14,9 @@ import json.Json
 // long a running job's earlier pauses lasted and `pausedAt` when its current pause began (wall
 // clock, milliseconds; 0 while it is not paused), 0 when absent. `attempt` counts its runs from 1
 // (1 when absent), and `retryAt` is when a job waiting to retry queues again (0 otherwise).
+// `reserved` is the memory the scheduler counts for it and `reservedLearned` whether its kind's
+// peaks taught it; a state saved without them reads as -1 and false, and the new image learns the
+// reservation again.
 data SavedJob(
     id: long,
     spec: JobSpec,
@@ -39,7 +42,9 @@ data SavedJob(
     pausedMs: long = 0,
     pausedAt: long = 0,
     attempt: int = 1,
-    retryAt: long = 0)
+    retryAt: long = 0,
+    reserved: long = -1,
+    reservedLearned: bool = false)
 
 // The whole daemon: the version and process that saved it, when, when the daemon first began, the
 // next job id, the queue in order, the running jobs, the jobs that ended last (oldest first), the
@@ -85,7 +90,9 @@ encodeSavedJob(j: SavedJob) -> Json = Json.obj(
     ("paused_ms", Json.num(j.pausedMs)),
     ("paused_at", Json.num(j.pausedAt)),
     ("attempt", Json.num(j.attempt)),
-    ("retry_at", Json.num(j.retryAt)))
+    ("retry_at", Json.num(j.retryAt)),
+    ("reserved", Json.num(j.reserved)),
+    ("reserved_learned", Json.Bool(j.reservedLearned)))
 
 private whole(j: Json, key: string) -> Result[long, string] = j.get(key).flatMap(v -> v.asLong()) match
     Some(n) -> Ok(n)
@@ -94,6 +101,11 @@ private whole(j: Json, key: string) -> Result[long, string] = j.get(key).flatMap
 // A whole number that state written before it was recorded does not have: 0.
 private wholeOrZero(j: Json, key: string) -> Result[long, string] = j.get(key) match
     None | Some(Json.Null) -> Ok(0)
+    Some(_) -> whole(j, key)
+
+// A whole number that state written before it was recorded does not have: `absent`.
+private wholeOr(j: Json, key: string, absent: long) -> Result[long, string] = j.get(key) match
+    None | Some(Json.Null) -> Ok(absent)
     Some(_) -> whole(j, key)
 
 private text(j: Json, key: string) -> Result[string, string] = j.get(key).flatMap(v -> v.asString()) match
@@ -152,7 +164,9 @@ decodeSavedJob(j: Json) -> Result[SavedJob, string]
         wholeOrZero(j, "paused_ms")?,
         wholeOrZero(j, "paused_at")?,
         intOr(j, "attempt", 1)?,
-        wholeOrZero(j, "retry_at")?))
+        wholeOrZero(j, "retry_at")?,
+        wholeOr(j, "reserved", -1)?,
+        truthOr(j, "reserved_learned", false)?))
 
 encodeState(s: SavedState) -> Json = Json.obj(
     ("version", Json.str(s.version)),

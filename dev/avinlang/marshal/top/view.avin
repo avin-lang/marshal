@@ -8,7 +8,7 @@ import dev.avinlang.marshal
 import dev.avinlang.marshal.{JobInfo, Overview, QueuedJob, Usage, Why}
 import dev.avinlang.marshal.{NoUnits, NoMemory, LaneBusy, ForTakeSlot, Behind, Starting, Held, QueueHeld}
 import dev.avinlang.marshal.{Exited, Signalled, TimedOut, Cancelled, Lost, DependencyFailed}
-import dev.avinlang.tui.{Black, Bold, BrightBlack, Char, Column, Ctrl, Cyan, Dim, Down, End, Enter, Escape, Event,
+import dev.avinlang.tui.{Black, Blue, Bold, BrightBlack, Char, Column, Ctrl, Cyan, Dim, Down, End, Enter, Escape, Event,
                          Green, Grid, Home, Key, KeyPress, Magenta, PageDown, PageUp, Rect, Red, Reverse, Rounded,
                          Stop, Style, Table, Up, Yellow, textWidth}
 
@@ -164,7 +164,7 @@ cells(l: Line, since: long, zone: time.Zone, today: string, width: int) -> Vecto
         stateOf(l).0,
         if j.landing then j.kind + "*" else j.kind,
         j.units.toString(),
-        if j.memory == 0 then "-" else marshal.formatSize(j.memory),
+        marshal.reservedText(j),
         measuredText(if j.state == "running" then j.rss else 0),
         measuredText(j.peakRss),
         if showsPeak(width) then marshal.startedColumn(j, zone) else marshal.startedShort(j, zone, today),
@@ -552,10 +552,7 @@ drawHeader(g: Grid, o: Overview, since: long, f: Filter) -> int
     g.text(6 + barWidth + 3, 1, s"${u.units}$share")
     g.text(0, 2, "mem   ")
     val bounded = u.memoryBudget != long.MaxValue && u.memoryBudget > 0
-    val fraction = if bounded then real(u.memory) / real(u.memoryBudget) else 0.0
-    g.text(6, 2, "[")
-    g.meter(7, 2, barWidth, if fraction > 1.0 then 1.0 else fraction, Style.fg(Cyan), Style.fg(BrightBlack))
-    g.text(7 + barWidth, 2, "]")
+    memBar(g, 6, 2, barWidth, u.memory, u.held, if bounded then u.memoryBudget else 0)
     val mem = if bounded then s"${marshal.formatSize(u.memory)} / ${marshal.formatSize(u.memoryBudget)}" else marshal.formatSize(u.memory)
     g.text(6 + barWidth + 3, 2, mem + memoryText(u))
     4
@@ -586,6 +583,26 @@ unitBar(g: Grid, x: int, y: int, width: int, ours: int, outside: int, budget: in
         val (c, style) = if i < mine then ("█", Style.fg(Green)) else if i < mine + theirs then ("█", Style.fg(Magenta)) else ("·", Style.fg(BrightBlack))
         g.text(x + 1 + i, y, c, style)
     g.text(x + 1 + width, y, "]")
+
+// The memory meter, `width` cells between brackets from column `x` of row `y`: the memory the running
+// jobs reserve (`reserved`) in cyan, and what admission counts them holding beyond it (`held`, a job's
+// measured memory where it is more than its reservation) in blue, as shares of `budget`; empty for
+// a budget of 0 (none set).
+memBar(g: Grid, x: int, y: int, width: int, reserved: long, held: long, budget: long)
+    g.text(x, y, "[")
+    val share = (part: long) -> if budget > 0 then minReal(real(part) / real(budget), 1.0) else 0.0
+    val mine = share(reserved)
+    if held > reserved && budget > 0
+        // the whole held span in blue, then the reserved part in cyan over the cells it reaches
+        g.meter(x + 1, y, width, share(held), Style.fg(Blue), Style.fg(BrightBlack))
+        val eighths = int(mine * real(width * 8) + 0.5)
+        val cells = (eighths + 7) / 8
+        if cells > 0 then g.meter(x + 1, y, width, mine, Style.fg(Cyan), Style.fg(BrightBlack), Rect(x + 1, y, cells, 1))
+    else
+        g.meter(x + 1, y, width, mine, Style.fg(Cyan), Style.fg(BrightBlack))
+    g.text(x + 1 + width, y, "]")
+
+private minReal(a: real, b: real) -> real = if a < b then a else b
 
 // How many of `width` cells `part` of `whole` fills, to the nearest.
 private cellsOf(part: int, whole: int, width: int) -> int = (part * width * 2 + whole) / (whole * 2)

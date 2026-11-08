@@ -1,0 +1,121 @@
+module tests
+
+// Reservations learned from a kind's peaks, and admission counting each running job as its
+// reservation or its measured memory, whichever is more.
+import dev.avinlang.marshal
+import dev.avinlang.marshal.{Budget, JobInfo, JobSpec, MemoryLearning, Overview, Reply, Request, Reservation, Started, Usage, Waiting}
+
+val M: long = 1024 * 1024
+val learning0: MemoryLearning = marshal.defaultMemoryLearning
+
+@test("too little history learns nothing: no peaks, and one peak, reserve 0")
+littleHistory()
+    assertEq(marshal.learnedPeak(learning0,[]), None)
+    assertEq(marshal.learnedPeak(learning0,[20 * G]), None)
+    assertEq(marshal.reservationFor(learning0,0, false, [], 56 * G), Reservation(0, false))
+    assertEq(marshal.reservationFor(learning0,0, false, [20 * G], 56 * G), Reservation(0, false))
+    // peaks of 0 (jobs never measured) are not history
+    assertEq(marshal.learnedPeak(learning0,[0, 20 * G, 0]), None)
+
+@test("enough history reserves the most of the recent peaks plus a tenth, rounded up to a mebibyte")
+enoughHistory()
+    assertEq(marshal.learnedPeak(learning0,[10 * G, 20 * G]), Some(22 * G))
+    assertEq(marshal.learnedPeak(learning0,[20 * G, 10 * G, 15 * G]), Some(22 * G))
+    assertEq(marshal.reservationFor(learning0,0, false, [10 * G, 20 * G], 56 * G), Reservation(22 * G, true))
+    // rounded up to a whole mebibyte
+    assertEq(marshal.learnedPeak(learning0,[1000, 1000]), Some(M))
+    val odd = 3 * G + 12345
+    val learned = marshal.learnedPeak(learning0,[odd, 1]).get()
+    assertEq(learned % M, 0)
+    assert(learned >= odd + odd / 10, s"$learned")
+    assert(learned < odd + odd / 10 + M, s"$learned")
+
+@test("only the last ten peaks count: an old big peak is forgotten")
+resvWindow()
+    val old: Vector[long] = [50 * G] ++ (0 ..< 10).map(_ -> 10 * G).toVector()
+    assertEq(marshal.learnedPeak(learning0,old), Some(11 * G))
+    val recent: Vector[long] = (0 ..< 9).map(_ -> 10 * G).toVector() ++ [50 * G]
+    assertEq(marshal.learnedPeak(learning0,recent), Some(55 * G))
+    assertEq(marshal.learnedPeak(MemoryLearning(3, 1, 0), [9 * G, G, 2 * G, 3 * G]), Some(3 * G))
+
+@test("a learned peak near the largest size does not overflow")
+noOverflow()
+    assertEq(marshal.learnedPeak(learning0,[long.MaxValue, long.MaxValue]), Some(long.MaxValue))
+    assertEq(marshal.reservationFor(learning0,0, false, [long.MaxValue, 1], 56 * G), Reservation(56 * G, true))
+
+@test("a given memory is the reservation, --mem 0 opting out of learning")
+given()
+    val peaks: Vector[long] = [20 * G, 20 * G]
+    assertEq(marshal.reservationFor(learning0,0, true, peaks, 56 * G), Reservation(0, false))
+    assertEq(marshal.reservationFor(learning0,4 * G, true, peaks, 56 * G), Reservation(4 * G, false))
+    // a memory above 0 from a client that does not say it was given still counts as given
+    assertEq(marshal.reservationFor(learning0,4 * G, false, peaks, 56 * G), Reservation(4 * G, false))
+
+@test("a learned reservation above the whole budget is held to the budget, so the job can run alone")
+overBudget()
+    val r = marshal.reservationFor(learning0,0, false, [80 * G, 70 * G], 56 * G)
+    assertEq(r, Reservation(56 * G, true))
+    assertEq(marshal.neverFits(Budget(12, 56 * G), 1, r.bytes, false), None)
+    val b = Budget(12, 56 * G)
+    // it waits while anything holds memory, and starts once nothing does
+    assertEq(marshal.schedule(b, [Started(1, 1, M, false, 0, hour)], [Waiting(2, 1, r.bytes, false, hour, 20)], 0), [])
+    assertEq(marshal.schedule(b, [], [Waiting(2, 1, r.bytes, false, hour, 20)], 0), [long(2)])
+    // and nothing that reserves memory starts beside it
+    assertEq(marshal.schedule(b, [Started(2, 1, r.bytes, false, 0, hour)], [Waiting(3, 1, M, false, hour, 30)], 0), [])
+
+@test("a running job holds its reservation, or its measured memory where that is more")
+holding()
+    assertEq(marshal.holding(0, 0), 0)
+    assertEq(marshal.holding(30 * G, 0), 30 * G)
+    assertEq(marshal.holding(30 * G, 2 * G), 30 * G)
+    assertEq(marshal.holding(0, 27 * G), 27 * G)
+    assertEq(marshal.holding(10 * G, 27 * G), 27 * G)
+
+@test("admission counts measured memory: a job reserving nothing but holding 27G keeps a 30G job out of 56G")
+resvAdmission()
+    val b = Budget(12, 56 * G)
+    val big = Waiting(2, 1, 30 * G, false, hour, 20)
+    val heavy = Started(1, 1, marshal.holding(0, 27 * G), false, 0, hour)
+    assertEq(marshal.schedule(b, [heavy], [big], 0), [])
+    val light = Started(1, 1, marshal.holding(0, 26 * G), false, 0, hour)
+    assertEq(marshal.schedule(b, [light], [big], 0), [long(2)])
+    // two learned 30G builds are not admitted together; two small jobs are
+    assertEq(marshal.schedule(b, [], [Waiting(1, 1, 30 * G, false, hour, 10), Waiting(2, 1, 30 * G, false, hour, 20)], 0), [long(1)])
+    assertEq(marshal.schedule(b, [], [Waiting(1, 1, G, false, hour, 10), Waiting(2, 1, G, false, hour, 20)], 0), [long(1), long(2)])
+
+job(memory: long, reserved: long, learned: bool) -> JobInfo =
+    JobInfo(1, "build", 1, memory, false, "/", ["true"], "queued", None, false, 0, 0, 0, "/l", None, reserved = reserved, reservedLearned = learned)
+
+@test("RESV shows a learned reservation with ~, a given one exactly, and none as -")
+resvText()
+    assertEq(marshal.reservedText(job(0, 22 * G, true)), "~22G")
+    assertEq(marshal.reservedText(job(0, 3 * G + 512 * M, true)), "~3.5G")
+    assertEq(marshal.reservedText(job(29 * G, 29 * G, false)), "29G")
+    assertEq(marshal.reservedText(job(0, 0, false)), "-")
+    // a job from a daemon that sent no reservation shows the memory it declared
+    assertEq(marshal.reservedText(job(512 * M, 0, false)), "512M")
+
+@test("a job's reservation and learned mark, the held memory and the memory-given flag read back")
+protocol()
+    for (r, learned) in [(long(0), false), (22 * G, true), (long.MaxValue, true)]
+        val reply = Reply.Jobs([job(0, r, learned)])
+        assertEq(marshal.decodeReply(marshal.encodeReply(reply).render()), Ok(reply))
+    val j = marshal.encodeJob(job(0, 22 * G, true))
+    assertEq((j("resv").asLong(), j("resv_learned").asBool()), (Some(22 * G), Some(true)))
+    // a job from a daemon that sent no reservation reserves the memory it declared
+    val old = marshal.encodeJob(job(3 * G, 0, false)).render().replace(",\"resv\":0,\"resv_learned\":false", "")
+    assert(!old.contains("resv"), old)
+    assertEq(marshal.decodeReply(s"{\"ok\":true,\"job\":$old}"), Ok(Reply.Ended(job(3 * G, 3 * G, false))))
+    val u = Usage(1, 12, 30 * G, 56 * G, 1, 0, None, None, 27 * G, 64 * G, false, 57 * G)
+    assertEq(marshal.decodeReply(marshal.encodeReply(Reply.Using(u)).render()), Ok(Reply.Using(u)))
+    // a snapshot counts its running and queued jobs from its lists
+    val view = Reply.Viewed(Overview(Usage(0, 12, 30 * G, 56 * G, 0, 0, None, None, 27 * G, 64 * G, false, 57 * G), 0, [], [], []))
+    assertEq(marshal.decodeReply(marshal.encodeReply(view).render()), Ok(view))
+    assertEq(marshal.statusJson(u, [])("mem_held").asLong(), Some(57 * G))
+    for given in [false, true]
+        val r = Request.Submit(JobSpec("build", 1, 0, false, "/", None, ["make"], [], memoryGiven = given))
+        assertEq(marshal.decodeRequest(marshal.encodeRequest(r).render()), Ok(r))
+    // a submit from a client that does not say reads as not given
+    assertEq(marshal.decodeRequest("{\"op\":\"submit\",\"kind\":\"build\",\"units\":1,\"mem\":0,\"dir\":\"/\",\"cmd\":[\"make\"]}"),
+             Ok(Request.Submit(JobSpec("build", 1, 0, false, "/", None, ["make"], []))))
+    assert(marshal.decodeRequest("{\"op\":\"submit\",\"kind\":\"build\",\"units\":1,\"mem\":0,\"dir\":\"/\",\"cmd\":[\"make\"],\"mem_given\":3}").err().get().contains("`mem_given` is not a bool"))

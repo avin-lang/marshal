@@ -853,3 +853,52 @@ four rows.
   kind, a command row, rule and a log row (under four rows inside the box) there is no header. The rows the log
   has, and so how many lines top asks the daemon for, are the pane's rows less the header's.
   Alternative: always showing the whole command and letting the log vanish in a small terminal.
+
+## Learned memory reservations and admission by measured memory (branch `mem-admission`)
+
+**Proposed.** The memory budget did nothing in practice: admission counted only `--mem`, nobody
+passes it, and two builds peaking at 25–35G each were admitted together on a 64G machine.
+
+- **A job without `--mem` reserves its kind's learned peak: the most of its history key's last 10
+  measured peaks, plus 10%, rounded up to a mebibyte.** The history key is the deadline's (kind,
+  `+landing` for landing jobs). Why the maximum: memory is not like time, running short costs an
+  out-of-memory kill or swapping for every job on the machine, while reserving a little too much
+  only delays a start; builds of one kind peak within a narrow band, so the maximum is close to the
+  typical case anyway. The 10% covers a peak between two once-a-second measurements. Alternatives:
+  the median or p90 (under-reserves on the run that matters), p90 plus a larger margin (needs more
+  history to mean anything), an exponentially weighted mean (slow to follow a kind that grew).
+- **Every job that ran and was measured is history, whatever its outcome.** A failed or killed
+  build held the memory it held; unlike a duration, a failure does not make the figure wrong. A peak
+  of 0 (never measured) is not history. Alternative: successful runs only, as deadlines learn
+  (would leave a kind that keeps failing unreserved, the very jobs most likely to be rerun at once).
+- **Two measured peaks before it applies; none, 0 as before.** One run may be atypical, and two
+  costs little when the daemon measures every job. Alternatives: one (learns sooner, but one
+  cold-cache or cancelled run sets the reservation), three like deadlines (slower for no gain,
+  since the statistic is a maximum).
+- **`--mem 0` opts out.** The command line now says whether `--mem` was given (`mem_given` in the
+  submit request), and a given memory, 0 among them, is the reservation. A `mem` above 0 counts as
+  given whatever the flag says, so an older client's `--mem 29G` keeps its meaning; an older client's
+  `--mem 0` reads as not given and learns. Alternatives: a separate `--no-learn` flag (one more
+  option for what `--mem 0` already says), a negative size meaning "learn" (a sentinel on the wire).
+- **A learned reservation above the whole budget is held to the budget.** It then fits only when
+  nothing else holds memory, so the job starts once the machine is free of other jobs and runs
+  alone, never waiting for ever and never refused (a given `--mem` above the budget is still
+  refused at submit, as before, since the user asked for what cannot be had). Alternatives: refusing
+  it (a kind that once peaked high could never run again), ignoring memory for it (runs beside
+  others and swaps).
+- **A running job counts as holding max(its reservation, its last measured RSS).** Admission adds
+  that, per running job, to the waiting job's reservation and compares with the budget. A job that
+  holds more than it reserved (no history yet, or `--mem` too small) is counted for what it really
+  holds; one holding less keeps its reservation, for the peak it has not reached yet. Alternatives:
+  the sum of reservations plus the sum of RSS (counts the same bytes twice), reservations alone (the
+  bug), RSS alone (admits a second build before the first has grown).
+- **The reservation is fixed at submit and handed over by restart.** Like the deadline, it is
+  computed when the job is submitted (state.json carries `reserved` and `reserved_learned`; state
+  saved without them is learned again from the event log's peaks). Alternative: recomputing at
+  every schedule (a queued job's reservation would move under it as other jobs end).
+- **Shown as RESV with `~`** (`~29G`) in `ls` and `top` where learned, and as `resv` /
+  `resv_learned` in the JSON beside the declared `mem`; `status`'s `mem` is the reserved total and
+  the new `mem_held` the admission figure.
+- **The meter in `top` draws reserved memory in cyan and what the running jobs hold beyond it in
+  blue**, the text unchanged; with nothing held beyond the reservations it is drawn exactly as
+  before. Alternatives: a second bar (costs a header row), RSS alone (hides what is promised).

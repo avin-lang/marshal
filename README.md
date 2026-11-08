@@ -176,7 +176,7 @@ Options of `submit` and `run`:
 | --- | --- |
 | `--kind <k>` | What the job is, for learning its deadline. Default: `test` when a word of the command is `test`, otherwise `build`. |
 | `--units <n>` | Its weight. Default: 4 for a `test`, 1 for anything else. |
-| `--mem <size>` | Memory it needs: `29G`, `512M` (powers of 1024). Default 0. |
+| `--mem <size>` | Memory it needs: `29G`, `512M` (powers of 1024). Default: its kind's learned peak (see Budget), 0 until two runs of the kind were measured. `--mem 0` reserves nothing and learns nothing. |
 | `--landing` | The landing lane: starts before every development job, outside the unit budget, at normal priority. One landing job runs at a time. |
 | `--urgent` | Queues it in its lane's urgent band: ahead of every job not urgent, behind the urgent jobs already queued. |
 | `--dir <d>` | Where it runs, relative to the current directory. Default: the current directory. |
@@ -307,6 +307,13 @@ ends: nothing polls.
   its units and memory fit beside what runs. The queue is first come, first served; a later job
   may start ahead of a head that does not fit only when it fits now and is expected to end before
   the head could start, so it never delays the head.
+- **Memory reservations.** A job without `--mem` reserves its kind's learned peak: the most memory
+  any of the kind's last 10 measured jobs held, whatever their outcome, plus a tenth, once two have
+  been measured (0 before that; a landing job of a kind learns apart from the development ones). A
+  learned reservation above the whole budget is held to the budget, so the job starts once nothing
+  else holds memory and runs alone. `--mem 0` opts out. A running job counts as holding its
+  reservation or what it was last measured holding, whichever is more, so a job that reserved
+  nothing but holds 27G keeps a 30G one out of a 56G budget.
 - **Deadlines.** A kind's deadline is twice the median of its last 20 successful runs, never under 5
   minutes; until it has 3 runs it is 20 minutes for a build, 45 for a test, 30 for anything else and
   120 for a landing job. A job past its deadline has its busiest process sampled (where the system
@@ -380,8 +387,10 @@ nothing. A removed job leaves `ls`; `wait` and `rerun` still answer for it from 
 every use moves forward. It ends by saying how much it freed (`marshal: freed 1.5M`; with `--dry-run`,
 `marshal: would free 1.5M`).
 
-`marshal status --json` prints `units`, `unit_budget`, `mem`, `mem_budget`, `rss` (what the
-running jobs hold in RAM, in bytes), `machine_mem` (the machine's memory, 0 if unknown), `landing` (the landing
+`marshal status --json` prints `units`, `unit_budget`, `mem` (what the running jobs reserve,
+declared or learned), `mem_budget`, `rss` (what the running jobs hold in RAM, in bytes), `mem_held`
+(what admission counts them holding: each job's reservation or its `rss`, whichever is more),
+`machine_mem` (the machine's memory, 0 if unknown), `landing` (the landing
 job's id or null), `take_slot` (`dir`, `units`, `waiting`, `landing`, or null when none is shared),
 `queue_held`, and `running` and `queued`, arrays of jobs as [the protocol](docs/protocol.md) writes
 them.
@@ -422,8 +431,10 @@ against its own budget. `marshal status` shows what take-slot holds.
   take-slot, or free), `(held)` in red beside the queued count while the queue is held, and the
   filter; a bar of the unit budget, marshal's development units in green
   and take-slot's share after them in magenta, with take-slot's waiting runs; a bar of the memory
-  budget the running jobs reserve, then what they hold in RAM (`rss`) and the machine's memory.
-- **Memory**: RESV is the memory a job declared with `--mem`. RSS is what a running job's whole
+  budget, what the running jobs reserve in cyan and what they hold beyond their reservations in
+  blue, then the reserved total, what they hold in RAM (`rss`) and the machine's memory.
+- **Memory**: RESV is the memory a job reserves: what it declared with `--mem`, or with `~` before
+  it (`~29G`) its kind's learned peak. RSS is what a running job's whole
   process tree holds in RAM, measured by the daemon every second, and PEAK the most it was measured
   holding, kept once it ends; `-` where there is none.
 - **Started**: STARTED is when the job started, in the terminal's local time zone (`TZ`, else the

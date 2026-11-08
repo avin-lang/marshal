@@ -30,7 +30,9 @@ eventLine(ts: long, event: string, job: JobInfo, extra: Vector[(string, Json)]) 
 // - `histories`: the run time of each job that exited 0, by `historyKey`, oldest first.
 // - `unreadable`: how many lines were not events.
 // - `ended`: the last `keep` jobs the log saw end, as their ending events describe them, by id.
-data Recovered(nextId: long, open: Vector[Json], histories: Map[string, Vector[long]], unreadable: int, ended: Vector[JobInfo])
+// - `peaks`: the `peak_rss` of every ending event that has one above 0, by `historyKey`, oldest
+//   first, whatever the outcome: what reservations are learned from.
+data Recovered(nextId: long, open: Vector[Json], histories: Map[string, Vector[long]], unreadable: int, ended: Vector[JobInfo], peaks: Map[string, Vector[long]])
 
 recover(lines: Iterable[string], keep: int = 10) -> Recovered
     var maxId: long = 0
@@ -38,6 +40,7 @@ recover(lines: Iterable[string], keep: int = 10) -> Recovered
     val last = Buffer[(long, Json)]()
     val position = MutableMap[long, int]()
     val histories = MutableMap[string, Buffer[long]]()
+    val peaks = MutableMap[string, Buffer[long]]()
     for line in lines
         if line.trim().isEmpty() then continue
         val ev = json.parse(line) match
@@ -57,6 +60,15 @@ recover(lines: Iterable[string], keep: int = 10) -> Recovered
             None ->
                 position(id) = last.length()
                 last += (id, ev)
+        val peak = ev.get("peak_rss").flatMap(v -> v.asLong()).getOrElse(0)
+        if endings.contains(kind) && peak > 0
+            val key = historyKey(ev.get("kind").flatMap(v -> v.asString()).getOrElse(""), ev.get("landing").flatMap(v -> v.asBool()).getOrElse(false))
+            peaks.get(key) match
+                Some(b) -> b += peak
+                None ->
+                    val b = Buffer[long]()
+                    b += peak
+                    peaks(key) = b
         if kind == "finished" && ev.get("exit").flatMap(v -> v.asLong()) == Some(long(0)) && !(ev.get("killed").flatMap(v -> v.asBool()) == Some(true))
             val run = ev.get("run_ms").flatMap(v -> v.asLong())
             val key = historyKey(ev.get("kind").flatMap(v -> v.asString()).getOrElse(""), ev.get("landing").flatMap(v -> v.asBool()).getOrElse(false))
@@ -72,7 +84,8 @@ recover(lines: Iterable[string], keep: int = 10) -> Recovered
     val open = last.filter(e -> !endings.contains(e.1.get("event").flatMap(v -> v.asString()).getOrElse(""))).map(e -> e.1)
     val learned = histories.keys().map(k -> (k, histories(k).toVector())).toMap()
     val ended = last.filter(e -> endings.contains(e.1.get("event").flatMap(v -> v.asString()).getOrElse(""))).map(e -> decodeJob(e.1)).filter(r -> r.isOk()).map(r -> r.ok().get())
-    Recovered(maxId + 1, open.toVector(), learned, unreadable, ended.takeRight(keep).toVector())
+    val peaked = peaks.keys().map(k -> (k, peaks(k).toVector())).toMap()
+    Recovered(maxId + 1, open.toVector(), learned, unreadable, ended.takeRight(keep).toVector(), peaked)
 
 // The `lost` event for a job whose last event is `ev`: done, its outcome `Lost`, and `group_alive`
 // saying whether its process group still had processes when the new daemon looked. None when `ev`

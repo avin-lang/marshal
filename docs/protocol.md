@@ -14,13 +14,13 @@ thread of its own, so a client blocked in `wait` holds up nobody else.
 
 | `op` | Fields | Reply |
 | --- | --- | --- |
-| `submit` | `kind` (string), `units` (int), `mem` (bytes), `landing` (bool, default false), `dir` (absolute path), `deadline_ms` (number or null: learned), `cmd` (array of strings, not empty), `env` (object of strings, default `{}`), `urgent` (bool, default false: the back of the lane's urgent band), `after` (array of job ids it waits for, default `[]`), `after_any` (bool, default false: it runs only if each of them exited 0), `retries` (int, default 0), `retry_delay_ms` (number, default 0) | `{"ok":true,"id":N,"log":"<path>"}`; refused for an `after` id that is no job or is the id this job would get |
+| `submit` | `kind` (string), `units` (int), `mem` (bytes), `landing` (bool, default false), `dir` (absolute path), `deadline_ms` (number or null: learned), `cmd` (array of strings, not empty), `env` (object of strings, default `{}`), `urgent` (bool, default false: the back of the lane's urgent band), `after` (array of job ids it waits for, default `[]`), `after_any` (bool, default false: it runs only if each of them exited 0), `retries` (int, default 0), `retry_delay_ms` (number, default 0), `mem_given` (bool, default false: `mem` was given, so a `mem` of 0 reserves nothing rather than the kind's learned peak; a `mem` above 0 is given either way) | `{"ok":true,"id":N,"log":"<path>"}`; refused for an `after` id that is no job or is the id this job would get |
 | `rerun` | `id` | `{"ok":true,"id":N,"log":"<path>"}`, the new job: the ended job's spec but `after`, submitted again; refused for no such job, one not ended, or one whose `submitted` event holds no spec |
 | `clean` | `older_ms` (number >= 1 or null), `keep` (number >= 0 or null), `dry_run` (bool, default false) | `{"ok":true,"cleaned":{"dry_run":bool,"jobs":[ids],"runs":[names],"steps":[names],"events":N,"event_jobs":M,"bytes":B}}`: the jobs whose logs went (none when `dry_run`: what would), the run directories and compiled steps removed, the events and jobs dropped from the event log, and `bytes`, how many bytes all of it held (what a dry run would free); a reply from an older daemon has no `bytes`, read as 0; only ended jobs are touched |
 | `wait` | `id` | `{"ok":true,"job":JOB}` once the job has ended (its last attempt); at once for a job already ended, including one an earlier daemon ran |
 | `kill` | `id` | `{"ok":true}`; the job's end is what `wait` answers |
 | `ls` | | `{"ok":true,"jobs":[JOB...]}`: running, then queued, then waiting (for other jobs or to retry), then the last ten ended |
-| `status` | | `{"ok":true,"units":U,"unit_budget":B,"mem":M,"mem_budget":MB,"rss":RSS,"machine_mem":MM,"running":R,"queued":Q,"landing":id or null,"take_slot":{"dir":D,"units":TU,"waiting":TW,"landing":bool} or null,"queue_held":bool}`; a reply without `queue_held` (an older daemon's) reads as false |
+| `status` | | `{"ok":true,"units":U,"unit_budget":B,"mem":M,"mem_budget":MB,"rss":RSS,"mem_held":H,"machine_mem":MM,"running":R,"queued":Q,"landing":id or null,"take_slot":{"dir":D,"units":TU,"waiting":TW,"landing":bool} or null,"queue_held":bool}`; `mem` is what the running jobs reserve (declared or learned), `mem_held` what admission counts them holding (each job's reservation or its `rss`, whichever is more); a reply without `queue_held` or `mem_held` (an older daemon's) reads as false and 0 |
 | `snapshot` | | `{"ok":true,"snapshot":{...}}`: the fields of the `status` reply but `running` and `queued`, then `uptime_ms` (how long the daemon has run), `running` (jobs), `queued` (jobs in queue order, each with `position` and `waits`, below), `recent` (the last ten jobs that ended, earlier daemons' included, the latest first) and `waiting` (jobs waiting for others or waiting to retry, oldest first; a reader takes a missing one as `[]`) |
 | `stop` | `force` (bool), `wait` (bool) | `{"ok":true}` once the daemon has removed its socket; refused while jobs run unless one of the two is true |
 | `version` | | `{"ok":true,"version":"<marshal's version>","pid":P}`, the daemon's process |
@@ -46,8 +46,13 @@ lacks a field or has one of the wrong type, names no job, or asks for a job that
  "state":"done","outcome":{"how":"exit","code":0},"killed":false,"queued_ms":12,
  "elapsed_ms":4200,"deadline_ms":2700000,"log":"/home/.marshal/jobs/7.log","sample":null,
  "rss":0,"peak_rss":1879048192,"started_at":1762521060000,"held":false,"priority":0,"urgent":false,
- "paused":false,"after":[],"attempt":1}
+ "paused":false,"after":[],"attempt":1,"resv":0,"resv_learned":false}
 ```
+
+`mem` is the memory the job declared; `resv` the memory the scheduler counts for it, its effective
+reservation: `mem`, or with `resv_learned` true its kind's learned peak (the most of the kind's last
+10 measured peaks plus a tenth, once there are two, held to the budget). A job without `resv` (from
+an older daemon or log) reserves its `mem`, not learned.
 
 `state` is `waiting` (for the jobs in `after` to end), `queued`, `running`, `retrying` (waiting out
 its retry delay) or `done`. `after` is what a waiting job still waits for; `attempt` counts its runs
@@ -177,7 +182,10 @@ missing reads as `[]`). Each job holds `id`, `spec` (the fields of a `submit` re
 `priority` and `urgent_at` (when it joined the urgent band, in microseconds since 1970, which
 orders the band; 0 outside it), `paused_ms` (how long the job's earlier pauses lasted),
 `paused_at` (when its current pause began, 0 while it is not paused; a job saved with one stays
-paused), `attempt` and `retry_at` (when a job waiting to retry queues again). State written
+paused), `attempt` and `retry_at` (when a job waiting to retry queues again), `reserved` and
+`reserved_learned` (its effective reservation, and whether its kind's peaks taught it; a job saved
+without them reads as -1 and false, and the new program learns its reservation again from the
+peaks it read in the event log). State written
 without `rss`, `peak_rss` or `retry_at` reads them as 0, so the measured memory of a running job
 carries across a restart; without `held`, `priority`, `urgent_at`, `paused_ms` or `paused_at` as
 false and 0; and without `attempt` as 1. A waiting job's pending dependencies are not saved: the
