@@ -9,6 +9,11 @@ module dev.avinlang.marshal
 //   deadline_floor  the shortest deadline learning may give, as `--deadline` writes one ("5m")
 //   learn_window    how many recent runs of a kind learning reads (20)
 //   learn_min_runs  how many runs a kind needs before its deadline is learned (3)
+//   keep_logs       how long the files of an ended job (log, run directory) are kept, such as "30d"
+//                   (30d); "never" keeps them for ever
+//   keep_jobs       how many ended jobs' files are kept at most (1000); "never" for no limit
+//   keep_events     how long an ended job's events stay in events.jsonl ("365d"); "never" for ever
+//   keep_steps      how long a compiled step may go unused before it is removed ("30d"); "never"
 //   take_slot       take-slot.zsh's lock directory, whose budget and landing lane marshal shares;
 //                   "" or no setting shares none, and `MARSHAL_TAKE_SLOT_DIR` overrides it
 //                   (see `takeSlotDir`)
@@ -16,7 +21,7 @@ import json
 import json.Json
 
 // `takeSlot` is what config.json says, None where it says nothing.
-data Config(budget: Budget, learning: Learning, takeSlot: Option[string])
+data Config(budget: Budget, learning: Learning, takeSlot: Option[string], retention: Retention = defaultRetention)
 
 private val DefaultReserve: long = 8 * 1024 * 1024 * 1024
 
@@ -28,7 +33,7 @@ readConfig(text: string, machineMemory: long) -> Result[Config, string]
         Err(e) -> return Err(s"config.json is not JSON: $e")
     if j.asMembers().isEmpty() then return Err("config.json holds an object")
     for key in j.keys()
-        if !["units", "memory", "reserve", "deadline_floor", "learn_window", "learn_min_runs", "take_slot"].contains(key)
+        if !["units", "memory", "reserve", "deadline_floor", "learn_window", "learn_min_runs", "take_slot", "keep_logs", "keep_jobs", "keep_events", "keep_steps"].contains(key)
             return Err(s"config.json: no setting `$key`")
     val units = whole(j, "units", 12)?
     if units < 1 then return Err("config.json: `units` is at least 1")
@@ -48,7 +53,29 @@ readConfig(text: string, machineMemory: long) -> Result[Config, string]
         Some(v) -> v.asString() match
             Some(dir) -> Some(dir)
             None -> return Err("config.json: `take_slot` is a directory, or \"\" for none")
-    Ok(Config(Budget(units, memory), Learning(window, minRuns, defaultLearning.factor, floor), takeSlot))
+    val retention = Retention(
+        ageSetting(j, "keep_logs", defaultRetention.logsMs)?,
+        countSetting(j, "keep_jobs", defaultRetention.jobs)?,
+        ageSetting(j, "keep_events", defaultRetention.eventsMs)?,
+        ageSetting(j, "keep_steps", defaultRetention.stepsMs)?)
+    Ok(Config(Budget(units, memory), Learning(window, minRuns, defaultLearning.factor, floor), takeSlot, retention))
+
+private ageSetting(j: Json, key: string, absent: Option[long]) -> Result[Option[long], string] = j.get(key) match
+    None -> Ok(absent)
+    Some(v) -> v.asString() match
+        Some("never") -> Ok(None)
+        Some(t) -> parseAge(t) match
+            Some(ms) -> Ok(Some(ms))
+            None -> Err(s"config.json: `$key` is an age such as \"30d\" or \"12h\", or \"never\"")
+        None -> Err(s"config.json: `$key` is an age such as \"30d\" or \"12h\", or \"never\"")
+
+private countSetting(j: Json, key: string, absent: Option[int]) -> Result[Option[int], string] = j.get(key) match
+    None -> Ok(absent)
+    Some(v) -> v.asString() match
+        Some("never") -> Ok(None)
+        _ -> v.asInt().filter(n -> n >= 1) match
+            Some(n) -> Ok(Some(n))
+            None -> Err(s"config.json: `$key` is a whole number, at least 1, or \"never\"")
 
 private whole(j: Json, key: string, absent: int) -> Result[int, string] = j.get(key) match
     None -> Ok(absent)

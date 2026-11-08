@@ -1,0 +1,354 @@
+module tests
+
+// Retention: ages, the arguments of `clean`, which jobs a rule picks, what leaves the event log, the
+// compiled-step and run-directory sweeps on real directories, and the settings in config.json.
+import avin.fs
+import json
+import json.Json
+import dev.avinlang.marshal
+import dev.avinlang.marshal.{CleanReport, CleanRule, JobInfo, JobSpec, LogEnded, Outcome, Retention}
+
+val OneHour: long = 3600000
+val OneDay: long = 24 * OneHour
+
+val cleanSpec: JobSpec = JobSpec("test", 2, 0, false, "/w", Some(60000), ["make", "check"], [("A", "1")])
+
+cleanInfo(id: long, state: string = "done") -> JobInfo =
+    JobInfo(id, "test", 4, 0, false, "/d", ["make"], state, if state == "done" then Some(Outcome.Exited(0)) else None, false, 5, 0, 60000, s"/h/jobs/$id.log", None, 0, 0, 0)
+
+// The events of a job that was submitted at `at` and ended at `end`.
+cleanEnded(id: long, at: long, end: long) -> Vector[string] =
+    [marshal.eventLine(at, "submitted", cleanInfo(id, "queued"), [("spec", marshal.encodeSpec(cleanSpec))]),
+     marshal.eventLine(at + 1, "started", cleanInfo(id, "running"), [("pgid", Json.num(9))]),
+     marshal.eventLine(end, "finished", cleanInfo(id), [("run_ms", Json.num(end - at)), ("exit", Json.num(0))])]
+
+cleanOpen(id: long, at: long) -> Vector[string] =
+    [marshal.eventLine(at, "submitted", cleanInfo(id, "queued"), [("spec", marshal.encodeSpec(cleanSpec))]),
+     marshal.eventLine(at + 1, "started", cleanInfo(id, "running"), [("pgid", Json.num(9))])]
+
+joinLines(lines: Vector[string]) -> string = lines.mkString("\n") + "\n"
+
+@test("an age is a whole number and a unit; a bare number, zero, a sign, a fraction and an unknown unit are not ages")
+ages()
+    assertEq(marshal.parseAge("1s"), Some(long(1000)))
+    assertEq(marshal.parseAge("90m"), Some(long(90 * 60000)))
+    assertEq(marshal.parseAge("12h"), Some(12 * OneHour))
+    assertEq(marshal.parseAge("7d"), Some(7 * OneDay))
+    assertEq(marshal.parseAge("2w"), Some(14 * OneDay))
+    for bad in ["", "7", "0d", "d", "-1d", "+1d", "1.5h", "7x", "7D", " 7d", "7d ", "1d1h", "99999999999999999999d", "9999999999999999w"]
+        assertEq(marshal.parseAge(bad), None)
+
+@test("clean's arguments: each option once, values checked, nothing else accepted")
+cleanArgs()
+    assertEq(marshal.parseCleanArgs([]), Ok(CleanRule(None, None, false)))
+    assertEq(marshal.parseCleanArgs(["--dry-run"]), Ok(CleanRule(None, None, true)))
+    assertEq(marshal.parseCleanArgs(["--older-than", "7d", "--keep", "5", "--dry-run"]), Ok(CleanRule(Some(7 * OneDay), Some(5), true)))
+    assertEq(marshal.parseCleanArgs(["--keep", "0"]), Ok(CleanRule(None, Some(0), false)))
+    assertEq(marshal.parseCleanArgs(["--keep", "3", "--older-than", "1h"]), Ok(CleanRule(Some(OneHour), Some(3), false)))
+    val errors = [
+        (["--older-than"], "--older-than needs a value"),
+        (["--keep"], "--keep needs a value"),
+        (["--older-than", "7"], "`7` is not an age"),
+        (["--older-than", "0d"], "`0d` is not an age"),
+        (["--keep", "-1"], "`-1` is not a count"),
+        (["--keep", "many"], "`many` is not a count"),
+        (["--keep", "1.5"], "`1.5` is not a count"),
+        (["--keep", "1", "--keep", "2"], "--keep is given twice"),
+        (["--older-than", "1d", "--older-than", "2d"], "--older-than is given twice"),
+        (["--dry-run", "--dry-run"], "--dry-run is given twice"),
+        (["--all"], "no option `--all`"),
+        (["-n"], "no option `-n`"),
+        (["5"], "clean takes no argument `5`"),
+        (["--keep", "2", "extra"], "clean takes no argument `extra`")]
+    for (args, why) in errors
+        val r = marshal.parseCleanArgs(args)
+        assert(r.err().exists(e -> e.contains(why)), s"$args: $r")
+
+@test("the log view: a job is ended by its last event, a retried attempt does not end it, and unreadable lines are skipped")
+logViews()
+    val retrying = marshal.eventLine(50, "finished", cleanInfo(3), [("run_ms", Json.num(1)), ("exit", Json.num(1)), ("retrying", Json.Bool(true))])
+    val lines = cleanEnded(1, 10, 20) ++ cleanOpen(2, 30) ++ [marshal.eventLine(40, "submitted", cleanInfo(3, "queued"), []), retrying, "not json", "{\"id\":7}", ""]
+    val view = marshal.logView(lines)
+    assertEq(view.ended, [LogEnded(1, 20)])
+    assertEq(view.maxId, long(3))
+    assertEq(marshal.logView([]).maxId, long(0))
+    assertEq(marshal.logView([]).ended, [])
+
+val sixEnded: Vector[LogEnded] = [LogEnded(1, 100), LogEnded(2, 200), LogEnded(3, 300), LogEnded(4, 400), LogEnded(5, 500), LogEnded(6, 600)]
+
+@test("a rule with neither option picks every ended job that is not active")
+selectAll()
+    assertEq(marshal.selectJobs(sixEnded, {}, 1000, None, None), [long(1), 2, 3, 4, 5, 6])
+    assertEq(marshal.selectJobs(sixEnded, {long(2), long(5)}, 1000, None, None), [long(1), 3, 4, 6])
+    assertEq(marshal.selectJobs([], {}, 1000, None, None), [])
+
+@test("--older-than picks the jobs that ended at least that long ago, the boundary included")
+selectOlder()
+    assertEq(marshal.selectJobs(sixEnded, {}, 700, Some(long(300)), None), [long(1), 2, 3, 4])
+    assertEq(marshal.selectJobs(sixEnded, {}, 700, Some(long(700)), None), [])
+    assertEq(marshal.selectJobs(sixEnded, {}, 700, Some(long(601)), None), [])
+    assertEq(marshal.selectJobs(sixEnded, {}, 700, Some(long(100)), None), [long(1), 2, 3, 4, 5, 6])
+    assertEq(marshal.selectJobs(sixEnded, {long(1)}, 700, Some(long(300)), None), [long(2), 3, 4])
+
+@test("--keep leaves the newest ended jobs alone, whatever the order of the log, and counts active jobs out")
+selectKeep()
+    assertEq(marshal.selectJobs(sixEnded, {}, 1000, None, Some(2)), [long(1), 2, 3, 4])
+    assertEq(marshal.selectJobs(sixEnded, {}, 1000, None, Some(0)), [long(1), 2, 3, 4, 5, 6])
+    assertEq(marshal.selectJobs(sixEnded, {}, 1000, None, Some(6)), [])
+    assertEq(marshal.selectJobs(sixEnded, {}, 1000, None, Some(60)), [])
+    assertEq(marshal.selectJobs(sixEnded.reverse(), {}, 1000, None, Some(2)), [long(1), 2, 3, 4])
+    assertEq(marshal.selectJobs(sixEnded, {long(6)}, 1000, None, Some(2)), [long(1), 2, 3])
+    // the newest is the latest to end, and an equal end time goes by id
+    val ties = [LogEnded(9, 50), LogEnded(8, 50), LogEnded(7, 50)]
+    assertEq(marshal.selectJobs(ties, {}, 1000, None, Some(1)), [long(7), 8])
+
+@test("--older-than and --keep together: a job must be old and not among the newest")
+selectBoth()
+    assertEq(marshal.selectJobs(sixEnded, {}, 700, Some(long(300)), Some(5)), [long(1)])
+    assertEq(marshal.selectJobs(sixEnded, {}, 700, Some(long(300)), Some(2)), [long(1), 2, 3, 4])
+    assertEq(marshal.selectJobs(sixEnded, {}, 700, Some(long(300)), Some(0)), [long(1), 2, 3, 4])
+    assertEq(marshal.selectJobs(sixEnded, {}, 700, Some(long(1000)), Some(0)), [])
+
+@test("automatic retention takes a job that is too old or beyond the newest jobs, and nothing where both are off")
+selectRetainedJobs()
+    val r = Retention(Some(long(300)), Some(5), None, None)
+    assertEq(marshal.selectRetained(sixEnded, {}, 700, r), [long(1), 2, 3, 4])
+    assertEq(marshal.selectRetained(sixEnded, {}, 700, Retention(None, Some(4), None, None)), [long(1), 2])
+    assertEq(marshal.selectRetained(sixEnded, {}, 700, Retention(Some(long(500)), None, None, None)), [long(1), 2])
+    assertEq(marshal.selectRetained(sixEnded, {}, 700, Retention(None, None, None, None)), [])
+    assertEq(marshal.selectRetained(sixEnded, {long(1), long(2)}, 700, r), [long(3), 4])
+
+@test("events leave the log by the age of their job's ending, never the job with the highest id, never an open job")
+selectEventJobs()
+    val lines = cleanEnded(1, 10, 20) ++ cleanEnded(2, 30, 40) ++ cleanOpen(3, 5) ++ cleanEnded(4, 60, 70)
+    val view = marshal.logView(lines)
+    assertEq(marshal.selectEvents(view, 100, Some(long(50))), {long(1), long(2)})
+    assertEq(marshal.selectEvents(view, 100, Some(long(1))), {long(1), long(2)})
+    assertEq(marshal.selectEvents(view, 100, None), {})
+    assertEq(marshal.selectEvents(view, 25, Some(long(5))), {long(1)})
+    // the highest id is kept even when it ended long ago
+    assertEq(marshal.selectEvents(marshal.logView(cleanEnded(1, 1, 2)), 1000000, Some(long(1))), {})
+
+@test("trimming the log drops every event of the chosen jobs and keeps the others and lines that are not events")
+trimming()
+    val lines = cleanEnded(1, 10, 20) ++ ["junk"] ++ cleanEnded(2, 30, 40)
+    val (text, gone) = marshal.withoutEvents(joinLines(lines), {long(1)})
+    assertEq(gone, 3)
+    assertEq(text, joinLines(["junk"] ++ cleanEnded(2, 30, 40)))
+    assertEq(marshal.withoutEvents(joinLines(lines), {}).1, 0)
+    assertEq(marshal.withoutEvents(joinLines(lines), {}).0, joinLines(lines))
+    assertEq(marshal.withoutEvents(joinLines(cleanEnded(1, 1, 2)), {long(1)}), ("", 3))
+
+@test("after a trim the log still gives history, rerun's spec, an ending, learning and the next id for the jobs that stay")
+trimmedLogStillReads()
+    val lines = cleanEnded(1, 10, 20) ++ cleanEnded(2, 30, 40) ++ cleanEnded(3, 60, 70)
+    val view = marshal.logView(lines)
+    val (text, _) = marshal.withoutEvents(joinLines(lines), marshal.selectEvents(view, 100, Some(long(50))))
+    val kept = text.lines().toVector()
+    assertEq(marshal.specOf(kept, 3), Some(cleanSpec))
+    assertEq(marshal.specOf(kept, 1), None)
+    assertEq(marshal.endOf(kept, 3).map(e -> e("event").asString()), Some(Some("finished")))
+    assertEq(marshal.endOf(kept, 1), None)
+    val recovered = marshal.recover(kept)
+    assertEq(recovered.nextId, long(4))
+    assertEq(recovered.ended.map(j -> j.id), [long(3)])
+    assertEq(marshal.historyKey("test", false), "test")
+    assertEq(recovered.histories("test"), [long(10)])
+    // the log read for the ledger holds the jobs that stayed
+    val ledger = marshal.Ledger()
+    for line in kept do ledger.add(line)
+    assertEq(ledger.ends.toVector().map(e -> e.id), [long(3)])
+
+@test("a compiled step's name is a base, a dash and 32 lowercase hexadecimal digits, and nothing beside it")
+stepNames()
+    val hex = "0123456789abcdef0123456789abcdef"
+    assert(marshal.isStepName(s"build-$hex"))
+    assert(marshal.isStepName(s"a-b-$hex"))
+    for bad in ["", "build", s"-$hex", s"build-$hex.lock", s"build-$hex.used", s"build-$hex.building", s"build-${hex.dropRight(1)}", s"build$hex", s"build-${hex.toUpperCase()}", s"build-${hex.dropRight(1)}g"]
+        assert(!marshal.isStepName(bad), bad)
+
+private cleanTempHome() -> string = fs.createTempDir("marshal-clean-").ok().get()
+
+private putFile(file: string, text: string = "x")
+    fs.createDirAll(file.take(file.lastIndexOf("/"))).ok().get()
+    fs.writeText(file, text).ok().get()
+
+val StepHex1: string = "0123456789abcdef0123456789abcdef"
+val StepHex2: string = "fedcba9876543210fedcba9876543210"
+
+@test("compiled steps unused for the age are removed with their records, newer ones, unstamped ones and ones being built stay")
+stepSweep()
+    val home = cleanTempHome()
+    val dir = home + "/steps"
+    putFile(s"$dir/old-$StepHex1")
+    putFile(s"$dir/old-$StepHex1.used", "1000")
+    putFile(s"$dir/new-$StepHex2")
+    putFile(s"$dir/new-$StepHex2.used", "9000")
+    putFile(s"$dir/bare-$StepHex1")
+    putFile(s"$dir/bare-$StepHex1.build.log")
+    putFile(s"$dir/busy-$StepHex1")
+    putFile(s"$dir/busy-$StepHex1.used", "1")
+    fs.createDir(s"$dir/busy-$StepHex1.lock").ok().get()
+    putFile(s"$dir/notes.txt")
+    // a dry run reports and changes nothing, and stamps nothing
+    assertEq(marshal.cleanSteps(home, 10000, Some(long(5000)), true), [s"old-$StepHex1"])
+    assert(fs.isFile(s"$dir/old-$StepHex1"))
+    assert(!fs.exists(s"$dir/bare-$StepHex1.used"))
+    assertEq(marshal.cleanSteps(home, 10000, Some(long(5000)), false), [s"old-$StepHex1"])
+    assert(!fs.exists(s"$dir/old-$StepHex1"))
+    assert(!fs.exists(s"$dir/old-$StepHex1.used"))
+    assert(fs.isFile(s"$dir/new-$StepHex2"))
+    assert(fs.isFile(s"$dir/busy-$StepHex1"))
+    assert(fs.isFile(s"$dir/notes.txt"))
+    // the unstamped one is stamped now, and ages from then
+    assertEq(fs.readText(s"$dir/bare-$StepHex1.used").ok().get(), "10000")
+    assertEq(marshal.cleanSteps(home, 14999, Some(long(5000)), false), [s"new-$StepHex2"])
+    assertEq(marshal.cleanSteps(home, 15000, Some(long(5000)), false), [s"bare-$StepHex1"])
+    // no age keeps everything; a home with no steps is fine
+    assertEq(marshal.cleanSteps(home, 1000000000, None, false), [])
+    assertEq(marshal.cleanSteps(home + "/nothing", 1, Some(long(1)), false), [])
+    fs.removeDirAll(home)
+
+@test("a step used again is not removed: touching records the time")
+stepTouch()
+    val home = cleanTempHome()
+    putFile(s"$home/steps/s-$StepHex1")
+    marshal.touchStep(s"$home/steps/s-$StepHex1", 4000)
+    assertEq(marshal.cleanSteps(home, 6000, Some(long(3000)), false), [])
+    marshal.touchStep(s"$home/steps/s-$StepHex1", 8000)
+    assertEq(marshal.cleanSteps(home, 10000, Some(long(3000)), false), [])
+    assertEq(marshal.cleanSteps(home, 11000, Some(long(3000)), false), [s"s-$StepHex1"])
+    fs.removeDirAll(home)
+
+@test("run directories go with their job or when no job has them; active jobs', other jobs' and oddly named ones stay")
+runSweep()
+    val home = cleanTempHome()
+    for name in ["1", "2", "3", "4", "5", "keep-me"] do putFile(s"$home/runs/$name/f")
+    putFile(s"$home/runs/9")
+    // 1 is chosen, 2 ended and stays, 3 is active, 4 is in no log, 5 is active and in no log
+    val inLog = {long(1), long(2)}
+    assertEq(marshal.cleanRuns(home, {long(3), long(5)}, inLog, {long(1)}, true), ["1", "4"])
+    assert(fs.isDir(home + "/runs/1"))
+    assertEq(marshal.cleanRuns(home, {long(3), long(5)}, inLog, {long(1)}, false), ["1", "4"])
+    assert(!fs.exists(home + "/runs/1"))
+    assert(!fs.exists(home + "/runs/4"))
+    for name in ["2", "3", "5", "keep-me"] do assert(fs.isDir(s"$home/runs/$name"), name)
+    assert(fs.isFile(home + "/runs/9"))
+    assertEq(marshal.cleanRuns(home + "/none", {}, {}, {}, false), [])
+    fs.removeDirAll(home)
+
+// A home with jobs 1 to 4 ended at 100..400 and job 5 running, each with a log and a run directory.
+private homeWithJobs() -> string
+    val home = cleanTempHome()
+    val lines = cleanEnded(1, 10, 100) ++ cleanEnded(2, 20, 200) ++ cleanEnded(3, 30, 300) ++ cleanEnded(4, 40, 400) ++ cleanOpen(5, 50)
+    fs.writeText(home + "/events.jsonl", joinLines(lines)).ok().get()
+    for id in 1..5
+        putFile(s"$home/jobs/$id.log", s"log $id")
+        putFile(s"$home/runs/$id/f")
+    putFile(home + "/jobs/2.sample.txt")
+    home
+
+@test("a sweep removes the logs, samples and run directories of the picked jobs, and never an active job's")
+sweepRemoves()
+    val home = homeWithJobs()
+    val r = marshal.sweepRule(home, {long(5)}, 1000, Retention(None, None, None, None), CleanRule(Some(long(700)), None, false))
+    assertEq(r.jobs, [long(1), 2, 3])
+    assertEq(r.runs, ["1", "2", "3"])
+    for id in 1..3
+        assert(!fs.exists(s"$home/jobs/$id.log"), s"$id")
+        assert(!fs.exists(s"$home/runs/$id"), s"$id")
+    assert(!fs.exists(home + "/jobs/2.sample.txt"))
+    assert(fs.isFile(home + "/jobs/4.log") && fs.isDir(home + "/runs/4"))
+    // the running job is spared by any rule, even one that picks every job
+    val all = marshal.sweepRule(home, {long(5)}, 1000, Retention(None, None, None, None), CleanRule(None, None, false))
+    assertEq(all.jobs, [long(4)])
+    assertEq(fs.readText(home + "/jobs/5.log").ok().get(), "log 5")
+    assert(fs.isDir(home + "/runs/5"))
+    // a job the daemon holds as active is spared even if its last event were an ending
+    assertEq(marshal.sweepRule(home, {long(4), long(5)}, 1000, Retention(None, None, None, None), CleanRule(None, None, false)).jobs, [])
+    fs.removeDirAll(home)
+
+@test("a dry run reports exactly what a real run removes, and removes nothing")
+sweepDryRun()
+    val home = homeWithJobs()
+    val before = fs.readText(home + "/events.jsonl").ok().get()
+    val r = Retention(None, None, Some(long(150)), None)
+    val dry = marshal.sweepRule(home, {long(5)}, 1000, r, CleanRule(None, Some(1), true))
+    assert(dry.dryRun)
+    assertEq(dry.jobs, [long(1), 2, 3])
+    for id in 1..5 do assert(fs.isFile(s"$home/jobs/$id.log") && fs.isDir(s"$home/runs/$id"), s"$id")
+    assertEq(fs.readText(home + "/events.jsonl").ok().get(), before)
+    val real = marshal.sweepRule(home, {long(5)}, 1000, r, CleanRule(None, Some(1), false))
+    assertEq(real, CleanReport(false, dry.jobs, dry.runs, dry.steps, dry.events, dry.eventJobs))
+    assert(dry.events > 0)
+    fs.removeDirAll(home)
+
+@test("a sweep trims the events of old ended jobs through the file, keeping the rest readable")
+sweepTrimsEvents()
+    val home = homeWithJobs()
+    val r = marshal.sweepRetained(home, {long(5)}, 1000, Retention(None, None, Some(long(650)), None))
+    assertEq((r.events, r.eventJobs), (9, 3))
+    assertEq(r.jobs, [])
+    val kept = fs.readText(home + "/events.jsonl").ok().get().lines().toVector()
+    assertEq(marshal.logView(kept).ended.map(e -> e.id), [long(4)])
+    assertEq(marshal.specOf(kept, 5), Some(cleanSpec))
+    assertEq(marshal.recover(kept).nextId, long(6))
+    assertEq(marshal.recover(kept).open.length(), 1)
+    assert(fs.isFile(home + "/jobs/1.log"))
+    // nothing is left beside the log
+    assertEq(fs.listDir(home).ok().get().filter(n -> n.startsWith("events")), ["events.jsonl"])
+    fs.removeDirAll(home)
+
+@test("automatic retention by count and by age, and a home with no log or no jobs directory is swept without error")
+sweepRetainedAndEmpty()
+    val home = homeWithJobs()
+    val r = marshal.sweepRetained(home, {long(5)}, 1000, Retention(Some(long(750)), Some(3), None, None))
+    assertEq(r.jobs, [long(1), 2])
+    assert(marshal.nothingRemoved(marshal.sweepRetained(home, {long(5)}, 1000, Retention(Some(long(750)), Some(3), None, None))))
+    fs.removeDirAll(home)
+    val empty = cleanTempHome()
+    assert(marshal.nothingRemoved(marshal.sweepRetained(empty, {}, 1000, marshal.defaultRetention)))
+    assert(marshal.nothingRemoved(marshal.sweepRule(empty, {}, 1000, marshal.defaultRetention, CleanRule(None, None, false))))
+    fs.removeDirAll(empty)
+
+@test("a report prints a line for each thing removed, says so when there is nothing, and survives the wire")
+cleanReports()
+    val r = CleanReport(false, [long(3), 4], ["3"], ["s-" + StepHex1], 6, 2)
+    assertEq(marshal.cleanLines(r), ["removed job 3's log", "removed job 4's log", "removed run directory 3", s"removed compiled step s-$StepHex1", "removed 6 events of 2 jobs from the event log"])
+    val dry = CleanReport(true, [long(3)], [], [], 0, 0)
+    assertEq(marshal.cleanLines(dry), ["would remove job 3's log", "marshal: dry run, nothing was removed"])
+    assertEq(marshal.cleanLines(CleanReport(false, [], [], [], 0, 0)), ["marshal: nothing to clean"])
+    assertEq(marshal.cleanLines(CleanReport(true, [], [], [], 0, 0)), ["marshal: nothing to clean"])
+    for rep in [r, dry, CleanReport(false, [], [], [], 0, 0)]
+        assertEq(marshal.decodeReply(marshal.encodeReply(marshal.Cleaned(rep)).render()), Ok(marshal.Cleaned(rep)))
+    assert(marshal.decodeReport(Json.obj(("jobs", Json.Arr([])))).isErr())
+
+@test("the clean request round-trips, absent options read as none, and bad values are refused")
+cleanRequest()
+    for rule in [CleanRule(None, None, false), CleanRule(Some(OneDay), Some(3), true), CleanRule(None, Some(0), false)]
+        assertEq(marshal.decodeRequest(marshal.encodeRequest(marshal.Clean(rule)).render()), Ok(marshal.Clean(rule)))
+    assertEq(marshal.decodeRequest("{\"op\":\"clean\"}"), Ok(marshal.Clean(CleanRule(None, None, false))))
+    for bad in ["{\"op\":\"clean\",\"older_ms\":0}", "{\"op\":\"clean\",\"older_ms\":\"7d\"}", "{\"op\":\"clean\",\"keep\":-1}", "{\"op\":\"clean\",\"keep\":\"x\"}", "{\"op\":\"clean\",\"dry_run\":3}"]
+        assert(marshal.decodeRequest(bad).isErr(), bad)
+
+@test("retention settings: defaults keep a month of logs and a year of history; each can be set or turned off; bad ones are named")
+retentionConfig()
+    val d = marshal.readConfig("", 0).ok().get().retention
+    assertEq(d, Retention(Some(30 * OneDay), Some(1000), Some(365 * OneDay), Some(30 * OneDay)))
+    assertEq(d, marshal.defaultRetention)
+    val c = marshal.readConfig("{\"keep_logs\": \"12h\", \"keep_jobs\": 50, \"keep_events\": \"2w\", \"keep_steps\": \"1d\"}", 0).ok().get().retention
+    assertEq(c, Retention(Some(12 * OneHour), Some(50), Some(14 * OneDay), Some(OneDay)))
+    val off = marshal.readConfig("{\"keep_logs\": \"never\", \"keep_jobs\": \"never\", \"keep_events\": \"never\", \"keep_steps\": \"never\"}", 0).ok().get().retention
+    assertEq(off, Retention(None, None, None, None))
+    assertEq(marshal.readConfig("{\"keep_jobs\": 1}", 0).ok().get().retention.jobs, Some(1))
+    val errors = [
+        ("{\"keep_logs\": 7}", "`keep_logs` is an age"),
+        ("{\"keep_logs\": \"7\"}", "`keep_logs` is an age"),
+        ("{\"keep_events\": \"soon\"}", "`keep_events` is an age"),
+        ("{\"keep_steps\": \"0d\"}", "`keep_steps` is an age"),
+        ("{\"keep_jobs\": 0}", "`keep_jobs` is a whole number"),
+        ("{\"keep_jobs\": \"lots\"}", "`keep_jobs` is a whole number"),
+        ("{\"keep_jobs\": -3}", "`keep_jobs` is a whole number")]
+    for (text, why) in errors
+        val r = marshal.readConfig(text, 0)
+        assert(r.err().exists(e -> e.contains(why)), s"$text: $r")

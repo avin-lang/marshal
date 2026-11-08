@@ -58,6 +58,8 @@ data Request
     // Places a queued job: by a priority number among the jobs not urgent, or at the back of its
     // lane's urgent band.
     Prioritize(id: long, priority: Priority)
+    // Removes the files of ended jobs, stale run directories and unused compiled steps (see clean.avin).
+    Clean(rule: CleanRule)
     // Follows events: `source` is the condition as written, `cond` what it parses to. The daemon
     // streams replies until the watch ends, which `mode` says; `since` and `sinceId` ask for the
     // events already in the log from a time (milliseconds since 1970, inclusive) and from a job.
@@ -191,6 +193,8 @@ data Reply
     // One event of a watch, as the log holds it, or the events of its backlog together.
     Streamed(event: Json)
     Replayed(events: Vector[Json])
+    // What a clean removed.
+    Cleaned(report: CleanReport)
     Done
     Failed(message: string)
 
@@ -209,7 +213,12 @@ encodeRequest(Stop(force, drain)) = Json.obj(("op", Json.str("stop")), ("force",
 encodeRequest(Hello) = Json.obj(("op", Json.str("version")))
 encodeRequest(Restart) = Json.obj(("op", Json.str("restart")))
 encodeRequest(Rerun(id)) = Json.obj(("op", Json.str("rerun")), ("id", Json.num(id)))
-encodeRequest(PauseQueue) = Json.obj(("op", Json.str("pause")))
+encodeRequest(Clean(rule)) = Json.obj(
+    ("op", Json.str("clean")),
+    ("older_ms", rule.olderMs.map(n -> Json.num(n)).getOrElse(Json.Null)),
+    ("keep", rule.keep.map(n -> Json.num(n)).getOrElse(Json.Null)),
+    ("dry_run", Json.Bool(rule.dryRun)))
+encodeRequest(PauseQueue) =Json.obj(("op", Json.str("pause")))
 encodeRequest(ResumeQueue) = Json.obj(("op", Json.str("resume")))
 encodeRequest(PauseJob(id)) = Json.obj(("op", Json.str("pause")), ("id", Json.num(id)))
 encodeRequest(ResumeJob(id)) = Json.obj(("op", Json.str("resume")), ("id", Json.num(id)))
@@ -331,6 +340,12 @@ decodeRequest(text: string) -> Result[Request, string]
         "hold" -> Ok(Hold(field(j, "id", v -> v.asLong(), "a whole number")?))
         "release" -> Ok(Release(field(j, "id", v -> v.asLong(), "a whole number")?))
         "priority" -> Ok(Prioritize(field(j, "id", v -> v.asLong(), "a whole number")?, field(j, "priority", priorityOf, "a whole number or \"urgent\"")?))
+        "clean" ->
+            val older = optional(j, "older_ms", someLong, "a whole number", None)?
+            val keep = optional(j, "keep", v -> v.asInt().map(n -> Some(n)), "a whole number", None)?
+            if older.exists(n -> n < 1) then return Err("`older_ms` is at least 1")
+            if keep.exists(n -> n < 0) then return Err("`keep` is 0 or more")
+            Ok(Clean(CleanRule(older, keep, optional(j, "dry_run", v -> v.asBool(), "a bool", false)?)))
         "watch" -> decodeWatch(j)
         other -> Err(s"no such request: `$other`")
 
@@ -470,7 +485,8 @@ encodeReply(Viewed(o)) = Json.obj(("ok", Json.Bool(true)), ("snapshot", encodeOv
 encodeReply(Hi(version, pid)) = Json.obj(("ok", Json.Bool(true)), ("version", Json.str(version)), ("pid", Json.num(pid)))
 encodeReply(Streamed(event)) = Json.obj(("ok", Json.Bool(true)), ("event", event))
 encodeReply(Replayed(events)) = Json.obj(("ok", Json.Bool(true)), ("events", Json.Arr(events)))
-encodeReply(Done) = Json.obj(("ok", Json.Bool(true)))
+encodeReply(Cleaned(report)) = Json.obj(("ok", Json.Bool(true)), ("cleaned", encodeReport(report)))
+encodeReply(Done) =Json.obj(("ok", Json.Bool(true)))
 encodeReply(Failed(message)) = Json.obj(("ok", Json.Bool(false)), ("error", Json.str(message)))
 
 decodeReply(text: string) -> Result[Reply, string]
@@ -481,6 +497,7 @@ decodeReply(text: string) -> Result[Reply, string]
         return Ok(Failed(field(j, "error", v -> v.asString(), "a string")?))
     if j.has("event") then return Ok(Streamed(j("event")))
     if j.has("events") then return Ok(Replayed(field(j, "events", v -> v.asVector(), "an array")?))
+    if j.has("cleaned") then return Ok(Cleaned(decodeReport(j("cleaned"))?))
     if j.has("snapshot") then return Ok(Viewed(decodeOverview(j("snapshot"))?))
     if j.has("job") then return Ok(Ended(decodeJob(j("job"))?))
     if j.has("jobs")

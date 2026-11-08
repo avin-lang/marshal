@@ -1,0 +1,265 @@
+module dev.avinlang.marshal
+
+// Retention: what `marshal clean` and the daemon's periodic sweep remove, so that marshal's home
+// does not grow for ever. Four kinds of file grow:
+//
+//   jobs/<id>.log, jobs/<id>.sample.txt   a job's output, and its stack sample if it took one
+//   runs/<id>                             the directory a job type's run keeps its files in
+//   steps/<name>-<32 hex digits>          a step compiled from Avin source (see `stepKey`)
+//   events.jsonl                          the event log
+//
+// A job's files go only once the job has ended for good: a running, queued, waiting, paused or
+// retrying job is never touched. A run directory goes with its job, or when no job of the log has
+// it. A compiled step goes when it has not been used for the step age; each use writes the time to
+// `<step>.used`, and a step with no such file is stamped by the first clean that sees it. The event
+// log loses every event of an ended job whose ending is older than the event age, always keeping
+// the job with the highest id so that ids are never reused; `history`, `stats`, `rerun` and
+// dependencies read what remains.
+import avin.collections.mutable.{Map as MutableMap}
+import avin.fs
+import json
+import json.Json
+
+// How long each kind of file is kept, by the daemon's sweep and by `marshal clean`. None keeps it
+// for ever: `logsMs` is the age of an ended job's files, `jobs` how many ended jobs' files are
+// kept at most, `eventsMs` the age of an ended job's events, `stepsMs` how long a compiled step
+// may go unused.
+data Retention(logsMs: Option[long], jobs: Option[int], eventsMs: Option[long], stepsMs: Option[long])
+
+private val Day: long = 24 * 3600000
+
+val defaultRetention: Retention = Retention(Some(30 * Day), Some(1000), Some(365 * Day), Some(30 * Day))
+
+// A length of time as `clean` and config.json write it: a whole number and a unit, `s`, `m`, `h`,
+// `d` or `w`. Milliseconds; zero, a number with no unit and anything else is None.
+parseAge(text: string) -> Option[long]
+    if text.byteLength() < 2 then return None
+    val scale: long = text.last() match
+        's' -> 1000
+        'm' -> 60000
+        'h' -> 3600000
+        'd' -> Day
+        'w' -> 7 * Day
+        _ -> 0
+    val digits = text.dropRight(1)
+    if scale == 0 || !digits.chars().forall(c -> '0' <= c <= '9') then return None
+    digits.toLongOption() match
+        Some(n) if 0 < n <= long.MaxValue / scale -> Some(n * scale)
+        _ -> None
+
+// What `marshal clean` was asked: `olderMs` and `keep` narrow the jobs whose files go (a job goes
+// when it is older and not among the newest `keep`; with neither, every ended job), `dryRun`
+// removes nothing.
+data CleanRule(olderMs: Option[long], keep: Option[int], dryRun: bool)
+
+// The rule `marshal clean`'s arguments spell, or why they are not one.
+parseCleanArgs(args: Vector[string]) -> Result[CleanRule, string]
+    var older: Option[long] = None
+    var keep: Option[int] = None
+    var dry = false
+    var i = 0
+    while i < args.length()
+        val a = args(i)
+        if a == "--dry-run"
+            if dry then return Err("--dry-run is given twice")
+            dry = true
+            i += 1
+        elif a == "--older-than" || a == "--keep"
+            if i + 1 >= args.length() then return Err(s"$a needs a value")
+            val value = args(i + 1)
+            if a == "--older-than"
+                if older.isDefined() then return Err("--older-than is given twice")
+                older = parseAge(value) match
+                    Some(ms) -> Some(ms)
+                    None -> return Err(s"`$value` is not an age: a whole number and s, m, h, d or w, such as 12h or 7d")
+            else
+                if keep.isDefined() then return Err("--keep is given twice")
+                keep = value.toIntOption().filter(n -> n >= 0) match
+                    Some(n) -> Some(n)
+                    None -> return Err(s"`$value` is not a count: a whole number, 0 or more")
+            i += 2
+        elif a.startsWith("-") then return Err(s"no option `$a`")
+        else return Err(s"clean takes no argument `$a`")
+    Ok(CleanRule(older, keep, dry))
+
+// What a clean removed, or with `dryRun` would have: the jobs whose files went, the run directories
+// and compiled steps, and how many events of how many jobs left the event log.
+data CleanReport(dryRun: bool, jobs: Vector[long], runs: Vector[string], steps: Vector[string], events: int, eventJobs: int)
+
+// Whether the report removed nothing.
+nothingRemoved(r: CleanReport) -> bool = r.jobs.isEmpty() && r.runs.isEmpty() && r.steps.isEmpty() && r.events == 0
+
+// What `marshal clean` prints for a report, one line for each thing removed and a last line that
+// counts them.
+cleanLines(r: CleanReport) -> Vector[string]
+    val verb = if r.dryRun then "would remove" else "removed"
+    val out = Buffer[string]()
+    for id in r.jobs do out += s"$verb job $id's log"
+    for run in r.runs do out += s"$verb run directory $run"
+    for step in r.steps do out += s"$verb compiled step $step"
+    if r.events > 0 then out += s"$verb ${r.events} events of ${r.eventJobs} jobs from the event log"
+    if nothingRemoved(r) then out += "marshal: nothing to clean"
+    elif r.dryRun then out += "marshal: dry run, nothing was removed"
+    out.toVector()
+
+// An ended job as the event log shows it: when it ended (wall clock, milliseconds).
+data LogEnded(id: long, endedAt: long)
+
+// What the event log says: the jobs that ended for good, by their last event, and the highest id
+// seen (0 for none).
+data LogView(ended: Vector[LogEnded], maxId: long)
+
+logView(lines: Iterable[string]) -> LogView
+    var maxId: long = 0
+    val last = MutableMap[long, (long, bool)]()
+    val order = Buffer[long]()
+    for line in lines
+        if line.trim().isEmpty() then continue
+        val ev = json.parse(line) match
+            Ok(j) -> j
+            Err(_) -> continue
+        val id = ev.get("id").flatMap(v -> v.asLong()) match
+            Some(i) -> i
+            None -> continue
+        if ev.get("event").flatMap(v -> v.asString()).isEmpty() then continue
+        if id > maxId then maxId = id
+        if !last.contains(id) then order += id
+        last(id) = (ev.get("ts").flatMap(v -> v.asLong()).getOrElse(0), endsJob(ev))
+    val ended = order.filter(id -> last(id).1).map(id -> LogEnded(id, last(id).0))
+    LogView(ended.toVector(), maxId)
+
+// The ended jobs, not active, whose files `rule` removes, oldest first. A job goes when it ended
+// at least `olderMs` ago (if given) and is not among the `keep` newest (if given).
+selectJobs(ended: Vector[LogEnded], active: Set[long], now: long, olderMs: Option[long], keep: Option[int]) -> Vector[long]
+    val candidates = ended.filter(e -> !active.contains(e.id)).sortBy(e -> (e.endedAt, e.id))
+    val skip = keep.map(n -> candidates.length() - n).getOrElse(0)
+    val beyond = if skip > 0 then candidates.take(skip) else []
+    val pool = if keep.isDefined() then beyond else candidates
+    pool.filter(e -> olderMs.forall(o -> e.endedAt <= now - o)).map(e -> e.id)
+
+// The jobs the automatic retention removes: those older than the log age, and those beyond the
+// newest `jobs`.
+selectRetained(ended: Vector[LogEnded], active: Set[long], now: long, r: Retention) -> Vector[long]
+    val byAge = r.logsMs.map(o -> selectJobs(ended, active, now, Some(o), None)).getOrElse([])
+    val byCount = r.jobs.map(n -> selectJobs(ended, active, now, None, Some(n))).getOrElse([])
+    val both = (byAge ++ byCount).toSet()
+    ended.filter(e -> both.contains(e.id)).sortBy(e -> (e.endedAt, e.id)).map(e -> e.id)
+
+// The jobs whose events leave the log: ended at least `eventsMs` ago, and never the job with the
+// highest id.
+selectEvents(view: LogView, now: long, eventsMs: Option[long]) -> Set[long] = eventsMs match
+    Some(age) -> view.ended.filter(e -> e.id != view.maxId && e.endedAt <= now - age).map(e -> e.id).toSet()
+    None -> {}
+
+// The log's text without the events of the jobs `drop`; lines that are not events stay. Also how
+// many events went.
+withoutEvents(text: string, drop: Set[long]) -> (string, int)
+    val kept = Buffer[string]()
+    var gone = 0
+    for line in text.lines()
+        val id = json.parse(line).ok().flatMap(ev -> ev.get("id")).flatMap(v -> v.asLong())
+        if id.exists(i -> drop.contains(i)) then gone += 1 else kept += line
+    (kept.mkString("\n") + (if kept.isEmpty() then "" else "\n"), gone)
+
+// Whether `name` is a compiled step's cache name: `<base>-<32 lowercase hexadecimal digits>`.
+isStepName(name: string) -> bool
+    val n = name.byteLength()
+    if n < 34 then return false
+    name.slice(n - 33, n - 32) == "-" && name.drop(n - 32).chars().forall(c -> '0' <= c <= '9' || 'a' <= c <= 'f')
+
+// The file that records when a compiled step was last used.
+usedFile(program: string) -> string = program + ".used"
+
+// Records that the compiled step `program` is in use at `now`.
+touchStep(program: string, now: long)
+    writeAtomic(usedFile(program), now.toString())
+
+private lastUsed(program: string) -> Option[long] = fs.readText(usedFile(program)).ok().flatMap(t -> t.trim().toLongOption())
+
+// Removes (unless `dry`) the compiled steps in `<home>/steps` unused for `ageMs`; the names of
+// those that went. A step being built (its lock exists) stays, and one with no record of use is
+// stamped as used now.
+cleanSteps(home: string, now: long, ageMs: Option[long], dry: bool) -> Vector[string]
+    val age = ageMs match
+        Some(a) -> a
+        None -> return []
+    val dir = home + "/steps"
+    val names = fs.listDir(dir).ok().getOrElse([]).filter(isStepName)
+    val removed = Buffer[string]()
+    for name in names
+        val program = s"$dir/$name"
+        if !fs.isFile(program) || fs.exists(program + ".lock") then continue
+        lastUsed(program) match
+            None -> if !dry then touchStep(program, now)
+            Some(at) ->
+                if now - at >= age
+                    removed += name
+                    if !dry
+                        fs.remove(program)
+                        fs.remove(usedFile(program))
+                        fs.remove(program + ".build.log")
+    removed.toVector()
+
+// Removes (unless `dry`) the run directories in `<home>/runs` that belong to a job in `gone`, or
+// to no ended job of the log and no active one; their names. Directories not named by a job id stay.
+cleanRuns(home: string, active: Set[long], inLog: Set[long], gone: Set[long], dry: bool) -> Vector[string]
+    val dir = home + "/runs"
+    val removed = Buffer[string]()
+    for name in fs.listDir(dir).ok().getOrElse([])
+        val id = name.toLongOption() match
+            Some(i) -> i
+            None -> continue
+        if active.contains(id) || !fs.isDir(s"$dir/$name") then continue
+        if gone.contains(id) || !inLog.contains(id)
+            removed += name
+            if !dry then fs.removeDirAll(s"$dir/$name")
+    removed.toVector()
+
+// One clean of the home `home` at `now`. `jobs` picks the jobs whose files go from the event log's
+// view; `active` are the jobs that must not be touched. Answers what was removed (or, with `dry`,
+// what would be), the job ids first; the caller makes the daemon forget those jobs.
+sweepHome(home: string, active: Set[long], now: long, retention: Retention, stepsMs: Option[long], dry: bool, jobs: (LogView) -> Vector[long]) -> CleanReport
+    val log = home + "/events.jsonl"
+    val text = fs.readText(log).ok().getOrElse("")
+    val view = logView(text.lines())
+    // a job whose files an earlier clean removed is not picked, reported or counted again
+    val withFiles = LogView(view.ended.filter(e -> fs.exists(s"$home/jobs/${e.id}.log") || fs.exists(s"$home/jobs/${e.id}.sample.txt")), view.maxId)
+    val chosen = jobs(withFiles).filter(id -> !active.contains(id))
+    val gone = chosen.toSet()
+    if !dry
+        for id in chosen
+            fs.remove(s"$home/jobs/$id.log")
+            fs.remove(s"$home/jobs/$id.sample.txt")
+    val runs = cleanRuns(home, active, view.ended.map(e -> e.id).toSet(), gone, dry)
+    val steps = cleanSteps(home, now, stepsMs, dry)
+    val drop = selectEvents(view, now, retention.eventsMs)
+    var events = 0
+    if drop.nonEmpty()
+        val (trimmed, n) = withoutEvents(text, drop)
+        events = n
+        if !dry && n > 0 then writeAtomic(log, trimmed)
+    CleanReport(dry, chosen, runs, steps, events, if events > 0 then drop.size() else 0)
+
+// The automatic sweep.
+sweepRetained(home: string, active: Set[long], now: long, r: Retention) -> CleanReport
+    sweepHome(home, active, now, r, r.stepsMs, false, view -> selectRetained(view.ended, active, now, r))
+
+// `marshal clean`: the jobs the rule picks; steps age by the rule's age, else by the retention's.
+sweepRule(home: string, active: Set[long], now: long, r: Retention, rule: CleanRule) -> CleanReport
+    sweepHome(home, active, now, r, rule.olderMs.orElse(r.stepsMs), rule.dryRun, view -> selectJobs(view.ended, active, now, rule.olderMs, rule.keep))
+
+encodeReport(r: CleanReport) -> Json = Json.obj(
+    ("dry_run", Json.Bool(r.dryRun)),
+    ("jobs", Json.Arr(r.jobs.map(id -> Json.num(id)))),
+    ("runs", Json.Arr(r.runs.map(s -> Json.str(s)))),
+    ("steps", Json.Arr(r.steps.map(s -> Json.str(s)))),
+    ("events", Json.num(r.events)),
+    ("event_jobs", Json.num(r.eventJobs)))
+
+decodeReport(j: Json) -> Result[CleanReport, string]
+    val jobs = j.get("jobs").flatMap(v -> v.asVector()).map(xs -> xs.flatMap(x -> x.asLong().toVector()))
+    val runs = j.get("runs").flatMap(v -> v.asVector()).map(xs -> xs.flatMap(x -> x.asString().toVector()))
+    val steps = j.get("steps").flatMap(v -> v.asVector()).map(xs -> xs.flatMap(x -> x.asString().toVector()))
+    (jobs, runs, steps, j.get("dry_run").flatMap(v -> v.asBool()), j.get("events").flatMap(v -> v.asInt()), j.get("event_jobs").flatMap(v -> v.asInt())) match
+        (Some(a), Some(b), Some(c), Some(d), Some(e), Some(f)) -> Ok(CleanReport(d, a, b, c, e, f))
+        _ -> Err("a clean report is malformed")

@@ -737,3 +737,45 @@ with the user: hold applying to waiting jobs, and priority staying for queued jo
   the state can be tested with no sleeps; `MARSHAL_TEST_TOP_IDLE_MS` sets the delay for the
   pseudo-terminal test and is not documented for users. The loop redraws at least once a second,
   so the highlight hides within a second after the delay.
+
+## Retention and `marshal clean` (branch `clean-retention`)
+
+**Proposed.** Review with the user: the defaults, and that `clean` drops events by the configured age.
+
+- **Only jobs that ended for good are cleaned.** A job counts as ended when its last event in the
+  log is an ending that is not a retried attempt, and the daemon holds it as not active. Running,
+  queued, waiting, paused and retrying jobs are never touched, whatever the rule. Alternative:
+  trusting the daemon's memory alone (a job lost across a crash would never be cleaned).
+- **`clean [--older-than <t>] [--keep <n>] [--dry-run]`: a job goes when it is older than `t` and
+  not among the `n` newest ended jobs; with neither option, every ended job.** Why: `pueue clean`
+  removes all finished jobs, and `--keep` is the safety most users want. Ages need a unit
+  (`s m h d w`; a bare number is refused, since `--deadline`'s bare number means minutes and an age
+  of "7" would be ambiguous). Options given twice, unknown options and arguments are errors.
+  Alternatives: `--keep` and `--older-than` as alternatives (union: surprising, `--keep 5
+  --older-than 30d` would remove a young job), a `--all` flag.
+- **Removing a job removes `jobs/<id>.log`, `jobs/<id>.sample.txt` and `runs/<id>`, and the daemon
+  forgets it** (it leaves `ls` and `top`). Later `wait`, `rerun` and dependency lookups answer from
+  the event log, exactly as for a job an earlier daemon ran. No new job field: the end time is read
+  from the event log, so the restart handover (`state.json`) is unchanged.
+- **Run directories**: removed with their job, or when no job of the log has them and no active job
+  does; a directory not named by a job id is left alone.
+- **Compiled steps** record when they were last used in `<step>.used` (written atomically at every
+  use); one unused for the age goes. Why a sidecar: avin's `fs` has no modification time, and
+  access times are unreliable on many mounts. A step with no record (cached before this) is
+  stamped by the first clean that sees it, so it ages from then. The age is `--older-than` when
+  given, else `keep_steps`. A step being built (its lock exists) stays.
+- **`events.jsonl` is trimmed, not rotated**: every event of an ended job whose ending is older than
+  `keep_events` is dropped, rewritten with `writeAtomic` by the daemon (the only appender, so no
+  append is lost). The job with the highest id is always kept so ids are never reused. Why: readers
+  (`history`, `stats`, `rerun`, dependencies, recovery) keep reading one file and need no change;
+  learning reads only each kind's last runs, so a year of history is ample. `rerun` of a job whose
+  events are gone is refused ("its command is not in the event log"). Lines that are not events stay.
+  Alternatives: rotating to `events.1.jsonl` (every reader must read both and the archive still
+  grows), trimming by count. `clean` applies the configured `keep_events`; it has no option for it.
+- **Automatic retention** runs in the daemon when it starts (also after `restart`) and every hour
+  (`MARSHAL_TEST_SWEEP_MS` shortens it for the tests). Defaults: `keep_logs` 30 days, `keep_jobs`
+  1000, `keep_events` 365 days, `keep_steps` 30 days; `"never"` turns one off. Why: a month of logs
+  and a year of history are a useful record and small; the default must never surprise by deleting
+  what a person looked at this week. Here a job goes when it is older than `keep_logs` OR beyond the
+  newest `keep_jobs`. Alternatives: sweeping when each job ends (a rewrite of the log on the hot
+  path), no automatic retention (the home grows for ever).

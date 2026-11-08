@@ -30,6 +30,7 @@ val Commands: Vector[(string, string)] = [
     ("ls", "jobs queued, running and recently ended"),
     ("kill <id>", "stops the job's whole process tree (a queued or waiting job is cancelled)"),
     ("rerun <id>", "submits an ended job again: its command, directory, environment, kind and resources; prints the new id"),
+    ("clean [--older-than <t>] [--keep <n>] [--dry-run]", "removes the logs of ended jobs (never a job that is not over), stale run directories and unused compiled steps; prints what went; --dry-run only lists them"),
     ("hold <id>", "keeps a queued job from starting; it keeps its place"),
     ("release <id>", "lets a held job start again"),
     ("priority <id> <n> | --urgent", "places a queued job in its lane: higher first; --urgent: the back of the urgent band"),
@@ -134,6 +135,7 @@ main(args: Vector[string]) -> int
         "wait" -> if rest.contains("--until") then waitUntil(rest) else withId(rest, id -> waitFor(id))
         "events" -> events(rest)
         "rerun" -> withId(rest, id -> rerun(id))
+        "clean" -> clean(rest)
         "kill" -> withId(rest, id -> simple(Request.Kill(id), s"marshal: job $id is being stopped"))
         "hold" -> withId(rest, id -> simple(Request.Hold(id), s"marshal: job $id is held"))
         "release" -> withId(rest, id -> simple(Request.Release(id), s"marshal: job $id is released"))
@@ -309,6 +311,20 @@ rerun(id: long) -> int = askDaemon(Request.Rerun(id)) match
     Ok(Failed(e)) -> complain(s"marshal: $e")
     Ok(other) -> complain(s"marshal: unexpected reply $other")
     Err(e) -> complain(e)
+
+// `clean [--older-than <t>] [--keep <n>] [--dry-run]`: asks the daemon to remove what retention
+// allows and prints what it removed.
+clean(args: Vector[string]) -> int
+    val rule = marshal.parseCleanArgs(args) match
+        Ok(r) -> r
+        Err(e) -> return complain(s"marshal: clean: $e")
+    askDaemon(Request.Clean(rule)) match
+        Ok(marshal.Cleaned(report)) ->
+            for line in marshal.cleanLines(report) do println(line)
+            0
+        Ok(Failed(e)) -> complain(s"marshal: $e")
+        Ok(other) -> complain(s"marshal: unexpected reply $other")
+        Err(e) -> complain(e)
 
 // What `wait --until` and `events` exit with when no daemon can be reached, and when a
 // `--timeout` ends the wait.

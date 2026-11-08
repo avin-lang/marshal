@@ -33,7 +33,7 @@ import json
 import json.Json
 import dev.avinlang.marshal
 import dev.avinlang.marshal.{Config,JobInfo, JobSpec, Outcome, Outside, Reply, Request, Started, TakeSlot, TakeSlotUse, Usage, Waiting}
-import dev.avinlang.marshal.{Submit, Wait, Kill, Status, Stop, Rerun}
+import dev.avinlang.marshal.{Submit, Wait, Kill, Status, Stop, Rerun, Clean, Cleaned}
 import dev.avinlang.marshal.{Submitted, Ended, Jobs, Using, Viewed, Hi, Done, Failed}
 import dev.avinlang.marshal.{Overview, QueuedJob, SavedJob, SavedState}
 import dev.avinlang.marshal.{Cancelled, DependencyFailed, TimedOut}
@@ -52,6 +52,8 @@ data Message
     Written
     Terminate
     Tick
+    // time for the automatic retention sweep
+    Sweep
     Sample
     // The resident bytes of each job's process tree, by job id.
     Measured(sizes: Vector[(long, long)])
@@ -78,6 +80,10 @@ val Recent: int = 10
 
 // How often waiting jobs look again at what take-slot holds, in milliseconds.
 val TickMs: long = 3000
+
+// How often the retention sweep runs, in milliseconds (an hour), unless
+// `$MARSHAL_TEST_SWEEP_MS` names another, so that the tests need not wait for one.
+sweepInterval() -> long = process.env("MARSHAL_TEST_SWEEP_MS").flatMap(t -> t.toLongOption()).filter(n -> n >= 1).getOrElse(3600000)
 
 // How often the running jobs' memory is measured, in milliseconds.
 val SampleMs: long = 1000
@@ -137,7 +143,7 @@ class Job(val id: long, val spec: JobSpec, val submittedMs: long, var arrived: l
 // `slots` is the take-slot directory it shares, if any; `ticket` the name of its waiting ticket there.
 // `earlier` holds the last jobs earlier daemons ended, as the event log describes them, by id.
 // `machineMemory` is the memory the machine has, 0 where it is not known.
-class Daemon(val home: string, val config: Config, val events: Channel[Message], var nextId: long, val histories: MutableMap[string, Buffer[long]], val slots: Option[TakeSlot], val earlier: Vector[JobInfo], val machineMemory: long)
+class Daemon(val home: string, val config: Config, val events: Channel[Message], var nextId: long, val histories: MutableMap[string, Buffer[long]], val slots: Option[TakeSlot], var earlier: Vector[JobInfo], val machineMemory: long)
     val jobs = MutableMap[long, Job]()
     val queue = Buffer[Job]()
     val running = Buffer[Job]()
@@ -191,6 +197,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
                 Retry(id, attempt) -> retryDue(id, attempt)
                 Written -> unwritten -= 1
                 Tick -> if queue.nonEmpty() then schedule()
+                Sweep -> sweep()
                 Sample -> measure()
                 Measured(sizes) -> measured(sizes)
                 Unwatch(out) -> unwatch(out)
@@ -220,6 +227,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             Request.Hello -> give(reply, Hi(reportedVersion(), process.pid()))
             Request.Restart -> restart(reply)
             Rerun(id) -> give(reply, rerun(id))
+            Clean(rule) -> give(reply, Cleaned(cleanNow(rule)))
             Request.PauseQueue -> give(reply, holdQueue(true))
             Request.ResumeQueue -> give(reply, holdQueue(false))
             Request.PauseJob(id) -> give(reply, pauseJob(id, true))
@@ -808,6 +816,32 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
                 remove(w)
                 out.close()
 
+    // The jobs retention must not touch: every job this daemon holds that has not ended.
+    activeIds() -> Set[long] = jobs.values().filter(j -> j.state != "done").map(j -> j.id).toSet()
+
+    // Forgets the jobs whose files were removed: they leave `ls`, and later questions about them
+    // are answered from the event log, as for a job an earlier daemon ran.
+    forget(ids: Vector[long])
+        val gone = ids.toSet()
+        for id in ids do jobs.remove(id)
+        val keep = ended.filter(j -> !gone.contains(j.id)).toVector()
+        ended.clear()
+        for j in keep do ended += j
+        earlier = earlier.filter(j -> !gone.contains(j.id))
+
+    // `marshal clean`.
+    cleanNow(rule: marshal.CleanRule) -> marshal.CleanReport
+        val report = marshal.sweepRule(home, activeIds(), time.now().epochMillis(), config.retention, rule)
+        if !report.dryRun then forget(report.jobs)
+        report
+
+    // The automatic sweep, by the retention config.json sets.
+    sweep()
+        val report = marshal.sweepRetained(home, activeIds(), time.now().epochMillis(), config.retention)
+        forget(report.jobs)
+        if !marshal.nothingRemoved(report)
+            eprintln(s"marshal: retention removed ${report.jobs.length()} jobs' files, ${report.runs.length()} run directories, ${report.steps.length()} compiled steps and ${report.events} events")
+
     listing() -> Vector[JobInfo]
         val t = now()
         (running.toVector() ++ queue.toVector() ++ waitingJobs.toVector() ++ ended.takeRight(Recent)).map(j -> j.info(t))
@@ -981,6 +1015,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             Some(Written) -> unwritten -= 1
             Some(Terminate) -> termed = true
             Some(Tick) -> ()
+            Some(Sweep) -> ()
             Some(Sample) -> ()
             Some(Measured(sizes)) -> measured(sizes)
             Some(Unwatch(out)) -> unwatch(out)
@@ -1239,6 +1274,11 @@ run(home: string, resume: Option[string] = None) -> int
             ())
     spawn(() ->
         loop
+            threads.sleep(millis(sweepInterval()))
+            events.send(Sweep)
+        ())
+    spawn(() ->
+        loop
             threads.sleep(millis(SampleMs))
             events.send(Sample)
         ())
@@ -1254,5 +1294,6 @@ run(home: string, resume: Option[string] = None) -> int
         val upgrade = if s.version == reportedVersion() then s"version ${s.version}" else s"version ${s.version} to ${reportedVersion()}"
         val waits = if s.waiting.isEmpty() then "" else s" and ${s.waiting.length()} waiting"
         eprintln(s"marshal: daemon ${process.pid()} restarted ($upgrade), taking over ${s.running.length()} running and ${s.queue.length()} queued$waits jobs")
+    daemon.sweep()
     daemon.serve()
     0

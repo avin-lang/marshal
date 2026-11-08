@@ -149,6 +149,7 @@ marshal events [--follow] [--since <t>] [<filter>]  the logged events as JSON li
 marshal ls                                 jobs queued, running and recently ended
 marshal kill <id>                          stops the job's whole process tree (a queued or waiting job is cancelled)
 marshal rerun <id>                         submits an ended job again: its command, directory, environment, kind and resources; prints the new id
+marshal clean [--older-than <t>] [--keep <n>] [--dry-run]  removes the logs of ended jobs (never a job that is not over), stale run directories and unused compiled steps; prints what went; --dry-run only lists them
 marshal hold <id>                          keeps a queued job from starting; it keeps its place
 marshal release <id>                       lets a held job start again
 marshal priority <id> <n> | --urgent       places a queued job in its lane: higher first; --urgent: the back of the urgent band
@@ -353,7 +354,27 @@ ends: nothing polls.
   daemon's, and neither starts a daemon.
 
 `config.json` in marshal's home changes the defaults: `units`, `memory` (`"56G"` or bytes),
-`reserve`, `deadline_floor` (`"5m"`), `learn_window`, `learn_min_runs` and `take_slot` (below).
+`reserve`, `deadline_floor` (`"5m"`), `learn_window`, `learn_min_runs` and `take_slot` (below),
+and the retention settings (next).
+
+**Retention.** Marshal's home would grow for ever, so the daemon removes old files when it starts
+and every hour, and `marshal clean` does it on request. Only a job that has ended for good is ever
+touched: never a running, queued, waiting, paused or retrying one. Four settings, each an age such
+as `"12h"`, `"30d"` or `"2w"` (or `"never"`), in `config.json`:
+
+- `keep_logs` (`"30d"`): an ended job's log and run directory go this long after it ended;
+- `keep_jobs` (1000, or `"never"`): at most this many ended jobs keep their files, the newest;
+- `keep_events` (`"365d"`): an ended job's events leave `events.jsonl` this long after it ended
+  (the newest job's never do, so ids are not reused). `history`, `stats` and `rerun` read what
+  remains; `rerun` of a job whose events are gone is refused;
+- `keep_steps` (`"30d"`): a compiled step unused this long is removed.
+
+`marshal clean` with no option removes the files of every ended job. `--older-than <t>` limits it
+to jobs that ended at least `t` ago, `--keep <n>` leaves the `n` newest ended jobs alone (both: a
+job must be old and not among the `n` newest), and `--dry-run` prints what would go and removes
+nothing. A removed job leaves `ls`; `wait` and `rerun` still answer for it from the event log.
+`clean` also removes run directories no job needs, and compiled steps unused for `--older-than`
+(else `keep_steps`).
 
 `marshal status --json` prints `units`, `unit_budget`, `mem`, `mem_budget`, `rss` (what the
 running jobs hold in RAM, in bytes), `machine_mem` (the machine's memory, 0 if unknown), `landing` (the landing

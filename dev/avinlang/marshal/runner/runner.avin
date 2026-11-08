@@ -98,7 +98,9 @@ stepBinary(source: string, home: string) -> Result[Compiled, string]
     val program = s"$dir/$base-${marshal.stepKey(version, text)}"
     val lock = program + ".lock"
     loop
-        if fs.isFile(program) && !fs.isDir(lock) then return Ok(Compiled(program, false))
+        if fs.isFile(program) && !fs.isDir(lock)
+            marshal.touchStep(program, time.now().epochMillis())
+            return Ok(Compiled(program, false))
         fs.createDir(lock) match
             Ok(_) -> break
             Err(_) ->
@@ -123,6 +125,7 @@ stepBinary(source: string, home: string) -> Result[Compiled, string]
         Err(_) -> false) && fs.rename(building, program).isOk()
     fs.remove(building)
     fs.removeDirAll(lock)
+    if ok then marshal.touchStep(program, time.now().epochMillis())
     if ok then Ok(Compiled(program, true)) else Err(s"cannot build $source:\n$said")
 
 // The program a step's first word names: `stock:<name>` is marshal's own step, the Avin package
