@@ -1,4 +1,4 @@
-package { name = "marshal", version = "0.1.0", description = "A job manager for building, testing and releasing: a unit and memory budget, a landing lane, learned deadlines" }
+package { name = "marshal", version = "0.2.0", description = "A job manager for building, testing and releasing: a unit and memory budget, a landing lane, learned deadlines" }
 
 dependencies {
   json { git = "github.com/avin-lang/avin", member = "packages/json", version = "0.0.11" }
