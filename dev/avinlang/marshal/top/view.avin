@@ -430,7 +430,7 @@ class App(val sock: string)
     // too long for a short pane ends in an ellipsis. Returns the rows used (none if the pane is too
     // small to also show a log row).
     private drawLogHeader(g: Grid, box: Rect, j: JobInfo) -> int
-        if box.h < 3 || box.w < 1 then return 0
+        if box.h < 4 || box.w < 1 then return 0
         val width = maxInt(box.w - LogLabel.charCount(), 1)
         val lines = wrapText(j.cmd.mkString(" "), width)
         // kind + rule + at least one log row leave this many for the command

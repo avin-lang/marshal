@@ -830,6 +830,6 @@ counts as a use. Avin 0.0.13 added `process.groupMembers`, `fs.metadata`/`size`/
   and the lines no longer join to the original).
 - **Proposed: the header never takes the whole pane.** One row is always kept for the log, so in a
   short pane the command shows as many lines as fit and the last ends in `…`; in a pane too small for
-  kind, rule and a log row (under three rows inside the box) there is no header. The rows the log
+  kind, a command row, rule and a log row (under four rows inside the box) there is no header. The rows the log
   has, and so how many lines top asks the daemon for, are the pane's rows less the header's.
   Alternative: always showing the whole command and letting the log vanish in a small terminal.
