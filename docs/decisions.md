@@ -856,7 +856,9 @@ four rows.
 
 ## Learned memory reservations and admission by measured memory (branch `mem-admission`)
 
-**Proposed.** The memory budget did nothing in practice: admission counted only `--mem`, nobody
+**Settled on the user's delegation 2026-11-08**; each says why and what else was weighed. Review
+with the user: the maximum of the last 10 peaks plus 10% rather than a percentile, and two measured
+runs as the least history. The memory budget did nothing in practice: admission counted only `--mem`, nobody
 passes it, and two builds peaking at 25–35G each were admitted together on a 64G machine.
 
 - **A job without `--mem` reserves its kind's learned peak: the most of its history key's last 10
