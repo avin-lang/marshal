@@ -250,7 +250,9 @@ Known gaps in Avin, left for it to fix rather than worked around here:
 - (Closed: `state.json` is now written aside and renamed, see "Atomic writes and the step-cache
   digest".)
 
-- **Proposed: the client sends its own executable path in the restart request.** The daemon
+- **The client sends its own executable path in the restart request** (branch
+  `restart-after-upgrade`; settled on the user's delegation 2026-11-08; review with the user: the
+  accepted risk of a client from another install). The daemon
   restarts into, in order, `$MARSHAL_RESTART_PROGRAM`, the request's optional `program`, then its
   own `process.executable()`, after checking the file exists and is executable (otherwise it says
   so, exits the request with an error and carries on, as for any failed restart). The client's path
