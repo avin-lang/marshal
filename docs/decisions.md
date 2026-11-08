@@ -904,3 +904,34 @@ passes it, and two builds peaking at 25–35G each were admitted together on a 6
 - **The meter in `top` draws reserved memory in cyan and what the running jobs hold beyond it in
   blue**, the text unchanged; with nothing held beyond the reservations it is drawn exactly as
   before. Alternatives: a second bar (costs a header row), RSS alone (hides what is promised).
+
+## Every action on a run reaches its step (branch `steps-pause-kill`)
+
+**Proposed.**
+
+- **The runner records the running step's process group in `runs/<job>/step.pgid`, and the daemon
+  signals and measures the job's group and that one.** A run-type job's step runs in a group of its
+  own (so the runner can stop it on a deadline), which left it outside every signal the daemon sent
+  the job's group: `pause` and `resume` did not reach it, `kill` and a deadline relied on the runner
+  forwarding TERM (and nothing reached a runner that was itself killed), the KILL after the grace
+  period went to the runner's group only, and the memory measurement and the deadline's stack sample
+  never saw the step. The file is written whole (`writeAtomic`) when the step starts and removed when
+  it ends; the daemon reads it at every signal and at every measurement. Alternatives: the runner
+  forwards TERM/STOP/CONT (a stopped runner cannot forward anything, KILL cannot be forwarded, and
+  the daemon would still not see the step's memory); the runner reports the pgid over the socket
+  (a new request and state in the daemon for what a file says as well); steps kept in the job's group
+  (the runner could no longer stop one step without itself, and a step's leftovers would be found by
+  the job's TERM at the end only).
+- **A file, not a job field.** The record lives under the run directory, so a daemon that took the
+  job over in `marshal restart` reads it as the old one did, and `state.json` needs nothing new.
+  Alternative: a `step_pgid` job field (needs the handover round trip and a message from the runner).
+- **The step group is read at every signal, KILL after the grace period included.** A step started
+  after a TERM is still reached by the KILL. The runner's own TERM handler stays: a TERM reaches the
+  step from both. A runner killed hard leaves its record, so the daemon's TERM when the job ends
+  (the leftovers rule) ends the step as well.
+- **Residual race.** A step the runner has started but not yet recorded when STOP arrives is not
+  stopped by that STOP (it is by the next signal, and by every TERM and KILL). Alternative: the
+  runner blocks signals around the start and the record (not expressible in avin's process API
+  today).
+- **The stack sample takes the busiest process of all the job's groups**, so a run's sample is of
+  the step's busy process, not of the idle runner.

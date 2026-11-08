@@ -173,7 +173,7 @@ private copyLines(reader: fs.File, end: bool)
 // errors to `log` and from there to standard output, and stops its group after `deadlineMs`. The
 // group the step runs in is in `current` while it runs, for a stop of the runner to stop it too.
 // What is left in the group when the program ends is stopped with it.
-execStep(argv: Vector[string], dir: string, env: Vector[(string, string)], log: string, deadlineMs: Option[long], current: Atomic[long]) -> StepEnd
+execStep(argv: Vector[string], dir: string, env: Vector[(string, string)], log: string, deadlineMs: Option[long], current: Atomic[long], home: string = "", job: string = "") -> StepEnd
     var command = Command(argv(0), argv.drop(1)*).inDir(dir).toFile(log).errorsToOutput().inNewGroup()
     for (name, value) in env do command = command.withEnv(name, value)
     val child = command.start() match
@@ -185,6 +185,8 @@ execStep(argv: Vector[string], dir: string, env: Vector[(string, string)], log: 
     val pgid = child.group().getOrElse(pid)
     child.detach()
     current.store(pgid)
+    // the daemon reaches the step through this file (stop, continue, kill, measure)
+    if home.nonEmpty() then marshal.recordStepGroup(home, job, pgid)
     val events = Channel[StepEvent](4)
     spawn(() -> events.send(StepExited(process.waitPid(pid))))
     for ms in deadlineMs
@@ -205,6 +207,7 @@ execStep(argv: Vector[string], dir: string, env: Vector[(string, string)], log: 
                     stopGroup(pgid)
             None -> threads.sleep(millis(50))
     current.store(0)
+    if home.nonEmpty() then marshal.forgetStepGroup(home, job)
     // what the step left running in its group goes with it
     process.signal(-pgid, signal.Terminate)
     reader.foreach(r ->
@@ -264,7 +267,7 @@ class Run(val t: JobType, val params: Map[string, Vector[string]], val jobDir: s
         val log = s"$work/$index-${s.name}.log"
         println(s"marshal: step ${s.name}: ${argv.mkString(" ")}" + (if dir == jobDir then "" else s" (in $dir)"))
         val started = time.monotonic()
-        val ran = execStep([program] ++ argv.drop(1), dir, env.toVector(), log, deadline, current)
+        val ran = execStep([program] ++ argv.drop(1), dir, env.toVector(), log, deadline, current, home, runDir.split("/").last())
         // a step ended by the runner's own stop is not followed: the run ends as stopped
         if stopping.load() then process.exit(143)
         val took = (time.monotonic() - started).micros / 1000

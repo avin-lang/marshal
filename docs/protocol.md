@@ -63,7 +63,8 @@ the job ends, then one of `{"how":"exit","code":C}`, `{"how":"signal","signal":S
 not exit 0. A reader takes a missing `after` as `[]` and a missing `attempt` as 1. `elapsed_ms` is
 the time since it was submitted for a waiting, queued or retrying job and the time run otherwise;
 `killed` says `marshal kill` or a forced stop ended it; `sample` names the stack sample of a job
-stopped at its deadline. `rss` is the bytes the job's whole process tree (its process group) held
+stopped at its deadline. `rss` is the bytes the job's whole process tree (its process group, and the
+group of the step a job type's run is executing) held
 in RAM at the daemon's last measurement, made every second, and 0 unless it runs; `peak_rss` the
 most any measurement found, kept once it ends; `started_at` when it started, in milliseconds since
 1970, 0 while it waits. The three are absent from what older daemons wrote and read as 0. In

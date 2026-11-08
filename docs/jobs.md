@@ -148,7 +148,10 @@ Besides its arguments, every step has in its environment the job's own (the call
 A step runs in a process group of its own. Its standard output and error go to its log in the
 pass's directory, and from there into the job's log, line by line as they come. What it leaves running
 in its group is stopped when it ends; a step past its deadline has its group sent TERM and, 5 seconds
-later, KILL; and killing the job stops the step that runs.
+later, KILL; and every action on the job reaches the step that runs and what it started: `kill`, the
+daemon's stop and a job deadline TERM it (and KILL it after the grace period), `pause` and `resume`
+stop and continue it, and the job's memory counts it. The runner records the step's group in
+`<home>/runs/<job>/step.pgid` while the step runs, for the daemon to read.
 
 ## A run
 

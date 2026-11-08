@@ -1,0 +1,257 @@
+module tests
+
+// A job type's run starts each step in a process group of its own, so the job's group holds only the
+// runner. Every action on the job (kill, pause, resume, a deadline, the daemon's stop, a restart) and
+// its measurement still reach the step and what the step started: the runner records the step's
+// group in `runs/<job>/step.pgid` and the daemon signals and measures it with the job's.
+import avin.fs
+import avin.process
+import avin.process.Command
+import avin.threads
+import avin.time
+import avin.time.millis
+import dev.avinlang.marshal
+
+// ---- the record of a step's group
+
+@test("a step's group is recorded whole, read back, and forgotten when the step ends")
+recordRoundTrip()
+    val home = fs.createTempDir("marshal-stepgroup-").ok().get()
+    fs.createDirAll(home + "/runs/7").ok().get()
+    assertEq(marshal.stepGroupOf(home, 7), 0)
+    marshal.recordStepGroup(home, "7", 4242)
+    assertEq(marshal.stepGroupOf(home, 7), 4242)
+    assertEq(fs.readText(marshal.stepGroupFile(home, 7)).ok().get(), "4242")
+    marshal.recordStepGroup(home, "7", 4343)
+    assertEq(marshal.stepGroupOf(home, 7), 4343)
+    marshal.forgetStepGroup(home, "7")
+    assertEq(marshal.stepGroupOf(home, 7), 0)
+    assert(fs.listDir(home + "/runs/7").ok().get().isEmpty(), "a temporary file was left")
+    // forgetting what is not recorded is nothing
+    marshal.forgetStepGroup(home, "7")
+    marshal.forgetStepGroup(home, "8")
+    fs.removeDirAll(home)
+
+@test("a record that is not a group is no step group")
+recordGarbage()
+    val home = fs.createTempDir("marshal-stepgroup-").ok().get()
+    fs.createDirAll(home + "/runs/3").ok().get()
+    for text in ["", "abc", "-5", "0", "1", "12x", "\n"]
+        fs.writeText(marshal.stepGroupFile(home, 3), text).ok().get()
+        assertEq(marshal.stepGroupOf(home, 3), 0)
+    fs.writeText(marshal.stepGroupFile(home, 3), "99\n").ok().get()
+    assertEq(marshal.stepGroupOf(home, 3), 99)
+    fs.removeDirAll(home)
+
+@test("a job's groups are its own and its step's, never the same one twice")
+groupsOfJob()
+    val home = fs.createTempDir("marshal-stepgroup-").ok().get()
+    fs.createDirAll(home + "/runs/5").ok().get()
+    assertEq(marshal.groupsOf(home, 5, 100), [100])
+    marshal.recordStepGroup(home, "5", 200)
+    assertEq(marshal.groupsOf(home, 5, 100), [100, 200])
+    marshal.recordStepGroup(home, "5", 100)
+    assertEq(marshal.groupsOf(home, 5, 100), [100])
+    // a job with no run directory at all (a plain command) has only its own
+    assertEq(marshal.groupsOf(home, 6, 100), [100])
+    fs.removeDirAll(home)
+
+@test("a job's memory counts its step's group as well as its own")
+residentCountsStep()
+    val home = fs.createTempDir("marshal-stepgroup-").ok().get()
+    fs.createDirAll(home + "/runs/5").ok().get()
+    val own = Command("sleep", "30").inNewGroup().start().ok().get()
+    val step = Command("sleep", "30").inNewGroup().start().ok().get()
+    val ownGroup = own.group().getOrElse(own.pid())
+    val stepGroup = step.group().getOrElse(step.pid())
+    val ownOnly = marshal.jobResident(home, 5, ownGroup)
+    assert(ownOnly > 0, s"$ownOnly")
+    marshal.recordStepGroup(home, "5", stepGroup)
+    val both = marshal.jobResident(home, 5, ownGroup)
+    assert(both > ownOnly, s"$both is not above $ownOnly")
+    process.signal(-ownGroup, 9)
+    process.signal(-stepGroup, 9)
+    own.waitFor()
+    step.waitFor()
+    fs.removeDirAll(home)
+
+// ---- through the daemon
+
+// The step: starts a child, and says its own pid and the child's.
+val holdScript: string = "echo $$ > shpid\nsleep 300 &\necho $! > sleeppid\nwait\n"
+
+// A project with the type `hold`, one step that runs `script`.
+holdProject(script: string) -> (string, string)
+    val (home, project) = projectWithType("hold", "{\"steps\": [{\"name\": \"hold\", \"run\": [\"sh\", \"hold.sh\"]}]}")
+    fs.writeText(project + "/hold.sh", script).ok().get()
+    (home, project)
+
+// Waits up to ten seconds for the step to have written its two pids; answers them.
+stepPids(project: string) -> (long, long)
+    val until = time.monotonic() + millis(10000)
+    while time.monotonic() < until
+        val a = fs.readText(project + "/shpid").getOrElse("").trim().toLongOption()
+        val b = fs.readText(project + "/sleeppid").getOrElse("").trim().toLongOption()
+        if a.isDefined() && b.isDefined() then return (a.get(), b.get())
+        threads.sleep(millis(50))
+    fail("the step did not start")
+
+// A submitted run of the type `hold`; its id, once its step runs.
+startHold(home: string, project: string, extra: Vector[string] = []) -> long
+    val id = m(home, (["run-type", "--submit", "--dir", project] ++ extra ++ ["hold"])*).out.trim().toLong()
+    stepPids(project)
+    id
+
+procState(pid: long) -> string = Command("ps", "-o", "stat=", "-p", pid.toString()).output().getOrElse("").trim()
+
+procAlive(pid: long) -> bool = process.signal(pid, 0).isOk() && !procState(pid).startsWith("Z") && procState(pid).nonEmpty()
+
+// Waits up to `ms` for every pid to be gone.
+waitGone(pids: Vector[long], ms: long) -> bool
+    val until = time.monotonic() + millis(ms)
+    while pids.exists(p -> procAlive(p)) && time.monotonic() < until do threads.sleep(millis(50))
+    !pids.exists(p -> procAlive(p))
+
+// Waits up to five seconds for every pid to be stopped (`stopped`), or none of them.
+waitStopped(pids: Vector[long], stopped: bool) -> bool
+    val until = time.monotonic() + millis(5000)
+    while !pids.forall(p -> procState(p).startsWith("T") == stopped) && time.monotonic() < until do threads.sleep(millis(50))
+    pids.forall(p -> procState(p).startsWith("T") == stopped)
+
+@test("kill ends a run's step and what the step started, within the grace period")
+killReachesStep()
+    val (home, project) = holdProject(holdScript)
+    val id = startHold(home, project)
+    val (sh, sleeper) = stepPids(project)
+    assert(procAlive(sh) && procAlive(sleeper))
+    val began = time.monotonic()
+    assertEq(m(home, "kill", id.toString()).code, 0)
+    assertEq(m(home, "wait", id.toString()).code, 143)
+    assert(waitGone([sh, sleeper], 6000), "a process of the step survived the kill")
+    assert((time.monotonic() - began).toMillis() < 8000)
+    assert(!fs.exists(marshal.stepGroupFile(home, id)) || !procAlive(marshal.stepGroupOf(home, id)))
+    cleanUp(home)
+
+@test("kill ends a step that ignores TERM, by the KILL after the grace period")
+killReachesStubbornStep()
+    val (home, project) = holdProject("trap '' TERM\necho $$ > shpid\n(trap '' TERM; exec sleep 300) &\necho $! > sleeppid\nwait\n")
+    val id = startHold(home, project)
+    val (sh, sleeper) = stepPids(project)
+    assertEq(m(home, "kill", id.toString()).code, 0)
+    m(home, "wait", id.toString())
+    assert(waitGone([sh, sleeper], 8000), "a process of the step that ignores TERM survived the KILL")
+    cleanUp(home)
+
+@test("pause stops a run's step and what it started, and resume continues them")
+pauseReachesStep()
+    val (home, project) = holdProject(holdScript)
+    val id = startHold(home, project)
+    val (sh, sleeper) = stepPids(project)
+    assertEq(m(home, "pause", id.toString()).code, 0)
+    assert(waitStopped([sh, sleeper], true), s"${procState(sh)} ${procState(sleeper)}")
+    assertEq(m(home, "resume", id.toString()).code, 0)
+    assert(waitStopped([sh, sleeper], false), s"${procState(sh)} ${procState(sleeper)}")
+    // paused again and killed: continued so it takes the TERM, and nothing survives
+    assertEq(m(home, "pause", id.toString()).code, 0)
+    assert(waitStopped([sh, sleeper], true))
+    assertEq(m(home, "kill", id.toString()).code, 0)
+    assertEq(m(home, "wait", id.toString()).code, 143)
+    assert(waitGone([sh, sleeper], 6000), "a paused step survived the kill")
+    cleanUp(home)
+
+@test("a deadline on a run ends its step and what the step started")
+deadlineReachesStep()
+    val (home, project) = holdProject(holdScript)
+    val id = startHold(home, project, ["--deadline", "2s"])
+    val (sh, sleeper) = stepPids(project)
+    assertEq(m(home, "wait", id.toString()).code, 124)
+    assert(waitGone([sh, sleeper], 6000), "a process of the step survived the deadline")
+    cleanUp(home)
+
+@test("the sample a deadline takes looks at the step's processes too")
+deadlineSampleSeesStep()
+    val (home, project) = holdProject("echo $$ > shpid\n/usr/bin/perl -e 'open(F, \">sleeppid\"); print F $$; close F; while (1) { $x++ }' &\nwait\n")
+    val id = startHold(home, project, ["--deadline", "2s"])
+    val (_, burner) = stepPids(project)
+    assertEq(m(home, "wait", id.toString()).code, 124)
+    val sample = fs.readText(s"$home/jobs/$id.sample.txt").getOrElse("")
+    assert(sample.contains("perl"), s"the sample is of another process: ${sample.take(300)}")
+    assert(waitGone([burner], 6000))
+    cleanUp(home)
+
+@test("a run's peak memory includes its step's process")
+peakIncludesStep()
+    val (home, project) = holdProject("/usr/bin/perl -e '$x = \"x\" x 200000000; sleep 4'\n")
+    val id = m(home, "run-type", "--submit", "--dir", project, "hold").out.trim().toLong()
+    assertEq(m(home, "wait", id.toString()).code, 0)
+    val ended = events(home).find(e -> e("id").asLong() == Some(id) && e("event").asString() == Some("finished")).get()
+    assert(ended("peak_rss").asLong().get() > 150000000, ended.render())
+    cleanUp(home)
+
+@test("kill reaches the step after the daemon restarted mid-step")
+killAfterRestart()
+    val (home, project) = holdProject(holdScript)
+    val id = startHold(home, project)
+    val (sh, sleeper) = stepPids(project)
+    assertEq(m(home, "restart").code, 0)
+    assert(procAlive(sh) && procAlive(sleeper))
+    assertEq(m(home, "kill", id.toString()).code, 0)
+    val w = m(home, "wait", id.toString())
+    assert(w.code == 143, s"${w.code}: ${w.out}")
+    assert(waitGone([sh, sleeper], 6000), "a process of the step survived the kill after a restart")
+    cleanUp(home)
+
+@test("pause and resume reach the step after the daemon restarted mid-step")
+pauseAfterRestart()
+    val (home, project) = holdProject(holdScript)
+    val id = startHold(home, project)
+    val (sh, sleeper) = stepPids(project)
+    assertEq(m(home, "restart").code, 0)
+    assertEq(m(home, "pause", id.toString()).code, 0)
+    assert(waitStopped([sh, sleeper], true))
+    assertEq(m(home, "restart").code, 0)
+    assert(waitStopped([sh, sleeper], true))
+    assertEq(m(home, "resume", id.toString()).code, 0)
+    assert(waitStopped([sh, sleeper], false))
+    assertEq(m(home, "kill", id.toString()).code, 0)
+    m(home, "wait", id.toString())
+    assert(waitGone([sh, sleeper], 6000))
+    cleanUp(home)
+
+@test("the daemon's stop --force ends a run's step too")
+stopReachesStep()
+    val (home, project) = holdProject(holdScript)
+    val id = startHold(home, project)
+    val (sh, sleeper) = stepPids(project)
+    assertEq(m(home, "stop", "--force").code, 0)
+    assert(waitGone([sh, sleeper], 8000), "a process of the step survived the daemon's stop")
+    cleanUp(home)
+
+@test("a runner killed hard leaves no step behind: the daemon ends the group that was recorded")
+runnerKilledHard()
+    val (home, project) = holdProject(holdScript)
+    val id = startHold(home, project)
+    val (sh, sleeper) = stepPids(project)
+    val runner = process.groupMembers(pgidOf(home, id)).getOrElse([])
+    assert(runner.nonEmpty())
+    for pid in runner do process.signal(pid, 9)
+    m(home, "wait", id.toString())
+    assert(waitGone([sh, sleeper], 8000), "a process of the step outlived its runner")
+    cleanUp(home)
+
+@test("a step that has ended leaves no record, and a job with no step is signalled as it always was")
+noRecordBetweenSteps()
+    val (home, project) = holdProject("echo done\n")
+    val id = m(home, "run-type", "--submit", "--dir", project, "hold").out.trim().toLong()
+    assertEq(m(home, "wait", id.toString()).code, 0)
+    assert(!fs.exists(marshal.stepGroupFile(home, id)))
+    // a plain job has no run directory, and pause, resume and kill are as before
+    val plain = submitted(home, "--", "sleep", "30")
+    startedGroup(home, plain)
+    assertEq(m(home, "pause", plain.toString()).code, 0)
+    assertEq(m(home, "resume", plain.toString()).code, 0)
+    assertEq(m(home, "kill", plain.toString()).code, 0)
+    assertEq(m(home, "wait", plain.toString()).code, 143)
+    refusedWith(m(home, "pause", plain.toString()), s"job $plain has already ended")
+    refusedWith(m(home, "kill", "99"), "no job 99")
+    cleanUp(home)

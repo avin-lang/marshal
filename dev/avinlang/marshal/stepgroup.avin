@@ -1,0 +1,41 @@
+module dev.avinlang.marshal
+
+// The process group of the step a job type's run is executing. The runner starts each step in a
+// group of its own, so the job's group (the runner's) does not hold it. The runner writes the step's
+// group to `<home>/runs/<job>/step.pgid` while the step runs and removes the file when it ends; the
+// daemon reads it to reach the step with every signal it sends the job, and to measure it. A file
+// (not a field of the job) so that a daemon that took the job over in a restart finds it as well.
+import avin.fs
+import avin.process
+
+// Where job `id`'s current step group is recorded.
+stepGroupFile(home: string, id: long) -> string = s"$home/runs/$id/step.pgid"
+
+// The group of the step job `id` is running; 0 where there is none or the file is not a group.
+stepGroupOf(home: string, id: long) -> long
+    val n = fs.readText(stepGroupFile(home, id)).getOrElse("").trim().toLongOption().getOrElse(0)
+    if n > 1 then n else 0
+
+// Records `pgid` as job `id`'s current step group, whole or not at all.
+recordStepGroup(home: string, id: string, pgid: long)
+    val file = s"$home/runs/$id/step.pgid"
+    writeAtomic(file, pgid.toString())
+    ()
+
+// Forgets job `id`'s step group: the step has ended.
+forgetStepGroup(home: string, id: string)
+    fs.remove(s"$home/runs/$id/step.pgid")
+    ()
+
+// Every process group of job `id`: the group `pgid` it was started in, and its step's group.
+groupsOf(home: string, id: long, pgid: long) -> Vector[long]
+    val step = stepGroupOf(home, id)
+    if step > 0 && step != pgid then [pgid, step] else [pgid]
+
+// The resident bytes of all of job `id`'s processes: those of its own group and of its step's.
+jobResident(home: string, id: long, pgid: long) -> long =
+    groupsOf(home, id, pgid).map(g -> groupResident(g)).sum()
+
+// Signals every group of job `id`; the errors of a group nobody is in are not an error.
+signalGroups(home: string, id: long, pgid: long, sig: int)
+    for g in groupsOf(home, id, pgid) do process.signal(-g, sig)

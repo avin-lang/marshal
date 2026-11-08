@@ -462,8 +462,8 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         job.killed = true
         if job.paused
             unpause(job)
-            process.signal(-job.pgid, signal.Continue)
-        terminate(job.pgid, None)
+            marshal.signalGroups(home, job.id, job.pgid, signal.Continue)
+        terminate(home, job.id, job.pgid, None)
 
     // Ends the job's pause on the daemon's books: the time paused is added up, and its clock runs.
     unpause(job: Job)
@@ -486,9 +486,12 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             Ok(j) -> j
             Err(e) -> return Failed(e)
         if job.paused == on then return Failed(if on then s"job $id is already paused" else s"job $id is not paused")
-        process.signal(-job.pgid, if on then signal.Stop else signal.Continue) match
+        val sig = if on then signal.Stop else signal.Continue
+        process.signal(-job.pgid, sig) match
             Err(e) -> return Failed(s"job $id's processes could not be signalled: ${e.message()}")
             Ok(_) -> ()
+        // the step a job type's run is executing is in a group of its own
+        marshal.signalGroups(home, id, job.pgid, sig)
         if on
             job.paused = true
             job.pausedAt = now()
@@ -656,8 +659,8 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         if job.state != "running" then return
         // Whatever the job left running in its group goes with it, and a paused group is continued
         // so the TERM reaches it.
-        process.signal(-job.pgid, signal.Terminate)
-        if job.paused then process.signal(-job.pgid, signal.Continue)
+        marshal.signalGroups(home, id, job.pgid, signal.Terminate)
+        if job.paused then marshal.signalGroups(home, id, job.pgid, signal.Continue)
         if job.timedOut
             attemptEnded(job, TimedOut, "timeout")
             return
@@ -681,7 +684,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         val sample = s"$home/jobs/$id.sample.txt"
         job.sample = Some(sample)
         eprintln(s"marshal: job $id passed its deadline of ${marshal.formatMillis(job.deadlineMs)}: sampling and stopping it")
-        terminate(job.pgid, Some(sample))
+        terminate(home, id, job.pgid, Some(sample))
 
     // Ends a job: records it, answers its waiters and lets the scheduler use what it held.
     conclude(job: Job, outcome: Outcome, event: string)
@@ -726,7 +729,8 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         measuring = true
         val groups = running.map(j -> (j.id, j.pgid)).toVector()
         val events = self.events
-        spawn(() -> events.send(Measured(groups.map(g -> (g.0, marshal.groupResident(g.1))))))
+        val home = self.home
+        spawn(() -> events.send(Measured(groups.map(g -> (g.0, marshal.jobResident(home, g.0, g.1))))))
 
     // What a measurement found, for the jobs still running.
     measured(sizes: Vector[(long, long)])
@@ -1129,7 +1133,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             val job = rebuilt(sj)
             running += job
             watch(job)
-            if job.killed || job.timedOut then terminate(job.pgid, None)
+            if job.killed || job.timedOut then terminate(home, job.id, job.pgid, None)
         // A waiting job waits again for those of its jobs that have not ended, which may be none by
         // now; a job waiting to retry waits out what is left of its delay.
         val waits = s.waiting.map(sj ->
@@ -1144,17 +1148,18 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
 
 // Stops a job's process group: samples its busiest process first when `sample` names a file, then
 // TERM, and KILL after the grace period. Runs on a thread of its own, so the daemon goes on.
-terminate(pgid: long, sample: Option[string])
+terminate(home: string, id: long, pgid: long, sample: Option[string])
     spawn(() ->
-        sample.foreach(file -> busiest(pgid).foreach(pid -> Command("sample", pid.toString(), "5", "1", "-file", file).output()))
-        process.signal(-pgid, signal.Terminate)
+        sample.foreach(file -> busiest(marshal.groupsOf(home, id, pgid)).foreach(pid -> Command("sample", pid.toString(), "5", "1", "-file", file).output()))
+        marshal.signalGroups(home, id, pgid, signal.Terminate)
         threads.sleep(millis(Grace))
-        process.signal(-pgid, signal.Kill)
+        // the step group is read again: a step may have started since the TERM
+        marshal.signalGroups(home, id, pgid, signal.Kill)
         ())
 
-// The process of the group that has used the most processor time.
-busiest(pgid: long) -> Option[long]
-    val pids = marshal.groupMembers(pgid)
+// The process of the groups that has used the most processor time.
+busiest(groups: Vector[long]) -> Option[long]
+    val pids = groups.flatMap(g -> marshal.groupMembers(g))
     if pids.isEmpty() then return None
     val table = Command("ps", "-o", "pid=,time=", "-p", pids.map(p -> p.toString()).mkString(",")).output().getOrElse("")
     var best: Option[(long, long)] = None
