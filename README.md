@@ -441,6 +441,10 @@ against its own budget. `marshal status` shows what take-slot holds.
   the table, following the end as it grows (PgUp, PgDn, Home, End scroll it while it is open, Esc
   closes it); `k` kills the selected job after `y`; `f` shows all jobs, the running, the queued or
   the ended ones; `h` the keys; `q` quits.
+- **Log pane header**: the pane opens with the job's `kind` and its whole `command` (wrapped to the
+  pane, never cut off, which the table has to do), bold labels and dim values, ruled off from the
+  log. The header stays put while the log scrolls under it; in a very short pane the command is
+  shortened with `…` so the log keeps a row.
 - **Idle**: the selected row's highlight hides after 5 seconds without a key, so a glance at
   progress is not a row to read around; `top` starts that way. The selected job is remembered while
   it is hidden. The first Up, Down, PgUp, PgDn, Home, End, Enter or `l` after that only shows the

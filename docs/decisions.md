@@ -813,3 +813,23 @@ counts as a use. Avin 0.0.13 added `process.groupMembers`, `fs.metadata`/`size`/
   1K; the reply and the JSON carry the exact number as `bytes`, which an older daemon's reply omits
   (read as 0). Why: the point of cleaning is the space. Alternatives: only a count of files (says
   nothing about space), `du` of the home before and after (counts what other processes wrote meanwhile).
+
+## The log pane's header (branch `top-log-header`)
+
+- **Proposed: the log pane in `marshal top` opens with a fixed header of the job's kind and its whole
+  command line.** Two labelled lines, `kind` and `command` (labels bold, values dim), then a rule across
+  the pane in the pane's colour; the log's lines scroll below the rule and the header stays where it
+  is. Why: the table elides both, and a job's log says nothing about what ran. The header's look (bold
+  labels, dim values, a rule) differs from a log line's plain text, so it cannot be mistaken for
+  something the job printed. Alternatives: the kind and command in the box's title (too long for a
+  title, and cut off), printing them as the log's first lines (would scroll away and look like output),
+  a separate pane (takes rows from the table).
+- **Proposed: a long command wraps by characters at the pane's width, not at spaces.** The wrapped
+  lines have no label and sit under the first, and joined they are the command exactly, which can be
+  copied back. Alternative: wrapping at spaces (reads better but a long word still needs a hard cut,
+  and the lines no longer join to the original).
+- **Proposed: the header never takes the whole pane.** One row is always kept for the log, so in a
+  short pane the command shows as many lines as fit and the last ends in `…`; in a pane too small for
+  kind, rule and a log row (under three rows inside the box) there is no header. The rows the log
+  has, and so how many lines top asks the daemon for, are the pane's rows less the header's.
+  Alternative: always showing the whole command and letting the log vanish in a small terminal.

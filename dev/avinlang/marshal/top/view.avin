@@ -408,11 +408,13 @@ class App(val sock: string)
         if r.h < 3
             logRows = 1
             return
-        val inside = r.inset(1)
-        logRows = inside.h
+        val whole = r.inset(1)
         g.fill(r.x, r.y, r.w, r.h, Style.plain())
         val follow = if logBack == 0 then "following" else s"$logBack lines back"
         g.box(r, Style.fg(Cyan), Rounded, s"job ${j.id} log, $follow; PgUp PgDn Home End scroll, Esc closes")
+        val used = drawLogHeader(g, whole, j)
+        val inside = Rect(whole.x, whole.y + used, whole.w, whole.h - used)
+        logRows = maxInt(inside.h, 1)
         val n = logLines.length()
         // the lines read are the last `logRows + logBack` of the log, or all of a shorter one
         val back = minInt(logBack, maxInt(n - inside.h, 0))
@@ -421,6 +423,30 @@ class App(val sock: string)
         if n == 0 then g.text(inside.x, inside.y, "(nothing in the log yet)", Style.fg(BrightBlack), inside)
         for (text, k) in logLines.slice(start, end).zipWithIndex()
             g.text(inside.x, inside.y + k, text, Style.plain(), inside)
+
+    // The fixed header of the log pane: the job's kind and its whole command line, wrapped to the
+    // pane, labels in bold and values dim, then a rule; the log scrolls below it, so none of this
+    // can be taken for a line the job printed. At least one row is left for the log, so a command
+    // too long for a short pane ends in an ellipsis. Returns the rows used (none if the pane is too
+    // small to also show a log row).
+    private drawLogHeader(g: Grid, box: Rect, j: JobInfo) -> int
+        if box.h < 3 || box.w < 1 then return 0
+        val width = maxInt(box.w - LogLabel.charCount(), 1)
+        val lines = wrapText(j.cmd.mkString(" "), width)
+        // kind + rule + at least one log row leave this many for the command
+        val room = maxInt(box.h - 3, 0)
+        val shownLines = if lines.length() <= room then lines else lines.take(room)
+        val clipped = lines.length() > shownLines.length()
+        g.text(box.x, box.y, "kind", Style.plain().with(Bold), box)
+        g.text(box.x + LogLabel.charCount(), box.y, j.kind, Style.fg(BrightBlack), box)
+        for (text, k) in shownLines.zipWithIndex()
+            val last = clipped && k == shownLines.length() - 1
+            val t = if last && text.charCount() > 1 then text.take(text.charCount() - 1) + "…" elif last then "…" else text
+            if k == 0 then g.text(box.x, box.y + 1, "command", Style.plain().with(Bold), box)
+            g.text(box.x + LogLabel.charCount(), box.y + 1 + k, t, Style.fg(BrightBlack), box)
+        val ruleY = box.y + 1 + maxInt(shownLines.length(), 1)
+        g.text(box.x, ruleY, (0 ..< box.w).map(i -> "─").mkString(""), Style.fg(Cyan), box)
+        ruleY - box.y + 1
 
     // With no snapshot: why, and what the keys do about it.
     private drawProblem(g: Grid)
@@ -461,6 +487,17 @@ class App(val sock: string)
 
 // How far back the log pane scrolls, in lines.
 val MaxBack: int = 10000
+
+// The width of the log pane header's labels (`kind`, `command`) and the space after them.
+val LogLabel: string = "command "
+
+// `text` cut into lines of `width` characters, exactly: no character is dropped or added, so
+// the lines joined are the text. An empty text is one empty line.
+wrapText(text: string, width: int) -> Vector[string]
+    val w = maxInt(width, 1)
+    if text.charCount() <= w then return [text]
+    val cs = text.chars().toVector()
+    (0 ..< (cs.length() + w - 1) / w).map(i -> cs.slice(i * w, minInt((i + 1) * w, cs.length())).mkString("")).toVector()
 
 // The keys the bottom line names, each with its word.
 val footerKeys: Vector[(string, string)] = [
