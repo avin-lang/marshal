@@ -740,7 +740,8 @@ with the user: hold applying to waiting jobs, and priority staying for queued jo
 
 ## Retention and `marshal clean` (branch `clean-retention`)
 
-**Proposed.** Review with the user: the defaults, and that `clean` drops events by the configured age.
+**Settled on the user's delegation 2026-11-07.** Review with the user: the defaults (30d logs, 1000 jobs,
+365d events, 30d steps), and that `clean` drops events by the configured age.
 
 - **Only jobs that ended for good are cleaned.** A job counts as ended when its last event in the
   log is an ending that is not a retried attempt, and the daemon holds it as not active. Running,
