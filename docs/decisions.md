@@ -940,7 +940,7 @@ step started but not yet recorded misses one STOP.
 
 ## Job labels (branch `job-labels`)
 
-**Proposed.** Review with the user: the 80-character limit and the LABEL column's cap in `top`.
+**Settled on the user's delegation 2026-11-08.** Review with the user: the 80-character limit and the LABEL column's cap in `top`.
 
 - **A label is free text of 1 to 80 characters, and a longer one is refused, not truncated.** The
   message says the length it had. Why: a silently cut label would no longer be the text the
