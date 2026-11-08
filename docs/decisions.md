@@ -789,15 +789,15 @@ with the user: hold applying to waiting jobs, and priority staying for queued jo
 counts as a use. Avin 0.0.13 added `process.groupMembers`, `fs.metadata`/`size`/`modified` and
 `fs.setModified`; each replaces something marshal did without them.
 
-- **Proposed: a job's process group is listed by `process.groupMembers(pgid)`, not `pgrep -g`.** An
+- **A job's process group is listed by `process.groupMembers(pgid)`, not `pgrep -g`.** An
   `Err` (or a `pgid` of zero or less) reads as no members, as `pgrep` failing did; a group nobody is
   in is `Ok([])`. Why: no subprocess per second per job, and no dependence on `pgrep`. Alternative:
   keeping `pgrep` (a process spawn for each measurement).
-- **Proposed: the `ps -o pid=,time=` query that picks the busiest process for the deadline's stack
+- **The `ps -o pid=,time=` query that picks the busiest process for the deadline's stack
   sample stays.** No avin call gives a process's processor time; the call is only made at a deadline.
   The test helper that reads each process's state letters (`ps -o stat=`, to see `T` for stopped)
   stays for the same reason. Revisit when avin can report either.
-- **Proposed (replaces "Compiled steps ... `<step>.used`" above): a compiled step's use is the
+- **(Replaces "Compiled steps ... `<step>.used`" above.) A compiled step's use is the
   modification time of its executable.** Compiling sets it (the file is new); every later use calls
   `fs.setModified(program, now)`; a clean ages a step by `fs.modified`. No sidecar file is written or
   read. A `.used` file left by an older marshal is removed by the next clean (and the daemon's
@@ -806,7 +806,7 @@ counts as a use. Avin 0.0.13 added `process.groupMembers`, `fs.metadata`/`size`/
   hot path of every run, and nothing to keep in step with the executable. Alternatives: access
   time (unreliable on `noatime` mounts, and reading a file would change it), keeping the sidecar.
   Cost: anything else that rewrites the executable's mtime (a backup restore, `touch`) looks like a use.
-- **Proposed: `clean` reports the bytes it freed, and `--dry-run` the bytes it would free.** The
+- **`clean` reports the bytes it freed, and `--dry-run` the bytes it would free.** The
   sum of `fs.size` of what goes: job logs and samples, every file under a run directory, a step and
   its build log, plus how much the event log shrank when events were trimmed. Printed as
   `marshal: freed 1.5M` (or `would free`), `roundSize`'s units like the memory columns, `N bytes` under
@@ -816,7 +816,11 @@ counts as a use. Avin 0.0.13 added `process.groupMembers`, `fs.metadata`/`size`/
 
 ## The log pane's header (branch `top-log-header`)
 
-- **Proposed: the log pane in `marshal top` opens with a fixed header of the job's kind and its whole
+**Settled on the user's delegation 2026-11-08**; each says why and what else was weighed. Review
+with the user: character wrapping rather than word wrapping, and the header dropped in a pane under
+four rows.
+
+- **The log pane in `marshal top` opens with a fixed header of the job's kind and its whole
   command line.** Two labelled lines, `kind` and `command` (labels bold, values dim), then a rule across
   the pane in the pane's colour; the log's lines scroll below the rule and the header stays where it
   is. Why: the table elides both, and a job's log says nothing about what ran. The header's look (bold
@@ -824,11 +828,11 @@ counts as a use. Avin 0.0.13 added `process.groupMembers`, `fs.metadata`/`size`/
   something the job printed. Alternatives: the kind and command in the box's title (too long for a
   title, and cut off), printing them as the log's first lines (would scroll away and look like output),
   a separate pane (takes rows from the table).
-- **Proposed: a long command wraps by characters at the pane's width, not at spaces.** The wrapped
+- **A long command wraps by characters at the pane's width, not at spaces.** The wrapped
   lines have no label and sit under the first, and joined they are the command exactly, which can be
   copied back. Alternative: wrapping at spaces (reads better but a long word still needs a hard cut,
   and the lines no longer join to the original).
-- **Proposed: the header never takes the whole pane.** One row is always kept for the log, so in a
+- **The header never takes the whole pane.** One row is always kept for the log, so in a
   short pane the command shows as many lines as fit and the last ends in `…`; in a pane too small for
   kind, a command row, rule and a log row (under four rows inside the box) there is no header. The rows the log
   has, and so how many lines top asks the daemon for, are the pane's rows less the header's.
