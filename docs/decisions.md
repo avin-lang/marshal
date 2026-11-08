@@ -785,7 +785,8 @@ with the user: hold applying to waiting jobs, and priority staying for queued jo
 
 ## Avin 0.0.13 calls replace the workarounds (branch `use-avin-0013`)
 
-**Proposed.** Avin 0.0.13 added `process.groupMembers`, `fs.metadata`/`size`/`modified` and
+**Settled on the user's delegation 2026-11-07.** Review with the user: a `touch` or restore of a step
+counts as a use. Avin 0.0.13 added `process.groupMembers`, `fs.metadata`/`size`/`modified` and
 `fs.setModified`; each replaces something marshal did without them.
 
 - **Proposed: a job's process group is listed by `process.groupMembers(pgid)`, not `pgrep -g`.** An
