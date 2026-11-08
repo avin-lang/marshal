@@ -342,14 +342,16 @@ ends: nothing polls.
   what runs and cancels what waits. `stop --wait` is refused while the queue or a queued job is
   held, since what waits would never end.
 - **Restarting.** `marshal restart` upgrades the daemon without stopping anything: after `brew
-  upgrade marshal`, it makes the running daemon the program now installed at its own path. The
+  upgrade marshal`, it makes the running daemon the program the command was run from, which is
+  the one now installed, even when the daemon's own file was removed by the upgrade. The
   daemon writes its jobs, queue and take-slot ticket to `state.json` in marshal's home and replaces
   its program in place, so it keeps its process, and its jobs stay its children; the new program
   reads the file and carries on. A running job keeps running and is answered with its own exit
   status, its deadline keeps counting from when it started, a job being killed is still killed,
   and the queue starts in the same order. A command whose connection closes during the restart
   (a `wait`, say) connects again for up to 30 seconds and asks again, so it never notices. When
-  the new program cannot run, the daemon goes on as it was, and `restart` says why and exits 2.
+  the new program is missing or cannot run, the daemon goes on as it was, and `restart` says why and
+  exits 2. `$MARSHAL_RESTART_PROGRAM`, in the daemon's environment, names another program.
   `restart` prints the version before and after; `version` prints this marshal's and the
   daemon's, and neither starts a daemon.
 

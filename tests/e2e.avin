@@ -6,6 +6,7 @@ module tests
 // executable and runs these with the unit tests.
 import avin.collections.mutable.{Set as MutableSet}
 import avin.fs
+import avin.net.UnixStream
 import avin.process
 import avin.process.{Command, ExitStatus}
 import avin.threads
@@ -35,9 +36,12 @@ newHome(config: string = "") -> string
 m(home: string, args: string*) -> Ran = mWith(home, [], args*)
 
 // `m` with `env` added to the command's environment, and so to the daemon's when it starts one.
-mWith(home: string, env: Vector[(string, string)], args: string*) -> Ran
+mWith(home: string, env: Vector[(string, string)], args: string*) -> Ran = mFrom(bin(), home, env, args*)
+
+// `mWith` run from the executable `program` instead of the one under test.
+mFrom(program: string, home: string, env: Vector[(string, string)], args: string*) -> Ran
     val out = s"$home/cli.${outputs.add(1)}.out"
-    var command = homed(Command(bin(), args*), home)
+    var command = homed(Command(program, args*), home)
     for (k, v) in env do command = command.withEnv(k, v)
     val status = command.toFile(out).errorsToOutput().run().ok().get()
     val code = status match
@@ -534,8 +538,7 @@ restartExecFails()
     val before = daemonPid(home)
     val r = m(home, "restart")
     assertEq(r.code, 2)
-    assert(r.out.contains("the daemon did not restart: cannot run " + home + "/no-such-marshal"), r.out)
-    assert(daemonLog(home).contains("restart failed"), daemonLog(home))
+    assert(r.out.contains("the daemon did not restart: " + home + "/no-such-marshal is not a file"), r.out)
     assertEq(daemonPid(home), before)
     assert(groupAlive(pgid), "the job did not outlive the failed restart")
     assert(!fs.exists(home + "/state.json"))
@@ -548,6 +551,124 @@ restartExecFails()
     assertEq(m(home, "kill", id.toString()).code, 0)
     assertEq(m(home, "wait", id.toString()).code, 143)
     assertEq(eventsOf(home, id), ["submitted", "started", "killed"])
+    cleanUp(home)
+
+// A copy of the executable under test, in a directory of its own, as an installed version is.
+copyOfBin(home: string, name: string) -> string
+    val dir = home + "/" + name
+    fs.createDirAll(dir).ok().get()
+    val copy = dir + "/marshal"
+    assertEq(Command("cp", bin(), copy).run().ok(), Some(ExitStatus.Exited(0)))
+    copy
+
+@test("a restart runs the marshal the command was run from, even when the daemon's own program is gone")
+restartAfterUpgrade()
+    val home = newHome()
+    val old = copyOfBin(home, "cellar-old")
+    val start = mFrom(old, home, [], "submit", "--", "sh", "-c", "sleep 1.5; exit 7")
+    assertEq(start.code, 0)
+    val id = start.out.trim().toLong()
+    threads.sleep(millis(200))
+    val pgid = pgidOf(home, id)
+    val before = daemonPid(home)
+    // the upgrade removes the directory the daemon was started from
+    fs.removeDirAll(home + "/cellar-old").ok().get()
+    val r = m(home, "restart")
+    assertEq(r.code, 0)
+    assert(r.out.contains(s"daemon $before restarted"), r.out)
+    assert(daemonLog(home).contains(s"restarting as ${bin()} with 1 running"), daemonLog(home))
+    assertEq(daemonPid(home), before)
+    assert(m(home, "version").out.contains(s"daemon $before: marshal"), "the new daemon does not answer")
+    assert(groupAlive(pgid), "the job did not outlive the restart")
+    assertEq(m(home, "wait", id.toString()).code, 7)
+    cleanUp(home)
+
+@test("a restart sent from a client that names a program of its own runs that program, not the daemon's")
+restartRunsClientsProgram()
+    val home = newHome()
+    val start = m(home, "submit", "--", "sleep", "30")
+    assertEq(start.code, 0)
+    val id = start.out.trim().toLong()
+    val before = daemonPid(home)
+    val client = copyOfBin(home, "cellar-new")
+    val r = mFrom(client, home, [], "restart")
+    assertEq(r.code, 0)
+    // the client names itself by the resolved path, so a temporary directory under a link reads differently
+    assert(daemonLog(home).contains("/cellar-new/marshal with 1 running"), daemonLog(home))
+    assert(!daemonLog(home).contains(s"restarting as ${bin()} with"), daemonLog(home))
+    assertEq(daemonPid(home), before)
+    assertEq(m(home, "kill", id.toString()).code, 0)
+    cleanUp(home)
+
+@test("a restart from a client run through a symbolic link runs the file the link names")
+restartThroughSymlink()
+    val home = newHome()
+    assertEq(m(home, "status").code, 0)
+    val before = daemonPid(home)
+    val real = copyOfBin(home, "cellar-real")
+    fs.createDirAll(home + "/links").ok().get()
+    val link = home + "/links/marshal"
+    assertEq(Command("ln", "-s", real, link).run().ok(), Some(ExitStatus.Exited(0)))
+    assertEq(mFrom(link, home, [], "restart").code, 0)
+    val log = daemonLog(home)
+    assert(log.contains("/cellar-real/marshal with"), log)
+    assert(!log.contains(s"restarting as $link with"), log)
+    assertEq(daemonPid(home), before)
+    cleanUp(home)
+
+// Sends `request` to the home's daemon as it is, and answers the one line it replies with; `None`
+// when the connection closes without a reply.
+rawRequest(home: string, request: string) -> Option[string]
+    val conn = UnixStream.connect(home + "/sock").ok().get()
+    conn.writeText(request + "\n").ok().get()
+    val reply = conn.readLine().ok().flatten()
+    conn.close()
+    reply
+
+@test("a restart naming a program that is missing, not a file or not executable fails cleanly and the daemon goes on")
+restartClientProgramUnusable()
+    val home = newHome()
+    val id = submitted(home, "--", "sleep", "30")
+    val before = daemonPid(home)
+    val plain = home + "/plain-file"
+    fs.writeText(plain, "not a program\n").ok().get()
+    val missing = home + "/gone/marshal"
+    val cases = [(missing, "is not a file"), (home, "is not a file"), (plain, "cannot be run")]
+    for (program, why) in cases
+        val reply = rawRequest(home, Json.obj(("op", Json.str("restart")), ("program", Json.str(program))).render()).get()
+        assert(reply.contains("the daemon did not restart: " + program + " " + why), reply)
+        assertEq(daemonPid(home), before)
+        assert(!fs.exists(home + "/state.json"))
+        assert(!fs.exists(home + "/starting"))
+    assertEq(m(home, "run", "--", "sh", "-c", "exit 5").code, 5)
+    assert(m(home, "ls").out.contains("running"))
+    assertEq(m(home, "kill", id.toString()).code, 0)
+    cleanUp(home)
+
+@test("a restart request without a program, as an older client sends it, runs the daemon's own program")
+restartOldClientRequest()
+    val home = newHome()
+    val id = submitted(home, "--", "sleep", "30")
+    val before = daemonPid(home)
+    val reply = rawRequest(home, "{\"op\":\"restart\"}")
+    assertEq(reply, None)
+    assertEq(m(home, "version").code, 0)
+    assert(m(home, "version").out.contains(s"daemon $before: marshal"))
+    assert(daemonLog(home).contains(s"restarting as ${bin()} with 1 running"), daemonLog(home))
+    assertEq(m(home, "kill", id.toString()).code, 0)
+    cleanUp(home)
+
+@test("$MARSHAL_RESTART_PROGRAM wins over the program the client names")
+restartVariableWinsOverClient()
+    val home = newHome()
+    val newer = newerMarshal(home, "9.9.9")
+    val start = mWith(home, [("MARSHAL_RESTART_PROGRAM", newer)], "submit", "--", "sleep", "30")
+    assertEq(start.code, 0)
+    val client = copyOfBin(home, "cellar-new")
+    val r = mFrom(client, home, [], "restart")
+    assertEq(r.code, 0)
+    assert(r.out.contains("now 9.9.9"), r.out)
+    assert(daemonLog(home).contains(s"restarting as $newer with"), daemonLog(home))
     cleanUp(home)
 
 @test("version names this marshal and the daemon's, and a restart into a newer marshal changes the daemon's")

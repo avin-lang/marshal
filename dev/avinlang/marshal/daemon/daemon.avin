@@ -229,7 +229,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             Request.Snapshot -> give(reply, Viewed(overview()))
             Stop(force, drain) -> stop(force, drain, Some(reply))
             Request.Hello -> give(reply, Hi(reportedVersion(), process.pid()))
-            Request.Restart -> restart(reply)
+            Request.Restart(program) -> restart(reply, program)
             Rerun(id) -> give(reply, rerun(id))
             Clean(rule) -> give(reply, Cleaned(cleanNow(rule)))
             Request.PauseQueue -> give(reply, holdQueue(true))
@@ -951,20 +951,29 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
                 None -> break
         eprintln(s"marshal: daemon ${process.pid()} stopped")
 
-    // Replaces the daemon with the program at its own path, which takes the jobs over. Before it
+    // Replaces the daemon with a program, which takes the jobs over: `$MARSHAL_RESTART_PROGRAM` when
+    // set, else the program the client was run from (`client`; an older client sends none), else the
+    // daemon's own. A program that is not there or cannot be run is refused before anything is
+    // touched, and the daemon goes on. Before it
     // goes, every running job is known to run or has ended and been recorded, every reply given is
     // written, and the state is in `<home>/state.json`; requests that arrive meanwhile are not
     // carried out, so their connections close unanswered and their clients ask the new image. When
     // the program cannot be run, the daemon goes on as it was and says why.
-    restart(reply: Channel[Reply])
+    restart(reply: Channel[Reply], client: Option[string])
         if stopping || draining
             give(reply, Failed("the daemon is stopping"))
             return
-        val program = process.env("MARSHAL_RESTART_PROGRAM").orElse(process.executable()) match
+        val program = process.env("MARSHAL_RESTART_PROGRAM").orElse(client).orElse(process.executable()) match
             Some(p) -> p
             None ->
                 give(reply, Failed("the daemon cannot tell where its program is"))
                 return
+        if !fs.isFile(program)
+            give(reply, Failed(s"the daemon did not restart: $program is not a file"))
+            return
+        if Command("test", "-x", program).run().ok() != Some(ExitStatus.Exited(0))
+            give(reply, Failed(s"the daemon did not restart: $program cannot be run"))
+            return
         restarting = true
         val held = Buffer[(Request, Channel[Reply])]()
         val file = home + "/state.json"

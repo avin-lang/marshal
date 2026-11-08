@@ -577,7 +577,7 @@ restart() -> int
     val (old, pid) = hello(conn) match
         Ok(h) -> h
         Err(e) -> return complain(e)
-    exchange(conn, Request.Restart) match
+    exchange(conn, Request.Restart(process.executable())) match
         Ok(Some(Failed(e))) -> return complain(s"marshal: $e")
         Ok(Some(other)) -> return complain(s"marshal: unexpected reply $other")
         Ok(None) -> ()

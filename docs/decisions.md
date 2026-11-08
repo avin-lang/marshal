@@ -219,10 +219,9 @@ that file, built to `.new` and moved over it), and the test-only `$MARSHAL_TEST_
   load, so the file means the same to any reader. A clock step during the instant of a restart
   shifts deadlines by that step. Alternative: monotonic times (the process keeps its clock across
   exec, but a value in a file would then mean nothing outside it).
-- **The program is the one at the daemon's own path** (`process.executable()`), so `brew upgrade`
-  followed by `marshal restart` runs the new one; `$MARSHAL_RESTART_PROGRAM`, in the daemon's
-  environment, names another (the tests use it). Alternative: the path of the `restart` command's
-  own program, sent in the request (a client from another install could swap the daemon for it).
+- **The program is the one the `restart` command was run from** (superseded the daemon's own path;
+  see the end of this section). `$MARSHAL_RESTART_PROGRAM`, in the daemon's environment, names
+  another (the tests use it).
 - **While it hands over, the daemon carries out nothing new**: it starts no job, writes every reply
   it has given, records every job that has ended, and holds requests unanswered; their connections
   close at exec and their clients connect again for up to 30 seconds and ask again. Why: a client
@@ -250,6 +249,21 @@ Known gaps in Avin, left for it to fix rather than worked around here:
   old image, so the new one cannot learn how it ended and records it `lost` (exit 125).
 - (Closed: `state.json` is now written aside and renamed, see "Atomic writes and the step-cache
   digest".)
+
+- **Proposed: the client sends its own executable path in the restart request.** The daemon
+  restarts into, in order, `$MARSHAL_RESTART_PROGRAM`, the request's optional `program`, then its
+  own `process.executable()`, after checking the file exists and is executable (otherwise it says
+  so, exits the request with an error and carries on, as for any failed restart). The client's path
+  is `process.executable()`, which resolves symbolic links, so under Homebrew it names the current
+  Cellar directory. Why: after `brew upgrade` the daemon's own file is gone (cleanup removes the old
+  Cellar directory) or is the old version, so restarting into it fails or defeats the upgrade; the
+  command the user just ran is by definition the marshal installed now. An older client omits the
+  field and keeps the old behaviour. Alternatives: resolving, in the daemon, the symlink the daemon
+  was started as (`/opt/homebrew/bin/marshal`; needs the daemon to know that path, which it does not
+  once started through the resolved one, and says nothing where there is no link); a fixed
+  well-known install path (names a layout marshal must not assume). Risk accepted: a client from
+  another install swaps the daemon for its own program; whoever can reach the socket can already stop
+  the daemon and run jobs as its owner.
 
 ## Accounting: `history` and `stats` (branch `history`)
 

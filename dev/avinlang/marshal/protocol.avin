@@ -40,8 +40,9 @@ data Request
     Stop(force: bool, drain: bool)
     // Which marshal the daemon is and its process.
     Hello
-    // The daemon replaces itself with the program installed at its own path, keeping its jobs.
-    Restart
+    // The daemon replaces itself with a program, keeping its jobs: the one the command line was run
+    // from when it sends its path, else the one at the daemon's own path.
+    Restart(program: Option[string])
     // Submits again a job that has ended, as it was submitted.
     Rerun(id: long)
     // Holds the queue, both lanes: running jobs go on and nothing new starts.
@@ -211,7 +212,7 @@ encodeRequest(Status) = Json.obj(("op", Json.str("status")))
 encodeRequest(Snapshot) = Json.obj(("op", Json.str("snapshot")))
 encodeRequest(Stop(force, drain)) = Json.obj(("op", Json.str("stop")), ("force", Json.Bool(force)), ("wait", Json.Bool(drain)))
 encodeRequest(Hello) = Json.obj(("op", Json.str("version")))
-encodeRequest(Restart) = Json.obj(("op", Json.str("restart")))
+encodeRequest(Restart(program)) = Json.Obj([("op", Json.str("restart"))] ++ program.map(p -> [("program", Json.str(p))]).getOrElse([]))
 encodeRequest(Rerun(id)) = Json.obj(("op", Json.str("rerun")), ("id", Json.num(id)))
 encodeRequest(Clean(rule)) = Json.obj(
     ("op", Json.str("clean")),
@@ -333,7 +334,7 @@ decodeRequest(text: string) -> Result[Request, string]
         "snapshot" -> Ok(Snapshot)
         "stop" -> Ok(Stop(optional(j, "force", v -> v.asBool(), "a bool", false)?, optional(j, "wait", v -> v.asBool(), "a bool", false)?))
         "version" -> Ok(Hello)
-        "restart" -> Ok(Restart)
+        "restart" -> Ok(Restart(if j.has("program") then Some(field(j, "program", v -> v.asString(), "a string")?) else None))
         "rerun" -> Ok(Rerun(field(j, "id", v -> v.asLong(), "a whole number")?))
         "pause" -> if j.has("id") then Ok(PauseJob(field(j, "id", v -> v.asLong(), "a whole number")?)) else Ok(PauseQueue)
         "resume" -> if j.has("id") then Ok(ResumeJob(field(j, "id", v -> v.asLong(), "a whole number")?)) else Ok(ResumeQueue)

@@ -224,5 +224,5 @@ watchReplies()
 @test("only a watch is answered with a stream")
 watchingIsWatch()
     assert(marshal.watching(Request.Watch("idle", Condition.IsIdle, Mode.Once, None, None)))
-    for r in [Request.Wait(1), Request.List, Request.Status, Request.Hello, Request.Restart, Request.Kill(1)] do
+    for r in [Request.Wait(1), Request.List, Request.Status, Request.Hello, Request.Restart(None), Request.Kill(1)] do
         assert(!marshal.watching(r))
