@@ -256,7 +256,10 @@ submissions()
     val env = [("A", "1")]
     assertEq(cli.parseSubmission(["--", "sysl", "test", "x"], "/w", env), Ok(marshal.JobSpec("test", 4, 0, false, "/w", None, ["sysl", "test", "x"], env)))
     assertEq(cli.parseSubmission(["make"], "/w", env), Ok(marshal.JobSpec("build", 1, 0, false, "/w", None, ["make"], env)))
-    assertEq(cli.parseSubmission(["--kind", "docs", "--units", "2", "--mem", "1G", "--landing", "--dir", "sub", "--deadline", "90s", "--", "--x"], "/w", env), Ok(marshal.JobSpec("docs", 2, G, true, "/w/sub", Some(long(90000)), ["--x"], env)))
+    assertEq(cli.parseSubmission(["--kind", "docs", "--units", "2", "--mem", "1G", "--landing", "--dir", "sub", "--deadline", "90s", "--", "--x"], "/w", env), Ok(marshal.JobSpec("docs", 2, G, true, "/w/sub", Some(long(90000)), ["--x"], env, memoryGiven = true)))
+    // without --mem the memory is not given, so the kind's learned peak is reserved; --mem 0 is given
+    assertEq(cli.parseSubmission(["make"], "/w", env).map(s -> s.memoryGiven), Ok(false))
+    assertEq(cli.parseSubmission(["--mem", "0", "make"], "/w", env).map(s -> (s.memory, s.memoryGiven)), Ok((long(0), true)))
     assertEq(cli.parseSubmission(["--dir", "/abs", "--", "a"], "/w", env).map(s -> s.dir), Ok("/abs"))
     for bad in [[], ["--"], ["--units"], ["--units", "x", "a"], ["--mem", "1.5G", "a"], ["--deadline", "0", "a"], ["--kind", "", "a"], ["--frob", "1", "a"]]
         assert(cli.parseSubmission(bad, "/w", env).isErr(), s"$bad")
