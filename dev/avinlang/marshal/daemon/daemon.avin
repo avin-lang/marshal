@@ -85,6 +85,10 @@ val TickMs: long = 3000
 // `$MARSHAL_TEST_SWEEP_MS` names another, so that the tests need not wait for one.
 sweepInterval() -> long = process.env("MARSHAL_TEST_SWEEP_MS").flatMap(t -> t.toLongOption()).filter(n -> n >= 1).getOrElse(3600000)
 
+// The process `$MARSHAL_TEST_WATCH_PID` names, if it does. A daemon the tests start stops itself,
+// as a TERM would, once that process is gone, so a test run that is killed leaves none behind.
+watchedOwner() -> Option[long] = process.env("MARSHAL_TEST_WATCH_PID").flatMap(t -> t.toLongOption()).filter(n -> n >= 1)
+
 // How often the running jobs' memory is measured, in milliseconds.
 val SampleMs: long = 1000
 
@@ -1277,6 +1281,14 @@ run(home: string, resume: Option[string] = None) -> int
             threads.sleep(millis(sweepInterval()))
             events.send(Sweep)
         ())
+    for owner in watchedOwner()
+        spawn(() ->
+            loop
+                threads.sleep(millis(200))
+                if process.signal(owner, 0).isErr()
+                    events.send(Terminate)
+                    break
+            ())
     spawn(() ->
         loop
             threads.sleep(millis(SampleMs))

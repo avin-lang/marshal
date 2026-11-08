@@ -26,7 +26,7 @@ data Background(pid: long, file: string)
 
 startM(home: string, env: Vector[(string, string)], args: string*) -> Background
     val file = s"$home/bg.${outputs.add(1)}.out"
-    var command = Command(bin(), args*).withEnv("MARSHAL_HOME", home).withEnv("MARSHAL_TAKE_SLOT_DIR", slots(home)).toFile(file).errorsToOutput()
+    var command = homed(Command(bin(), args*), home).toFile(file).errorsToOutput()
     for (k, v) in env do command = command.withEnv(k, v)
     val child = command.start().ok().get()
     val code = Atomic(-1)

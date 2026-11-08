@@ -27,6 +27,7 @@ bin() -> string = process.env("MARSHAL_BIN").getOrElse(fail("MARSHAL_BIN names t
 newHome(config: string = "") -> string
     val home = fs.createTempDir("marshal-").ok().get()
     fs.createDir(slots(home)).ok().get()
+    register(home, process.pid())
     if config.nonEmpty() then fs.writeText(home + "/config.json", config).ok().get()
     home
 
@@ -36,7 +37,7 @@ m(home: string, args: string*) -> Ran = mWith(home, [], args*)
 // `m` with `env` added to the command's environment, and so to the daemon's when it starts one.
 mWith(home: string, env: Vector[(string, string)], args: string*) -> Ran
     val out = s"$home/cli.${outputs.add(1)}.out"
-    var command = Command(bin(), args*).withEnv("MARSHAL_HOME", home).withEnv("MARSHAL_TAKE_SLOT_DIR", slots(home))
+    var command = homed(Command(bin(), args*), home)
     for (k, v) in env do command = command.withEnv(k, v)
     val status = command.toFile(out).errorsToOutput().run().ok().get()
     val code = status match
@@ -48,10 +49,54 @@ mWith(home: string, env: Vector[(string, string)], args: string*) -> Ran
 // The take-slot directory the home's daemon shares.
 slots(home: string) -> string = home + "/take-slot"
 
+// `command` run against `home`, with its own take-slot directory. A daemon it starts watches this
+// test process and stops itself when that is gone, however it went.
+homed(command: Command, home: string) -> Command =
+    command.withEnv("MARSHAL_HOME", home).withEnv("MARSHAL_TAKE_SLOT_DIR", slots(home)).withEnv("MARSHAL_TEST_WATCH_PID", process.pid().toString())
+
+// Where the homes of a test run are recorded, next to the executable under test, so that a
+// teardown, or the script that ran the tests, can find the daemons a dead test left.
+registry() -> string = bin().split("/").dropRight(1).mkString("/") + "/homes"
+
+// Records `home` as owned by process `owner`: one file in the registry, naming the home and then
+// the owner.
+register(home: string, owner: long)
+    fs.createDirAll(registry()).ok().get()
+    fs.writeText(entryOf(home), s"$home\n$owner\n").ok().get()
+
+entryOf(home: string) -> string = registry() + "/" + home.split("/").last()
+
 // Stops the home's daemon, killing what it runs, and removes the home.
 cleanUp(home: string)
     m(home, "stop", "--force")
     fs.removeDirAll(home)
+    fs.remove(entryOf(home))
+
+// Ends the daemon of every registered home whose owner process is gone, and removes the home. A
+// test that failed or was stopped never reached its `cleanUp`; this is what does it for the test.
+// It returns how many homes it cleaned.
+reapOrphans() -> int
+    var reaped = 0
+    if process.env("MARSHAL_BIN").isEmpty() then return 0
+    for name in fs.listDir(registry()).getOrElse([])
+        val entry = registry() + "/" + name
+        val lines = fs.readText(entry).getOrElse("").lines().toVector()
+        val owner = (if lines.length() > 1 then lines(1).trim().toLongOption() else None).getOrElse(0)
+        if lines.nonEmpty() && !(owner >= 1 && process.signal(owner, 0).isOk())
+            val home = lines(0)
+            for pid in fs.readText(home + "/daemon.pid").ok().flatMap(t -> t.trim().toLongOption())
+                process.signal(pid, 15)
+                val until = time.monotonic() + millis(5000)
+                while process.signal(pid, 0).isOk() && time.monotonic() < until do threads.sleep(millis(20))
+                process.signal(pid, 9)
+            fs.removeDirAll(home)
+            fs.remove(entry)
+            reaped += 1
+    reaped
+
+@teardown
+reapAfterTest()
+    reapOrphans()
 
 submitted(home: string, args: string*) -> long
     val r = m(home, (["submit"] ++ args.toVector())*)
@@ -621,7 +666,7 @@ split(home: string, args: string*) -> Split
     val n = outputs.add(1)
     val out = s"$home/split.$n.out"
     val err = s"$home/split.$n.err"
-    val status = Command(bin(), args*).withEnv("MARSHAL_HOME", home).withEnv("MARSHAL_TAKE_SLOT_DIR", slots(home)).toFile(out).errorsToFile(err).run().ok().get()
+    val status = homed(Command(bin(), args*), home).toFile(out).errorsToFile(err).run().ok().get()
     val code = status match
         ExitStatus.Exited(c) -> c
         ExitStatus.Signalled(s) -> 128 + s
@@ -1229,3 +1274,56 @@ historyAfterJobsAndRestart()
     assertEq(kinds(0)("success_pct").asLong(), Some(long(100)))
     assertEq(kinds(1)("success_pct").asLong(), Some(long(0)))
     cleanUp(home)
+
+// A process that does nothing but stand in for the test process that owns a home.
+startOwner() -> process.Child = Command("sleep", "120").start().ok().get()
+
+// Ends `owner` by SIGKILL, as a killed test run would be, and reaps it.
+killOwner(owner: process.Child)
+    process.signal(owner.pid(), 9)
+    owner.waitFor()
+    ()
+
+@test("the teardown ends the daemon of a home whose owner is gone, and removes the home")
+reapsDeadOwner()
+    val owner = startOwner()
+    val home = newHome()
+    register(home, owner.pid())
+    assertEq(m(home, "status").code, 0)
+    val daemon = daemonPid(home)
+    killOwner(owner)
+    assert(reapOrphans() >= 1, "nothing was reaped")
+    assert(process.signal(daemon, 0).isErr(), "the daemon is still running")
+    assert(!fs.exists(home), "the home is still there")
+    assert(!fs.exists(entryOf(home)), "the registry entry is still there")
+
+@test("the teardown leaves a home whose owner is still running, and a home it cannot read")
+reapLeavesLiveOwner()
+    val home = newHome()
+    assertEq(m(home, "status").code, 0)
+    val daemon = daemonPid(home)
+    reapOrphans()
+    assert(process.signal(daemon, 0).isOk(), "a live test's daemon was ended")
+    assert(fs.exists(home + "/sock"))
+    fs.writeText(registry() + "/garbage-entry", "").ok().get()
+    reapOrphans()
+    assert(process.signal(daemon, 0).isOk(), "an empty entry ended a daemon")
+    fs.remove(registry() + "/garbage-entry")
+    cleanUp(home)
+
+@test("a daemon whose owner is killed stops by itself, with its job and its followers")
+daemonStopsWithOwner()
+    val owner = startOwner()
+    val home = newHome()
+    val watch = [("MARSHAL_TEST_WATCH_PID", owner.pid().toString())]
+    assertEq(mWith(home, watch, "status").code, 0)
+    val daemon = daemonPid(home)
+    val id = submitted(home, "--", "sleep", "60")
+    val following = startM(home, [], "events", "--follow")
+    assert(within(5000, () -> started(home, id)), "the job did not start")
+    killOwner(owner)
+    assert(within(5000, () -> process.signal(daemon, 0).isErr()), "the daemon is still running")
+    assert(within(5000, () -> process.signal(following.pid, 0).isErr()), "events --follow is still running")
+    assertEq(eventsOf(home, id), ["submitted", "started", "killed"])
+    fs.removeDirAll(home)
+    fs.remove(entryOf(home))
