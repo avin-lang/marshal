@@ -926,8 +926,9 @@ passes it, and two builds peaking at 25–35G each were admitted together on a 6
   job over in `marshal restart` reads it as the old one did, and `state.json` needs nothing new.
   Alternative: a `step_pgid` job field (needs the handover round trip and a message from the runner).
 - **The step group is read at every signal, KILL after the grace period included.** A step started
-  after a TERM is still reached by the KILL. The runner's own TERM handler stays: a TERM reaches the
-  step from both. A runner killed hard leaves its record, so the daemon's TERM when the job ends
+  after a TERM is still reached by the KILL. TERM of a stop goes to the runner alone, whose handler
+  stops its step: a step ended under the runner by the daemon's TERM could be read as a failed step
+  (exit 1) before the runner knew it was being stopped. A runner killed hard leaves its record, so the daemon's TERM when the job ends
   (the leftovers rule) ends the step as well.
 - **Residual race.** A step the runner has started but not yet recorded when STOP arrives is not
   stopped by that STOP (it is by the next signal, and by every TERM and KILL). Alternative: the

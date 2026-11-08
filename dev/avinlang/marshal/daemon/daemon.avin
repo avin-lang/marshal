@@ -1151,7 +1151,9 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
 terminate(home: string, id: long, pgid: long, sample: Option[string])
     spawn(() ->
         sample.foreach(file -> busiest(marshal.groupsOf(home, id, pgid)).foreach(pid -> Command("sample", pid.toString(), "5", "1", "-file", file).output()))
-        marshal.signalGroups(home, id, pgid, signal.Terminate)
+        // TERM goes to the runner alone, which stops its step itself and so knows the run was
+        // stopped; a step ended under it first would read as a failed step
+        process.signal(-pgid, signal.Terminate)
         threads.sleep(millis(Grace))
         // the step group is read again: a step may have started since the TERM
         marshal.signalGroups(home, id, pgid, signal.Kill)
