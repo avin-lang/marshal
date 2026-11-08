@@ -12,7 +12,8 @@ val Version: string = "0.2.2"
 // band, behind the urgent jobs already queued and ahead of every other. `after` names the jobs it
 // waits for: it queues once they have all ended, and with `afterAny` false only if each of them
 // succeeded. `retries` is how many times more it runs after failing or timing out, `retryDelayMs`
-// after how long.
+// after how long. `memoryGiven` says the memory was given (`--mem`), so `--mem 0` opts out of the
+// reservation learned from the kind's peaks; a memory above 0 counts as given either way.
 data JobSpec(
     kind: string,
     units: int,
@@ -26,7 +27,8 @@ data JobSpec(
     after: Vector[long] = [],
     afterAny: bool = false,
     retries: int = 0,
-    retryDelayMs: long = 0)
+    retryDelayMs: long = 0,
+    memoryGiven: bool = false)
 
 data Request
     Submit(spec: JobSpec)
@@ -113,7 +115,8 @@ retryable(_, _) = false
 // puts it in the lane's urgent band, ahead of every job not urgent whatever its priority. `paused`
 // says a running job's processes are stopped by `pause`; its `elapsedMs` leaves its pauses out.
 // `after` is what a waiting job still waits for, the jobs that have not ended yet; `attempt` counts
-// its runs from 1.
+// its runs from 1. `reserved` is the memory the scheduler counts for it, its effective reservation:
+// the memory it declared, or, with `reservedLearned`, what its kind's peaks taught (memory.avin).
 data JobInfo(
     id: long,
     kind: string,
@@ -138,11 +141,22 @@ data JobInfo(
     urgent: bool = false,
     paused: bool = false,
     after: Vector[long] = [],
-    attempt: int = 1)
+    attempt: int = 1,
+    reserved: long = 0,
+    reservedLearned: bool = false)
 
-// The budget in use. `memory` is what the running jobs declared; `rss` what their process trees hold
-// in RAM, as last measured; `machineMemory` the memory the machine has, 0 where it is not known;
-// `queueHeld` says the queue is held: nothing new starts in either lane.
+// The memory a listing shows for a job: its reservation, `~` before one learned from its kind's
+// peaks; `-` for none. A job that says no reservation shows the memory it declared.
+reservedText(j: JobInfo) -> string
+    if j.reservedLearned && j.reserved > 0 then return "~" + roundSize(j.reserved)
+    val r = if j.reserved > j.memory then j.reserved else j.memory
+    if r == 0 then "-" else formatSize(r)
+
+// The budget in use. `memory` is what the running jobs reserve (declared or learned); `rss` what
+// their process trees hold in RAM, as last measured; `held` what admission counts them as holding,
+// each job's reservation or its measured memory, whichever is more; `machineMemory` the memory the
+// machine has, 0 where it is not known; `queueHeld` says the queue is held: nothing new starts in
+// either lane.
 data Usage(
     units: int,
     unitBudget: int,
@@ -154,7 +168,8 @@ data Usage(
     takeSlot: Option[TakeSlotUse],
     rss: long = 0,
     machineMemory: long = 0,
-    queueHeld: bool = false)
+    queueHeld: bool = false,
+    held: long = 0)
 
 // What take-slot.zsh holds in the directory `dir` that marshal shares: units its runs hold, how many
 // of its runs wait, and whether one of them holds the landing lane.
@@ -269,7 +284,8 @@ encodeSpec(s: JobSpec) -> Json = Json.obj(
     ("after", longs(s.after)),
     ("after_any", Json.Bool(s.afterAny)),
     ("retries", Json.num(s.retries)),
-    ("retry_delay_ms", Json.num(s.retryDelayMs)))
+    ("retry_delay_ms", Json.num(s.retryDelayMs)),
+    ("mem_given", Json.Bool(s.memoryGiven)))
 
 decodeSpec(j: Json) -> Result[JobSpec, string]
     val cmd = field(j, "cmd", stringVector, "an array of strings")?
@@ -287,7 +303,8 @@ decodeSpec(j: Json) -> Result[JobSpec, string]
         optional(j, "after", longVector, "an array of job ids", Vector[long]())?,
         optional(j, "after_any", v -> v.asBool(), "a bool", false)?,
         optional(j, "retries", v -> v.asInt(), "an int", 0)?,
-        optional(j, "retry_delay_ms", v -> v.asLong(), "a whole number", long(0))?))
+        optional(j, "retry_delay_ms", v -> v.asLong(), "a whole number", long(0))?,
+        optional(j, "mem_given", v -> v.asBool(), "a bool", false)?))
 
 private field[T](j: Json, key: string, read: (Json) -> Option[T], what: string) -> Result[T, string] =
     j.get(key) match
@@ -401,18 +418,21 @@ encodeJob(i: JobInfo) -> Json = Json.obj(
     ("urgent", Json.Bool(i.urgent)),
     ("paused", Json.Bool(i.paused)),
     ("after", longs(i.after)),
-    ("attempt", Json.num(i.attempt)))
+    ("attempt", Json.num(i.attempt)),
+    ("resv", Json.num(i.reserved)),
+    ("resv_learned", Json.Bool(i.reservedLearned)))
 
 decodeJob(j: Json) -> Result[JobInfo, string]
     val outcome = j.get("outcome") match
         Some(Json.Null) -> None
         Some(o) -> Some(decodeOutcome(o)?)
         None -> None
+    val memory = field(j, "mem", v -> v.asLong(), "a whole number")?
     Ok(JobInfo(
         field(j, "id", v -> v.asLong(), "a whole number")?,
         field(j, "kind", v -> v.asString(), "a string")?,
         field(j, "units", v -> v.asInt(), "an int")?,
-        field(j, "mem", v -> v.asLong(), "a whole number")?,
+        memory,
         field(j, "landing", v -> v.asBool(), "a bool")?,
         field(j, "dir", v -> v.asString(), "a string")?,
         field(j, "cmd", stringVector, "an array of strings")?,
@@ -434,7 +454,10 @@ decodeJob(j: Json) -> Result[JobInfo, string]
         optional(j, "paused", v -> v.asBool(), "a bool", false)?,
         // absent from what marshal wrote before jobs waited for others and retried
         optional(j, "after", longVector, "an array of job ids", Vector[long]())?,
-        optional(j, "attempt", v -> v.asInt(), "an int", 1)?))
+        optional(j, "attempt", v -> v.asInt(), "an int", 1)?,
+        // absent from what marshal wrote before it learned reservations: the declared memory
+        optional(j, "resv", wholeNumber, "a whole number", memory)?,
+        optional(j, "resv_learned", v -> v.asBool(), "a bool", false)?))
 
 encodeTakeSlot(t: TakeSlotUse) -> Json = Json.obj(
     ("dir", Json.str(t.dir)),
@@ -458,6 +481,7 @@ statusJson(u: Usage, jobs: Vector[JobInfo]) -> Json = Json.obj(
     ("mem", Json.num(u.memory)),
     ("mem_budget", Json.num(u.memoryBudget)),
     ("rss", Json.num(u.rss)),
+    ("mem_held", Json.num(u.held)),
     ("machine_mem", Json.num(u.machineMemory)),
     ("landing", u.landing.map(id -> Json.num(id)).getOrElse(Json.Null)),
     ("take_slot", u.takeSlot.map(encodeTakeSlot).getOrElse(Json.Null)),
@@ -476,6 +500,7 @@ encodeReply(Using(u)) = Json.obj(
     ("mem", Json.num(u.memory)),
     ("mem_budget", Json.num(u.memoryBudget)),
     ("rss", Json.num(u.rss)),
+    ("mem_held", Json.num(u.held)),
     ("machine_mem", Json.num(u.machineMemory)),
     ("running", Json.num(u.running)),
     ("queued", Json.num(u.queued)),
@@ -518,7 +543,8 @@ decodeReply(text: string) -> Result[Reply, string]
             decodeTakeSlot(j.get("take_slot").getOrElse(Json.Null))?,
             optional(j, "rss", wholeNumber, "a whole number", 0)?,
             optional(j, "machine_mem", wholeNumber, "a whole number", 0)?,
-            optional(j, "queue_held", v -> v.asBool(), "a bool", false)?)))
+            optional(j, "queue_held", v -> v.asBool(), "a bool", false)?,
+            optional(j, "mem_held", wholeNumber, "a whole number", 0)?)))
     if j.has("version") then return Ok(Hi(field(j, "version", v -> v.asString(), "a string")?, field(j, "pid", v -> v.asLong(), "a whole number")?))
     if j.has("id") then return Ok(Submitted(field(j, "id", v -> v.asLong(), "a whole number")?, field(j, "log", v -> v.asString(), "a string")?))
     Ok(Done)
@@ -563,6 +589,7 @@ encodeOverview(o: Overview) -> Json = Json.obj(
     ("mem", Json.num(o.usage.memory)),
     ("mem_budget", Json.num(o.usage.memoryBudget)),
     ("rss", Json.num(o.usage.rss)),
+    ("mem_held", Json.num(o.usage.held)),
     ("machine_mem", Json.num(o.usage.machineMemory)),
     ("landing", o.usage.landing.map(id -> Json.num(id)).getOrElse(Json.Null)),
     ("take_slot", o.usage.takeSlot.map(encodeTakeSlot).getOrElse(Json.Null)),
@@ -594,7 +621,8 @@ decodeOverview(j: Json) -> Result[Overview, string]
             decodeTakeSlot(j.get("take_slot").getOrElse(Json.Null))?,
             optional(j, "rss", wholeNumber, "a whole number", 0)?,
             optional(j, "machine_mem", wholeNumber, "a whole number", 0)?,
-            optional(j, "queue_held", v -> v.asBool(), "a bool", false)?),
+            optional(j, "queue_held", v -> v.asBool(), "a bool", false)?,
+            optional(j, "mem_held", wholeNumber, "a whole number", 0)?),
         field(j, "uptime_ms", v -> v.asLong(), "a whole number")?,
         running,
         queued,
