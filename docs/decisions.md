@@ -170,7 +170,8 @@ user: tui pinned by commit until it has a tag, and `top` never starting a daemon
 ## Measured memory (branch `top-columns`)
 
 **Settled on the user's delegation 2026-11-07**; each says what else was weighed. Listing a group's
-members with `pgrep -g` is temporary, until avin binds Sysl's `group_members`.
+members with `pgrep -g` was temporary, until avin bound Sysl's `group_members`; it now does (see
+"Avin 0.0.13 calls replace the workarounds", last section).
 
 - **A job's tree is its process group**, listed by `pgrep -g` (the same listing the deadline's
   stack sampler already used) and each member's `residentBytes` summed; a member gone since it was
@@ -761,10 +762,11 @@ with the user: hold applying to waiting jobs, and priority staying for queued jo
 - **Run directories**: removed with their job, or when no job of the log has them and no active job
   does; a directory not named by a job id is left alone.
 - **Compiled steps** record when they were last used in `<step>.used` (written atomically at every
-  use); one unused for the age goes. Why a sidecar: avin's `fs` has no modification time, and
+  use); one unused for the age goes. Why a sidecar: avin's `fs` had no modification time, and
   access times are unreliable on many mounts. A step with no record (cached before this) is
   stamped by the first clean that sees it, so it ages from then. The age is `--older-than` when
-  given, else `keep_steps`. A step being built (its lock exists) stays.
+  given, else `keep_steps`. A step being built (its lock exists) stays. **Superseded** by the
+  executable's own modification time (see "Avin 0.0.13 calls replace the workarounds").
 - **`events.jsonl` is trimmed, not rotated**: every event of an ended job whose ending is older than
   `keep_events` is dropped, rewritten with `writeAtomic` by the daemon (the only appender, so no
   append is lost). The job with the highest id is always kept so ids are never reused. Why: readers
@@ -780,3 +782,33 @@ with the user: hold applying to waiting jobs, and priority staying for queued jo
   what a person looked at this week. Here a job goes when it is older than `keep_logs` OR beyond the
   newest `keep_jobs`. Alternatives: sweeping when each job ends (a rewrite of the log on the hot
   path), no automatic retention (the home grows for ever).
+
+## Avin 0.0.13 calls replace the workarounds (branch `use-avin-0013`)
+
+**Proposed.** Avin 0.0.13 added `process.groupMembers`, `fs.metadata`/`size`/`modified` and
+`fs.setModified`; each replaces something marshal did without them.
+
+- **Proposed: a job's process group is listed by `process.groupMembers(pgid)`, not `pgrep -g`.** An
+  `Err` (or a `pgid` of zero or less) reads as no members, as `pgrep` failing did; a group nobody is
+  in is `Ok([])`. Why: no subprocess per second per job, and no dependence on `pgrep`. Alternative:
+  keeping `pgrep` (a process spawn for each measurement).
+- **Proposed: the `ps -o pid=,time=` query that picks the busiest process for the deadline's stack
+  sample stays.** No avin call gives a process's processor time; the call is only made at a deadline.
+  The test helper that reads each process's state letters (`ps -o stat=`, to see `T` for stopped)
+  stays for the same reason. Revisit when avin can report either.
+- **Proposed (replaces "Compiled steps ... `<step>.used`" above): a compiled step's use is the
+  modification time of its executable.** Compiling sets it (the file is new); every later use calls
+  `fs.setModified(program, now)`; a clean ages a step by `fs.modified`. No sidecar file is written or
+  read. A `.used` file left by an older marshal is removed by the next clean (and the daemon's
+  sweep), whatever the age setting, and is not reported. A step that cannot be stamped or read (it
+  vanished, or a dangling link) is skipped. Why: one file instead of two, no atomic write on the
+  hot path of every run, and nothing to keep in step with the executable. Alternatives: access
+  time (unreliable on `noatime` mounts, and reading a file would change it), keeping the sidecar.
+  Cost: anything else that rewrites the executable's mtime (a backup restore, `touch`) looks like a use.
+- **Proposed: `clean` reports the bytes it freed, and `--dry-run` the bytes it would free.** The
+  sum of `fs.size` of what goes: job logs and samples, every file under a run directory, a step and
+  its build log, plus how much the event log shrank when events were trimmed. Printed as
+  `marshal: freed 1.5M` (or `would free`), `roundSize`'s units like the memory columns, `N bytes` under
+  1K; the reply and the JSON carry the exact number as `bytes`, which an older daemon's reply omits
+  (read as 0). Why: the point of cleaning is the space. Alternatives: only a count of files (says
+  nothing about space), `du` of the home before and after (counts what other processes wrote meanwhile).

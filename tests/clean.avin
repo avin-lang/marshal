@@ -3,6 +3,8 @@ module tests
 // Retention: ages, the arguments of `clean`, which jobs a rule picks, what leaves the event log, the
 // compiled-step and run-directory sweeps on real directories, and the settings in config.json.
 import avin.fs
+import avin.process
+import avin.time
 import json
 import json.Json
 import dev.avinlang.marshal
@@ -176,48 +178,123 @@ private putFile(file: string, text: string = "x")
 val StepHex1: string = "0123456789abcdef0123456789abcdef"
 val StepHex2: string = "fedcba9876543210fedcba9876543210"
 
-@test("compiled steps unused for the age are removed with their records, newer ones, unstamped ones and ones being built stay")
+// Marks the compiled step `file` as last used at `ms` (milliseconds since the epoch).
+private stampStep(file: string, ms: long)
+    fs.setModified(file, time.epochMillis(ms)).ok().get()
+
+@test("compiled steps unused for the age are removed, newer ones, freshly built ones and ones being built stay")
 stepSweep()
     val home = cleanTempHome()
     val dir = home + "/steps"
     putFile(s"$dir/old-$StepHex1")
-    putFile(s"$dir/old-$StepHex1.used", "1000")
+    stampStep(s"$dir/old-$StepHex1", 1000)
+    putFile(s"$dir/old-$StepHex1.build.log")
     putFile(s"$dir/new-$StepHex2")
-    putFile(s"$dir/new-$StepHex2.used", "9000")
+    stampStep(s"$dir/new-$StepHex2", 9000)
     putFile(s"$dir/bare-$StepHex1")
-    putFile(s"$dir/bare-$StepHex1.build.log")
     putFile(s"$dir/busy-$StepHex1")
-    putFile(s"$dir/busy-$StepHex1.used", "1")
+    stampStep(s"$dir/busy-$StepHex1", 1000)
     fs.createDir(s"$dir/busy-$StepHex1.lock").ok().get()
     putFile(s"$dir/notes.txt")
-    // a dry run reports and changes nothing, and stamps nothing
+    // a dry run reports and changes nothing
     assertEq(marshal.cleanSteps(home, 10000, Some(long(5000)), true), [s"old-$StepHex1"])
     assert(fs.isFile(s"$dir/old-$StepHex1"))
-    assert(!fs.exists(s"$dir/bare-$StepHex1.used"))
     assertEq(marshal.cleanSteps(home, 10000, Some(long(5000)), false), [s"old-$StepHex1"])
     assert(!fs.exists(s"$dir/old-$StepHex1"))
-    assert(!fs.exists(s"$dir/old-$StepHex1.used"))
+    assert(!fs.exists(s"$dir/old-$StepHex1.build.log"))
     assert(fs.isFile(s"$dir/new-$StepHex2"))
     assert(fs.isFile(s"$dir/busy-$StepHex1"))
     assert(fs.isFile(s"$dir/notes.txt"))
-    // the unstamped one is stamped now, and ages from then
-    assertEq(fs.readText(s"$dir/bare-$StepHex1.used").ok().get(), "10000")
-    assertEq(marshal.cleanSteps(home, 14999, Some(long(5000)), false), [s"new-$StepHex2"])
-    assertEq(marshal.cleanSteps(home, 15000, Some(long(5000)), false), [s"bare-$StepHex1"])
+    // a step is as old as its file's modification time, and ages from there; a file made just now
+    // (the compiled step nobody has used yet) is as young as the clock
+    assertEq(marshal.cleanSteps(home, 13999, Some(long(5000)), false), [])
+    assertEq(marshal.cleanSteps(home, 14000, Some(long(5000)), false), [s"new-$StepHex2"])
+    assert(fs.isFile(s"$dir/bare-$StepHex1"))
     // no age keeps everything; a home with no steps is fine
     assertEq(marshal.cleanSteps(home, 1000000000, None, false), [])
     assertEq(marshal.cleanSteps(home + "/nothing", 1, Some(long(1)), false), [])
     fs.removeDirAll(home)
 
-@test("a step used again is not removed: touching records the time")
+@test("a step used again is not removed: touching moves its modification time, and writes nothing else")
 stepTouch()
     val home = cleanTempHome()
     putFile(s"$home/steps/s-$StepHex1")
     marshal.touchStep(s"$home/steps/s-$StepHex1", 4000)
+    assertEq(fs.modified(s"$home/steps/s-$StepHex1").ok().get().epochMillis(), long(4000))
     assertEq(marshal.cleanSteps(home, 6000, Some(long(3000)), false), [])
     marshal.touchStep(s"$home/steps/s-$StepHex1", 8000)
     assertEq(marshal.cleanSteps(home, 10000, Some(long(3000)), false), [])
     assertEq(marshal.cleanSteps(home, 11000, Some(long(3000)), false), [s"s-$StepHex1"])
+    assertEq(fs.listDir(home + "/steps").ok().get(), [])
+    // a step that is not there is not recorded, and nothing is made in its place
+    marshal.touchStep(s"$home/steps/gone-$StepHex2", 1)
+    assert(!fs.exists(s"$home/steps/gone-$StepHex2"))
+    fs.removeDirAll(home)
+
+@test("the `.used` records older versions wrote are removed by a clean and never reported; a dry run leaves them")
+stepUsedLeftovers()
+    val home = cleanTempHome()
+    val dir = home + "/steps"
+    putFile(s"$dir/s-$StepHex1")
+    stampStep(s"$dir/s-$StepHex1", 1000)
+    putFile(s"$dir/s-$StepHex1.used", "1000")
+    putFile(s"$dir/orphan-$StepHex2.used", "1")
+    putFile(s"$dir/notes.used", "1")
+    assertEq(marshal.cleanSteps(home, 2000, Some(long(5000)), true), [])
+    assert(fs.isFile(s"$dir/s-$StepHex1.used") && fs.isFile(s"$dir/orphan-$StepHex2.used"))
+    // with no age at all the leftovers still go: the file was the old way to record use
+    assertEq(marshal.cleanSteps(home, 2000, None, false), [])
+    assert(!fs.exists(s"$dir/s-$StepHex1.used") && !fs.exists(s"$dir/orphan-$StepHex2.used"))
+    assert(fs.isFile(s"$dir/s-$StepHex1") && fs.isFile(s"$dir/notes.used"))
+    fs.removeDirAll(home)
+
+@test("a step that cannot be read while the clean runs (here a link to nothing) is skipped without error and counts no bytes")
+stepVanishes()
+    val home = cleanTempHome()
+    val dir = home + "/steps"
+    putFile(s"$dir/a-$StepHex1", "12345")
+    stampStep(s"$dir/a-$StepHex1", 1000)
+    process.Command("ln", "-s", dir + "/nowhere", s"$dir/b-$StepHex2").output().ok().get()
+    val (names, bytes) = marshal.sweepSteps(home, 100000, Some(long(5000)), false)
+    assertEq(names, [s"a-$StepHex1"])
+    assertEq(bytes, long(5))
+    assertEq(marshal.fileBytes(dir + "/nowhere"), long(0))
+    assertEq(marshal.fileBytes(s"$dir/b-$StepHex2"), long(0))
+    fs.removeDirAll(home)
+
+@test("bytes are the sizes of what is removed: files, directory trees, build logs; a dry run counts what a real run frees")
+cleanBytes()
+    val home = cleanTempHome()
+    putFile(s"$home/steps/a-$StepHex1", "x".repeat(100))
+    stampStep(s"$home/steps/a-$StepHex1", 1000)
+    putFile(s"$home/steps/a-$StepHex1.build.log", "y".repeat(10))
+    putFile(s"$home/runs/7/f", "z".repeat(1000))
+    putFile(s"$home/runs/7/sub/g", "z".repeat(24))
+    assertEq(marshal.fileBytes(home + "/runs/7"), long(1024))
+    assertEq(marshal.fileBytes(home + "/runs/7/f"), long(1000))
+    assertEq(marshal.fileBytes(home + "/missing"), long(0))
+    assertEq(marshal.sweepSteps(home, 100000, Some(long(5000)), true), ([s"a-$StepHex1"], long(110)))
+    assertEq(marshal.sweepRuns(home, {}, {}, {}, true), (["7"], long(1024)))
+    assert(fs.isFile(s"$home/runs/7/f"))
+    assertEq(marshal.sweepSteps(home, 100000, Some(long(5000)), false), ([s"a-$StepHex1"], long(110)))
+    assertEq(marshal.sweepRuns(home, {}, {}, {}, false), (["7"], long(1024)))
+    // nothing left to free
+    assertEq(marshal.sweepRuns(home, {}, {}, {}, false), ([], long(0)))
+    fs.removeDirAll(home)
+
+@test("a sweep sums the bytes of job files, run directories and the event log's shrinkage; a dry run says the same")
+sweepBytes()
+    val home = homeWithJobs()
+    val r = Retention(None, None, Some(long(150)), None)
+    val dry = marshal.sweepRule(home, {long(5)}, 1000, r, CleanRule(None, Some(1), true))
+    // jobs 1 to 3: logs of 5 bytes each, job 2's sample 1 byte, each run directory's file 1 byte
+    val before = fs.readText(home + "/events.jsonl").ok().get().byteLength()
+    val real = marshal.sweepRule(home, {long(5)}, 1000, r, CleanRule(None, Some(1), false))
+    val shrunk = before - fs.readText(home + "/events.jsonl").ok().get().byteLength()
+    assert(shrunk > 0)
+    assertEq(dry.bytes, long(15 + 1 + 3 + shrunk))
+    assertEq(real.bytes, dry.bytes)
+    assert(marshal.sweepRule(home, {}, 1000, Retention(None, None, None, None), CleanRule(None, Some(0), false)).bytes > 0)
     fs.removeDirAll(home)
 
 @test("run directories go with their job or when no job has them; active jobs', other jobs' and oddly named ones stay")
@@ -279,7 +356,7 @@ sweepDryRun()
     for id in 1..5 do assert(fs.isFile(s"$home/jobs/$id.log") && fs.isDir(s"$home/runs/$id"), s"$id")
     assertEq(fs.readText(home + "/events.jsonl").ok().get(), before)
     val real = marshal.sweepRule(home, {long(5)}, 1000, r, CleanRule(None, Some(1), false))
-    assertEq(real, CleanReport(false, dry.jobs, dry.runs, dry.steps, dry.events, dry.eventJobs))
+    assertEq(real, CleanReport(false, dry.jobs, dry.runs, dry.steps, dry.events, dry.eventJobs, dry.bytes))
     assert(dry.events > 0)
     fs.removeDirAll(home)
 
@@ -313,15 +390,20 @@ sweepRetainedAndEmpty()
 
 @test("a report prints a line for each thing removed, says so when there is nothing, and survives the wire")
 cleanReports()
-    val r = CleanReport(false, [long(3), 4], ["3"], ["s-" + StepHex1], 6, 2)
-    assertEq(marshal.cleanLines(r), ["removed job 3's log", "removed job 4's log", "removed run directory 3", s"removed compiled step s-$StepHex1", "removed 6 events of 2 jobs from the event log"])
-    val dry = CleanReport(true, [long(3)], [], [], 0, 0)
-    assertEq(marshal.cleanLines(dry), ["would remove job 3's log", "marshal: dry run, nothing was removed"])
-    assertEq(marshal.cleanLines(CleanReport(false, [], [], [], 0, 0)), ["marshal: nothing to clean"])
-    assertEq(marshal.cleanLines(CleanReport(true, [], [], [], 0, 0)), ["marshal: nothing to clean"])
-    for rep in [r, dry, CleanReport(false, [], [], [], 0, 0)]
+    val r = CleanReport(false, [long(3), 4], ["3"], ["s-" + StepHex1], 6, 2, 3 * 1024 * 1024 / 2)
+    assertEq(marshal.cleanLines(r), ["removed job 3's log", "removed job 4's log", "removed run directory 3", s"removed compiled step s-$StepHex1", "removed 6 events of 2 jobs from the event log", "marshal: freed 1.5M"])
+    val dry = CleanReport(true, [long(3)], [], [], 0, 0, 512)
+    assertEq(marshal.cleanLines(dry), ["would remove job 3's log", "marshal: would free 512 bytes", "marshal: dry run, nothing was removed"])
+    assertEq(marshal.cleanLines(CleanReport(false, [long(1)], [], [], 0, 0, 0)), ["removed job 1's log", "marshal: freed 0 bytes"])
+    assertEq(marshal.cleanLines(CleanReport(false, [], [], [], 0, 0, 0)), ["marshal: nothing to clean"])
+    assertEq(marshal.cleanLines(CleanReport(true, [], [], [], 0, 0, 0)), ["marshal: nothing to clean"])
+    for rep in [r, dry, CleanReport(false, [], [], [], 0, 0, 0)]
         assertEq(marshal.decodeReply(marshal.encodeReply(marshal.Cleaned(rep)).render()), Ok(marshal.Cleaned(rep)))
     assert(marshal.decodeReport(Json.obj(("jobs", Json.Arr([])))).isErr())
+    // a report without `bytes`, as an older daemon sends it, reads as zero
+    val old = marshal.encodeReport(dry)
+    assertEq(marshal.decodeReport(Json.obj(("dry_run", Json.Bool(true)), ("jobs", Json.Arr([Json.num(3)])), ("runs", Json.Arr([])), ("steps", Json.Arr([])), ("events", Json.num(0)), ("event_jobs", Json.num(0)))), Ok(CleanReport(true, [long(3)], [], [], 0, 0, 0)))
+    assertEq(old.get("bytes").flatMap(v -> v.asLong()), Some(long(512)))
 
 @test("the clean request round-trips, absent options read as none, and bad values are refused")
 cleanRequest()

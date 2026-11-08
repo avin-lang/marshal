@@ -3,6 +3,7 @@ module tests
 // Pausing one running job, end to end: `pause <id>` stops its whole process group and `resume
 // <id>` continues it; it keeps its units; its deadline's clock stops while it is paused, across a
 // restart too; and a paused job killed, or stopped with the daemon, still ends.
+import avin.process
 import avin.process.Command
 import avin.threads
 import avin.time
@@ -10,9 +11,7 @@ import avin.time.millis
 import json.Json
 
 // The processes of the group, by pid.
-groupPids(pgid: long) -> Vector[string] = Command("pgrep", "-g", pgid.toString()).output() match
-    Ok(text) -> text.lines().map(l -> l.trim()).filter(l -> l.nonEmpty()).toVector()
-    Err(_) -> []
+groupPids(pgid: long) -> Vector[string] = process.groupMembers(pgid).getOrElse([]).map(p -> p.toString())
 
 // Each process's state letters, as `ps` gives them: `T` for a stopped one.
 states(pids: Vector[string]) -> Vector[string] =

@@ -149,7 +149,7 @@ marshal events [--follow] [--since <t>] [<filter>]  the logged events as JSON li
 marshal ls                                 jobs queued, running and recently ended
 marshal kill <id>                          stops the job's whole process tree (a queued or waiting job is cancelled)
 marshal rerun <id>                         submits an ended job again: its command, directory, environment, kind and resources; prints the new id
-marshal clean [--older-than <t>] [--keep <n>] [--dry-run]  removes the logs of ended jobs (never a job that is not over), stale run directories and unused compiled steps; prints what went; --dry-run only lists them
+marshal clean [--older-than <t>] [--keep <n>] [--dry-run]  removes the logs of ended jobs (never a job that is not over), stale run directories and unused compiled steps; prints what went and the bytes freed; --dry-run only lists them
 marshal hold <id>                          keeps a queued job from starting; it keeps its place
 marshal release <id>                       lets a held job start again
 marshal priority <id> <n> | --urgent       places a queued job in its lane: higher first; --urgent: the back of the urgent band
@@ -374,7 +374,9 @@ to jobs that ended at least `t` ago, `--keep <n>` leaves the `n` newest ended jo
 job must be old and not among the `n` newest), and `--dry-run` prints what would go and removes
 nothing. A removed job leaves `ls`; `wait` and `rerun` still answer for it from the event log.
 `clean` also removes run directories no job needs, and compiled steps unused for `--older-than`
-(else `keep_steps`).
+(else `keep_steps`). A compiled step's last use is the modification time of its executable, which
+every use moves forward. It ends by saying how much it freed (`marshal: freed 1.5M`; with `--dry-run`,
+`marshal: would free 1.5M`).
 
 `marshal status --json` prints `units`, `unit_budget`, `mem`, `mem_budget`, `rss` (what the
 running jobs hold in RAM, in bytes), `machine_mem` (the machine's memory, 0 if unknown), `landing` (the landing

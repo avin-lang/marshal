@@ -10,13 +10,14 @@ module dev.avinlang.marshal
 //
 // A job's files go only once the job has ended for good: a running, queued, waiting, paused or
 // retrying job is never touched. A run directory goes with its job, or when no job of the log has
-// it. A compiled step goes when it has not been used for the step age; each use writes the time to
-// `<step>.used`, and a step with no such file is stamped by the first clean that sees it. The event
+// it. A compiled step goes when it has not been used for the step age; compiling it and each use
+// set the executable's own modification time, which is the time it ages from. The event
 // log loses every event of an ended job whose ending is older than the event age, always keeping
 // the job with the highest id so that ids are never reused; `history`, `stats`, `rerun` and
 // dependencies read what remains.
 import avin.collections.mutable.{Map as MutableMap}
 import avin.fs
+import avin.time
 import json
 import json.Json
 
@@ -83,14 +84,15 @@ parseCleanArgs(args: Vector[string]) -> Result[CleanRule, string]
     Ok(CleanRule(older, keep, dry))
 
 // What a clean removed, or with `dryRun` would have: the jobs whose files went, the run directories
-// and compiled steps, and how many events of how many jobs left the event log.
-data CleanReport(dryRun: bool, jobs: Vector[long], runs: Vector[string], steps: Vector[string], events: int, eventJobs: int)
+// and compiled steps, how many events of how many jobs left the event log, and the bytes all of it
+// held: the sizes of the files and directories removed, and how much the event log shrank.
+data CleanReport(dryRun: bool, jobs: Vector[long], runs: Vector[string], steps: Vector[string], events: int, eventJobs: int, bytes: long)
 
 // Whether the report removed nothing.
 nothingRemoved(r: CleanReport) -> bool = r.jobs.isEmpty() && r.runs.isEmpty() && r.steps.isEmpty() && r.events == 0
 
-// What `marshal clean` prints for a report, one line for each thing removed and a last line that
-// counts them.
+// What `marshal clean` prints for a report, one line for each thing removed, then the bytes freed
+// (or that would be) in the units of the memory columns.
 cleanLines(r: CleanReport) -> Vector[string]
     val verb = if r.dryRun then "would remove" else "removed"
     val out = Buffer[string]()
@@ -99,7 +101,9 @@ cleanLines(r: CleanReport) -> Vector[string]
     for step in r.steps do out += s"$verb compiled step $step"
     if r.events > 0 then out += s"$verb ${r.events} events of ${r.eventJobs} jobs from the event log"
     if nothingRemoved(r) then out += "marshal: nothing to clean"
-    elif r.dryRun then out += "marshal: dry run, nothing was removed"
+    else
+        out += (if r.dryRun then "marshal: would free " else "marshal: freed ") + (if r.bytes < 1024 then s"${r.bytes} bytes" else roundSize(r.bytes))
+        if r.dryRun then out += "marshal: dry run, nothing was removed"
     out.toVector()
 
 // An ended job as the event log shows it: when it ended (wall clock, milliseconds).
@@ -167,44 +171,73 @@ isStepName(name: string) -> bool
     if n < 34 then return false
     name.slice(n - 33, n - 32) == "-" && name.drop(n - 32).chars().forall(c -> '0' <= c <= '9' || 'a' <= c <= 'f')
 
-// The file that records when a compiled step was last used.
-usedFile(program: string) -> string = program + ".used"
-
-// Records that the compiled step `program` is in use at `now`.
+// Records that the compiled step `program` is in use at `now` (milliseconds): the executable's own
+// modification time is set to it. A step that is gone is not recorded.
 touchStep(program: string, now: long)
-    writeAtomic(usedFile(program), now.toString())
+    fs.setModified(program, time.epochMillis(now))
 
-private lastUsed(program: string) -> Option[long] = fs.readText(usedFile(program)).ok().flatMap(t -> t.trim().toLongOption())
+// When the compiled step `program` was last used (milliseconds): its modification time, which
+// compiling it sets and every later use moves forward. None where it cannot be read.
+private lastUsed(program: string) -> Option[long] = fs.modified(program).ok().map(t -> t.epochMillis())
+
+// The bytes in the file `file`, or in every file under the directory `file`; zero for what is not
+// there (a file another process removed meanwhile) or cannot be read.
+fileBytes(file: string) -> long = treeBytes(file, 0)
+
+private treeBytes(file: string, depth: int) -> long
+    val meta = fs.metadata(file) match
+        Ok(m) -> m
+        Err(_) -> return 0
+    if meta.isFile then return meta.size
+    if !meta.isDir || depth >= 64 then return 0
+    var total: long = 0
+    for name in fs.listDir(file).ok().getOrElse([]) do total += treeBytes(s"$file/$name", depth + 1)
+    total
+
+// Removes (unless `dry`) the leftovers of the record older versions kept beside each compiled step,
+// `<step>.used`; a clean does not report them.
+private dropUsedRecords(dir: string, names: Vector[string], dry: bool)
+    if dry then return
+    for name in names
+        if name.endsWith(".used") && isStepName(name.dropRight(5)) then fs.remove(s"$dir/$name")
 
 // Removes (unless `dry`) the compiled steps in `<home>/steps` unused for `ageMs`; the names of
-// those that went. A step being built (its lock exists) stays, and one with no record of use is
-// stamped as used now.
-cleanSteps(home: string, now: long, ageMs: Option[long], dry: bool) -> Vector[string]
+// those that went. A step being built (its lock exists) stays.
+cleanSteps(home: string, now: long, ageMs: Option[long], dry: bool) -> Vector[string] = sweepSteps(home, now, ageMs, dry).0
+
+// `cleanSteps`, and the bytes the steps it removed (or would remove) held with their build logs.
+sweepSteps(home: string, now: long, ageMs: Option[long], dry: bool) -> (Vector[string], long)
+    val dir = home + "/steps"
+    val all = fs.listDir(dir).ok().getOrElse([])
+    dropUsedRecords(dir, all, dry)
     val age = ageMs match
         Some(a) -> a
-        None -> return []
-    val dir = home + "/steps"
-    val names = fs.listDir(dir).ok().getOrElse([]).filter(isStepName)
+        None -> return ([], 0)
     val removed = Buffer[string]()
-    for name in names
+    var bytes: long = 0
+    for name in all.filter(isStepName)
         val program = s"$dir/$name"
         if !fs.isFile(program) || fs.exists(program + ".lock") then continue
         lastUsed(program) match
-            None -> if !dry then touchStep(program, now)
+            None -> ()
             Some(at) ->
                 if now - at >= age
                     removed += name
+                    bytes += fileBytes(program) + fileBytes(program + ".build.log")
                     if !dry
                         fs.remove(program)
-                        fs.remove(usedFile(program))
                         fs.remove(program + ".build.log")
-    removed.toVector()
+    (removed.toVector(), bytes)
 
 // Removes (unless `dry`) the run directories in `<home>/runs` that belong to a job in `gone`, or
 // to no ended job of the log and no active one; their names. Directories not named by a job id stay.
-cleanRuns(home: string, active: Set[long], inLog: Set[long], gone: Set[long], dry: bool) -> Vector[string]
+cleanRuns(home: string, active: Set[long], inLog: Set[long], gone: Set[long], dry: bool) -> Vector[string] = sweepRuns(home, active, inLog, gone, dry).0
+
+// `cleanRuns`, and the bytes in the directories it removed (or would remove).
+sweepRuns(home: string, active: Set[long], inLog: Set[long], gone: Set[long], dry: bool) -> (Vector[string], long)
     val dir = home + "/runs"
     val removed = Buffer[string]()
+    var bytes: long = 0
     for name in fs.listDir(dir).ok().getOrElse([])
         val id = name.toLongOption() match
             Some(i) -> i
@@ -212,8 +245,9 @@ cleanRuns(home: string, active: Set[long], inLog: Set[long], gone: Set[long], dr
         if active.contains(id) || !fs.isDir(s"$dir/$name") then continue
         if gone.contains(id) || !inLog.contains(id)
             removed += name
+            bytes += fileBytes(s"$dir/$name")
             if !dry then fs.removeDirAll(s"$dir/$name")
-    removed.toVector()
+    (removed.toVector(), bytes)
 
 // One clean of the home `home` at `now`. `jobs` picks the jobs whose files go from the event log's
 // view; `active` are the jobs that must not be touched. Answers what was removed (or, with `dry`,
@@ -226,19 +260,23 @@ sweepHome(home: string, active: Set[long], now: long, retention: Retention, step
     val withFiles = LogView(view.ended.filter(e -> fs.exists(s"$home/jobs/${e.id}.log") || fs.exists(s"$home/jobs/${e.id}.sample.txt")), view.maxId)
     val chosen = jobs(withFiles).filter(id -> !active.contains(id))
     val gone = chosen.toSet()
-    if !dry
-        for id in chosen
+    var bytes: long = 0
+    for id in chosen
+        bytes += fileBytes(s"$home/jobs/$id.log") + fileBytes(s"$home/jobs/$id.sample.txt")
+        if !dry
             fs.remove(s"$home/jobs/$id.log")
             fs.remove(s"$home/jobs/$id.sample.txt")
-    val runs = cleanRuns(home, active, view.ended.map(e -> e.id).toSet(), gone, dry)
-    val steps = cleanSteps(home, now, stepsMs, dry)
+    val (runs, runBytes) = sweepRuns(home, active, view.ended.map(e -> e.id).toSet(), gone, dry)
+    val (steps, stepBytes) = sweepSteps(home, now, stepsMs, dry)
     val drop = selectEvents(view, now, retention.eventsMs)
     var events = 0
     if drop.nonEmpty()
         val (trimmed, n) = withoutEvents(text, drop)
         events = n
-        if !dry && n > 0 then writeAtomic(log, trimmed)
-    CleanReport(dry, chosen, runs, steps, events, if events > 0 then drop.size() else 0)
+        if n > 0
+            bytes += long(text.byteLength() - trimmed.byteLength())
+            if !dry then writeAtomic(log, trimmed)
+    CleanReport(dry, chosen, runs, steps, events, if events > 0 then drop.size() else 0, bytes + runBytes + stepBytes)
 
 // The automatic sweep.
 sweepRetained(home: string, active: Set[long], now: long, r: Retention) -> CleanReport
@@ -254,12 +292,13 @@ encodeReport(r: CleanReport) -> Json = Json.obj(
     ("runs", Json.Arr(r.runs.map(s -> Json.str(s)))),
     ("steps", Json.Arr(r.steps.map(s -> Json.str(s)))),
     ("events", Json.num(r.events)),
-    ("event_jobs", Json.num(r.eventJobs)))
+    ("event_jobs", Json.num(r.eventJobs)),
+    ("bytes", Json.num(r.bytes)))
 
 decodeReport(j: Json) -> Result[CleanReport, string]
     val jobs = j.get("jobs").flatMap(v -> v.asVector()).map(xs -> xs.flatMap(x -> x.asLong().toVector()))
     val runs = j.get("runs").flatMap(v -> v.asVector()).map(xs -> xs.flatMap(x -> x.asString().toVector()))
     val steps = j.get("steps").flatMap(v -> v.asVector()).map(xs -> xs.flatMap(x -> x.asString().toVector()))
     (jobs, runs, steps, j.get("dry_run").flatMap(v -> v.asBool()), j.get("events").flatMap(v -> v.asInt()), j.get("event_jobs").flatMap(v -> v.asInt())) match
-        (Some(a), Some(b), Some(c), Some(d), Some(e), Some(f)) -> Ok(CleanReport(d, a, b, c, e, f))
+        (Some(a), Some(b), Some(c), Some(d), Some(e), Some(f)) -> Ok(CleanReport(d, a, b, c, e, f, j.get("bytes").flatMap(v -> v.asLong()).getOrElse(0)))
         _ -> Err("a clean report is malformed")

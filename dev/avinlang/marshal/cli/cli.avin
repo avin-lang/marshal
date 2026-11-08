@@ -30,7 +30,7 @@ val Commands: Vector[(string, string)] = [
     ("ls", "jobs queued, running and recently ended"),
     ("kill <id>", "stops the job's whole process tree (a queued or waiting job is cancelled)"),
     ("rerun <id>", "submits an ended job again: its command, directory, environment, kind and resources; prints the new id"),
-    ("clean [--older-than <t>] [--keep <n>] [--dry-run]", "removes the logs of ended jobs (never a job that is not over), stale run directories and unused compiled steps; prints what went; --dry-run only lists them"),
+    ("clean [--older-than <t>] [--keep <n>] [--dry-run]", "removes the logs of ended jobs (never a job that is not over), stale run directories and unused compiled steps; prints what went and the bytes freed; --dry-run only lists them"),
     ("hold <id>", "keeps a queued job from starting; it keeps its place"),
     ("release <id>", "lets a held job start again"),
     ("priority <id> <n> | --urgent", "places a queued job in its lane: higher first; --urgent: the back of the urgent band"),

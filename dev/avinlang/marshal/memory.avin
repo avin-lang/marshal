@@ -4,7 +4,6 @@ module dev.avinlang.marshal
 // job's process group are listed, and their resident bytes summed.
 import avin.io.IoError
 import avin.process
-import avin.process.Command
 
 // The resident bytes of the processes `pids`, summed by asking `resident` of each. A process that has
 // ended since it was listed answers NotFound and counts nothing; so does one that cannot be asked.
@@ -20,12 +19,11 @@ residentOf(pids: Vector[long], resident: (long) -> Result[long, IoError]) -> lon
 // was started in and every program it starts joins.
 groupResident(pgid: long) -> long = residentOf(groupMembers(pgid), pid -> process.residentBytes(pid))
 
-// The processes of the process group `pgid`, as `pgrep` lists them; none where it cannot be asked.
+// The processes of the process group `pgid`; none where it cannot be asked, for a group nobody is in
+// and for a `pgid` that is not a group's.
 groupMembers(pgid: long) -> Vector[long]
     if pgid <= 0 then return []
-    Command("pgrep", "-g", pgid.toString()).output() match
-        Ok(text) -> text.lines().map(l -> l.trim().toLongOption()).filter(o -> o.isDefined()).map(o -> o.get()).toVector()
-        Err(_) -> []
+    process.groupMembers(pgid).getOrElse([])
 
 // A job's memory as measured: the latest measurement, and the most any has found.
 data Resident(now: long, peak: long)
