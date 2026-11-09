@@ -9,7 +9,7 @@ import dev.avinlang.marshal.cli
 import dev.avinlang.marshal.top
 import dev.avinlang.marshal.top.{App, IdleHideMs,KillJob, Quit, StartDaemon, Stay, ShowAll, ShowRunning, ShowQueued, ShowFinished}
 import dev.avinlang.tui.{BrightBlack, Char, Ctrl, Down, End, Enter, Escape, Event, Green, Grid, Home, Key, KeyPress, Magenta,
-                         PageDown, PageUp, Red, Resize, Reverse, Stop, Up, Yellow}
+                         PageDown, PageUp, Red, Resize, Reverse, Stop, Up, Yellow, wrapChars}
 
 val minuteMs: long = 60000
 
@@ -422,7 +422,7 @@ logScroll()
     drawn(app, 80, 30)
     val rows = app.logRows
     app.handle(press(PageUp))
-    assertEq(app.logBack, rows)
+    assertEq(app.logBack(), rows)
     assertEq(app.logWanted().map(w -> w.1), Some(2 * rows))
     app.logLines = (1 .. 2 * rows).map(i -> s"line $i").toVector()
     val g = drawn(app, 80, 30)
@@ -430,16 +430,16 @@ logScroll()
     assert(rowOf(g, "line 1 ") > 0 || rowOf(g, "line 1│") > 0, "the first line is shown")
     assertEq(rowOf(g, s"line ${2 * rows}"), -1)
     app.handle(press(PageDown))
-    assertEq(app.logBack, 0)
+    assertEq(app.logBack(), 0)
     app.handle(press(PageDown))
-    assertEq(app.logBack, 0)
+    assertEq(app.logBack(), 0)
     app.handle(press(Home))
-    assertEq(app.logBack, top.MaxBack)
+    assertEq(app.logBack(), top.MaxBack)
     // a log shorter than the scroll shows its start
     app.logLines = ["only"]
     assert(rowOf(drawn(app, 80, 30), "only") > 0)
     app.handle(press(End))
-    assertEq(app.logBack, 0)
+    assertEq(app.logBack(), 0)
     // the selection does not move while the pane scrolls
     assertEq(app.selected().map(j -> j.id), Some(long(1)))
 
@@ -732,15 +732,15 @@ logHeaderWraps()
     assert(rowOf(small, "…") > 0)
     assert(rowOf(small, "last") > 0)
 
-@test("wrapText cuts exactly at the width, keeps every character and treats empty and zero widths")
+@test("the log header's command is cut exactly at the width: every character kept, spaces too")
 wrapping()
-    assertEq(top.wrapText("", 5), [""])
-    assertEq(top.wrapText("abc", 5), ["abc"])
-    assertEq(top.wrapText("abcde", 5), ["abcde"])
-    assertEq(top.wrapText("abcdef", 5), ["abcde", "f"])
-    assertEq(top.wrapText("abcd", 2), ["ab", "cd"])
-    assertEq(top.wrapText("ab", 0), ["a", "b"])
-    assertEq(top.wrapText("héllo wörld", 4).mkString(""), "héllo wörld")
+    assertEq(wrapChars("", 5), [""])
+    assertEq(wrapChars("abc", 5), ["abc"])
+    assertEq(wrapChars("abcde", 5), ["abcde"])
+    assertEq(wrapChars("abcdef", 5), ["abcde", "f"])
+    assertEq(wrapChars("abcd", 2), ["ab", "cd"])
+    assertEq(wrapChars("a b c d", 3), ["a b", " c ", "d"])
+    assertEq(wrapChars("héllo wörld", 4).mkString(""), "héllo wörld")
 
 @test("a job with an empty log still shows the header, and a narrow terminal draws it without failing")
 logHeaderEdges()

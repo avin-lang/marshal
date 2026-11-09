@@ -10,7 +10,8 @@ import dev.avinlang.marshal.{NoUnits, NoMemory, LaneBusy, Draining, ForTakeSlot,
 import dev.avinlang.marshal.{Exited, Signalled, TimedOut, Cancelled, Lost, DependencyFailed, Quiet}
 import dev.avinlang.tui.{Black, Blue, Bold, BrightBlack, Char, Column, Ctrl, Cyan, Dim, Down, End, Enter, Escape, Event,
                          Fill, Fixed, Green, Grid, Home, Key, KeyPress, Magenta, Modal, ModalStack, PageDown, PageUp,
-                         Rect, Red, Reverse, Rounded, ScrollView, Span, Stop, Style, Table, Up, Yellow, textWidth}
+                         Rect, Red, Reverse, Rounded, ScrollView, Segment, Span, Stop, Style, Table, Up, Yellow, textWidth,
+                         wrapChars}
 
 // Which jobs the table lists.
 data Filter
@@ -183,7 +184,8 @@ val CommandMin: int = 20
 
 // The width of the LABEL column on a screen `width` cells wide, drawn with the columns `base` (the
 // last of them COMMAND), when the longest label shown is `longest` cells; 0 for no column, where no
-// shown job has a label or the screen leaves COMMAND under `CommandMin` cells.
+// shown job has a label or the screen leaves COMMAND under `CommandMin` cells. The label is measured
+// in characters, which the column's `fit` (in display columns) would change for wide characters.
 labelWidth(base: Vector[Column], width: int, longest: int) -> int
     if longest <= 0 then return 0
     val fixed = base.map(c -> c.width).sum()
@@ -242,9 +244,8 @@ class App(val sock: string)
     // end it is scrolled (0: it follows the end).
     var logOf: Option[JobInfo] = None
     var logLines: Vector[string] = []
-    var logBack = 0
-    // Draws the log's lines up to where the pane is scrolled to; it always follows their end.
-    private val logView: ScrollView = ScrollView()
+    // Holds how far back the pane is scrolled and draws the lines read, which end where it is.
+    private val logView: ScrollView = logScroll()
     // Rows of the table's page and of the log pane at the last draw, which page keys move by.
     var page = 1
     var logRows = 10
@@ -283,7 +284,10 @@ class App(val sock: string)
         if 0 <= table.selected < shown.length() then Some(shown(table.selected).job) else None
 
     // The log the pane wants and how many of its last lines: enough to fill the pane at its scroll.
-    logWanted() -> Option[(string, int)] = logOf.map(j -> (j.log, logRows + logBack))
+    logWanted() -> Option[(string, int)] = logOf.map(j -> (j.log, logRows + logBack()))
+
+    // How many lines back from the end the log pane is scrolled (0: it follows the end).
+    logBack() -> int = logView.back
 
     // Counts as a key at `now`, which highlights the selected row.
     touch(now: long)
@@ -337,10 +341,10 @@ class App(val sock: string)
     key(Char('s')) = if noDaemon then StartDaemon else Stay
     key(Up) = move(-1)
     key(Down) = move(1)
-    key(PageUp) = if logOf.isDefined() then scrollLog(logRows) else move(-page)
-    key(PageDown) = if logOf.isDefined() then scrollLog(-logRows) else move(page)
-    key(Home) = if logOf.isDefined() then scrollLog(MaxBack) else moveTo(0)
-    key(End) = if logOf.isDefined() then scrollLog(-MaxBack) else moveTo(shown.length() - 1)
+    key(PageUp) = if logOf.isDefined() then scrollLog(PageUp) else move(-page)
+    key(PageDown) = if logOf.isDefined() then scrollLog(PageDown) else move(page)
+    key(Home) = if logOf.isDefined() then scrollLog(Home) else moveTo(0)
+    key(End) = if logOf.isDefined() then scrollLog(End) else moveTo(shown.length() - 1)
     key(_) = Stay
 
     private showHelp() -> Action
@@ -363,19 +367,18 @@ class App(val sock: string)
         if logOf.isDefined() then return closeLog()
         logOf = selected()
         logLines = []
-        logBack = 0
+        logView.toEnd()
         if logOf.isEmpty() then message = "no job selected"
         Stay
 
     private closeLog() -> Action
         logOf = None
         logLines = []
-        logBack = 0
+        logView.toEnd()
         Stay
 
-    private scrollLog(n: int) -> Action
-        val back = logBack + n
-        logBack = if back < 0 then 0 else if back > MaxBack then MaxBack else back
+    private scrollLog(k: Key) -> Action
+        logView.handle(k)
         Stay
 
     private move(n: int) -> Action = moveTo(table.selected + n)
@@ -387,7 +390,7 @@ class App(val sock: string)
         if logOf.isDefined() && selected().map(j -> j.id) != logOf.map(j -> j.id)
             logOf = selected()
             logLines = []
-            logBack = 0
+            logView.toEnd()
         Stay
 
     // Draws the screen into `g`, `since` milliseconds after the snapshot came: the header, the table,
@@ -426,18 +429,18 @@ class App(val sock: string)
     private drawLog(g: Grid, r: Rect, j: JobInfo)
         if r.h < 3
             logRows = 1
+            logView.rows = 1
             return
         val whole = r.inset(1)
         g.fill(r.x, r.y, r.w, r.h, Style.plain())
-        val follow = if logBack == 0 then "following" else s"$logBack lines back"
+        val follow = if logBack() == 0 then "following" else s"${logBack()} lines back"
         g.box(r, Style.fg(Cyan), Rounded, s"job ${j.id} log, $follow; PgUp PgDn Home End scroll, Esc closes")
         val inside = whole.shrink(drawLogHeader(g, whole, j), 0, 0, 0)
         logRows = maxInt(inside.h, 1)
-        val n = logLines.length()
-        // the lines read are the last `logRows + logBack` of the log, or all of a shorter one: the
-        // pane shows those that end `logBack` lines before the last
-        logView.draw(g, inside, logLines.slice(0, n - minInt(logBack, maxInt(n - inside.h, 0))))
-        if n == 0 then g.text(inside.x, inside.y, "(nothing in the log yet)", Style.fg(BrightBlack), inside)
+        // the lines read are the last `logRows + logBack()` of the log, or all of a shorter one: the
+        // pane shows those that end `logBack()` lines before the last
+        logView.draw(g, inside, logLines)
+        if logLines.isEmpty() then g.text(inside.x, inside.y, "(nothing in the log yet)", Style.fg(BrightBlack), inside)
 
     // The fixed header of the log pane: the job's kind, with its label if it has one beside it, and its whole command line, wrapped to the
     // pane, labels in bold and values dim, then a rule; the log scrolls below it, so none of this
@@ -447,12 +450,12 @@ class App(val sock: string)
     private drawLogHeader(g: Grid, box: Rect, j: JobInfo) -> int
         if box.h < 4 || box.w < 1 then return 0
         val width = maxInt(box.w - LogLabel.charCount(), 1)
-        val lines = wrapText(j.cmd.mkString(" "), width)
+        val lines = wrapChars(j.cmd.mkString(" "), width)
         // the label stands on the kind's line, after the kind, and wraps onto the rows below under
         // where it began, whole while there is room: one command row, the rule and one log row stay
         val kindEnd = box.x + LogLabel.charCount() + j.kind.charCount()
         val labelX = kindEnd + LabelGap + LabelWord.charCount()
-        val labelLines = if j.label.isEmpty() then [] else wrapText(j.label, maxInt(box.x + box.w - labelX, 1))
+        val labelLines = if j.label.isEmpty() then [] else wrapChars(j.label,maxInt(box.x + box.w - labelX, 1))
         val labelShown = labelLines.take(maxInt(box.h - 3, 1))
         val extra = maxInt(labelShown.length() - 1, 0)
         // kind, the label's further rows, the rule and at least one log row leave this many for the command
@@ -492,10 +495,7 @@ class App(val sock: string)
         if confirming is Some(j)
             g.text(0, y, s"Kill job ${j.id} (${j.cmd.mkString(" ")})? y/n", Style(Black, Red, Bold), line)
             return
-        var x = 0
-        for (k, what) in footerKeys
-            x = g.text(x, y, k, Style.plain().with(Bold), line)
-            x = g.text(x, y, what, Style(Black, Cyan, 0), line)
+        val x = g.keyHints(0, y, footerKeys, Style.plain().with(Bold), Style(Black, Cyan, 0), line, sep = 0, gap = 0, cut = true)
         if message.nonEmpty() && x + 1 < g.width
             g.textIn(x + 1, y, g.width - x - 1, message, Style.fg(Yellow), 1, line)
 
@@ -519,6 +519,16 @@ class Help(): Modal
 // How far back the log pane scrolls, in lines.
 val MaxBack: int = 10000
 
+// The log pane's view: anchored at the end, a page the whole pane, and as far back as `MaxBack`
+// lines, though only the last lines read are given to it.
+private logScroll() -> ScrollView
+    val view = ScrollView()
+    view.fromEnd = true
+    view.overlap = 0
+    view.backLimit = MaxBack
+    view.rows = 10
+    view
+
 // A job's label in the log pane header stands after its kind: `label`, two spaces, the text, with
 // `LabelGap` spaces between the kind and the word.
 val LabelWord: string = "label  "
@@ -526,14 +536,6 @@ val LabelGap: int = 3
 
 // The width of the log pane header's labels (`kind`, `command`) and the space after them.
 val LogLabel: string = "command "
-
-// `text` cut into lines of `width` characters, exactly: no character is dropped or added, so
-// the lines joined are the text. An empty text is one empty line.
-wrapText(text: string, width: int) -> Vector[string]
-    val w = maxInt(width, 1)
-    if text.charCount() <= w then return [text]
-    val cs = text.chars().toVector()
-    (0 ..< (cs.length() + w - 1) / w).map(i -> cs.slice(i * w, minInt((i + 1) * w, cs.length())).mkString("")).toVector()
 
 // The keys the bottom line names, each with its word.
 val footerKeys: Vector[(string, string)] = [
@@ -620,39 +622,16 @@ laneText(o: Overview) -> (string, Style)
 
 // The unit budget as a bar `width` cells wide between brackets: marshal's development units in
 // green, take-slot's after them in magenta, the rest dotted. Each boundary is at the nearest cell, a
-// half rounding up, counted in whole numbers so an exact half is never lost to rounding.
+// half rounding up. A budget of 0 counts as 1.
 unitBar(g: Grid, x: int, y: int, width: int, ours: int, outside: int, budget: int)
-    val whole = if budget > 0 then budget else 1
-    val mine = minInt(cellsOf(ours, whole, width), width)
-    val theirs = minInt(cellsOf(ours + outside, whole, width), width) - mine
-    g.text(x, y, "[")
-    for i in 0 ..< width
-        val (c, style) = if i < mine then ("█", Style.fg(Green)) else if i < mine + theirs then ("█", Style.fg(Magenta)) else ("·", Style.fg(BrightBlack))
-        g.text(x + 1 + i, y, c, style)
-    g.text(x + 1 + width, y, "]")
-
-// How many of `width` cells `part` of `whole` fills, to the nearest.
-private cellsOf(part: int, whole: int, width: int) -> int = (part * width * 2 + whole) / (whole * 2)
+    g.gauge(x, y, width + 2, [Segment(real(ours), Style.fg(Green)), Segment(real(outside), Style.fg(Magenta))], real(if budget > 0 then budget else 1))
 
 // The memory meter, `width` cells between brackets from column `x` of row `y`: the memory the running
 // jobs reserve (`reserved`) in cyan, and what admission counts them holding beyond it (`held`, a job's
 // measured memory where it is more than its reservation) in blue, as shares of `budget`; empty for
 // a budget of 0 (none set).
 memBar(g: Grid, x: int, y: int, width: int, reserved: long, held: long, budget: long)
-    g.text(x, y, "[")
-    val share = (part: long) -> if budget > 0 then minReal(real(part) / real(budget), 1.0) else 0.0
-    val mine = share(reserved)
-    if held > reserved && budget > 0
-        // the whole held span in blue, then the reserved part in cyan over the cells it reaches
-        g.meter(x + 1, y, width, share(held), Style.fg(Blue), Style.fg(BrightBlack))
-        val eighths = int(mine * real(width * 8) + 0.5)
-        val cells = (eighths + 7) / 8
-        if cells > 0 then g.meter(x + 1, y, width, mine, Style.fg(Cyan), Style.fg(BrightBlack), Rect(x + 1, y, cells, 1))
-    else
-        g.meter(x + 1, y, width, mine, Style.fg(Cyan), Style.fg(BrightBlack))
-    g.text(x + 1 + width, y, "]")
-
-private minReal(a: real, b: real) -> real = if a < b then a else b
+    g.gauge(x, y, width + 2, [Segment(real(reserved), Style.fg(Cyan)), Segment(real(held - reserved), Style.fg(Blue))], real(budget), rest = ' ', eighths = true)
 
 private minInt(a: int, b: int) -> int = if a < b then a else b
 private maxInt(a: int, b: int) -> int = if a > b then a else b
