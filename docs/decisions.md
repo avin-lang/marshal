@@ -22,8 +22,8 @@ budgets, and a job's leftover processes being sent TERM when its main process en
   development jobs.** Why: take-slot's `land.lock` is one reserved slot that nothing slows; counting
   its memory makes development jobs wait for it rather than risk swapping it. (It was first outside
   the memory budget too; see the next entry.)
-- **Proposed: a landing job starts only when its memory fits beside what runs, and while it waits
-  for memory it drains the machine.** It waits with the reason `draining`; every development job
+- **A landing job starts only when its memory fits beside what runs, and while it waits for memory
+  it drains the machine.** (Settled on the user's delegation 2026-11-09; the design is the user's.) It waits with the reason `draining`; every development job
   waits `behind` it (no backfill past it, even for a job that fits and would end at once), a second
   landing job waits `behind` it, and the daemon's take-slot ticket becomes the landing job's, dated
   just ahead of take-slot's earliest waiter, so take-slot admits none of its runs either. Why: a
@@ -35,8 +35,8 @@ budgets, and a job's leftover processes being sent TERM when its main process en
   still holds their memory). The ticket's date moves ahead of take-slot's waiters rather than
   staying at the landing job's arrival because a waiter that arrived earlier would otherwise still
   be admitted ahead of it.
-- **Proposed: a landing job whose memory alone exceeds the budget is accepted, and starts when
-  nothing else of marshal's runs.** It drains the machine as any landing job short of memory does,
+- **A landing job whose memory alone exceeds the budget is accepted, and starts when nothing else
+  of marshal's runs.** (Settled on the user's delegation 2026-11-09. Review with the user.) It drains the machine as any landing job short of memory does,
   and starts once the running jobs have all ended. Why: the lane is for the job that must run, the
   budget is set below the machine's memory (8G less by default), and a reservation can be declared
   generously; refusing it at submit would turn a cautious `--mem` into a failed landing, and a
