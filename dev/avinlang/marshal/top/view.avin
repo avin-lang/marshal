@@ -585,7 +585,8 @@ drawHeader(g: Grid, o: Overview, since: long, f: Filter) -> int
     val share = u.takeSlot match
         Some(t) -> s" + take-slot $outside / ${u.unitBudget}" + (if t.waiting > 0 then s", ${t.waiting} waiting" else "")
         None -> s" / ${u.unitBudget}"
-    g.text(6 + barWidth + 3, 1, s"${u.units}$share")
+    val after = g.text(6 + barWidth + 3, 1, s"${u.units}$share")
+    landingUnits(g, after, 1, o)
     g.text(0, 2, "mem   ")
     val bounded = u.memoryBudget != long.MaxValue && u.memoryBudget > 0
     memBar(g, 6, 2, barWidth, u.memory, u.held, if bounded then u.memoryBudget else 0)
@@ -597,6 +598,15 @@ drawHeader(g: Grid, o: Overview, since: long, f: Filter) -> int
 // and the memory the machine has, where it is known.
 memoryText(u: Usage) -> string =
     s"   rss ${marshal.roundSize(u.rss)}" + (if u.machineMemory > 0 then s"   machine ${marshal.roundSize(u.machineMemory)}" else "")
+
+// The units of the landing job that runs, which the landing lane holds outside the unit budget, after
+// the units line from column `x` of row `y`: `   landing 1`, in the landing job's colour. Nothing while
+// no landing job runs, and nothing where the whole of it does not fit on the screen.
+landingUnits(g: Grid, x: int, y: int, o: Overview)
+    for id in o.usage.landing
+        for j in o.running.find(j -> j.id == id)
+            val text = s"landing ${j.units}"
+            if x + 3 + textWidth(text) <= g.width then g.text(x + 3, y, text, Style.fg(Cyan))
 
 // Who holds the landing lane, as the header says it.
 laneText(o: Overview) -> (string, Style)

@@ -191,3 +191,25 @@ goldenOverlays()
     app.handle(key('h'))
     app.handle(Resize(120, 30))
     golden("help-resized", drawn(app, 120, 30))
+
+// A daemon running only a landing job of `units`, with take-slot's use if any.
+landingOnly(units: int, takeSlot: Option[TakeSlotUse]) -> Overview =
+    Overview(Usage(0, 12, 0, 16 * G, 1, 0, Some(7), takeSlot), 60000, [gjob(7, kind = "test", units = units, landing = true)], [], [])
+
+@test("golden: the units line adds the landing job's units, outside the budget, and drops them whole where they do not fit")
+goldenLandingUnits()
+    val alone = landingOnly(1, None)
+    // `0 / 12   landing 1` ends at column 40 of a 40-cell screen, and is dropped from a 39-cell one
+    for w in [100, 40, 39, 24]
+        golden(s"landing-units-$w", drawn(viewing(alone), w, 10))
+    val beside = landingOnly(3, Some(TakeSlotUse("/s/.git", 4, 0, false)))
+    // `0 + take-slot 4 / 12   landing 3` ends at column 61 of a 61-cell screen
+    for w in [120, 61, 60, 40]
+        golden(s"landing-units-takeslot-$w", drawn(viewing(beside), w, 10))
+    golden("landing-units-takeslot-waiting", drawn(viewing(landingOnly(2, Some(TakeSlotUse("/s/.git", 4, 3, false)))), 100, 10))
+    // the lane held by take-slot, or by a landing job not among the running ones: nothing is added
+    golden("landing-units-lane-takeslot", drawn(viewing(Overview(Usage(0, 12, 0, 16 * G, 0, 0, None, Some(TakeSlotUse("/s", 2, 0, true))), 0, [], [], [])), 100, 10))
+    golden("landing-units-not-running", drawn(viewing(Overview(Usage(0, 12, 0, 16 * G, 0, 1, Some(9), None), 0, [], [], [])), 100, 10))
+    val row = drawn(viewing(alone), 100, 10).rowText(1)
+    assert(row.contains("] 0 / 12   landing 1"), row)
+    assert(!drawn(viewing(alone), 39, 10).rowText(1).contains("landing"))

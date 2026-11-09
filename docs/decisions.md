@@ -1103,3 +1103,20 @@ fixed there: the budget becomes a failure the caller sees, and then `grep` exits
 - **A pattern that exhausts the regex library's step budget traps rather than returning an
   error**, so `marshal grep` would end with the trap's status, not 2. Left as the library has it;
   the budget is large (at least 10,000,000 steps per attempt).
+
+## The landing job's units on top's units line (branch `top-tui020`)
+
+**Proposed.**
+
+- **While a landing job runs, top's units line ends with `   landing N`, its units, in the landing
+  job's cyan.** `0 + take-slot 0 / 12   landing 1`, or `0 / 12   landing 1` with nothing shared. Why:
+  the landing lane sits outside the unit budget, so a landing job's units are in neither the bar nor
+  the count, and a machine busy with one landing job read as idle on that line. They stay outside the
+  `/ 12` and off the bar, which both describe the budget. Alternatives: counting them into the bar in a
+  third colour (would read as part of the budget, and could overfill it), or only the header's
+  `landing: job 7 (1 unit)` (already there, but on another line from the units it explains).
+- **Nothing is added while no landing job runs**: a lane held by take-slot holds units take-slot
+  already reports, and a lane whose job is not among the running ones has no units to show.
+- **Where the whole of `   landing N` does not fit on the screen it is left out**, not cut. Why: a cut
+  `landi…` or a bare `landing` without the number says less than nothing, and the header's first
+  line still names the landing job. Alternative: cutting with `…`.

@@ -1,5 +1,5 @@
 |marshal  up 25:01:01   4 running  9 queued (held)   landing: job 21 (2 units) filter: all|
-|units [██████████████████████·······] 6 + take-slot 3 / 12, 2 waiting                    |
+|units [██████████████████████·······] 6 + take-slot 3 / 12, 2 waiting   landing 2        |
 |mem   [████████████▊█████▏          ] 7G / 16G   rss 6.0G   machine 64G                  |
 |                                                                                         |
 |   ID STATE          KIND     UNITS   RESV   RSS STARTED  ELAPSED DEADLINE COMMAND       |
@@ -36,6 +36,7 @@
 1 7..22 Basic(2)/Default/0
 1 22..29 Basic(5)/Default/0
 1 29..36 Basic(8)/Default/0
+1 72..81 Basic(6)/Default/0
 2 7..20 Basic(6)/Default/0
 2 20..26 Basic(4)/Default/0
 2 26..36 Basic(8)/Default/0

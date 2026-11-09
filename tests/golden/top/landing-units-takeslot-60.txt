@@ -1,0 +1,32 @@
+|marshal  up 1:00   1 running  0 queued   landing:filter: all|
+|units [███████·············] 0 + take-slot 4 / 12           |
+|mem   [                    ] 0 / 16G   rss 0                |
+|                                                            |
+|   ID STATE          KIND     UNITS   RESV   RSS STARTED  EL|
+|    7 landing        test*        3      -     - -          |
+|                                                            |
+|                                                            |
+|                                                            |
+|hHelp EnterLog kKill fFilter qQuit                          |
+--
+0 0..7 Default/Default/1
+0 19..28 Basic(2)/Default/0
+0 30..38 Basic(3)/Default/0
+0 49..60 Basic(8)/Default/0
+1 7..14 Basic(5)/Default/0
+1 14..27 Basic(8)/Default/0
+2 7..27 Basic(8)/Default/0
+4 0..60 Default/Default/17
+5 0..6 Default/Default/16
+5 6..20 Basic(2)/Default/17
+5 20..60 Default/Default/16
+9 0..1 Default/Default/1
+9 1..6 Basic(0)/Basic(6)/0
+9 6..11 Default/Default/1
+9 11..15 Basic(0)/Basic(6)/0
+9 15..16 Default/Default/1
+9 16..21 Basic(0)/Basic(6)/0
+9 21..22 Default/Default/1
+9 22..29 Basic(0)/Basic(6)/0
+9 29..30 Default/Default/1
+9 30..35 Basic(0)/Basic(6)/0
