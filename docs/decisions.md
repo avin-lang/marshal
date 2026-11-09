@@ -1142,3 +1142,15 @@ the reason in the state cell rather than a column.
   its reply and its recent-jobs window. A job that starts between the two requests has no reason and
   lists as it is. Alternative: `ls` reply carrying the reasons (one atomic reply, but a new reply
   shape for every client of `ls`).
+
+## `top`'s LABEL column is sized by display width
+
+**Settled by the user 2026-11-09.**
+
+- **`top` draws LABEL as a tui `Column` with `fit`, `min` 5 (its heading), `max` 24, with COMMAND
+  `keep` 20, and the table sizes and cuts it, with `…`.** The width is measured in display cells, so a
+  double-width character counts 2; the longest label drawn sets the column, and a screen that would
+  leave COMMAND under 20 cells, or where no drawn job has a label, leaves it out. Why: the
+  hand-rolled sizing counted characters, so a wide-character label overran its column and shifted
+  the ones after it. Alternative: keeping `labelWidth` and counting display width by hand (a second
+  copy of what the table already does).

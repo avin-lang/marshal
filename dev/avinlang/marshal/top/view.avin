@@ -113,6 +113,12 @@ deadlineOf(l: Line, since: long) -> (string, Style)
 // job's run time stands still.
 elapsedOf(l: Line, since: long) -> long = if l.job.outcome.isDefined() || l.job.paused then l.job.elapsedMs else l.job.elapsedMs + since
 
+// The most cells the LABEL column takes, the fewest (its heading), and the cells COMMAND keeps at
+// least: the LABEL column is narrowed, or left out, on a screen too narrow to leave COMMAND that.
+val LabelCap: int = 24
+val LabelMin: int = 5
+val CommandMin: int = 20
+
 val columns: Vector[Column] = [
     Column("ID", 5, 1),
     Column("STATE", 14),
@@ -124,7 +130,7 @@ val columns: Vector[Column] = [
     Column("STARTED", 11),
     Column("ELAPSED", 8, 1),
     Column("DEADLINE", 8, 1),
-    Column("COMMAND", 0)
+    Column("COMMAND", 0, keep = CommandMin)
 ]
 
 // The column PEAK sits at, and the narrowest screen that shows it: the fixed columns with it take 85
@@ -168,33 +174,16 @@ cells(l: Line, since: long, zone: time.Zone, today: string, width: int) -> Vecto
     ]
     if showsPeak(width) then all else all.slice(0, PeakColumn) ++ all.slice(PeakColumn + 1, all.length())
 
-// The most cells the LABEL column takes, the fewest (its heading), and the cells COMMAND keeps at
-// least: the column is dropped from a screen too narrow to leave COMMAND that.
-val LabelCap: int = 24
-val LabelMin: int = 5
-val CommandMin: int = 20
+// The LABEL column: as wide as the longest label drawn, measured in display cells, between its heading
+// and `LabelCap`, cut with an ellipsis; left out where no drawn job has a label, or where the screen
+// would leave COMMAND under `CommandMin` cells.
+val LabelColumn: Column = Column("LABEL", 0, min = LabelMin, max = LabelCap, fit = true)
 
-// The width of the LABEL column on a screen `width` cells wide, drawn with the columns `base` (the
-// last of them COMMAND), when the longest label shown is `longest` cells; 0 for no column, where no
-// shown job has a label or the screen leaves COMMAND under `CommandMin` cells. The label is measured
-// in characters, which the column's `fit` (in display columns) would change for wide characters.
-labelWidth(base: Vector[Column], width: int, longest: int) -> int
-    if longest <= 0 then return 0
-    val fixed = base.map(c -> c.width).sum()
-    val room = width - fixed - base.length() - CommandMin
-    val w = minInt(maxInt(longest, LabelMin), minInt(LabelCap, room))
-    if w < LabelMin then 0 else w
+// The columns `base` (the last of them COMMAND) with LABEL put before COMMAND.
+withLabelColumn(base: Vector[Column]) -> Vector[Column] = base.slice(0, base.length() - 1) ++ [LabelColumn, base(base.length() - 1)]
 
-// The columns with LABEL of `width` cells put before COMMAND, the last; as they were for width 0.
-withLabelColumn(base: Vector[Column], width: int) -> Vector[Column]
-    if width <= 0 then return base
-    base.slice(0, base.length() - 1) ++ [Column("LABEL", width), base(base.length() - 1)]
-
-// A row of `cells` with the label put before the command, the last cell; the table cuts it to its
-// column with an ellipsis.
-withLabelCell(cells: Vector[Span], label: string, width: int) -> Vector[Span]
-    if width <= 0 then return cells
-    cells.slice(0, cells.length() - 1) ++ [Span(label), cells(cells.length() - 1)]
+// A row of `cells` with the label put before the command, the last cell.
+withLabelCell(cells: Vector[Span], label: string) -> Vector[Span] = cells.slice(0, cells.length() - 1) ++ [Span(label), cells(cells.length() - 1)]
 
 // How long, in milliseconds, the selected row stays highlighted after the last key.
 val IdleHideMs: long = 5000
@@ -401,12 +390,11 @@ class App(val sock: string)
             val rows = shown.map(l -> cells(l, since, zone, today, area.w))
             val startedWidth = if rows.exists(r -> r(PeakColumn).text.charCount() > 7) then 11 else 7
             val base = columnsFor(area.w, startedWidth)
-            val labelCells = labelWidth(base, area.w, if shown.isEmpty() then 0 else shown.map(l -> l.job.label.charCount()).max())
-            val drawing = if labelCells > 0 then Table(withLabelColumn(base, labelCells)) elif showsPeak(area.w) then table else Table(base)
+            val drawing = Table(withLabelColumn(base))
             drawing.selected = table.selected
             drawing.offset = table.offset
             drawing.selectedStyle = if highlighted(now) then Style.plain().with(Reverse) else drawing.rowStyle
-            drawing.drawSpans(g, area, if labelCells > 0 then rows.zip(shown).map(p -> withLabelCell(p.0, p.1.job.label, labelCells)) else rows)
+            drawing.drawSpans(g, area, rows.zip(shown).map(p -> withLabelCell(p.0, p.1.job.label)))
             table.selected = drawing.selected
             table.offset = drawing.offset
             remember()
