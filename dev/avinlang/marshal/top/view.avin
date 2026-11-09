@@ -9,8 +9,8 @@ import dev.avinlang.marshal.{JobInfo, Overview, QueuedJob, Usage, Why}
 import dev.avinlang.marshal.{NoUnits, NoMemory, LaneBusy, Draining, ForTakeSlot, Behind, Starting, Held, QueueHeld}
 import dev.avinlang.marshal.{Exited, Signalled, TimedOut, Cancelled, Lost, DependencyFailed, Quiet}
 import dev.avinlang.tui.{Black, Blue, Bold, BrightBlack, Char, Column, Ctrl, Cyan, Dim, Down, End, Enter, Escape, Event,
-                         Green, Grid, Home, Key, KeyPress, Magenta, PageDown, PageUp, Rect, Red, Reverse, Rounded,
-                         Stop, Style, Table, Up, Yellow, textWidth}
+                         Fill, Fixed, Green, Grid, Home, Key, KeyPress, Magenta, Modal, ModalStack, PageDown, PageUp,
+                         Rect, Red, Reverse, Rounded, ScrollView, Span, Stop, Style, Table, Up, Yellow, textWidth}
 
 // Which jobs the table lists.
 data Filter
@@ -134,10 +134,6 @@ val columns: Vector[Column] = [
     Column("COMMAND", 0)
 ]
 
-// The column of STATE and of DEADLINE, which are drawn again in colour over the table's plain text.
-val StateColumn: int = 1
-val DeadlineColumn: int = 9
-
 // The column PEAK sits at, and the narrowest screen that shows it: the fixed columns with it take 85
 // cells, so under 90 the table is drawn without PEAK (the peak is still in `stats` and the JSON) and
 // keeps STARTED and every other column.
@@ -153,26 +149,29 @@ columnsFor(width: int, startedWidth: int) -> Vector[Column]
     if showsPeak(width) then return columns
     val narrow = columns.slice(0, PeakColumn) ++ columns.slice(PeakColumn + 1, columns.length())
     narrow.map(c -> if c.title == "STARTED" then Column("STARTED", startedWidth) else c)
-deadlineColumnFor(width: int) -> int = if showsPeak(width) then DeadlineColumn else DeadlineColumn - 1
 
 // A measured size for the RSS and PEAK columns: `-` where nothing was measured.
 measuredText(bytes: long) -> string = if bytes <= 0 then "-" else marshal.roundSize(bytes)
 
-// The text of a line's cells on a screen `width` cells wide, the start time read in `zone`.
-cells(l: Line, since: long, zone: time.Zone, today: string, width: int) -> Vector[string]
+// A cell in the style the pair gives.
+styled(p: (string, Style)) -> Span = Span(p.0, Some(p.1))
+
+// A line's cells on a screen `width` cells wide, the start time read in `zone`: STATE and DEADLINE in
+// their colours, the rest in the table's.
+cells(l: Line, since: long, zone: time.Zone, today: string, width: int) -> Vector[Span]
     val j = l.job
     val all = [
-        j.id.toString(),
-        stateOf(l).0,
-        if j.landing then j.kind + "*" else j.kind,
-        j.units.toString(),
-        marshal.reservedText(j),
-        measuredText(if j.state == "running" then j.rss else 0),
-        measuredText(j.peakRss),
-        if showsPeak(width) then marshal.startedColumn(j, zone) else marshal.startedShort(j, zone, today),
-        clock(elapsedOf(l, since)),
-        deadlineOf(l, since).0,
-        j.cmd.mkString(" ")
+        Span(j.id.toString()),
+        styled(stateOf(l)),
+        Span(if j.landing then j.kind + "*" else j.kind),
+        Span(j.units.toString()),
+        Span(marshal.reservedText(j)),
+        Span(measuredText(if j.state == "running" then j.rss else 0)),
+        Span(measuredText(j.peakRss)),
+        Span(if showsPeak(width) then marshal.startedColumn(j, zone) else marshal.startedShort(j, zone, today)),
+        Span(clock(elapsedOf(l, since))),
+        styled(deadlineOf(l, since)),
+        Span(j.cmd.mkString(" "))
     ]
     if showsPeak(width) then all else all.slice(0, PeakColumn) ++ all.slice(PeakColumn + 1, all.length())
 
@@ -192,21 +191,16 @@ labelWidth(base: Vector[Column], width: int, longest: int) -> int
     val w = minInt(maxInt(longest, LabelMin), minInt(LabelCap, room))
     if w < LabelMin then 0 else w
 
-// `text` in `width` cells: as it is, or its start and an ellipsis.
-elide(text: string, width: int) -> string
-    if text.charCount() <= width then return text
-    if width < 1 then return ""
-    text.chars().toVector().take(width - 1).mkString("") + "…"
-
 // The columns with LABEL of `width` cells put before COMMAND, the last; as they were for width 0.
 withLabelColumn(base: Vector[Column], width: int) -> Vector[Column]
     if width <= 0 then return base
     base.slice(0, base.length() - 1) ++ [Column("LABEL", width), base(base.length() - 1)]
 
-// A row of `cells` with the label put before the command, the last cell, elided to `width`.
-withLabelCell(cells: Vector[string], label: string, width: int) -> Vector[string]
+// A row of `cells` with the label put before the command, the last cell; the table cuts it to its
+// column with an ellipsis.
+withLabelCell(cells: Vector[Span], label: string, width: int) -> Vector[Span]
     if width <= 0 then return cells
-    cells.slice(0, cells.length() - 1) ++ [elide(label, width), cells(cells.length() - 1)]
+    cells.slice(0, cells.length() - 1) ++ [Span(label), cells(cells.length() - 1)]
 
 // How long, in milliseconds, the selected row stays highlighted after the last key.
 val IdleHideMs: long = 5000
@@ -233,7 +227,8 @@ class App(val sock: string)
     // Whether `s` may start a daemon: there is none.
     var noDaemon = false
     var filter: Filter = ShowAll
-    var help = false
+    // The help, while it is open.
+    val modals: ModalStack = ModalStack()
     var confirming: Option[JobInfo] = None
     var message = ""
     val table: Table = Table(columns)
@@ -248,6 +243,8 @@ class App(val sock: string)
     var logOf: Option[JobInfo] = None
     var logLines: Vector[string] = []
     var logBack = 0
+    // Draws the log's lines up to where the pane is scrolled to; it always follows their end.
+    private val logView: ScrollView = ScrollView()
     // Rows of the table's page and of the log pane at the last draw, which page keys move by.
     var page = 1
     var logRows = 10
@@ -295,7 +292,10 @@ class App(val sock: string)
     // Whether the selected row is highlighted at `now`: always while the log pane, the kill prompt
     // or the help is showing, otherwise until `hideAfter` after the last key.
     highlighted(now: long) -> bool =
-        logOf.isDefined() || confirming.isDefined() || help || lastKeyAt.exists(t -> now - t < hideAfter)
+        logOf.isDefined() || confirming.isDefined() || helpShown() || lastKeyAt.exists(t -> now - t < hideAfter)
+
+    // Whether the help is showing.
+    helpShown() -> bool = !modals.isEmpty()
 
     // Changes the state for `e`, which came at `now`, and says what to do next. A key that finds the
     // highlight hidden and only moves or opens something shows it again and does nothing else.
@@ -314,8 +314,10 @@ class App(val sock: string)
                 _ ->
                     message = "not killed"
                     Stay
-        if help
-            help = false
+        if helpShown()
+            // any event closes the help: a key it takes itself, and a resize or a stop, which the
+            // stack leaves to the screen, closes it here
+            if !modals.handle(e) then modals.clear()
             return if e is Stop(_) then Quit else Stay
         e match
             KeyPress(Char('c'), mods) if (mods & Ctrl) != 0 -> Quit
@@ -342,7 +344,7 @@ class App(val sock: string)
     key(_) = Stay
 
     private showHelp() -> Action
-        help = true
+        modals.push(Help())
         Stay
 
     private cycleFilter() -> Action
@@ -392,52 +394,33 @@ class App(val sock: string)
     // the log pane under it when open, the bottom line, and the help over everything when open.
     draw(g: Grid, since: long, now: long = 0)
         if overview is Some(o)
-            val top = drawHeader(g, o, since, filter)
-            val bottom = g.height - 1
-            val space = bottom - top
-            val tableRows = if logOf.isDefined() then maxInt(space / 2, 2) else space
-            val area = Rect(0, top, g.width, maxInt(minInt(tableRows, space), 0))
+            // the header, the body, and the bottom line; with the log open, the table takes half the
+            // body (at least two rows) and the pane the rest
+            val screen = g.area().rows([Fixed(drawHeader(g, o, since, filter)), Fill(), Fixed(1)])
+            val body = screen(1)
+            val parts = body.rows([Fixed(if logOf.isDefined() then maxInt(body.h / 2, 2) else body.h), Fill()])
+            val area = parts(0)
             page = if area.h > 2 then area.h - 1 else 1
             val zone = time.localZone()
             val today = time.now().atZone(zone).format("YYYY-MM-DD")
             val rows = shown.map(l -> cells(l, since, zone, today, area.w))
-            val startedWidth = if rows.exists(r -> r(PeakColumn).charCount() > 7) then 11 else 7
+            val startedWidth = if rows.exists(r -> r(PeakColumn).text.charCount() > 7) then 11 else 7
             val base = columnsFor(area.w, startedWidth)
             val labelCells = labelWidth(base, area.w, if shown.isEmpty() then 0 else shown.map(l -> l.job.label.charCount()).max())
             val drawing = if labelCells > 0 then Table(withLabelColumn(base, labelCells)) elif showsPeak(area.w) then table else Table(base)
             drawing.selected = table.selected
             drawing.offset = table.offset
-            val lit = highlighted(now)
-            drawing.selectedStyle = if lit then Style.plain().with(Reverse) else drawing.rowStyle
-            drawing.draw(g, area, if labelCells > 0 then rows.zip(shown).map(p -> withLabelCell(p.0, p.1.job.label, labelCells)) else rows)
+            drawing.selectedStyle = if highlighted(now) then Style.plain().with(Reverse) else drawing.rowStyle
+            drawing.drawSpans(g, area, if labelCells > 0 then rows.zip(shown).map(p -> withLabelCell(p.0, p.1.job.label, labelCells)) else rows)
             table.selected = drawing.selected
             table.offset = drawing.offset
-            paintCells(g, area, since, drawing, lit)
             remember()
             for j in logOf
-                drawLog(g, Rect(0, top + area.h, g.width, maxInt(bottom - top - area.h, 0)), j)
+                drawLog(g, parts(1), j)
         else
             drawProblem(g)
         drawFooter(g)
-        if help then drawHelp(g)
-
-    // STATE and DEADLINE again over the table's text, in their colours; on the selected line the
-    // colours are reversed as the table reverses it.
-    private paintCells(g: Grid, area: Rect, since: long, drawn: Table, lit: bool)
-        if area.h < 2 then return
-        val ws = drawn.widths(area.w)
-        val deadlineColumn = deadlineColumnFor(area.w)
-        val stateX = columnX(ws, StateColumn)
-        val deadlineX = columnX(ws, deadlineColumn)
-        for k in 0 ..< area.h - 1
-            val i = table.offset + k
-            if i >= shown.length() then break
-            val l = shown(i)
-            val mark = if lit && i == table.selected then Reverse else 0
-            val (state, stateStyle) = stateOf(l)
-            val (left, leftStyle) = deadlineOf(l, since)
-            g.textIn(stateX, area.y + 1 + k, ws(StateColumn), state, stateStyle.with(mark), columns(StateColumn).align, area)
-            g.textIn(deadlineX, area.y + 1 + k, ws(deadlineColumn), left, leftStyle.with(mark), columns(DeadlineColumn).align, area)
+        modals.draw(g, g.area())
 
     // The log pane: a box titled with the job, its log's lines at the pane's scroll inside.
     private drawLog(g: Grid, r: Rect, j: JobInfo)
@@ -448,17 +431,13 @@ class App(val sock: string)
         g.fill(r.x, r.y, r.w, r.h, Style.plain())
         val follow = if logBack == 0 then "following" else s"$logBack lines back"
         g.box(r, Style.fg(Cyan), Rounded, s"job ${j.id} log, $follow; PgUp PgDn Home End scroll, Esc closes")
-        val used = drawLogHeader(g, whole, j)
-        val inside = Rect(whole.x, whole.y + used, whole.w, whole.h - used)
+        val inside = whole.shrink(drawLogHeader(g, whole, j), 0, 0, 0)
         logRows = maxInt(inside.h, 1)
         val n = logLines.length()
-        // the lines read are the last `logRows + logBack` of the log, or all of a shorter one
-        val back = minInt(logBack, maxInt(n - inside.h, 0))
-        val end = n - back
-        val start = maxInt(end - inside.h, 0)
+        // the lines read are the last `logRows + logBack` of the log, or all of a shorter one: the
+        // pane shows those that end `logBack` lines before the last
+        logView.draw(g, inside, logLines.slice(0, n - minInt(logBack, maxInt(n - inside.h, 0))))
         if n == 0 then g.text(inside.x, inside.y, "(nothing in the log yet)", Style.fg(BrightBlack), inside)
-        for (text, k) in logLines.slice(start, end).zipWithIndex()
-            g.text(inside.x, inside.y + k, text, Style.plain(), inside)
 
     // The fixed header of the log pane: the job's kind, with its label if it has one beside it, and its whole command line, wrapped to the
     // pane, labels in bold and values dim, then a rule; the log scrolls below it, so none of this
@@ -493,7 +472,7 @@ class App(val sock: string)
             if k == 0 then g.text(box.x, top, "command", Style.plain().with(Bold), box)
             g.text(box.x + LogLabel.charCount(), top + k, t, Style.fg(BrightBlack), box)
         val ruleY = top + maxInt(shownLines.length(), 1)
-        g.text(box.x, ruleY, (0 ..< box.w).map(i -> "─").mkString(""), Style.fg(Cyan), box)
+        g.hline(box.x, ruleY, box.w, Style.fg(Cyan), clip = box)
         ruleY - box.y + 1
 
     // With no snapshot: why, and what the keys do about it.
@@ -520,18 +499,22 @@ class App(val sock: string)
         if message.nonEmpty() && x + 1 < g.width
             g.textIn(x + 1, y, g.width - x - 1, message, Style.fg(Yellow), 1, line)
 
-    private drawHelp(g: Grid)
+// The help, over the screen: the lines one column in from its border, cut at the box's edge where the
+// screen is too small, and closed by any key.
+class Help(): Modal
+    override title() -> string = "help; any key closes"
+
+    override measure(maxWidth: int, maxHeight: int) -> (int, int)
         var widest = 0
         for l in helpLines
             if textWidth(l) > widest then widest = textWidth(l)
-        val w = minInt(widest + 4, g.width)
-        val h = minInt(helpLines.length() + 2, g.height)
-        val r = Rect((g.width - w) / 2, (g.height - h) / 2, w, h)
-        g.fill(r.x, r.y, r.w, r.h, Style.plain())
-        g.box(r, Style.fg(Cyan), Rounded, "help; any key closes")
-        val inside = r.inset(1)
+        (minInt(widest + 2, maxWidth), minInt(helpLines.length(), maxHeight))
+
+    override draw(g: Grid, r: Rect)
         for (l, i) in helpLines.zipWithIndex()
-            g.text(inside.x + 1, inside.y + i, l, Style.plain(), inside)
+            g.text(r.x + 1, r.y + i, l, Style.plain(), r)
+
+    override handle(e: Event) -> bool = false
 
 // How far back the log pane scrolls, in lines.
 val MaxBack: int = 10000
@@ -584,15 +567,15 @@ val helpLines: Vector[string] = [
 //   mem   [███·············]  12G / 56G   rss 9.4G   machine 64G
 drawHeader(g: Grid, o: Overview, since: long, f: Filter) -> int
     val u = o.usage
-    var x = g.text(0, 0, "marshal", Style.plain().with(Bold))
-    x = g.text(x, 0, s"  up ${clock(o.uptimeMs + since)}   ")
-    x = g.text(x, 0, s"${u.running} running", Style.fg(Green))
-    x = g.text(x, 0, "  ")
-    x = g.text(x, 0, s"${u.queued} queued", Style.fg(Yellow))
-    if u.queueHeld then x = g.text(x, 0, " (held)", Style.fg(Red).with(Bold))
-    x = g.text(x, 0, "   landing: ")
-    val (lane, laneStyle) = laneText(o)
-    g.text(x, 0, lane, laneStyle)
+    val held = if u.queueHeld then [Span(" (held)", Some(Style.fg(Red).with(Bold)))] else []
+    g.spans(0, 0, [
+        Span("marshal", Some(Style.plain().with(Bold))),
+        Span(s"  up ${clock(o.uptimeMs + since)}   "),
+        Span(s"${u.running} running", Some(Style.fg(Green))),
+        Span("  "),
+        Span(s"${u.queued} queued", Some(Style.fg(Yellow)))] ++ held ++ [
+        Span("   landing: "),
+        styled(laneText(o))])
     val shown = s"filter: ${filterName(f)}"
     if g.width > textWidth(shown) then g.text(g.width - textWidth(shown), 0, shown, Style.fg(BrightBlack))
     val barWidth = minInt(maxInt(g.width / 3, 10), 40)
@@ -626,7 +609,8 @@ laneText(o: Overview) -> (string, Style)
             else ("free", Style.fg(BrightBlack))
 
 // The unit budget as a bar `width` cells wide between brackets: marshal's development units in
-// green, take-slot's after them in magenta, the rest dotted.
+// green, take-slot's after them in magenta, the rest dotted. Each boundary is at the nearest cell, a
+// half rounding up, counted in whole numbers so an exact half is never lost to rounding.
 unitBar(g: Grid, x: int, y: int, width: int, ours: int, outside: int, budget: int)
     val whole = if budget > 0 then budget else 1
     val mine = minInt(cellsOf(ours, whole, width), width)
@@ -636,6 +620,9 @@ unitBar(g: Grid, x: int, y: int, width: int, ours: int, outside: int, budget: in
         val (c, style) = if i < mine then ("█", Style.fg(Green)) else if i < mine + theirs then ("█", Style.fg(Magenta)) else ("·", Style.fg(BrightBlack))
         g.text(x + 1 + i, y, c, style)
     g.text(x + 1 + width, y, "]")
+
+// How many of `width` cells `part` of `whole` fills, to the nearest.
+private cellsOf(part: int, whole: int, width: int) -> int = (part * width * 2 + whole) / (whole * 2)
 
 // The memory meter, `width` cells between brackets from column `x` of row `y`: the memory the running
 // jobs reserve (`reserved`) in cyan, and what admission counts them holding beyond it (`held`, a job's
@@ -656,16 +643,6 @@ memBar(g: Grid, x: int, y: int, width: int, reserved: long, held: long, budget: 
     g.text(x + 1 + width, y, "]")
 
 private minReal(a: real, b: real) -> real = if a < b then a else b
-
-// How many of `width` cells `part` of `whole` fills, to the nearest.
-private cellsOf(part: int, whole: int, width: int) -> int = (part * width * 2 + whole) / (whole * 2)
-
-// The column the `j`th column starts at, for the table's widths `ws`.
-private columnX(ws: Vector[int], j: int) -> int
-    var x = 0
-    for k in 0 ..< j
-        x += ws(k) + 1
-    x
 
 private minInt(a: int, b: int) -> int = if a < b then a else b
 private maxInt(a: int, b: int) -> int = if a > b then a else b

@@ -8,7 +8,8 @@ import avin.fs
 import avin.process
 import dev.avinlang.marshal.{JobInfo, Outcome, Overview, QueuedJob, TakeSlotUse, Usage, Why}
 import dev.avinlang.marshal.top.App
-import dev.avinlang.tui.{Down, End, Enter, Grid, Home, PageDown, PageUp, Resize, Style, Up}
+import dev.avinlang.marshal.top
+import dev.avinlang.tui.{Down, End, Enter, Green, Grid, Home, Magenta, PageDown, PageUp, Resize, Style, Up}
 
 val GoldenDir: string = "tests/golden/top"
 
@@ -82,6 +83,24 @@ busy() -> Overview
              90061000, running, queuedJobs, recent, waits)
 
 idleDaemon() -> Overview =Overview(Usage(0, 12, 0, 16 * G, 0, 0, None, None), 5000, [], [], [])
+
+@test("the unit bar puts each boundary at the nearest cell and an exact half rounds up, wherever the half falls")
+unitBarHalves()
+    // 15 of 22 in 11 cells is exactly 7.5, and 1 of 4 in 10 is 2.5: both round up
+    assertEq(counts(0, 15, 22, 11), [0, 8])
+    assertEq(counts(15, 0, 22, 11), [8, 0])
+    assertEq(counts(1, 0, 4, 10), [3, 0])
+    assertEq(counts(7, 8, 22, 11), [4, 4])
+    // past the budget the bar is full, and a budget of 0 counts as 1
+    assertEq(counts(10, 10, 12, 12), [10, 2])
+    assertEq(counts(1, 0, 0, 10), [10, 0])
+
+// The green cells and the magenta ones of a unit bar `width` wide for `ours` and `outside` of `budget`.
+private counts(ours: int, outside: int, budget: int, width: int) -> Vector[int]
+    val g = Grid(width + 2, 1)
+    top.unitBar(g, 0, 0, width, ours, outside, budget)
+    val cells = (1 .. width).map(x -> g(x, 0).style.fg).toVector()
+    [cells.count(c -> c == Green), cells.count(c -> c == Magenta)]
 
 @test("golden: the main list of a full daemon at every width, wide to narrow")
 goldenMain()
