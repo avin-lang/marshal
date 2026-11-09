@@ -1055,8 +1055,9 @@ default is wanted, and whether `stats` should count quiet stops in TIMEOUTS.
 
 ## `marshal grep` (branch `marshal-grep`)
 
-**Proposed.** Review with the user: the option set, and whether a pattern that backtracks past the
-regex budget (which traps) should be caught.
+**Settled on the user's delegation 2026-11-09.** Review with the user: the option set. A pattern
+that backtracks past the regex budget traps today. That is avin's regex library trapping, and it is
+fixed there: the budget becomes a failure the caller sees, and then `grep` exits 2.
 
 - **`grep` reads the log file itself, as `tail` does, and asks the daemon nothing.** Why: a waiting
   agent wants the failures out of a log without reading it all; going through the daemon would add
