@@ -55,14 +55,38 @@ startedShort(j: JobInfo, zone: time.Zone, today: string) -> string
     val at = time.epochMillis(j.startedAt).atZone(zone)
     if at.format("YYYY-MM-DD") == today then at.format("hh:mm") else at.format("MM-DD hh:mm")
 
+// Why a queued job waits, in the words `top` shows and `ls` appends to `queued`.
+whyText(w: Why) -> string
+whyText(NoUnits) = "no units"
+whyText(NoMemory) = "no memory"
+whyText(LaneBusy) = "lane busy"
+whyText(Draining) = "draining"
+whyText(ForTakeSlot) = "take-slot"
+whyText(Behind(id)) = s"behind $id"
+whyText(Starting) = "starting"
+whyText(Held) = "held"
+whyText(QueueHeld) = "queue held"
+
+// A job's state cell in `ls`: `stateColumn`, and for a job that is plainly `queued` and has a reason
+// in `whys` (job id, reason), the reason after it: `queued (draining)`. A job held by hand already
+// says `held`, so its reason adds nothing.
+stateWithWhy(j: JobInfo, whys: Vector[(long, Why)]) -> string
+    val state = stateColumn(j)
+    if state != "queued" then return state
+    whys.find(w -> w.0 == j.id) match
+        Some((_, Held)) -> state
+        Some((_, why)) -> s"$state (${whyText(why)})"
+        None -> state
+
 // The listing `ls` prints: a header, then one row per job. A LABEL column stands before COMMAND, and
-// only when some listed job has a label, so a listing of unlabelled jobs is as it always was.
-listing(jobs: Vector[JobInfo]) -> string
+// only when some listed job has a label, so a listing of unlabelled jobs is as it always was. `whys`
+// gives the queued jobs' reasons to wait; with none, a queued job shows plain `queued`.
+listing(jobs: Vector[JobInfo], whys: Vector[(long, Why)] = []) -> string
     val zone = time.localZone()
     val labelled = jobs.exists(j -> j.label.nonEmpty())
     val rows = [["ID", "STATE", "KIND", "UNITS", "RESV", "STARTED", "ELAPSED"] ++ (if labelled then ["LABEL"] else []) ++ ["COMMAND"]] ++ jobs.map(j -> [
         j.id.toString(),
-        stateColumn(j),
+        stateWithWhy(j, whys),
         if j.landing then j.kind + "*" else j.kind,
         j.units.toString(),
         reservedText(j),

@@ -1120,3 +1120,22 @@ fixed there: the budget becomes a failure the caller sees, and then `grep` exits
 - **Where the whole of `   landing N` does not fit on the screen it is left out**, not cut. Why: a cut
   `landi…` or a bare `landing` without the number says less than nothing, and the header's first
   line still names the landing job. Alternative: cutting with `…`.
+
+## `ls` and `status --json` say why a queued job waits
+
+- **Proposed: in `ls` the reason follows `queued` in the state cell** (`queued (draining)`,
+  `queued (behind 405)`), in the words `top` uses; running and ended rows are unchanged. Why: no new
+  column, so nothing moves for listings without queued jobs. Alternatives: a WHY column (shifts every
+  row's alignment whenever one job is queued, as LABEL does), or `top`'s `#position reason` (the
+  position is not in `ls`'s order).
+- **Proposed: a job held by hand shows plain `held`, with no reason after it.** Why: the cell already
+  says it. In `status --json` its `why` is `held`.
+- **Proposed: `status --json` adds `why` (the protocol word) and, for `behind`, `behind` (the id) to
+  each queued job**, the encoding `snapshot` uses, minus `position`. Why: scripts can reuse the
+  protocol's words. Alternative: `position` and `waits` as the snapshot has them (a second name for
+  the same thing).
+- **Proposed: the command line reads the reasons with a second request, `snapshot`, only when some
+  listed job is queued.** The reasons come from the one scheduler function `top` uses. Why: `ls` keeps
+  its reply and its recent-jobs window. A job that starts between the two requests has no reason and
+  lists as it is. Alternative: `ls` reply carrying the reasons (one atomic reply, but a new reply
+  shape for every client of `ls`).

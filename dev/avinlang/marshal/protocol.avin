@@ -531,8 +531,10 @@ private decodeTakeSlot(j: Json) -> Result[Option[TakeSlotUse], string]
         field(j, "landing", v -> v.asBool(), "a bool")?)))
 
 // What `status --json` prints: the budget in use, what take-slot holds (null when no directory is
-// shared), and the running and queued jobs, each as the protocol gives a job.
-statusJson(u: Usage, jobs: Vector[JobInfo]) -> Json = Json.obj(
+// shared), and the running and queued jobs, each as the protocol gives a job. A queued job in `whys`
+// (job id, reason) also has `why`, the protocol's word for the reason, and `behind`, the job it
+// waits behind, when that is the reason.
+statusJson(u: Usage, jobs: Vector[JobInfo], whys: Vector[(long, Why)] = []) -> Json = Json.obj(
     ("units", Json.num(u.units)),
     ("unit_budget", Json.num(u.unitBudget)),
     ("mem", Json.num(u.memory)),
@@ -544,7 +546,15 @@ statusJson(u: Usage, jobs: Vector[JobInfo]) -> Json = Json.obj(
     ("take_slot", u.takeSlot.map(encodeTakeSlot).getOrElse(Json.Null)),
     ("queue_held", Json.Bool(u.queueHeld)),
     ("running", Json.Arr(jobs.filter(j -> j.state == "running").map(encodeJob))),
-    ("queued", Json.Arr(jobs.filter(j -> j.state == "queued").map(encodeJob))))
+    ("queued", Json.Arr(jobs.filter(j -> j.state == "queued").map(j -> withWhy(j, whys)))))
+
+private withWhy(j: JobInfo, whys: Vector[(long, Why)]) -> Json = whys.find(w -> w.0 == j.id) match
+    Some((_, why)) ->
+        val behind = why match
+            Behind(id) -> [("behind", Json.num(id))]
+            _ -> Vector[(string, Json)]()
+        Json.Obj(encodeJob(j).asMembers().get() ++ [("why", Json.str(whyWord(why)))] ++ behind)
+    None -> encodeJob(j)
 
 encodeReply(r: Reply) -> Json
 encodeReply(Submitted(id, log)) = Json.obj(("ok", Json.Bool(true)), ("id", Json.num(id)), ("log", Json.str(log)))

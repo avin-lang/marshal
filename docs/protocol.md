@@ -101,6 +101,10 @@ jobs queue apart), and `waits`, why it has not started:
 | `held` | it is held (`hold`) |
 | `queue-held` | the whole queue is held (`pause`) |
 
+`marshal status --json` gives a queued job the same reason as `why` (the words in the table, with
+`behind` when `why` is `behind`); `ls` and `status --json` read it from a `snapshot` request, and a
+job that started in between has none.
+
 **Across a restart.** The daemon writes every reply it has given before it restarts, and carries
 out no request that arrives while it hands over: those connections close unanswered. So a
 connection that closes before its reply means the request was not carried out, and the client

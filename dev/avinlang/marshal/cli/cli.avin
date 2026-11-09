@@ -28,7 +28,7 @@ val Commands: Vector[(string, string)] = [
     ("train [parameters] <branch...>", "run-type train: merges the branches, builds and tests them, lands them when green"),
     ("wait <id> | --until <cond> [--timeout <t>] [--since <t>]", "waits for the job, prints one result line, exits with its status; or waits for an event, prints it, exits 0 (124 on timeout)"),
     ("events [--follow] [--since <t>] [<filter>]", "the logged events as JSON lines; --follow goes on streaming them until killed"),
-    ("ls", "jobs queued, running and recently ended"),
+    ("ls", "jobs queued, running and recently ended; a queued job's state says why it waits: queued (draining)"),
     ("kill <id>", "stops the job's whole process tree (a queued or waiting job is cancelled)"),
     ("rerun <id>", "submits an ended job again: its command, directory, environment, kind, label and resources; prints the new id"),
     ("clean [--older-than <t>] [--keep <n>] [--dry-run]", "removes the logs of ended jobs (never a job that is not over), stale run directories and unused compiled steps; prints what went and the bytes freed; --dry-run only lists them"),
@@ -550,10 +550,19 @@ simple(request: Request, said: string) -> int = askDaemon(request) match
     Ok(other) -> complain(s"marshal: unexpected reply $other")
     Err(e) -> complain(e)
 
+// Why each queued job among `jobs` waits, from the daemon's snapshot: (job id, reason). Empty when
+// nothing is queued, and when the daemon cannot say (a job that started since `jobs` was read has no
+// reason, and shows as it is).
+queuedWhys(jobs: Vector[JobInfo]) -> Vector[(long, marshal.Why)]
+    if !jobs.exists(j -> j.state == "queued") then return []
+    askDaemon(Request.Snapshot) match
+        Ok(marshal.Viewed(o)) -> o.queued.map(q -> (q.job.id, q.why))
+        _ -> []
+
 list() -> int
     askDaemon(Request.List) match
         Ok(Jobs(jobs)) ->
-            println(marshal.listing(jobs))
+            println(marshal.listing(jobs, queuedWhys(jobs)))
             0
         Ok(Failed(e)) -> complain(s"marshal: $e")
         Ok(other) -> complain(s"marshal: unexpected reply $other")
@@ -577,7 +586,7 @@ statusJson() -> int
         Err(e) -> return complain(e)
     askDaemon(Request.List) match
         Ok(Jobs(jobs)) ->
-            println(marshal.statusJson(usage, jobs).render())
+            println(marshal.statusJson(usage, jobs, queuedWhys(jobs)).render())
             0
         Ok(Failed(e)) -> complain(s"marshal: $e")
         Ok(other) -> complain(s"marshal: unexpected reply $other")

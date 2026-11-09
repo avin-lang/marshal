@@ -60,16 +60,8 @@ lines(o: Overview, f: Filter) -> Vector[Line]
 waiting(l: Line) -> bool = l.job.outcome.isEmpty() && (l.job.state == "waiting" || l.job.state == "retrying")
 
 // Why a queued job waits, in the words of its STATE cell.
-whyText(w: Why) -> string
-whyText(NoUnits) = "no units"
-whyText(NoMemory) = "no memory"
-whyText(LaneBusy) = "lane busy"
-whyText(Draining) = "draining"
-whyText(ForTakeSlot) = "take-slot"
-whyText(Behind(id)) = s"behind $id"
-whyText(Starting) = "starting"
-whyText(Held) = "held"
-whyText(QueueHeld) = "queue held"
+// The words are `ls`'s too, so they are kept in one place.
+whyText(w: Why) -> string = marshal.whyText(w)
 
 // A time as a clock: `0:07`, `18:12`, `1:02:03`; a negative time is shown as none.
 clock(ms: long) -> string

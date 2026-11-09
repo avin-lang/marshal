@@ -146,7 +146,7 @@ marshal run-type <type> [parameters]       runs a job type's steps as one job an
 marshal train [parameters] <branch...>     run-type train: merges the branches, builds and tests them, lands them when green
 marshal wait <id> | --until <cond> [--timeout <t>] [--since <t>]  waits for the job, prints one result line, exits with its status; or waits for an event, prints it, exits 0 (124 on timeout)
 marshal events [--follow] [--since <t>] [<filter>]  the logged events as JSON lines; --follow goes on streaming them until killed
-marshal ls                                 jobs queued, running and recently ended
+marshal ls                                 jobs queued, running and recently ended; a queued job's state says why it waits: queued (draining)
 marshal kill <id>                          stops the job's whole process tree (a queued or waiting job is cancelled)
 marshal rerun <id>                         submits an ended job again: its command, directory, environment, kind, label and resources; prints the new id
 marshal clean [--older-than <t>] [--keep <n>] [--dry-run]  removes the logs of ended jobs (never a job that is not over), stale run directories and unused compiled steps; prints what went and the bytes freed; --dry-run only lists them
@@ -421,7 +421,11 @@ declared or learned), `mem_budget`, `rss` (what the running jobs hold in RAM, in
 `machine_mem` (the machine's memory, 0 if unknown), `landing` (the landing
 job's id or null), `take_slot` (`dir`, `units`, `waiting`, `landing`, or null when none is shared),
 `queue_held`, and `running` and `queued`, arrays of jobs as [the protocol](docs/protocol.md) writes
-them.
+them; a queued job also has `why`, the protocol's word for why it has not started (`units`,
+`memory`, `lane`, `draining`, `take-slot`, `behind`, `starting`, `held`, `queue-held`), and `behind`,
+the job's id, when `why` is `behind`. In `marshal ls` the same reason follows `queued` in the state
+cell, in the words `top` shows: `queued (no units)`, `queued (behind 405)`, `queued (queue held)`.
+A job held by hand says just `held`.
 
 ## Sharing the machine with take-slot.zsh
 
