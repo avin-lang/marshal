@@ -1,0 +1,98 @@
+module dev.avinlang.marshal
+
+// `marshal grep`: the lines of a job's log that match a pattern, as grep prints them. The log is
+// read one line at a time and never held whole: what is kept is the few lines of leading context
+// still waiting for a match, so a log of any size is searched in the same small space.
+import avin.regex.Regex
+
+// What to print. `maxMatches` stops the search after that many matching lines (the trailing context
+// of the last one is still printed); `before` and `after` are the lines of context around a match.
+data GrepSpec(invert: bool, numbers: bool, countOnly: bool, maxMatches: Option[long], before: int, after: int)
+
+// A search with nothing asked for: every matching line, bare.
+val GrepPlain: GrepSpec = GrepSpec(false, false, false, None, 0, 0)
+
+// A line test for `pattern`: a regular expression, or with `fixed` the text itself; `ignoreCase`
+// makes upper and lower case the same. A pattern that is not a regular expression is the `Err`,
+// with the library's own words for what is wrong.
+grepMatcher(pattern: string, fixed: bool, ignoreCase: bool) -> Result[(string) -> bool, string]
+    val source = if fixed then Regex.quote(pattern) else pattern
+    // `i` alone folds ASCII letters only; with `u`, Unicode's simple case mapping
+    val written = if ignoreCase then "(?iu)" + source else source
+    Regex.compile(written) match
+        Ok(r) ->
+            val any = r.unanchored()
+            Ok(line -> any.matches(line))
+        Err(e) -> Err(e.message())
+
+// The state of one search: which lines still to print around the matches found so far.
+private class Grepper(private val spec: GrepSpec, private val hit: (string) -> bool, private val emit: (string) -> unit)
+    var matches: long = 0
+    private var lastShown: long = 0
+    private var afterLeft = 0
+    private val held = Deque[(long, string)]()
+
+    // Whether the search has nothing more to read: the limit is reached and no trailing context
+    // is owed.
+    finished() -> bool = limitReached() && afterLeft == 0
+
+    private limitReached() -> bool = spec.maxMatches.exists(m -> matches >= m)
+
+    // Takes line number `n`.
+    feed(n: long, line: string)
+        if limitReached()
+            // only the trailing context of the last match remains; a line in it is context
+            // whether or not it would match
+            show(n, line, false)
+            afterLeft -= 1
+        elif hit(line) != spec.invert
+            matches += 1
+            if !spec.countOnly
+                while !held.isEmpty()
+                    val (k, l) = held.removeHead()
+                    show(k, l, false)
+                show(n, line, true)
+                afterLeft = spec.after
+        elif afterLeft > 0
+            show(n, line, false)
+            afterLeft -= 1
+        elif spec.before > 0 && !spec.countOnly
+            held.append((n, line))
+            if held.length() > spec.before then held.removeHead()
+
+    // Prints a line, with `--` first where it does not follow the last one printed.
+    private show(n: long, line: string, selected: bool)
+        if (spec.before > 0 || spec.after > 0) && lastShown > 0 && n != lastShown + 1 then emit("--")
+        if spec.numbers
+            val mark = if selected then ":" else "-"
+            emit(s"$n$mark$line")
+        else
+            emit(line)
+        lastShown = n
+
+// Searches the lines `next` gives, the first being line number `first`, calling `emit` with each
+// line to print, `--` between groups of context included. Answers how many lines matched, or what
+// stopped the reading. With `countOnly` nothing is emitted.
+grepLines(next: () -> Result[Option[string], string], first: long, hit: (string) -> bool, spec: GrepSpec, emit: (string) -> unit) -> Result[long, string]
+    val g = Grepper(spec, hit, emit)
+    var n = first
+    while !g.finished()
+        next()? match
+            Some(line) ->
+                g.feed(n, line)
+                n += 1
+            None -> break
+    Ok(g.matches)
+
+// The same over lines already in hand: the matches, and what was printed.
+grepVector(lines: Vector[string], hit: (string) -> bool, spec: GrepSpec) -> (long, Vector[string])
+    val out = Buffer[string]()
+    var i = 0
+    val next = () ->
+        if i < lines.length()
+            i += 1
+            Ok(Some(lines(i - 1)))
+        else
+            Ok(None)
+    val count = grepLines(next, 1, hit, spec, l -> out.addOne(l)).getOrElse(0)
+    (count, out.toVector())

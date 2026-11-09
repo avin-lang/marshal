@@ -15,6 +15,7 @@ import dev.avinlang.marshal
 import dev.avinlang.marshal.{JobInfo, JobSpec, Reply, Request}
 import dev.avinlang.marshal.{Submitted, Ended, Jobs, Using, Hi, Done, Failed}
 import dev.avinlang.marshal.{Condition, Once, Past, Follow, Streamed, Replayed}
+import dev.avinlang.marshal.{GrepSpec, grepMatcher, grepLines}
 import dev.avinlang.marshal.daemon
 import json.Json
 
@@ -37,6 +38,7 @@ val Commands: Vector[(string, string)] = [
     ("pause [<id>]", "stops a running job's processes, keeping its units, its deadline's clock stopped; with no id, holds the queue"),
     ("resume [<id>]", "continues a paused job; with no id, releases the queue"),
     ("tail <id> [-f] [-n <lines>]", "the job's log; -f follows it until the job ends"),
+    ("grep <id> <pattern> [-i] [-v] [-n] [-c] [-F] [-m <n>] [-A|-B|-C <n>] [--last <n>]", "the lines of the job's log that match the pattern (a regular expression; -F: literal text), as grep prints them; exits 0 when a line matched, 1 when none did, 2 on an error"),
     ("status [--json]", "the budget in use; --json: one JSON object with the running and queued jobs"),
     ("history [options]", "ended jobs from the event log, newest first: id, kind, outcome, exit code, duration, when, label"),
     ("stats [options]", "per kind from the event log: count, success rate, p50/p90/max duration, timeouts, deadline, peak memory"),
@@ -71,6 +73,26 @@ Options of submit and run:
   --                the command begins after this; nothing after it is an option\
 """
 
+// The options of `grep`.
+val GrepOptions: string = """
+Options of grep (the log is read directly, as tail reads it: a running job and an ended one are
+searched alike, and no daemon is needed; the log is read a line at a time, never held whole):
+  -i          upper and lower case are the same
+  -F          the pattern is literal text, not a regular expression
+  -v          print the lines that do not match
+  -n          put each line's number before it: N: for a match, N- for a line of context
+  -c          print only the number of matching lines
+  -m <n>      stop after n matching lines (the context after the last is still printed)
+  -A <n>      also print n lines after each match
+  -B <n>      also print n lines before each match
+  -C <n>      -A n and -B n; -A and -B win over -C; groups that do not touch are parted by --
+  --last <n>  search only the last n lines of the log (line numbers stay the log's own)
+  --          the id and pattern follow; a pattern that begins with - goes after it
+
+Exits 0 when a line matched, 1 when none did, 2 on an error: an unknown job, no log, a pattern
+that is not a regular expression, a bad option.\
+"""
+
 // The options of `history` and `stats`.
 val Queries: string = """
 Options of history and stats (both read events.jsonl; no daemon is needed):
@@ -98,6 +120,7 @@ commandHelp(name: string) -> Option[string]
         val head = s"usage: marshal ${c.0}\n\n${c.1}"
         if name == "submit" || name == "run" then head + "\n\n" + Options
         elif name == "history" || name == "stats" then head + "\n\n" + Queries
+        elif name == "grep" then head + "\n\n" + GrepOptions
         elif name == "wait" || name == "events" then head + "\n" + marshal.Grammar
         else head)
 
@@ -162,6 +185,7 @@ main(args: Vector[string]) -> int
         "history" -> history(rest)
         "stats" -> stats(rest)
         "tail" -> tail(rest)
+        "grep" -> grep(rest)
         "top" -> top(rest)
         "stop" -> stop(rest)
         "restart" -> if rest.isEmpty() then restart() else complain("marshal: restart takes no arguments")
@@ -684,6 +708,87 @@ tail(args: Vector[string]) -> int
             Err(e) -> return complain(s"marshal: $log: ${e.message()}")
     f.close()
     reportEnd(waiter.join())
+
+// `grep [options] <id> <pattern>`: the lines of a job's log that match, read straight from the log
+// as `tail` does, so a running job and an ended one are searched alike and no daemon is needed.
+// Exits as grep does: 0 when a line matched, 1 when none did, 2 when the search could not be made.
+grep(args: Vector[string]) -> int
+    var ignoreCase = false
+    var invert = false
+    var numbers = false
+    var countOnly = false
+    var fixed = false
+    var maxMatches: Option[long] = None
+    var before: Option[int] = None
+    var after: Option[int] = None
+    var context: Option[int] = None
+    var last: Option[long] = None
+    val words = Buffer[string]()
+    var i = 0
+    var optionsOver = false
+    while i < args.length()
+        val word = args(i)
+        if optionsOver || !word.startsWith("-") || word == "-"
+            words.addOne(word)
+        else
+            word match
+                "--" -> optionsOver = true
+                "-i" -> ignoreCase = true
+                "-v" -> invert = true
+                "-n" -> numbers = true
+                "-c" -> countOnly = true
+                "-F" -> fixed = true
+                "-m" | "--last" ->
+                    i += 1
+                    if i >= args.length() then return complain(s"marshal: grep: $word needs a number")
+                    args(i).toLongOption() match
+                        Some(n) if n >= 0 -> if word == "-m" then maxMatches = Some(n) else last = Some(n)
+                        _ -> return complain(s"marshal: grep: `${args(i)}` is not a number for $word")
+                "-A" | "-B" | "-C" ->
+                    i += 1
+                    if i >= args.length() then return complain(s"marshal: grep: $word needs a number of lines")
+                    args(i).toIntOption() match
+                        Some(n) if n >= 0 -> if word == "-A" then after = Some(n) elif word == "-B" then before = Some(n) else context = Some(n)
+                        _ -> return complain(s"marshal: grep: `${args(i)}` is not a number of lines for $word")
+                _ -> return complain(s"marshal: grep: no option `$word`; use -- before a pattern that begins with -")
+        i += 1
+    if words.length() != 2 then return complain("marshal: grep takes a job id and a pattern")
+    val job = words(0).toLongOption() match
+        Some(n) -> n
+        None -> return complain(s"marshal: `${words(0)}` is not a job id")
+    val hit = grepMatcher(words(1), fixed, ignoreCase) match
+        Ok(h) -> h
+        Err(e) -> return complain(s"marshal: grep: `${words(1)}` is not a pattern: $e")
+    val spec = GrepSpec(invert, numbers, countOnly, maxMatches, before.getOrElse(context.getOrElse(0)), after.getOrElse(context.getOrElse(0)))
+    val log = s"${home()}/jobs/$job.log"
+    val f = fs.open(log) match
+        Ok(f) -> f
+        Err(IoError.NotFound) -> return complain(s"marshal: job $job has no log")
+        Err(e) -> return complain(s"marshal: $log: ${e.message()}")
+    // `--last N` skips all but the last N lines: one pass to count them, then the search.
+    var skip: long = 0
+    last match
+        Some(keep) ->
+            var total: long = 0
+            loop
+                f.readLine() match
+                    Ok(Some(_)) -> total += 1
+                    Ok(None) -> break
+                    Err(e) -> return complain(s"marshal: $log: ${e.message()}")
+            skip = if total > keep then total - keep else 0
+            f.seek(0)
+        None -> ()
+    var n: long = 0
+    while n < skip
+        f.readLine()
+        n += 1
+    val result = grepLines(() -> f.readLine().mapErr(e -> s"marshal: $log: ${e.message()}"), skip + 1, hit, spec, l -> println(l))
+    f.close()
+    result match
+        Ok(count) ->
+            if countOnly then println(count)
+            if count > 0 then 0 else 1
+        Err(e) -> complain(e)
 
 reportEnd(result: Result[Reply, string]) -> int
 reportEnd(Ok(Ended(j))) =

@@ -35,6 +35,11 @@ thread of its own, so a client blocked in `wait` holds up nobody else.
 | `watch` | `cond` (string, the grammar below), `mode` (`once`, `past` or `follow`), `since` (milliseconds since 1970 or null), `since_id` (job id or null) | a stream: see below |
 
 `history` and `stats` are not requests: the command line reads `events.jsonl` itself (below).
+`grep` is not one either: like `tail` without `-f`, it reads the job's log, `jobs/<id>.log` in marshal's
+home, itself, a line at a time, so it works on a running job and an ended one and with no daemon. It
+exits 0 when a line matched, 1 when none did, 2 when it could not search (an unknown job or no log,
+a pattern that is not a regular expression, a bad option); `-c` prints the number of matching lines
+and nothing else. No state, field or message is added.
 
 Any request may be refused: `{"ok":false,"error":"<a sentence>"}`, for a request that is not JSON,
 lacks a field or has one of the wrong type, names no job, or asks for a job that can never fit.

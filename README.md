@@ -156,6 +156,7 @@ marshal priority <id> <n> | --urgent       places a queued job in its lane: high
 marshal pause [<id>]                       stops a running job's processes, keeping its units, its deadline's clock stopped; with no id, holds the queue
 marshal resume [<id>]                      continues a paused job; with no id, releases the queue
 marshal tail <id> [-f] [-n <lines>]        the job's log; -f follows it until the job ends
+marshal grep <id> <pattern> [-i] [-v] [-n] [-c] [-F] [-m <n>] [-A|-B|-C <n>] [--last <n>]  the lines of the job's log that match the pattern (a regular expression; -F: literal text), as grep prints them; exits 0 when a line matched, 1 when none did, 2 on an error
 marshal status [--json]                    the budget in use; --json: one JSON object with the running and queued jobs
 marshal history [options]                  ended jobs from the event log, newest first: id, kind, outcome, exit code, duration, when, label
 marshal stats [options]                    per kind from the event log: count, success rate, p50/p90/max duration, timeouts, deadline, peak memory
@@ -169,6 +170,26 @@ marshal daemon                             runs the daemon in the foreground
 `marshal --help` (or `-h`, or `help`) prints these lines and the options below; `marshal <command> --help`
 describes one command, and both exit 0. A bare `marshal` prints the same usage to standard error and
 exits 2. After `--` nothing is an option, so `marshal run -- prog --help` runs `prog`.
+
+`marshal grep <id> <pattern>` searches a job's log without reading all of it into your context: it
+prints the matching lines and nothing else. It reads the log file directly, as `tail` does, so it
+works on a running job and an ended one alike, and needs no daemon. The log is read a line at a
+time, so any size is fine. The pattern is an avin regular expression, found anywhere in a line.
+
+| Option | Meaning |
+| --- | --- |
+| `-i` | Upper and lower case are the same (Unicode's simple case mapping). |
+| `-F` | The pattern is literal text. |
+| `-v` | Print the lines that do not match. |
+| `-n` | Put each line's number before it: `N:` for a match, `N-` for a line of context. |
+| `-c` | Print only the number of matching lines. |
+| `-m <n>` | Stop after `n` matching lines; the context after the last one is still printed. |
+| `-A <n>`, `-B <n>`, `-C <n>` | Lines after, before, and around each match; groups that do not touch are parted by `--`. `-A` and `-B` win over `-C`. |
+| `--last <n>` | Search only the last `n` lines; `-n` still gives the log's own line numbers. |
+
+Exit codes follow grep: 0 when a line matched, 1 when none did, 2 on an error (an unknown job, no
+log, a pattern that is not a regular expression, a bad option). `--` ends the options, for a pattern
+that begins with `-`: `marshal grep 7 -- -v`.
 
 Options of `submit` and `run`:
 

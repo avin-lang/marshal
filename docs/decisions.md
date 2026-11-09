@@ -1052,3 +1052,53 @@ default is wanted, and whether `stats` should count quiet stops in TIMEOUTS.
   after which `stats` can show it and a learned default can be weighed against real numbers.
 - **A parameter may not be named `quiet-timeout` or `label`**, run-type's own options. `label` was
   missing from that list, so a type with a `label` parameter had `--label` taken by run-type itself.
+
+## `marshal grep` (branch `marshal-grep`)
+
+**Proposed.** Review with the user: the option set, and whether a pattern that backtracks past the
+regex budget (which traps) should be caught.
+
+- **`grep` reads the log file itself, as `tail` does, and asks the daemon nothing.** Why: a waiting
+  agent wants the failures out of a log without reading it all; going through the daemon would add
+  a request, a reply size limit and a need for a daemon, for a file the command line can already
+  read. It works wherever `tail` does, running and ended jobs alike, and across `restart`.
+  Alternatives: a daemon request that searches (the daemon's threads spent on a client's scan; the
+  whole result in one reply); piping `tail -n 100000` into the system `grep` (needs the log read
+  whole by `tail`, and no system `grep` option knows a job id).
+- **The log is streamed a line at a time; only leading context is kept.** The state held is the
+  last `-B` lines, never the log, so a log of gigabytes is searched in the same small space, and
+  `-m` stops reading at once. Alternative: `readText` and split (simple, but holds the whole log).
+- **The set is `-i -v -n -c -F -m -A -B -C --last`, and nothing more.** Short options are not
+  combined (`-in` is not `-i -n`), `-e` and `-f` do not exist (one pattern, given after the id) and
+  `-r` is meaningless for one file. Why: each is one word to read and to test; combining adds a
+  parsing mode for a few keystrokes. `--` ends the options so a pattern may begin with `-`.
+  Alternative: grep's full set (a long tail nobody waiting on a job uses).
+- **Exit codes are grep's: 0 a line matched, 1 none did, 2 an error.** Why: `marshal grep id x &&
+  …` reads as grep does. Marshal's own failures already exit 2 (`Trouble`), so nothing new is
+  borrowed; a job's status is not involved. `-c` exits by the count too: 1 for a count of 0.
+  An unknown job and a job with no log yet are the same error, `job N has no log`, because without
+  a daemon the log's absence is all that is known; a queued job that has not started has none.
+- **`-i` is `(?iu)`: Unicode's simple case mapping, not ASCII only.** Why: a log may hold any
+  text, and `-i` that folds `e` but not `é` surprises. Alternative: plain `(?i)` (ASCII only, per
+  the regex spec).
+- **`-F` quotes the pattern with `Regex.quote` and goes through the same matcher**, so `-F -i`
+  works and there is one code path. Alternative: a substring search (a second matcher for `-i`).
+- **A pattern is found anywhere in the line** (an unanchored search), as grep does, not
+  anchored to the whole line as `Regex.matches` is.
+- **`-m N` still prints the trailing context of the last match**, as grep does; a line inside it
+  that would match is context there and is not counted. `-m 0` reads nothing and exits 1.
+  `-c` with `-m` counts up to the limit.
+- **With `-c`, context options are accepted and have no effect.** `-n` also does nothing with `-c`.
+  Alternative: refuse the combination (an error where grep prints a count).
+- **`--last N` is two passes: one counts the lines, the second skips to the last N, so `-n` still
+  gives the log's own line numbers.** Why: numbers that restart at 1 would not point into the log
+  (`tail -n` and `grep -n` side by side would disagree). Cost: the file is read twice, still in
+  constant space; for a running job lines written between the passes are searched too. Alternative:
+  reading the end with `readTailLines` (one pass, but it holds N lines and cannot number them).
+  Context before the first line searched is not printed: it is outside the window.
+- **A final line with no newline is a line, as is a half-written one in a running job's log; a
+  `\r` before the `\n` is dropped; bytes that are not UTF-8 read as U+FFFD.** All as the library's
+  `readLine` does.
+- **A pattern that exhausts the regex library's step budget traps rather than returning an
+  error**, so `marshal grep` would end with the trap's status, not 2. Left as the library has it;
+  the budget is large (at least 10,000,000 steps per attempt).
