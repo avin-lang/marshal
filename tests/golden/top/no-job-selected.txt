@@ -1,0 +1,30 @@
+|marshal  up 0:05   0 running  0 queued   landing: free               filter: all|
+|units [··························] 0 / 12                                       |
+|mem   [                          ] 0 / 16G   rss 0                              |
+|                                                                                |
+|   ID STATE          KIND     UNITS   RESV   RSS STARTED  ELAPSED DEADLINE COMM…|
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|hHelp EnterLog kKill fFilter qQuit                               no job selected|
+--
+0 0..7 Default/Default/1
+0 19..28 Basic(2)/Default/0
+0 30..38 Basic(3)/Default/0
+0 50..54 Basic(8)/Default/0
+0 69..80 Basic(8)/Default/0
+1 7..33 Basic(8)/Default/0
+2 7..33 Basic(8)/Default/0
+4 0..80 Default/Default/17
+9 0..1 Default/Default/1
+9 1..6 Basic(0)/Basic(6)/0
+9 6..11 Default/Default/1
+9 11..15 Basic(0)/Basic(6)/0
+9 15..16 Default/Default/1
+9 16..21 Basic(0)/Basic(6)/0
+9 21..22 Default/Default/1
+9 22..29 Basic(0)/Basic(6)/0
+9 29..30 Default/Default/1
+9 30..35 Basic(0)/Basic(6)/0
+9 36..80 Basic(3)/Default/0

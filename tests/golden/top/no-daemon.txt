@@ -1,0 +1,22 @@
+|marshal top                                                                     |
+|                                                                                |
+|no daemon at /h/sock (connection refused)                                       |
+|s starts one; q quits; looking again every second                               |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|hHelp EnterLog kKill fFilter qQuit                                              |
+--
+0 0..11 Default/Default/1
+2 0..41 Basic(3)/Default/0
+3 0..49 Basic(8)/Default/0
+7 0..1 Default/Default/1
+7 1..6 Basic(0)/Basic(6)/0
+7 6..11 Default/Default/1
+7 11..15 Basic(0)/Basic(6)/0
+7 15..16 Default/Default/1
+7 16..21 Basic(0)/Basic(6)/0
+7 21..22 Default/Default/1
+7 22..29 Basic(0)/Basic(6)/0
+7 29..30 Default/Default/1
+7 30..35 Basic(0)/Basic(6)/0

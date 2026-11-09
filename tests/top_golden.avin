@@ -1,0 +1,174 @@
+module tests
+
+// `marshal top`'s screens, cell for cell: every screen is drawn into a grid and compared with a
+// golden file under tests/golden/top, which holds each row's text and every run of cells not drawn
+// in the plain style. A change to how top looks fails here until the golden is written again, with
+// MARSHAL_GOLDEN_WRITE=1 set, and the new file is read over in review.
+import avin.fs
+import avin.process
+import dev.avinlang.marshal.{JobInfo, Outcome, Overview, QueuedJob, TakeSlotUse, Usage, Why}
+import dev.avinlang.marshal.top.App
+import dev.avinlang.tui.{Down, End, Enter, Grid, Home, PageDown, PageUp, Resize, Style, Up}
+
+val GoldenDir: string = "tests/golden/top"
+
+// The style of a cell as the golden file writes it.
+styleText(s: Style) -> string = s"${s.fg}/${s.bg}/${s.attrs}"
+
+// `g` as text: its rows between bars, then for each row the runs of cells in one style other than
+// the plain one, as `row x..end style`.
+screenText(g: Grid) -> string
+    val rows = (0 ..< g.height).map(y -> "|" + g.rowText(y) + "|").toVector()
+    val runs = Vector.newBuilder[string]()
+    for y in 0 ..< g.height
+        var x = 0
+        while x < g.width
+            val s = g(x, y).style
+            var end = x + 1
+            while end < g.width && g(end, y).style == s
+                end += 1
+            if s != Style.plain() then runs.addOne(s"$y $x..$end ${styleText(s)}")
+            x = end
+    (rows ++ ["--"] ++ runs.result()).mkString("\n") + "\n"
+
+// Checks `g` against the golden file `name`, or writes it when MARSHAL_GOLDEN_WRITE is set.
+golden(name: string, g: Grid)
+    val file = s"$GoldenDir/$name.txt"
+    val got = screenText(g)
+    if process.env("MARSHAL_GOLDEN_WRITE").isDefined()
+        fs.createDirAll(GoldenDir).ok().get()
+        fs.writeText(file, got).ok().get()
+        return
+    val want = fs.readText(file).ok().getOrElse(s"(no golden file $file)")
+    if got != want then println(s"the screen differs from $file")
+    assertEq(got, want)
+
+// A job with every field the screen reads, as a snapshot gives it.
+gjob(id: long, kind: string = "build", state: string = "running", outcome: Option[Outcome] = None, units: int = 1,
+     landing: bool = false, cmd: Vector[string] = ["make", "-j4"], elapsed: long = 2 * minuteMs, deadline: long = 30 * minuteMs,
+     memory: long = 0, rss: long = 0, peak: long = 0, paused: bool = false, killed: bool = false, label: string = "",
+     after: Vector[long] = [], attempt: int = 1, reserved: long = 0, learned: bool = false) -> JobInfo =
+    JobInfo(id, kind, units, memory, landing, "/w", cmd, state, outcome, killed, 0, elapsed, deadline, s"/h/jobs/$id.log", None,
+            rss = rss, peakRss = peak, paused = paused, after = after, attempt = attempt, reserved = reserved,
+            reservedLearned = learned, label = label)
+
+// A busy daemon: a landing job, a paused one, take-slot holding units with runs waiting, the queue
+// held, every reason to wait, jobs waiting for others or to retry, and every way a job ends.
+busy() -> Overview
+    val running = [
+        gjob(21, kind = "test", units = 2, landing = true, cmd = ["sysl", "test", "compiler", "--timeout", "1800"], elapsed = 25 * minuteMs,
+             memory = 4 * G, rss = 3 * G, peak = 5 * G, label = "release 0.3 train"),
+        gjob(22, units = 3, cmd = ["cargo", "build", "--release"], elapsed = 29 * minuteMs + 30000, memory = 2 * G, rss = 2 * G + G / 2, peak = 3 * G),
+        gjob(23, kind = "bench", paused = true, cmd = ["./bench.sh"], elapsed = 3 * minuteMs, deadline = 4 * minuteMs, reserved = G, learned = true),
+        gjob(24, kind = "lint", cmd = ["eslint", "."], elapsed = 26 * minuteMs, deadline = 30 * minuteMs)]
+    val queuedJobs = [
+        QueuedJob(gjob(30, state = "queued", deadline = 45 * minuteMs, units = 4), 1, Why.NoUnits),
+        QueuedJob(gjob(31, state = "queued", memory = 8 * G), 2, Why.NoMemory),
+        QueuedJob(gjob(32, kind = "test", state = "queued", landing = true), 3, Why.LaneBusy),
+        QueuedJob(gjob(33, state = "queued"), 4, Why.Draining),
+        QueuedJob(gjob(34, state = "queued"), 5, Why.ForTakeSlot),
+        QueuedJob(gjob(35, state = "queued"), 6, Why.Behind(30)),
+        QueuedJob(gjob(36, state = "queued"), 7, Why.Starting),
+        QueuedJob(gjob(37, state = "queued", label = "日本語のラベルはとても長い"), 8, Why.Held),
+        QueuedJob(gjob(38, state = "queued"), 9, Why.QueueHeld)]
+    val waits = [gjob(40, state = "waiting", after = [21, 22]), gjob(41, state = "retrying", attempt = 2)]
+    val recent = [
+        gjob(19, state = "done", outcome = Some(Outcome.Quiet(600000))),
+        gjob(18, state = "done", outcome = Some(Outcome.DependencyFailed(17))),
+        gjob(17, state = "done", outcome = Some(Outcome.Exited(1))),
+        gjob(16, state = "done", outcome = Some(Outcome.Signalled(9))),
+        gjob(15, state = "done", outcome = Some(Outcome.Exited(0)), peak = 700 * 1048576)]
+    Overview(Usage(6, 12, 7 * G, 16 * G, 4, 9, Some(21), Some(TakeSlotUse("/s/.git", 3, 2, false)), 6 * G, 64 * G, true, 10 * G),
+             90061000, running, queuedJobs, recent, waits)
+
+idleDaemon() -> Overview =Overview(Usage(0, 12, 0, 16 * G, 0, 0, None, None), 5000, [], [], [])
+
+@test("golden: the main list of a full daemon at every width, wide to narrow")
+goldenMain()
+    for (w, h) in [(140, 24), (120, 22), (100, 20), (90, 20), (89, 20), (80, 18), (60, 16), (40, 12), (24, 8)]
+        golden(s"full-$w", drawn(viewing(full()), w, h))
+
+@test("golden: a busy daemon, with landing, take-slot, a paused job, the queue held and every state")
+goldenBusy()
+    for (w, h) in [(160, 30), (120, 30), (100, 28), (89, 28), (70, 24), (40, 14)]
+        golden(s"busy-$w", drawn(viewing(busy()), w, h))
+    // time on since the snapshot: clocks move, the paused job's stands still
+    golden("busy-later", drawn(viewing(busy()), 120, 30, 5 * minuteMs))
+
+@test("golden: every filter")
+goldenFilters()
+    val app = viewing(busy())
+    for name in ["running", "queued", "finished", "all"]
+        app.handle(key('f'))
+        golden(s"filter-$name", drawn(app, 120, 30))
+
+@test("golden: an empty daemon, no daemon, one that cannot answer, and none asked yet")
+goldenEmpty()
+    golden("empty", drawn(viewing(idleDaemon()), 100, 12))
+    golden("empty-narrow", drawn(viewing(idleDaemon()), 30, 8))
+    val none = App("/h/sock")
+    golden("asking", drawn(none, 80, 8))
+    none.lost("no daemon at /h/sock (connection refused)", true)
+    golden("no-daemon", drawn(none, 80, 8))
+    none.lost("the daemon cannot give a snapshot", false)
+    golden("cannot-answer", drawn(none, 80, 8))
+
+@test("golden: the selection hidden after the delay, and scrolled to the end of a short screen")
+goldenSelection()
+    val app = viewing(busy())
+    app.handle(press(Down))
+    app.handle(press(Down))
+    val g = Grid(120, 30)
+    app.draw(g, 0, 60000)
+    golden("hidden", g)
+    app.handle(press(End), 60000)
+    app.handle(press(End), 60000)
+    golden("end-short", drawn(app, 100, 14))
+
+@test("golden: the log pane with its header, following, scrolled back, empty, wrapped and squeezed")
+goldenLog()
+    val app = viewing(busy())
+    app.handle(press(Enter))
+    app.logLines = (1 .. 60).map(i -> s"line $i of the build output").toVector()
+    golden("log-labelled", drawn(app, 120, 34))
+    golden("log-narrow", drawn(app, 50, 34))
+    app.handle(press(PageUp))
+    golden("log-back", drawn(app, 120, 34))
+    app.handle(press(Home))
+    golden("log-home", drawn(app, 120, 34))
+    app.handle(press(End))
+    app.handle(press(Down))
+    app.logLines = []
+    golden("log-empty", drawn(app, 100, 30))
+    val long = ["sh", "-c", (0 ..< 14).map(i -> "abcdefghij").mkString("")]
+    val wrapping = viewing(Overview(full().usage, 0, [gjob(1, cmd = long, label = "a label long enough to wrap in a narrow pane")], [], []))
+    wrapping.handle(press(Enter))
+    wrapping.logLines = ["first", "last"]
+    for (w, h) in [(60, 30), (60, 16), (60, 14), (60, 12), (40, 12), (30, 10), (100, 9), (100, 8), (100, 7)]
+        golden(s"log-wrap-$w-$h", drawn(wrapping, w, h))
+
+@test("golden: the help, wide and squeezed, and the kill prompt and messages on the bottom line")
+goldenOverlays()
+    val app = viewing(busy())
+    app.handle(key('h'))
+    golden("help", drawn(app, 120, 30))
+    golden("help-small", drawn(app, 50, 14))
+    app.handle(key('x'))
+    app.handle(key('k'))
+    golden("kill-prompt", drawn(app, 120, 30))
+    golden("kill-prompt-narrow", drawn(app, 40, 12))
+    app.handle(key('n'))
+    golden("not-killed", drawn(app, 120, 30))
+    app.handle(key('f'))
+    app.handle(key('f'))
+    app.handle(key('f'))
+    app.handle(press(End))
+    app.handle(key('k'))
+    golden("already-ended", drawn(app, 120, 30))
+    val none = viewing(idleDaemon())
+    none.handle(key('k'))
+    golden("no-job-selected", drawn(none, 80, 10))
+    // a resize while the help shows closes it
+    app.handle(key('h'))
+    app.handle(Resize(120, 30))
+    golden("help-resized", drawn(app, 120, 30))

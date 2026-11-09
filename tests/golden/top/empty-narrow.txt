@@ -1,0 +1,23 @@
+|marshal  up 0:05   filter: all|
+|units [··········] 0 / 12     |
+|mem   [          ] 0 / 16G   r|
+|                              |
+|   ID STATE          KIND     |
+|                              |
+|                              |
+|hHelp EnterLog kKill fFilter q|
+--
+0 0..7 Default/Default/1
+0 19..30 Basic(8)/Default/0
+1 7..17 Basic(8)/Default/0
+2 7..17 Basic(8)/Default/0
+4 0..30 Default/Default/17
+7 0..1 Default/Default/1
+7 1..6 Basic(0)/Basic(6)/0
+7 6..11 Default/Default/1
+7 11..15 Basic(0)/Basic(6)/0
+7 15..16 Default/Default/1
+7 16..21 Basic(0)/Basic(6)/0
+7 21..22 Default/Default/1
+7 22..29 Basic(0)/Basic(6)/0
+7 29..30 Default/Default/1
