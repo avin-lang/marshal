@@ -1106,7 +1106,7 @@ fixed there: the budget becomes a failure the caller sees, and then `grep` exits
 
 ## The landing job's units on top's units line (branch `top-tui020`)
 
-**Proposed.**
+**Settled on the user's delegation 2026-11-09** (the request was the user's).
 
 - **While a landing job runs, top's units line ends with `   landing N`, its units, in the landing
   job's cyan.** `0 + take-slot 0 / 12   landing 1`, or `0 / 12   landing 1` with nothing shared. Why:
