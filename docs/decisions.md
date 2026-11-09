@@ -998,7 +998,8 @@ step started but not yet recorded misses one STOP.
 
 ## Quiet timeouts (branch `quiet-timeout`)
 
-**Proposed.**
+**Settled on the user's delegation 2026-11-09.** Review with the user: whether a learned per-kind
+default is wanted, and whether `stats` should count quiet stops in TIMEOUTS.
 
 - **Log growth is measured by the log file's size, not its mtime.** Any change of size, either way,
   is output and starts the clock again. Why: the size changes exactly when the job writes, and it
