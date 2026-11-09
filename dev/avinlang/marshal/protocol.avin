@@ -14,7 +14,8 @@ val Version: string = "0.2.5"
 // succeeded. `retries` is how many times more it runs after failing or timing out, `retryDelayMs`
 // after how long. `memoryGiven` says the memory was given (`--mem`), so `--mem 0` opts out of the
 // reservation learned from the kind's peaks; a memory above 0 counts as given either way. `label`
-// is free text the submitter gave the job to find it by ("" for none; see `checkLabel`).
+// is free text the submitter gave the job to find it by ("" for none; see `checkLabel`). `quietMs`
+// stops a running job whose log has had no new output for that long (0 for none; see quiet.avin).
 data JobSpec(
     kind: string,
     units: int,
@@ -30,7 +31,8 @@ data JobSpec(
     retries: int = 0,
     retryDelayMs: long = 0,
     memoryGiven: bool = false,
-    label: string = "")
+    label: string = "",
+    quietMs: long = 0)
 
 // The longest label, in characters.
 val MaxLabel: int = 80
@@ -90,6 +92,7 @@ data Priority
     Urgent
 
 // How a job ended. `DependencyFailed` cancels a job waiting for job `after`, which did not succeed.
+// `Quiet` is a job stopped because its log had no new output for `afterMs` (its quiet timeout).
 data Outcome
     Exited(code: int)
     Signalled(signal: int)
@@ -97,14 +100,17 @@ data Outcome
     Cancelled
     Lost
     DependencyFailed(after: long)
+    Quiet(afterMs: long)
 
 // The exit status `wait` and `run` end with: the job's own code, 128 + the signal that ended it,
-// 124 for a timeout, 143 for a job cancelled before it started (as a TERM would), 125 for a job
-// lost with a daemon that died and 126 for a job cancelled because a job it waited for failed.
+// 124 for a timeout (its deadline or its quiet timeout), 143 for a job cancelled before it started
+// (as a TERM would), 125 for a job lost with a daemon that died and 126 for a job cancelled because a
+// job it waited for failed.
 exitCode(o: Outcome) -> int
 exitCode(Exited(code)) = code
 exitCode(Signalled(sig)) = 128 + sig
 exitCode(TimedOut) = 124
+exitCode(Quiet(_)) = 124
 exitCode(Cancelled) = 143
 exitCode(Lost) = 125
 exitCode(DependencyFailed(_)) = 126
@@ -113,11 +119,11 @@ exitCode(DependencyFailed(_)) = 126
 succeeded(o: Outcome) -> bool = o == Exited(0)
 
 // Whether a job that ended so failed in a way another attempt may mend: a nonzero exit, a signal it
-// was not sent by `kill`, or its deadline.
+// was not sent by `kill`, its deadline, or its quiet timeout.
 retryable(o: Outcome, killed: bool) -> bool
 retryable(_, true) = false
 retryable(Exited(code), _) = code != 0
-retryable(Signalled(_) | TimedOut, _) = true
+retryable(Signalled(_) | TimedOut | Quiet(_), _) = true
 retryable(_, _) = false
 
 // One job as a listing shows it. `state` is `waiting` (for the jobs it runs after), `queued`,
@@ -132,7 +138,7 @@ retryable(_, _) = false
 // `after` is what a waiting job still waits for, the jobs that have not ended yet; `attempt` counts
 // its runs from 1. `reserved` is the memory the scheduler counts for it, its effective reservation:
 // the memory it declared, or, with `reservedLearned`, what its kind's peaks taught (memory.avin).
-// `label` is the text its submitter gave it, "" for none.
+// `label` is the text its submitter gave it, "" for none; `quietMs` its quiet timeout, 0 for none.
 data JobInfo(
     id: long,
     kind: string,
@@ -160,7 +166,8 @@ data JobInfo(
     attempt: int = 1,
     reserved: long = 0,
     reservedLearned: bool = false,
-    label: string = "")
+    label: string = "",
+    quietMs: long = 0)
 
 // The memory a listing shows for a job: its reservation, `~` before one learned from its kind's
 // peaks; `-` for none. A job that says no reservation shows the memory it declared.
@@ -305,11 +312,22 @@ encodeSpec(s: JobSpec) -> Json = Json.Obj(Json.obj(
     ("after_any", Json.Bool(s.afterAny)),
     ("retries", Json.num(s.retries)),
     ("retry_delay_ms", Json.num(s.retryDelayMs)),
-    ("mem_given", Json.Bool(s.memoryGiven))).asMembers().get() ++ labelMember(s.label))
+    ("mem_given", Json.Bool(s.memoryGiven))).asMembers().get() ++ labelMember(s.label) ++ quietMember(s.quietMs))
 
 // A label's member of an object: none for no label, so what marshal wrote before labels and what it
 // writes for a job without one are the same.
 private labelMember(label: string) -> Vector[(string, Json)] = if label.isEmpty() then [] else [("label", Json.str(label))]
+
+// A quiet timeout's member of an object: none for no quiet timeout, as with a label.
+private quietMember(ms: long) -> Vector[(string, Json)] = if ms <= 0 then [] else [("quiet_ms", Json.num(ms))]
+
+// A quiet timeout read from an object: 0 where it is absent or null, an error where it is not a
+// whole number above 0.
+private quietOf(j: Json) -> Result[long, string] = j.get("quiet_ms") match
+    None | Some(Json.Null) -> Ok(0)
+    Some(v) -> v.asLong() match
+        Some(n) if n > 0 -> Ok(n)
+        _ -> Err("`quiet_ms` is not a whole number above 0")
 
 // A label read from an object: "" where it is absent, an error where it is not a label.
 private labelOf(j: Json) -> Result[string, string] = j.get("label") match
@@ -336,7 +354,8 @@ decodeSpec(j: Json) -> Result[JobSpec, string]
         optional(j, "retries", v -> v.asInt(), "an int", 0)?,
         optional(j, "retry_delay_ms", v -> v.asLong(), "a whole number", long(0))?,
         optional(j, "mem_given", v -> v.asBool(), "a bool", false)?,
-        labelOf(j)?))
+        labelOf(j)?,
+        quietOf(j)?))
 
 private field[T](j: Json, key: string, read: (Json) -> Option[T], what: string) -> Result[T, string] =
     j.get(key) match
@@ -413,6 +432,7 @@ encodeOutcome(TimedOut) = Json.obj(("how", Json.str("timeout")))
 encodeOutcome(Cancelled) = Json.obj(("how", Json.str("cancelled")))
 encodeOutcome(Lost) = Json.obj(("how", Json.str("lost")))
 encodeOutcome(DependencyFailed(after)) = Json.obj(("how", Json.str("dependency-failed")), ("after", Json.num(after)))
+encodeOutcome(Quiet(afterMs)) = Json.obj(("how", Json.str("quiet")), ("after_ms", Json.num(afterMs)))
 
 decodeOutcome(j: Json) -> Result[Outcome, string]
     field(j, "how", v -> v.asString(), "a string")? match
@@ -422,6 +442,7 @@ decodeOutcome(j: Json) -> Result[Outcome, string]
         "cancelled" -> Ok(Cancelled)
         "lost" -> Ok(Lost)
         "dependency-failed" -> Ok(DependencyFailed(field(j, "after", v -> v.asLong(), "a whole number")?))
+        "quiet" -> Ok(Quiet(field(j, "after_ms", v -> v.asLong(), "a whole number")?))
         other -> Err(s"no such outcome: `$other`")
 
 // Replies.
@@ -452,7 +473,7 @@ encodeJob(i: JobInfo) -> Json = Json.Obj(Json.obj(
     ("after", longs(i.after)),
     ("attempt", Json.num(i.attempt)),
     ("resv", Json.num(i.reserved)),
-    ("resv_learned", Json.Bool(i.reservedLearned))).asMembers().get() ++ labelMember(i.label))
+    ("resv_learned", Json.Bool(i.reservedLearned))).asMembers().get() ++ labelMember(i.label) ++ quietMember(i.quietMs))
 
 decodeJob(j: Json) -> Result[JobInfo, string]
     val outcome = j.get("outcome") match
@@ -491,7 +512,9 @@ decodeJob(j: Json) -> Result[JobInfo, string]
         optional(j, "resv", wholeNumber, "a whole number", memory)?,
         optional(j, "resv_learned", v -> v.asBool(), "a bool", false)?,
         // absent from what marshal wrote before labels: no label; one already logged is read as it is
-        optional(j, "label", v -> v.asString(), "a string", "")?))
+        optional(j, "label", v -> v.asString(), "a string", "")?,
+        // absent from what marshal wrote before quiet timeouts, and for a job without one: none
+        quietOf(j)?))
 
 encodeTakeSlot(t: TakeSlotUse) -> Json = Json.obj(
     ("dir", Json.str(t.dir)),

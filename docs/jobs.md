@@ -39,6 +39,8 @@ often a misspelling.
 | `bisect` | The repeatable parameter whose values a red gate is bisected over. |
 
 `--dir`, `--deadline`, `--units` and `--mem` on the command line override the type's own.
+`--quiet-timeout <t>` stops the run, sampled and with the outcome `quiet`, once its log (every
+step's output) has had no new output for `t`; a type has no quiet timeout of its own.
 
 ### Parameters
 
@@ -63,7 +65,8 @@ often a misspelling.
 | `about` | One line for `--help`. |
 
 A name is a lowercase letter, then lowercase letters, digits, `-` and `_`. It may not be one of
-run-type's own options (`dir`, `deadline`, `units`, `mem`, `help`, `submit`) or one of the names
+run-type's own options (`dir`, `deadline`, `quiet-timeout`, `units`, `mem`, `label`, `help`,
+`submit`) or one of the names
 marshal gives every step (below).
 
 On the command line a parameter is `--name value` or `--name=value`, and a `bool` is `--name` (or

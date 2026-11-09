@@ -108,6 +108,10 @@ class Job(val id: long, val spec: JobSpec, val submittedMs: long, var arrived: l
     var outcome: Option[Outcome] = None
     var killed = false
     var timedOut = false
+    // a job being stopped (`timedOut`) for its quiet timeout rather than its deadline, and how long
+    // its log has gone without output
+    var quietStopped = false
+    var quiet = marshal.QuietClock(0, 0)
     var sample: Option[string] = None
     // a queued job kept from starting, and its place in the queue
     var held = false
@@ -144,7 +148,7 @@ class Job(val id: long, val spec: JobSpec, val submittedMs: long, var arrived: l
         val rss = if state == "running" then resident.now else 0
         // a waiting job that asked to be urgent joins the urgent band once it queues
         val urgent = urgentAt > 0 || (state == "waiting" && spec.urgent)
-        JobInfo(id, spec.kind, spec.units, spec.memory, spec.landing, spec.dir, spec.cmd, state, outcome, killed, queued, elapsed, deadlineMs, log, sample, rss, resident.peak, startedAt, held, priority, urgent, paused, after, attempt, reserved, learnedMem, spec.label)
+        JobInfo(id, spec.kind, spec.units, spec.memory, spec.landing, spec.dir, spec.cmd, state, outcome, killed, queued, elapsed, deadlineMs, log, sample, rss, resident.peak, startedAt, held, priority, urgent, paused, after, attempt, reserved, learnedMem, spec.label, spec.quietMs)
 
 // The daemon's state, owned by its own thread.
 // `slots` is the take-slot directory it shares, if any; `ticket` the name of its waiting ticket there.
@@ -230,7 +234,9 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
                 Written -> unwritten -= 1
                 Tick -> if queue.nonEmpty() then schedule()
                 Sweep -> sweep()
-                Sample -> measure()
+                Sample ->
+                    quietCheck()
+                    measure()
                 Measured(sizes) -> measured(sizes)
                 Unwatch(out) -> unwatch(out)
                 Terminate ->
@@ -308,7 +314,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         Submitted(id, job.log)
 
     // `rerun`: job `id`, ended, submitted again with the same command, directory, environment, kind,
-    // resources, deadline, urgency, retries and label, but waiting for nothing.
+    // resources, deadline, quiet timeout, urgency, retries and label, but waiting for nothing.
     rerun(id: long) -> Reply
         val spec = jobs.get(id) match
             Some(j) if j.state != "done" -> return Failed(s"job $id is ${j.state}: only a job that has ended runs again")
@@ -319,7 +325,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
                 marshal.specOf(text.lines(), id) match
                     Some(s) -> s
                     None -> return Failed(s"job $id's command is not in the event log")
-        submit(JobSpec(spec.kind, spec.units, spec.memory, spec.landing, spec.dir, spec.deadlineMs, spec.cmd, spec.env, spec.urgent, [], false, spec.retries, spec.retryDelayMs, spec.memoryGiven, spec.label), [("rerun_of", Json.num(id))])
+        submit(JobSpec(spec.kind, spec.units, spec.memory, spec.landing, spec.dir, spec.deadlineMs, spec.cmd, spec.env, spec.urgent, [], false, spec.retries, spec.retryDelayMs, spec.memoryGiven, spec.label, spec.quietMs), [("rerun_of", Json.num(id))])
 
     // How job `id` ended: None while it has not, and an error when there is no such job or its end
     // cannot be read.
@@ -391,6 +397,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         record(event, job, [("run_ms", Json.num(job.ran(t))), ("exit", Json.num(marshal.exitCode(outcome))), ("retrying", Json.Bool(true))])
         job.outcome = None
         job.timedOut = false
+        job.quietStopped = false
         job.sample = None
         job.pid = 0
         job.pgid = 0
@@ -466,10 +473,12 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         terminate(home, job.id, job.pgid, None)
 
     // Ends the job's pause on the daemon's books: the time paused is added up, and its clock runs.
+    // Its quiet clock starts again: a pause is not quiet.
     unpause(job: Job)
         job.pausedMs += now() - job.pausedAt
         job.paused = false
         job.pausedAt = 0
+        job.quiet = marshal.quietStart(marshal.fileBytes(job.log), now())
 
     // The running job `id`, or why there is none, saying `what` only a running job may have done.
     runningJob(id: long, what: string) -> Result[Job, string] = jobs.get(id) match
@@ -621,6 +630,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         job.state = "running"
         job.startedMs = now()
         job.startedAt = time.now().epochMillis()
+        job.quiet = marshal.quietStart(marshal.fileBytes(job.log), job.startedMs)
         running += job
         command.start() match
             Ok(child) ->
@@ -668,6 +678,12 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         // so the TERM reaches it.
         marshal.signalGroups(home, id, job.pgid, signal.Terminate)
         if job.paused then marshal.signalGroups(home, id, job.pgid, signal.Continue)
+        if job.timedOut && job.quietStopped
+            // the job's log ends saying why it was stopped, after all it wrote
+            val sample = job.sample.map(s -> s"; stack sample in $s").getOrElse("")
+            fs.appendText(job.log, s"\nmarshal: ${marshal.quietWords(job.spec.quietMs)} (quiet timeout)$sample\n")
+            attemptEnded(job, marshal.Quiet(job.spec.quietMs), "quiet")
+            return
         if job.timedOut
             attemptEnded(job, TimedOut, "timeout")
             return
@@ -687,11 +703,27 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
     due(id: long, gen: int)
         val job = jobs(id)
         if job.state != "running" || job.killed || job.timedOut || job.paused || gen != job.dueGen then return
+        outOfTime(job, s"passed its deadline of ${marshal.formatMillis(job.deadlineMs)}")
+
+    // Looks at the log of each running job that has a quiet timeout, and stops one whose log has gone
+    // without output for that long. A paused job, or one already being stopped, is not looked at.
+    quietCheck()
+        val t = now()
+        for job in running.toVector()
+            if job.spec.quietMs <= 0 || job.killed || job.timedOut || job.paused then continue
+            job.quiet = marshal.quietSeen(job.quiet, marshal.fileBytes(job.log), t)
+            if marshal.quietPassed(job.quiet, job.spec.quietMs, t)
+                job.quietStopped = true
+                outOfTime(job, s"has had no output for ${marshal.formatMillis(job.spec.quietMs)}")
+
+    // Stops a running job that ran out of time, at its deadline or its quiet timeout (`why`): its
+    // busiest process is sampled, then its groups are stopped.
+    outOfTime(job: Job, why: string)
         job.timedOut = true
-        val sample = s"$home/jobs/$id.sample.txt"
+        val sample = s"$home/jobs/${job.id}.sample.txt"
         job.sample = Some(sample)
-        eprintln(s"marshal: job $id passed its deadline of ${marshal.formatMillis(job.deadlineMs)}: sampling and stopping it")
-        terminate(home, id, job.pgid, Some(sample))
+        eprintln(s"marshal: job ${job.id} $why: sampling and stopping it")
+        terminate(home, job.id, job.pgid, Some(sample))
 
     // Ends a job: records it, answers its waiters and lets the scheduler use what it held.
     conclude(job: Job, outcome: Outcome, event: string)
@@ -1089,7 +1121,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             j.resident.now, j.resident.peak, j.held, j.priority, j.urgentAt,
             j.pausedMs, if j.paused then wall(j.pausedAt) else 0,
             j.attempt, if j.state == "retrying" then wall(j.retryAt) else 0,
-            j.reserved, j.learnedMem)
+            j.reserved, j.learnedMem, j.quietStopped)
         SavedState(reportedVersion(), process.pid(), wallNow, wall(began), nextId,
             queue.map(saved).toVector(), running.map(saved).toVector(), ended.takeRight(Recent).map(saved).toVector(), ticket, queueHeld,
             waitingJobs.map(saved).toVector())
@@ -1117,6 +1149,9 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             job.outcome = sj.outcome
             job.killed = sj.killed
             job.timedOut = sj.timedOut
+            job.quietStopped = sj.quietStopped
+            // the quiet the old image saw is not carried over: the clock starts again here
+            job.quiet = marshal.quietStart(marshal.fileBytes(sj.log), t)
             job.sample = sj.sample
             job.held = sj.held
             job.priority = sj.priority

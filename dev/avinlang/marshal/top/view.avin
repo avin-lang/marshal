@@ -7,7 +7,7 @@ import avin.time
 import dev.avinlang.marshal
 import dev.avinlang.marshal.{JobInfo, Overview, QueuedJob, Usage, Why}
 import dev.avinlang.marshal.{NoUnits, NoMemory, LaneBusy, Draining, ForTakeSlot, Behind, Starting, Held, QueueHeld}
-import dev.avinlang.marshal.{Exited, Signalled, TimedOut, Cancelled, Lost, DependencyFailed}
+import dev.avinlang.marshal.{Exited, Signalled, TimedOut, Cancelled, Lost, DependencyFailed, Quiet}
 import dev.avinlang.tui.{Black, Blue, Bold, BrightBlack, Char, Column, Ctrl, Cyan, Dim, Down, End, Enter, Escape, Event,
                          Green, Grid, Home, Key, KeyPress, Magenta, PageDown, PageUp, Rect, Red, Reverse, Rounded,
                          Stop, Style, Table, Up, Yellow, textWidth}
@@ -102,6 +102,7 @@ stateOf(l: Line) -> (string, Style)
             Some(Exited(code)) -> (s"exit $code", Style.fg(Red).with(Bold))
             Some(Signalled(sig)) -> if j.killed then ("killed", Style.fg(Magenta).with(Bold)) else (s"signal $sig", Style.fg(Red).with(Bold))
             Some(TimedOut) -> ("timeout", Style.fg(Red).with(Bold | Reverse))
+            Some(Quiet(_)) -> ("quiet", Style.fg(Red).with(Bold | Reverse))
             Some(Cancelled) -> ("cancelled", Style.fg(BrightBlack))
             Some(Lost) -> ("lost", Style.fg(Magenta).with(Bold | Reverse))
             Some(DependencyFailed(after)) -> (s"dep $after failed", Style.fg(BrightBlack))

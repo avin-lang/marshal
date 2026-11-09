@@ -10,8 +10,8 @@ import json.Json
 
 // One job the log saw end, as its last ending event describes it.
 // - `how`: `ok` (exit 0), `failed` (any other exit), `signal`, `killed` (stopped by `kill`),
-//   `timeout`, `cancelled` (never started, by `kill` or because a job it waited for failed) or
-//   `lost`.
+//   `timeout` (its deadline), `quiet` (its quiet timeout), `cancelled` (never started, by `kill` or
+//   because a job it waited for failed) or `lost`.
 // - `exit`: the status `wait` would have exited with.
 // - `runMs`: how long it ran; 0 for a job cancelled before it started.
 // - `endedAt`: when it ended, wall clock milliseconds since 1970.
@@ -26,6 +26,7 @@ howWord(Exited(_), _) = "failed"
 howWord(Signalled(_), true) = "killed"
 howWord(Signalled(_), _) = "signal"
 howWord(TimedOut, _) = "timeout"
+howWord(Quiet(_), _) = "quiet"
 howWord(Cancelled, _) = "cancelled"
 howWord(Lost, _) = "lost"
 howWord(DependencyFailed(_), _) = "cancelled"

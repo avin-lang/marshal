@@ -79,7 +79,7 @@ val AfterGate: Vector[string] = ["next", "report", "stop"]
 val Builtins: Vector[string] = ["dir", "work", "run_dir", "head", "pass"]
 
 // The options `run-type` keeps for itself, which no parameter may be named.
-val JobOptions: Vector[string] = ["dir", "deadline", "units", "mem", "help", "submit"]
+val JobOptions: Vector[string] = ["dir", "deadline", "quiet-timeout", "units", "mem", "label", "help", "submit"]
 
 private val TypeKeys: Vector[string] = ["about", "kind", "lane", "units", "mem", "deadline", "params", "bisect", "steps", "land", "fail_map", "cleanup"]
 private val ParamKeys: Vector[string] = ["type", "repeat", "required", "positional", "default", "choices", "about"]
@@ -443,5 +443,5 @@ typeHelp(t: JobType) -> string
         if !p.required && p.kind != "bool" then notes += "default: " + (if p.defaults.isEmpty() then "none" else p.defaults.map(d -> if d.isEmpty() then "\"\"" else d).mkString(" "))
         val note = if notes.isEmpty() then "" else s" (${notes.mkString("; ")})"
         lines += s"  --${p.name}$value".padEnd(28, ' ') + p.about + note
-    lines += "\nOptions of run-type: --dir <d>, --deadline <t>, --units <n>, --mem <size>, --label <text>, --submit (print the job's id and do not wait)."
+    lines += "\nOptions of run-type: --dir <d>, --deadline <t>, --quiet-timeout <t>, --units <n>, --mem <size>, --label <text>, --submit (print the job's id and do not wait)."
     lines.mkString("\n")

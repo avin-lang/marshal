@@ -1,0 +1,28 @@
+module dev.avinlang.marshal
+
+// A job's quiet clock: how long its log has gone without new output, for `--quiet-timeout`. The
+// daemon looks at the log's size once a second; any change of size is output and starts the clock
+// again. A paused job is not looked at, and its clock starts again when it is resumed; so does every
+// running job's when a restarted daemon takes it over, since the quiet the old image saw is not
+// carried across.
+
+// `size` is the log's size in bytes when it last changed, and `since` when that was seen (the
+// daemon's clock, milliseconds).
+data QuietClock(size: long, since: long)
+
+// A clock started at `now`, the log being `size` bytes: as a job starts, is resumed or is taken over.
+quietStart(size: long, now: long) -> QuietClock = QuietClock(size, now)
+
+// The clock after the log is seen at `size` at `now`: output, a change of size either way (a log
+// truncated and written again counts), starts it again; no change leaves it as it was.
+quietSeen(c: QuietClock, size: long, now: long) -> QuietClock = if size != c.size then QuietClock(size, now) else c
+
+// How long the log has been quiet by `now`.
+quietFor(c: QuietClock, now: long) -> long = if now > c.since then now - c.since else 0
+
+// Whether a job with the quiet timeout `quietMs` (0 for none) and the clock `c` has gone quiet for
+// that long by `now`.
+quietPassed(c: QuietClock, quietMs: long, now: long) -> bool = quietMs > 0 && quietFor(c, now) >= quietMs
+
+// What the job's log, the daemon's output and `wait` say of a job stopped for its quiet timeout.
+quietWords(quietMs: long) -> string = s"killed after ${formatMillis(quietMs)} without output"

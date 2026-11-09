@@ -995,3 +995,59 @@ step started but not yet recorded misses one STOP.
   under where it began, never elided, since the column often elides it; the line is the one there
   always was for a job without a label. Alternatives: a fixed column (costs every screen the cells),
   eliding in the header (hides what the column already hides).
+
+## Quiet timeouts (branch `quiet-timeout`)
+
+**Proposed.**
+
+- **Log growth is measured by the log file's size, not its mtime.** Any change of size, either way,
+  is output and starts the clock again. Why: the size changes exactly when the job writes, and it
+  is read with the same `stat` an mtime would be; an mtime has a coarse resolution on some
+  filesystems (a second or more), can move without output (`touch`, a backup tool, an editor opening
+  the file), and is wall-clock time, which jumps when the clock is set, while the quiet clock is the
+  daemon's monotonic one. A job's log is only appended to (a retry appends after the earlier
+  attempts), so a write never leaves the size as it was. Alternatives: mtime (above); reading the
+  tail of the log for new lines (more I/O for the same answer).
+- **The daemon looks once a second, on the tick that already measures memory (`Sample`), not with a
+  sleeper per job as the deadline has.** Why: output moves the moment a quiet timeout is due, so a
+  sleeper would have to be re-armed on every write, which the daemon only learns of by looking; one
+  `stat` per job a second costs nothing. The cost is that a quiet job is stopped up to a second
+  after its timeout. Alternatives: a sleeper per job woken to look (the same looking with more
+  threads); kqueue/inotify on each log (platform code for a second's precision).
+- **The kill is the deadline's: the same sample of the busiest process across the job's and its
+  step's groups, then TERM to the job's group and KILL to both after the grace period** (`outOfTime`,
+  shared by both). The job's `timedOut` mark is set as for a deadline, so everything that treats a
+  job being stopped (kill and pause refused, the deadline's sleeper disarmed, a restart stopping it
+  again) does so for both; `quietStopped` says which.
+- **The outcome is its own, `{"how":"quiet","after_ms":Q}`, with the ending event `quiet`**, not
+  `timeout` with a flag. Why: history, `ls`, `top`, `wait`'s line and events filters
+  (`outcome=quiet`) then tell the two apart with no reader needing a second field, and a reader of
+  the outcome alone knows the timeout. It exits 124 like a deadline (it is a timeout), and it is
+  retried like one under `--retries`. `stats`' TIMEOUTS column still counts deadlines only.
+  Alternatives: `timeout` plus `"quiet":true` (every existing reader would read a quiet stop as a
+  deadline); exit 125 or another code (125 is a lost job; a script testing for 124 wants both).
+- **The job's log ends with `marshal: killed after 10m00s without output (quiet timeout); stack
+  sample in …`**, appended when the job's process has ended, so it follows everything the job and
+  the runner wrote. The deadline's stop writes nothing into the log, as before.
+- **A pause is not quiet: a paused job is not looked at, and `resume` starts its clock again** (from
+  the log as it is then), rather than carrying the quiet before the pause over. Why: the job could
+  not write while it was stopped, and what it does next after a long pause deserves a whole timeout.
+  Alternative: subtract the pause, as the deadline does (lets a job that was nearly quiet when paused
+  be stopped a moment after resuming).
+- **`marshal restart` starts every running job's clock again; the clock is not saved.** The quiet
+  timeout is in the spec, so it rides in the state's `spec` (`quiet_ms`, absent for none), and a stop
+  under way is `quiet_stopped` beside `timed_out`, so the new image ends it as `quiet`. Why: the
+  new image cannot know whether the job wrote during the handover except by its size, which it reads
+  fresh; at worst a hung job lives one quiet timeout longer per restart. Alternatives: save the
+  last size and its time on the wall clock (one more pair of fields for a second's accuracy).
+- **No quiet timeout by default, and none in a job type's file; `run-type` and `train` take the
+  option.** Why: some honest jobs are silent for a long time (a linker, a large compile), so a
+  default would kill working jobs. A type's `quiet_timeout` key is a natural follow-up.
+- **Considered, not built: a learned quiet timeout per kind**, as deadlines are learned (a multiple
+  of the longest silence seen in the kind's successful runs). Why not now: learning it needs the
+  longest gap between writes of every successful run, which the daemon would have to record per job
+  in the event log first; and a learned quiet timeout would apply to jobs that never asked for one,
+  the default this item avoids. Recording `max_quiet_ms` on each ending event is the first step,
+  after which `stats` can show it and a learned default can be weighed against real numbers.
+- **A parameter may not be named `quiet-timeout` or `label`**, run-type's own options. `label` was
+  missing from that list, so a type with a `label` parameter had `--label` taken by run-type itself.

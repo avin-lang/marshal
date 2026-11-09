@@ -126,7 +126,7 @@ mostAtOnce(home: string, landing: bool) -> int
                 started += id
                 now += 1
                 if now > most then most = now
-            "finished" | "timeout" | "killed" | "lost" ->
+            "finished" | "timeout" | "quiet" | "killed" | "lost" ->
                 if started.contains(id)
                     started -= id
                     now -= 1

@@ -181,10 +181,11 @@ Options of `submit` and `run`:
 | `--urgent` | Queues it in its lane's urgent band: ahead of every job not urgent, behind the urgent jobs already queued. |
 | `--dir <d>` | Where it runs, relative to the current directory. Default: the current directory. |
 | `--deadline <t>` | Stops it after `t`: a number of minutes, or `90s`, `30m`, `2h`. Default: learned for its kind. |
+| `--quiet-timeout <t>` | Stops it once its log has had no new output for `t`, written as `--deadline` writes one: a hung job ends then rather than at its deadline. It is sampled and stopped as a deadline stops it, but its outcome is `quiet`: `wait` says `killed after 10m00s without output (quiet timeout)`, its log ends with that line, the event is `quiet`, and `ls` and `history` show `quiet`. Time paused does not count, and the quiet clock starts again on `resume` and on `marshal restart`. `status --json` gives it as `quiet_ms`; `rerun` keeps it; `run-type` and `train` take it too. Default: none. |
 | `--after <ids>` | Waits until jobs `<ids>` (`3` or `3,4`) have ended; the same as `--after-ok`. |
 | `--after-ok <ids>` | Waits until they have ended, then queues it if each exited 0, and otherwise cancels it (`dependency-failed`, exit 126), which cancels in turn what waits for it. |
 | `--after-any <ids>` | Waits until they have ended, then queues it however they ended. |
-| `--retries <n>` | Runs it again, up to `n` times, when it exits nonzero, is ended by a signal it was not sent by `kill`, or passes its deadline. Default 0. |
+| `--retries <n>` | Runs it again, up to `n` times, when it exits nonzero, is ended by a signal it was not sent by `kill`, or passes its deadline or its quiet timeout. Default 0. |
 | `--retry-delay <t>` | Waits `t` before each retry. Default: none. |
 | `--label <text>` | A note to find the job by, such as `train 209`: one line of 1 to 80 characters, no control characters (newline, tab), no space at either end; a longer or malformed label is refused, not cut. It shows in `ls`, `history`, `top` (a LABEL column when a listed job has one; the whole label beside the kind in the log pane) and `status --json`, and is in the events. `rerun` keeps it; `run-type` and `train` take `--label` too. Default: none. |
 
@@ -202,7 +203,7 @@ standard error.
 | `--limit <n>` | `history` only: at most `n` jobs. Default 20. |
 
 `history` has the columns ID, KIND (`*` marks a landing job), OUTCOME (`ok`, `failed`, `signal`,
-`killed`, `timeout`, `cancelled`, `lost`), EXIT (the status `wait` exits with), DURATION and ENDED
+`killed`, `timeout`, `quiet`, `cancelled`, `lost`), EXIT (the status `wait` exits with), DURATION and ENDED
 (the end, to the second, in the caller's local time zone like STARTED; `--json` carries `ended_at` as milliseconds). `stats` has one row per kind (a kind's landing runs are their own row, `kind+landing`, as for
 learning deadlines): COUNT, OK (the share that exited 0), P50, P90 and MAX of the run times,
 TIMEOUTS, DEADLINE (what the next job of the kind would get, learned from every successful run in the
@@ -216,15 +217,15 @@ $ marshal stats --kind test --json
 ```
 
 `run-type` and `train` take `--dir`, `--deadline`, `--units` and `--mem` too, which override the
-type's own, and `--submit`, which prints the job's id instead of waiting. A type's parameters may not
-use those names.
+type's own, `--quiet-timeout` and `--label`, and `--submit`, which prints the job's id instead of
+waiting. A type's parameters may not use those names.
 
 A job runs with the caller's environment, plus `MARSHAL_JOB` (its id) and `MARSHAL_HOME`, in a
 process group of its own, under `nice -n 15` unless it is a landing job, with its standard output
 and error in `~/.marshal/jobs/<id>.log`.
 
 **Exit statuses.** `wait` and `run` exit with the job's own code; 128 + the signal for a job ended by
-a signal (143 for `kill`); 124 for a job stopped at its deadline; 143 for a job cancelled before it
+a signal (143 for `kill`); 124 for a job stopped at its deadline or its quiet timeout; 143 for a job cancelled before it
 started; 125 for a job lost when a daemon died; 126 for a job cancelled because a job it waited for
 did not succeed. A type's run exits 0 when it is green, 1 when it is red and 2 when its type or
 parameters are wrong. marshal's own failures (a bad command line, an unknown job, no daemon) exit 2.
@@ -322,10 +323,11 @@ ends: nothing polls.
   minutes; until it has 3 runs it is 20 minutes for a build, 45 for a test, 30 for anything else and
   120 for a landing job. A job past its deadline has its busiest process sampled (where the system
   has `sample`, 5 seconds, to `jobs/<id>.sample.txt`), then its group gets TERM and, 5 seconds later,
-  KILL.
+  KILL. A job with `--quiet-timeout` is stopped the same way once its log's size has not changed
+  for that long; the daemon looks at the log once a second, so the stop comes up to a second late.
 - **Events.** `events.jsonl` records every job's `submitted`, `ready` (a job that waited for others
   joining the queue), `held`, `released`, `prioritized`, `started`, `paused`, `resumed`, `retry` and
-  ending (`finished`, `timeout`, `killed`, `cancelled`, `lost`), each with the time, the job, and its
+  ending (`finished`, `timeout`, `quiet`, `killed`, `cancelled`, `lost`), each with the time, the job, and its
   durations and exit status.
   Deadlines are learned from it, and a daemon that starts after one died records the jobs that
   were left open as `lost`.
@@ -358,7 +360,8 @@ ends: nothing polls.
   daemon writes its jobs, queue and take-slot ticket to `state.json` in marshal's home and replaces
   its program in place, so it keeps its process, and its jobs stay its children; the new program
   reads the file and carries on. A running job keeps running and is answered with its own exit
-  status, its deadline keeps counting from when it started, a job being killed is still killed,
+  status, its deadline keeps counting from when it started, its quiet clock starts again, a job
+  being killed or stopped at its deadline or quiet timeout is still stopped, with the same outcome,
   and the queue starts in the same order. A command whose connection closes during the restart
   (a `wait`, say) connects again for up to 30 seconds and asks again, so it never notices. When
   the new program is missing or cannot run, the daemon goes on as it was, and `restart` says why and

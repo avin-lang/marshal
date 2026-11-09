@@ -14,7 +14,7 @@ thread of its own, so a client blocked in `wait` holds up nobody else.
 
 | `op` | Fields | Reply |
 | --- | --- | --- |
-| `submit` | `kind` (string), `units` (int), `mem` (bytes), `landing` (bool, default false), `dir` (absolute path), `deadline_ms` (number or null: learned), `cmd` (array of strings, not empty), `env` (object of strings, default `{}`), `urgent` (bool, default false: the back of the lane's urgent band), `after` (array of job ids it waits for, default `[]`), `after_any` (bool, default false: it runs only if each of them exited 0), `retries` (int, default 0), `retry_delay_ms` (number, default 0), `mem_given` (bool, default false: `mem` was given, so a `mem` of 0 reserves nothing rather than the kind's learned peak; a `mem` above 0 is given either way), `label` (string, absent or null for none: one line of 1 to 80 characters, no control characters, no space at either end; a bad one is refused) | `{"ok":true,"id":N,"log":"<path>"}`; refused for an `after` id that is no job or is the id this job would get |
+| `submit` | `kind` (string), `units` (int), `mem` (bytes), `landing` (bool, default false), `dir` (absolute path), `deadline_ms` (number or null: learned), `cmd` (array of strings, not empty), `env` (object of strings, default `{}`), `urgent` (bool, default false: the back of the lane's urgent band), `after` (array of job ids it waits for, default `[]`), `after_any` (bool, default false: it runs only if each of them exited 0), `retries` (int, default 0), `retry_delay_ms` (number, default 0), `mem_given` (bool, default false: `mem` was given, so a `mem` of 0 reserves nothing rather than the kind's learned peak; a `mem` above 0 is given either way), `label` (string, absent or null for none: one line of 1 to 80 characters, no control characters, no space at either end; a bad one is refused), `quiet_ms` (number above 0, absent or null for none: the job is sampled and stopped, outcome `quiet`, once its log has had no new output for that long, paused time left out) | `{"ok":true,"id":N,"log":"<path>"}`; refused for an `after` id that is no job or is the id this job would get |
 | `rerun` | `id` | `{"ok":true,"id":N,"log":"<path>"}`, the new job: the ended job's spec but `after`, submitted again; refused for no such job, one not ended, or one whose `submitted` event holds no spec |
 | `clean` | `older_ms` (number >= 1 or null), `keep` (number >= 0 or null), `dry_run` (bool, default false) | `{"ok":true,"cleaned":{"dry_run":bool,"jobs":[ids],"runs":[names],"steps":[names],"events":N,"event_jobs":M,"bytes":B}}`: the jobs whose logs went (none when `dry_run`: what would), the run directories and compiled steps removed, the events and jobs dropped from the event log, and `bytes`, how many bytes all of it held (what a dry run would free); a reply from an older daemon has no `bytes`, read as 0; only ended jobs are touched |
 | `wait` | `id` | `{"ok":true,"job":JOB}` once the job has ended (its last attempt); at once for a job already ended, including one an earlier daemon ran |
@@ -58,16 +58,17 @@ an older daemon or log) reserves its `mem`, not learned.
 its retry delay) or `done`. `after` is what a waiting job still waits for; `attempt` counts its runs
 from 1. `outcome` is null until
 the job ends, then one of `{"how":"exit","code":C}`, `{"how":"signal","signal":S}`,
-`{"how":"timeout"}`, `{"how":"cancelled"}`, `{"how":"lost"}` and
+`{"how":"timeout"}` (its deadline), `{"how":"quiet","after_ms":Q}` (stopped because its log had no
+new output for `Q` milliseconds, its quiet timeout), `{"how":"cancelled"}`, `{"how":"lost"}` and
 `{"how":"dependency-failed","after":D}`, a job cancelled because job `D`, which it waited for, did
-not exit 0. A reader takes a missing `after` as `[]` and a missing `attempt` as 1. `label` is the
+not exit 0. `quiet_ms` is the job's quiet timeout, present only for a job that has one. A reader takes a missing `after` as `[]` and a missing `attempt` as 1. `label` is the
 text the job was submitted with; it is present only for a labelled job, so an absent one means no
 label (an older daemon's replies and events have none). Every event of a job carries it, the
 `submitted` event's `spec` too, and a reader of the log takes a label as it finds it, whatever the
 limits are now. `elapsed_ms` is
 the time since it was submitted for a waiting, queued or retrying job and the time run otherwise;
 `killed` says `marshal kill` or a forced stop ended it; `sample` names the stack sample of a job
-stopped at its deadline. `rss` is the bytes the job's whole process tree (its process group, and the
+stopped at its deadline or its quiet timeout. `rss` is the bytes the job's whole process tree (its process group, and the
 group of the step a job type's run is executing) held
 in RAM at the daemon's last measurement, made every second, and 0 unless it runs; `peak_rss` the
 most any measurement found, kept once it ends; `started_at` when it started, in milliseconds since
@@ -111,8 +112,8 @@ refuses it with `no such request: `snapshot``.
 `rerun` `rerun_of`, the job run again), `ready` (a job that waited for others joins the queue),
 `held`, `released` and `prioritized` (a hold by hand begins or ends, a queued job is given a
 priority), `paused` and `resumed` (a running job's), `started` (adds `pgid` and `pid`, the job's
-main process), and one ending, `finished`, `timeout`, `killed`, `cancelled` (a job whose
-dependency failed) or `lost`, which adds `run_ms` and `exit`, the status `wait` exits with. `lost`
+main process), and one ending, `finished`, `timeout` (its deadline), `quiet` (its quiet timeout),
+`killed`, `cancelled` (a job whose dependency failed) or `lost`, which adds `run_ms` and `exit`, the status `wait` exits with. `lost`
 also adds `pgid` and `group_alive`, whether the job's processes were still running when the new
 daemon looked. A job that is retried ends each attempt with its ending event, which adds
 `"retrying":true`, and then records `retry` (adds `delay_ms`), with `attempt` the attempt to come;
@@ -124,7 +125,7 @@ where present.
 "ended_at","peak_rss"}...],"unreadable":N}`, newest first (`ended_at` is `ts` of the ending event,
 an instant in milliseconds whatever the caller's time zone; the table `history` prints shows it in
 local time; `peak_rss` null where unknown, `outcome` one of `ok`, `failed`, `signal`, `killed`,
-`timeout`, `cancelled`, `lost`). `marshal stats --json` prints `{"kinds":[{"kind","count","ok","success_pct",
+`timeout`, `quiet`, `cancelled`, `lost`). `marshal stats --json` prints `{"kinds":[{"kind","count","ok","success_pct",
 "timeouts","p50_ms","p90_ms","max_ms","deadline_ms","peak_p50","peak_max"}...],"unreadable":N}`;
 the percentiles and peaks are null where no job has one. `unreadable` counts the log lines skipped.
 
@@ -153,7 +154,7 @@ job=<id>[,<id>...]
 <name>[:<filter>[,<filter>...]]
 ```
 
-where `<name>` is `ended` (any ending event: `finished`, `timeout`, `killed`, `cancelled`,
+where `<name>` is `ended` (any ending event: `finished`, `timeout`, `quiet`, `killed`, `cancelled`,
 `lost`), `failed` (an ending whose outcome is not `ok`), `landing-done` (an ending of a landing
 job), `started`, `submitted`, `ready`, `retry`, `held`, `released`, `paused`, `resumed`,
 `prioritized` (each the event of that name) or `any`, and a `<filter>` is `kind=<k>`,
@@ -161,7 +162,7 @@ job), `started`, `submitted`, `ready`, `retry`, `held`, `released`, `paused`, `r
 contains `text`; it takes the rest of the filter, commas included, so it is written last), each at
 most once. An event's
 outcome is `ok` for `finished` with `exit` 0, `failed` for `finished` with any other `exit`, and the
-event's name for `timeout`, `killed`, `cancelled` and `lost`; other events have none. `idle` and
+event's name for `timeout`, `quiet`, `killed`, `cancelled` and `lost`; other events have none. `idle` and
 `job=` are conditions of state and so only for `once`: `idle` is met when nothing runs, is queued,
 waits for other jobs or waits to retry,
 at once when it already is, and answered with `{"ts":T,"event":"idle","running":0,"queued":0}`;
@@ -193,8 +194,11 @@ orders the band; 0 outside it), `paused_ms` (how long the job's earlier pauses l
 paused), `attempt` and `retry_at` (when a job waiting to retry queues again), `reserved` and
 `reserved_learned` (its effective reservation, and whether its kind's peaks taught it; a job saved
 without them reads as -1 and false, and the new program learns its reservation again from the
-peaks it read in the event log). A job's label is the `label` member of its saved `spec`, absent
-for none, so state saved before labels reads with no label. State written
+peaks it read in the event log), and `quiet_stopped` (a job being stopped, `timed_out`, is stopped
+for its quiet timeout rather than its deadline; false when absent). A job's label is the `label`
+member of its saved `spec`, absent for none, so state saved before labels reads with no label; its
+quiet timeout is the spec's `quiet_ms` the same way. The quiet clock is not saved: the new program
+starts every running job's again, from its log as it finds it. State written
 without `rss`, `peak_rss` or `retry_at` reads them as 0, so the measured memory of a running job
 carries across a restart; without `held`, `priority`, `urgent_at`, `paused_ms` or `paused_at` as
 false and 0; and without `attempt` as 1. A waiting job's pending dependencies are not saved: the

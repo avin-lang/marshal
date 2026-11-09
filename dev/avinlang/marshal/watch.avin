@@ -7,7 +7,7 @@ import json.Json
 
 // Which events a condition lets through. Every field narrows: `names` are the event names allowed
 // (all when empty), `kind` the job's kind, `outcome` how the job ended (`ok`, `failed`, `timeout`,
-// `killed`, `cancelled` or `lost`; only an ending event has one), `landing` a landing-lane job
+// `quiet`, `killed`, `cancelled` or `lost`; only an ending event has one), `landing` a landing-lane job
 // only, and `notOk` an ending that is not `ok`; `label` text the job's label contains.
 data Filter(names: Vector[string], kind: Option[string], outcome: Option[string], landing: bool, notOk: bool, label: Option[string] = None)
 
@@ -26,7 +26,7 @@ data Mode
     Past
     Follow
 
-val Outcomes: Vector[string] = ["ok", "failed", "timeout", "killed", "cancelled", "lost"]
+val Outcomes: Vector[string] = ["ok", "failed", "timeout", "quiet", "killed", "cancelled", "lost"]
 
 val Grammar: string = """
 Conditions of wait --until, and filters of events:
@@ -45,7 +45,7 @@ Conditions of wait --until, and filters of events:
   any                  any event (events only)
 Narrow any of these but idle and job= with filters after a colon, separated by commas: kind=<k>,
 label=<text> (the job's label contains text; last, and it takes the rest, commas too),
-and, for ended, failed, landing-done and any, outcome=<ok|failed|timeout|killed|cancelled|lost>.
+and, for ended, failed, landing-done and any, outcome=<ok|failed|timeout|quiet|killed|cancelled|lost>.
 --since <t> also looks at the events already logged: t is a job id (the events of that job and later
 ones), a time ago such as 90s, 10m, 2h or 1d, or @<milliseconds since 1970>. Without it, a wait for
 an event sees only events that happen after it asks.
@@ -53,7 +53,7 @@ an event sees only events that happen after it asks.
 """
 
 // The outcome word of an event: `ok` for a job that exited 0, `failed` for one that ended any other
-// way of exiting, and the event's own name for `timeout`, `killed`, `cancelled` and `lost`; None for
+// way of exiting, and the event's own name for `timeout`, `quiet`, `killed`, `cancelled` and `lost`; None for
 // an event that is not an ending.
 outcomeOf(ev: Json) -> Option[string]
     val name = ev.get("event").flatMap(v -> v.asString()).getOrElse("")
@@ -83,7 +83,7 @@ admits(f: Filter, ev: Json) -> bool
     if f.outcome.exists(o -> outcome != Some(o)) then return false
     !(f.notOk && outcome.forall(o -> o == "ok"))
 
-private val EndingNames: Vector[string] = ["finished", "timeout", "killed", "cancelled", "lost"]
+private val EndingNames: Vector[string] = ["finished", "timeout", "quiet", "killed", "cancelled", "lost"]
 
 // The events that are filters of their own name, beside `started` and `submitted`.
 private val Named: Vector[string] = ["ready", "retry", "held", "released", "paused", "resumed", "prioritized"]

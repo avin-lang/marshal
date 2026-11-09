@@ -16,7 +16,9 @@ import json.Json
 // (1 when absent), and `retryAt` is when a job waiting to retry queues again (0 otherwise).
 // `reserved` is the memory the scheduler counts for it and `reservedLearned` whether its kind's
 // peaks taught it; a state saved without them reads as -1 and false, and the new image learns the
-// reservation again.
+// reservation again. `quietStopped` says a job being stopped (`timedOut`) is stopped for its quiet
+// timeout rather than its deadline; false when absent. The quiet timeout itself is the spec's, and
+// its clock is not saved: the new image starts every running job's again.
 data SavedJob(
     id: long,
     spec: JobSpec,
@@ -44,7 +46,8 @@ data SavedJob(
     attempt: int = 1,
     retryAt: long = 0,
     reserved: long = -1,
-    reservedLearned: bool = false)
+    reservedLearned: bool = false,
+    quietStopped: bool = false)
 
 // The whole daemon: the version and process that saved it, when, when the daemon first began, the
 // next job id, the queue in order, the running jobs, the jobs that ended last (oldest first), the
@@ -92,7 +95,8 @@ encodeSavedJob(j: SavedJob) -> Json = Json.obj(
     ("attempt", Json.num(j.attempt)),
     ("retry_at", Json.num(j.retryAt)),
     ("reserved", Json.num(j.reserved)),
-    ("reserved_learned", Json.Bool(j.reservedLearned)))
+    ("reserved_learned", Json.Bool(j.reservedLearned)),
+    ("quiet_stopped", Json.Bool(j.quietStopped)))
 
 private whole(j: Json, key: string) -> Result[long, string] = j.get(key).flatMap(v -> v.asLong()) match
     Some(n) -> Ok(n)
@@ -166,7 +170,8 @@ decodeSavedJob(j: Json) -> Result[SavedJob, string]
         intOr(j, "attempt", 1)?,
         wholeOrZero(j, "retry_at")?,
         wholeOr(j, "reserved", -1)?,
-        truthOr(j, "reserved_learned", false)?))
+        truthOr(j, "reserved_learned", false)?,
+        truthOr(j, "quiet_stopped", false)?))
 
 encodeState(s: SavedState) -> Json = Json.obj(
     ("version", Json.str(s.version)),

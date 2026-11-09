@@ -57,6 +57,10 @@ Options of submit and run:
   --urgent          queue it ahead of every job not urgent in its lane, behind the urgent ones already queued
   --dir <d>         the directory to run it in, relative to this one (default: this one)
   --deadline <t>    stop it after t: minutes, or 90s, 30m, 2h (default: learned for the kind)
+  --quiet-timeout <t>
+                    stop it, with a stack sample, once its log has had no new output for t, written
+                    as --deadline writes one; time paused does not count (default: none; run-type
+                    and train take it too)
   --after <ids>     wait until jobs <ids> (such as 3,4) have ended; the same as --after-ok
   --after-ok <ids>  wait until they have ended, and cancel it unless each of them succeeded
   --after-any <ids> wait until they have ended, then run it however they ended
@@ -220,6 +224,7 @@ parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]
     var urgent = false
     var workDir = dir
     var deadline: Option[long] = None
+    var quiet: long = 0
     val after = Buffer[long]()
     var afterMode: Option[string] = None
     var retries = 0
@@ -258,6 +263,7 @@ parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]
             "--deadline" -> marshal.parseDeadline(value) match
                 Some(ms) -> deadline = Some(ms)
                 None -> return Err(s"`--deadline $value`: a deadline is minutes, or a number with s, m or h, such as 90s")
+            "--quiet-timeout" -> quiet = parseQuietTimeout(value)?
             "--after" | "--after-ok" | "--after-any" ->
                 val mode = if word == "--after-any" then "--after-any" else "--after-ok"
                 if afterMode.exists(m -> m != mode) then return Err("a job waits with --after-ok or with --after-any, not both")
@@ -276,7 +282,12 @@ parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]
     if cmd.isEmpty() then return Err("no command to run: give it after `--`")
     val k = kind.getOrElse(if cmd.exists(w -> w == "test") then "test" else "build")
     Ok(JobSpec(k, units.getOrElse(marshal.defaultUnits(k)), memory, landing, workDir, deadline, cmd, env, urgent,
-        after.toVector().distinct(), afterMode == Some("--after-any"), retries, retryDelay, memoryGiven, label))
+        after.toVector().distinct(), afterMode == Some("--after-any"), retries, retryDelay, memoryGiven, label, quiet))
+
+// The value of `--quiet-timeout`, written as `--deadline` writes a deadline, in milliseconds.
+parseQuietTimeout(value: string) -> Result[long, string] = marshal.parseDeadline(value) match
+    Some(ms) -> Ok(ms)
+    None -> Err(s"`--quiet-timeout $value`: a quiet timeout is minutes, or a number with s, m or h, such as 90s")
 
 // Job ids separated by commas, such as `3,4`.
 parseIds(text: string) -> Result[Vector[long], string]

@@ -20,7 +20,8 @@ data TypeLine(
     submitOnly: bool,
     help: bool,
     rest: Vector[string],
-    label: string = "")
+    label: string = "",
+    quietMs: long = 0)
 
 // Takes run-type's own options out of `args` (they may stand anywhere before a `--`), leaving the
 // type's name and its parameters in order. A parameter's value that is spelt like one of these
@@ -31,6 +32,7 @@ typeLine(args: Vector[string]) -> Result[TypeLine, string]
     var units: Option[int] = None
     var memory: Option[long] = None
     var label = ""
+    var quiet: long = 0
     var submitOnly = false
     var help = false
     val rest = Buffer[string]()
@@ -47,7 +49,7 @@ typeLine(args: Vector[string]) -> Result[TypeLine, string]
         if word == "--help" || word == "-h"
             help = true
             continue
-        if !["--dir", "--deadline", "--units", "--mem", "--label"].contains(word)
+        if !["--dir", "--deadline", "--quiet-timeout", "--units", "--mem", "--label"].contains(word)
             rest += word
             continue
         if i >= args.length() then return Err(s"`$word` needs a value")
@@ -58,6 +60,7 @@ typeLine(args: Vector[string]) -> Result[TypeLine, string]
             "--deadline" -> marshal.parseDeadline(value) match
                 Some(ms) -> deadline = Some(ms)
                 None -> return Err(s"`--deadline $value`: a deadline is minutes, or a number with s, m or h, such as 90s")
+            "--quiet-timeout" -> quiet = parseQuietTimeout(value)?
             "--units" -> value.toIntOption() match
                 Some(n) -> units = Some(n)
                 None -> return Err(s"`--units $value`: units are a whole number")
@@ -65,7 +68,7 @@ typeLine(args: Vector[string]) -> Result[TypeLine, string]
             _ -> marshal.parseSize(value) match
                 Some(n) -> memory = Some(n)
                 None -> return Err(s"`--mem $value`: a size is a whole number with K, M, G or T, such as 29G")
-    Ok(TypeLine(dir, deadline, units, memory, submitOnly, help, rest.toVector(), label))
+    Ok(TypeLine(dir, deadline, units, memory, submitOnly, help, rest.toVector(), label, quiet))
 
 // `marshal run-type <type> …`, or with `typeName` given, `marshal train …` and the like.
 runType(args: Vector[string], typeName: Option[string]) -> int
@@ -101,7 +104,7 @@ runType(args: Vector[string], typeName: Option[string]) -> int
         None -> return complain("marshal: cannot find this program's own executable to run the steps with")
     val env = process.environment().toVector().sortBy(e -> e.0)
     val spec = JobSpec(t.kind, line.units.getOrElse(t.units), line.memory.getOrElse(t.memory), t.landing, dir,
-        line.deadline.orElse(t.deadlineMs), [own, "run-steps", file] ++ params, env, false, [], false, 0, 0, false, line.label)
+        line.deadline.orElse(t.deadlineMs), [own, "run-steps", file] ++ params, env, false, [], false, 0, 0, false, line.label, line.quietMs)
     val (id, log) = askDaemon(Request.Submit(spec)) match
         Ok(Submitted(id, log)) -> (id, log)
         Ok(Failed(e)) -> return complain(s"marshal: $e")

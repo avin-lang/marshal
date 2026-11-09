@@ -14,7 +14,7 @@ readmeHasEveryCommandLine()
 @test("the README documents every option the usage lists")
 readmeHasEveryOption()
     val text = readme()
-    for flag in ["--kind", "--units", "--mem", "--landing", "--urgent", "--dir", "--deadline"] do
+    for flag in ["--kind", "--units", "--mem", "--landing", "--urgent", "--dir", "--deadline", "--quiet-timeout"] do
         assert(text.contains(s"| `$flag"), flag)
         assert(cli.usage.contains(flag), flag)
 
