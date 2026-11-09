@@ -570,8 +570,9 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             None -> if !queueHeld then plan(marshal.NoOutside)
             Some(ts) ->
                 ts.lock()
-                if !queueHeld then plan(ts.scan(ours(), config.budget.units))
-                keepTicket(ts)
+                val outside = if queueHeld then marshal.NoOutside else ts.scan(ours(), config.budget.units)
+                if !queueHeld then plan(outside)
+                keepTicket(ts, outside)
                 ts.unlock()
 
     // The queued jobs the scheduler weighs: those not held.
@@ -593,13 +594,19 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             start(job)
 
     // While a development job waits, take-slot sees a ticket of the first one's arrival, so its
-    // later runs wait behind it as they wait behind each other.
-    keepTicket(ts: TakeSlot)
-        val head = if queueHeld then None else eligible().find(j -> !j.spec.landing)
-        val want = head.map(j -> marshal.ticketName(j.arrived, ts.me))
+    // later runs wait behind it as they wait behind each other. While a landing job drains the
+    // machine, the ticket is the landing job's, ahead of every take-slot waiter (`outside`).
+    keepTicket(ts: TakeSlot, outside: Outside)
+        val head = if queueHeld
+            None
+        else
+            val started = running.map(j -> Started(j.id, j.spec.units, holds(j), j.spec.landing, j.startedMs, j.expectedMs)).toVector()
+            val waiting = eligible().map(j -> Waiting(j.id, j.spec.units, j.reserved, j.spec.landing, j.expectedMs, j.arrived))
+            marshal.ticketFor(config.budget, started, waiting, now(), outside)
+        val want = head.map(t -> marshal.ticketName(t.0, ts.me))
         if want == ticket then return
         ticket.foreach(name -> ts.removeTicket(name))
-        ticket = head.map(j -> ts.putTicket(j.arrived, j.spec.units))
+        ticket = head.map(t -> ts.putTicket(t.0, t.1))
 
     start(job: Job)
         val spec = job.spec

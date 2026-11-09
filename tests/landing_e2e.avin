@@ -1,0 +1,109 @@
+module tests
+
+// End to end, a landing job and the memory budget: a landing job whose memory does not fit beside
+// the running jobs waits, `draining`, while nothing else starts (development jobs that would fit,
+// and take-slot's waiters, which the daemon's ticket keeps back), and starts once the running jobs
+// free its memory; one with room starts at once with every unit taken; one larger than the whole
+// budget is accepted and runs alone; and a draining landing job still drains after `marshal
+// restart`. The helpers are e2e.avin's and top_pty.avin's.
+import avin.fs
+import avin.threads
+import avin.time
+import avin.time.millis
+import dev.avinlang.marshal
+import dev.avinlang.marshal.{QueuedJob, Why}
+
+// Why the queued job `id` waits, as the daemon's snapshot says.
+whyOf(home: string, id: long) -> Option[Why] = snapshotOf(home).queued.find(q -> q.job.id == id).map(q -> q.why)
+
+@test("a landing job short of memory drains the machine: it and a development job that would fit both wait until the running job ends")
+landingDrainsE2e()
+    val home = newHome("{\"memory\": \"1G\"}")
+    val a = submitted(home, "--mem", "600M", "--", "sleep", "3")
+    assert(within(2000, () -> started(home, a)))
+    val land = submitted(home, "--landing", "--mem", "600M", "--", "sleep", "0.3")
+    // 100M fits beside the 600M that runs, and would end at once
+    val b = submitted(home, "--mem", "100M", "--", "sleep", "0.1")
+    assertEq(whyOf(home, land), Some(Why.Draining))
+    assertEq(whyOf(home, b), Some(Why.Behind(land)))
+    assert(!started(home, land) && !started(home, b))
+    assertEq(m(home, "wait", b.toString()).code, 0)
+    assert(at(home, a, "finished") < at(home, land, "started"), s"${eventsOf(home, a)} ${eventsOf(home, land)}")
+    assert(at(home, land, "started") < at(home, b, "started"), s"${eventsOf(home, land)} ${eventsOf(home, b)}")
+    cleanUp(home)
+
+@test("a landing job with room starts at once while development jobs hold every unit")
+landingWithRoom()
+    val home = newHome("{\"units\": 1, \"memory\": \"1G\"}")
+    val busy = submitted(home, "--units", "1", "--mem", "300M", "--", "sleep", "3")
+    val queued = submitted(home, "--units", "1", "--", "sleep", "0.1")
+    val land = submitted(home, "--landing", "--mem", "600M", "--", "sleep", "0.2")
+    assertEq(m(home, "wait", land.toString()).code, 0)
+    // the landing job has run and ended while the development job still holds the only unit
+    assert(!ended(home, busy), eventsOf(home, busy).mkString(" "))
+    assertEq(whyOf(home, queued), Some(Why.NoUnits))
+    assertEq(m(home, "wait", queued.toString()).code, 0)
+    assert(at(home, land, "finished") < at(home, busy, "finished"))
+    cleanUp(home)
+
+@test("a landing job larger than the whole memory budget is accepted and runs once nothing else does, and alone")
+landingOverBudgetE2e()
+    val home = newHome("{\"memory\": \"1G\"}")
+    val a = submitted(home, "--mem", "100M", "--", "sleep", "1.5")
+    // accepted at submit, where a development job of 2G is refused
+    assertEq(m(home, "submit", "--mem", "2G", "--", "true").code, 2)
+    val land = submitted(home, "--landing", "--mem", "2G", "--", "sleep", "0.5")
+    val b = submitted(home, "--", "sleep", "0.1")
+    assertEq(whyOf(home, land), Some(Why.Draining))
+    assertEq(whyOf(home, b), Some(Why.Behind(land)))
+    assertEq(m(home, "wait", b.toString()).code, 0)
+    assert(at(home, a, "finished") < at(home, land, "started"))
+    assert(at(home, land, "finished") < at(home, b, "started"))
+    cleanUp(home)
+
+@test("while a landing job drains the machine, the daemon's ticket goes ahead of take-slot's earlier waiter, and take-slot's runs wait")
+landingTicketAheadOfTakeSlot()
+    val home = newHome("{\"memory\": \"1G\"}")
+    val a = submitted(home, "--mem", "600M", "--", "sleep", "60")
+    assert(within(2000, () -> started(home, a)))
+    // a take-slot waiter that arrived a second before the landing job
+    val waiter = sleeper()
+    fs.createDirAll(slots(home) + "/slot-waiting").ok().get()
+    val earlier = time.now().epochMicros - 1000000
+    val theirs = slots(home) + "/slot-waiting/" + marshal.ticketName(earlier, waiter.pid)
+    fs.writeText(theirs, "1\n").ok().get()
+    val land = submitted(home, "--landing", "--mem", "600M", "--", "sleep", "0.3")
+    val mine = s"-${daemonPid(home)}"
+    val ours = () -> tickets(home).find(t -> t.endsWith(mine)).flatMap(t -> marshal.parseTicket(t))
+    assert(within(5000, () -> ours().exists(t -> t.0 < earlier)), tickets(home).mkString(" "))
+    assertEq(fs.readText(slots(home) + "/slot-waiting/" + tickets(home).find(t -> t.endsWith(mine)).get()).ok().get(), "1\nmarshal\n")
+    // with the earlier waiter gone, a real take-slot run that fits is still held back
+    fs.remove(theirs).ok().get()
+    stopSleeper(waiter)
+    val run = takeSlot(home, [("SLOT_UNITS", "1")], "touch", "marker")
+    threads.sleep(millis(12000))
+    assert(!fs.exists(home + "/marker"), "take-slot overtook a draining landing job")
+    assert(!started(home, land))
+    m(home, "kill", a.toString())
+    assert(within(5000, () -> started(home, land)), eventsOf(home, land).mkString(" "))
+    assert(within(25000, () -> run.code.load() == 0), "take-slot never followed")
+    assert(fs.exists(home + "/marker"))
+    assert(within(5000, () -> !tickets(home).exists(t -> t.endsWith(mine))), tickets(home).mkString(" "))
+    cleanUp(home)
+
+@test("a draining landing job still drains after marshal restart, and starts once memory frees")
+landingDrainsAcrossRestart()
+    val home = newHome("{\"memory\": \"1G\"}")
+    val a = submitted(home, "--mem", "600M", "--", "sleep", "60")
+    assert(within(2000, () -> started(home, a)))
+    val land = submitted(home, "--landing", "--mem", "600M", "--", "sleep", "0.2")
+    val b = submitted(home, "--mem", "100M", "--", "sleep", "0.1")
+    assertEq(whyOf(home, land), Some(Why.Draining))
+    assertEq(m(home, "restart").code, 0)
+    assertEq(whyOf(home, land), Some(Why.Draining))
+    assertEq(whyOf(home, b), Some(Why.Behind(land)))
+    assert(!started(home, b))
+    m(home, "kill", a.toString())
+    assertEq(m(home, "wait", b.toString()).code, 0)
+    assert(at(home, land, "started") < at(home, b, "started"))
+    cleanUp(home)

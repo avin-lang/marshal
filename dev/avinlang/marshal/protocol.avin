@@ -193,13 +193,16 @@ data Usage(
 data TakeSlotUse(dir: string, units: int, waiting: int, landing: bool)
 
 // Why a queued job has not started: its units do not fit beside what runs, its memory does not, it
-// is a landing job and the lane is held, it waits for what take-slot holds or for a take-slot run
-// ahead of it, it fits but starting it would delay job `id` at the head of the queue, or it starts
-// at the daemon's next look; or it is held, or the whole queue is.
+// is a landing job and the lane is held, it is a landing job whose memory does not fit and it waits
+// for running jobs to free it while nothing else starts, it waits for what take-slot holds or for a
+// take-slot run ahead of it, it fits but starting it would delay job `id` at the head of the queue
+// (or a landing job `id` drains the machine), or it starts at the daemon's next look; or it is held,
+// or the whole queue is.
 data Why
     NoUnits
     NoMemory
     LaneBusy
+    Draining
     ForTakeSlot
     Behind(id: long)
     Starting
@@ -587,6 +590,7 @@ whyWord(w: Why) -> string
 whyWord(NoUnits) = "units"
 whyWord(NoMemory) = "memory"
 whyWord(LaneBusy) = "lane"
+whyWord(Draining) = "draining"
 whyWord(ForTakeSlot) = "take-slot"
 whyWord(Behind(_)) = "behind"
 whyWord(Starting) = "starting"
@@ -604,6 +608,7 @@ private decodeWhy(j: Json) -> Result[Why, string]
         "units" -> Ok(NoUnits)
         "memory" -> Ok(NoMemory)
         "lane" -> Ok(LaneBusy)
+        "draining" -> Ok(Draining)
         "take-slot" -> Ok(ForTakeSlot)
         "behind" -> Ok(Behind(field(j, "behind", v -> v.asLong(), "a whole number")?))
         "starting" -> Ok(Starting)

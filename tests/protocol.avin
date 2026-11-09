@@ -111,7 +111,7 @@ overview(running: Vector[JobInfo], queued: Vector[QueuedJob], recent: Vector[Job
          takeSlot: Option[marshal.TakeSlotUse] = None) -> Overview =
     Overview(Usage(5, 12, 1024, 4096, running.length(), queued.length(), landing, takeSlot), 3723000, running, queued, recent)
 
-val everyWhy: Vector[Why] = [Why.NoUnits, Why.NoMemory, Why.LaneBusy, Why.ForTakeSlot, Why.Behind(3), Why.Behind(long.MaxValue), Why.Starting, Why.Held, Why.QueueHeld]
+val everyWhy: Vector[Why] = [Why.NoUnits, Why.NoMemory, Why.LaneBusy, Why.Draining, Why.ForTakeSlot, Why.Behind(3), Why.Behind(long.MaxValue), Why.Starting, Why.Held, Why.QueueHeld]
 
 // A running job measured at `rss` with a peak of `peak`, started at `at`.
 measuredJob(rss: long, peak: long, at: long = 1762521060000) -> JobInfo =
@@ -162,7 +162,7 @@ snapshotReplies()
 
 @test("a snapshot's queued job is the job's own fields plus position, waits and, behind a job, behind")
 snapshotWire()
-    val text = marshal.encodeReply(Reply.Viewed(overview([], [QueuedJob(job("queued", None), 2, Why.Behind(5)), QueuedJob(job("queued", None), 3, Why.ForTakeSlot)], []))).render()
+    val text = marshal.encodeReply(Reply.Viewed(overview([], [QueuedJob(job("queued", None), 2, Why.Behind(5)), QueuedJob(job("queued", None), 3, Why.ForTakeSlot), QueuedJob(job("queued", None), 1, Why.Draining)], []))).render()
     assert(!text.contains("\n"))
     val j = json.parse(text).ok().get()
     val s = j("snapshot")
@@ -175,6 +175,8 @@ snapshotWire()
     assertEq(q(0)("behind").asLong(), Some(long(5)))
     assertEq(q(1)("waits").asString(), Some("take-slot"))
     assert(!q(1).has("behind"))
+    assertEq(q(2)("waits").asString(), Some("draining"))
+    assert(!q(2).has("behind"))
     assertEq(s("recent").asVector().map(v -> v.length()), Some(0))
     // a client that knows only jobs reads a queued entry as a job
     assertEq(marshal.decodeJob(q(0)), Ok(job("queued", None)))

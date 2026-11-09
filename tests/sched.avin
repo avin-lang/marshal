@@ -4,7 +4,7 @@ module tests
 // backfill rule, each pinned by what `schedule` answers.
 import dev.avinlang.marshal
 import dev.avinlang.marshal.{Budget, Outside, Started, Ticket, Waiting, Why}
-import dev.avinlang.marshal.{NoUnits, NoMemory, LaneBusy, ForTakeSlot, Behind, Starting}
+import dev.avinlang.marshal.{NoUnits, NoMemory, LaneBusy, Draining, ForTakeSlot, Behind, Starting}
 
 val budget: Budget = Budget(12, 64 * 1024)
 val hour: long = 3600000
@@ -93,12 +93,89 @@ oneLandingAtATime()
 landingTakesNoUnits()
     assertEq(marshal.schedule(budget, [landing(1)], [dev(2, 12)], 0), ids(2))
 
-@test("a landing job starts whatever memory development jobs hold, and its memory then counts")
+@test("a landing job starts only when its memory fits beside what runs, and its memory then counts")
 landingMemory()
     val b = Budget(12, 100)
-    assertEq(marshal.schedule(b, [running(1, 1, memory = 90)], [land(2, memory = 50)], 0), ids(2))
+    assertEq(marshal.schedule(b, [running(1, 1, memory = 90)], [land(2, memory = 50)], 0), [])
+    assertEq(marshal.schedule(b, [running(1, 1, memory = 50)], [land(2, memory = 50)], 0), ids(2))
+    assertEq(marshal.schedule(b, [running(1, 1, memory = 50)], [land(2, memory = 51)], 0), [])
     assertEq(marshal.schedule(b, [landing(1, memory = 50)], [dev(2, 1, memory = 51)], 0), [])
     assertEq(marshal.schedule(b, [landing(1, memory = 50)], [dev(2, 1, memory = 50)], 0), ids(2))
+
+@test("a landing job waiting for memory holds every development job, even one that fits or backfills")
+landingDrains()
+    val b = Budget(12, 100)
+    val r = [running(1, 1, memory = 90)]
+    // dev 3 fits and is short; without the landing job it would start
+    assertEq(marshal.schedule(b, r, [dev(3, 1, expected = 1, memory = 5)], 0), ids(3))
+    assertEq(marshal.schedule(b, r, [land(2, memory = 50), dev(3, 1, expected = 1, memory = 5)], 0), [])
+    // a development job that arrived before the landing job waits too
+    assertEq(marshal.schedule(b, r, [dev(0, 1, expected = 1), land(2, memory = 50)], 0), [])
+    // no backfill past a blocked development head either
+    assertEq(marshal.schedule(b, [running(1, 12, memory = 90)], [land(2, memory = 50), dev(3, 4), dev(4, 1, expected = 1)], 0), [])
+
+@test("a landing job waiting for memory holds take-slot's waiters too, even one that would fit")
+landingDrainsTakeSlot()
+    val b = Budget(12, 100)
+    val r = [running(1, 1, memory = 90)]
+    // dev 3 is held behind the landing job rather than behind take-slot's waiter, which is not admitted
+    assertEq(why(r, [land(2, memory = 50), dev(3, 1)], outside(0, [Ticket(5, 4)]), b), [(long(2), 1, Draining), (long(3), 1, Behind(2))])
+    assertEq(marshal.schedule(b, r, [land(2, memory = 50), dev(3, 1)], 0, outside(0, [Ticket(5, 4)])), [])
+
+@test("a landing job starts once running jobs have freed its memory")
+landingStartsWhenMemoryFrees()
+    val b = Budget(12, 100)
+    val q = [land(2, memory = 50), dev(3, 1, memory = 10)]
+    assertEq(marshal.schedule(b, [running(1, 1, memory = 90)], q, 0), [])
+    assertEq(marshal.schedule(b, [], q, 0), ids(2, 3))
+    assertEq(marshal.schedule(b, [running(1, 1, memory = 40)], q, 0), ids(2, 3))
+
+@test("a landing job with room starts at once while development jobs hold every unit")
+landingOutsideUnits()
+    val b = Budget(12, 100)
+    assertEq(marshal.schedule(b, [running(1, 12, memory = 40)], [land(2, memory = 60), dev(3, 1)], 0), ids(2))
+    assertEq(why([running(1, 12, memory = 40)], [land(2, memory = 60), dev(3, 1)], b = b), [(long(2), 1, Starting), (long(3), 1, NoUnits)])
+
+@test("a landing job whose memory alone exceeds the budget starts when nothing else runs")
+landingOverBudget()
+    val b = Budget(12, 100)
+    assertEq(marshal.schedule(b, [running(1, 1)], [land(2, memory = 150), dev(3, 1)], 0), [])
+    assertEq(why([running(1, 1)], [land(2, memory = 150), dev(3, 1)], b = b), [(long(2), 1, Draining), (long(3), 1, Behind(2))])
+    // alone, it starts, and nothing starts beside it while it holds more than the budget
+    assertEq(marshal.schedule(b, [], [land(2, memory = 150), dev(3, 1)], 0), ids(2))
+    assertEq(marshal.schedule(b, [landing(2, memory = 150)], [dev(3, 1)], 0), [])
+    // it is accepted at submit, so a reservation learned or a budget lowered later cannot strand it
+    assertEq(marshal.neverFits(b, 4, 150, true), None)
+
+@test("a second landing job waits behind one that drains the machine, and for the lane once it runs")
+twoLandings()
+    val b = Budget(12, 100)
+    val q = [land(2, memory = 50), land(3, memory = 10), dev(4, 1)]
+    assertEq(why([running(1, 1, memory = 90)], q, b = b), [(long(2), 1, Draining), (long(3), 2, Behind(2)), (long(4), 1, Behind(2))])
+    assertEq(why([], q, b = b), [(long(2), 1, Starting), (long(3), 2, LaneBusy), (long(4), 1, Starting)])
+
+@test("take-slot holding the landing lock: a landing job waits for take-slot, short of memory or not, and drains nothing")
+landingLockHeldOutside()
+    val b = Budget(12, 100)
+    val o = outside(0, [], true)
+    assertEq(why([running(1, 1, memory = 90)], [land(2, memory = 50), dev(3, 1)], o, b), [(long(2), 1, ForTakeSlot), (long(3), 1, Starting)])
+    assertEq(why([], [land(2, memory = 50), dev(3, 1)], o, b), [(long(2), 1, ForTakeSlot), (long(3), 1, Starting)])
+
+@test("the daemon's ticket: the development head's, or a draining landing job's ahead of every take-slot waiter")
+ticketFor()
+    val b = Budget(12, 100)
+    val r = [running(1, 1, memory = 90)]
+    assertEq(marshal.ticketFor(b, [], [], 0, marshal.NoOutside), None)
+    assertEq(marshal.ticketFor(b, r, [dev(3, 2)], 0, marshal.NoOutside), Some((long(30), 2)))
+    // a landing job that starts, or waits for the lane, keeps no ticket of its own
+    assertEq(marshal.ticketFor(b, [], [land(2, memory = 50), dev(3, 2)], 0, marshal.NoOutside), Some((long(30), 2)))
+    assertEq(marshal.ticketFor(b, [landing(1)], [land(2), dev(3, 2)], 0, marshal.NoOutside), Some((long(30), 2)))
+    assertEq(marshal.ticketFor(b, [], [land(2)], 0, marshal.NoOutside), None)
+    // draining: the landing job's arrival, or just ahead of an earlier take-slot waiter
+    assertEq(marshal.ticketFor(b, r, [land(2, memory = 50), dev(3, 2)], 0, marshal.NoOutside), Some((long(20), 4)))
+    assertEq(marshal.ticketFor(b, r, [land(2, memory = 50)], 0, outside(0, [Ticket(25, 1)])), Some((long(20), 4)))
+    assertEq(marshal.ticketFor(b, r, [land(2, memory = 50)], 0, outside(0, [Ticket(25, 1), Ticket(7, 1)])), Some((long(6), 4)))
+    assertEq(marshal.ticketFor(b, r, [land(2, memory = 50)], 0, outside(0, [Ticket(20, 1)])), Some((long(19), 4)))
 
 @test("a landing job ending frees its memory for the head's start time")
 landingEndFreesMemory()
@@ -107,7 +184,7 @@ landingEndFreesMemory()
     assertEq(marshal.schedule(b, r, [dev(2, 1, memory = 50), dev(3, 1, expected = hour, memory = 10)], 0), ids(3))
     assertEq(marshal.schedule(b, r, [dev(2, 1, memory = 50), dev(3, 1, expected = hour + 1, memory = 10)], 0), [])
 
-@test("a job can never fit when it outweighs the budget; a landing job is held to neither budget")
+@test("a job can never fit when it outweighs the budget; a landing job of any size is accepted")
 neverFits()
     assertEq(marshal.neverFits(budget, 4, 0, false), None)
     assertEq(marshal.neverFits(budget, 12, 64 * 1024, false), None)
@@ -242,7 +319,9 @@ whyAgreesWithSchedule()
         ([running(1, 10)], [dev(2, 4), dev(3, 1, expected = 1), dev(4, 1, expected = 1), land(5)], marshal.NoOutside),
         ([running(1, 6)], [dev(2, 2), dev(3, 4)], outside(0, [Ticket(5, 4)])),
         ([landing(1)], [land(2), dev(3, 12)], outside(0, [], true)),
-        ([], [dev(1, 8)], outside(0, [Ticket(11, 8)]))]
+        ([], [dev(1, 8)], outside(0, [Ticket(11, 8)])),
+        ([running(1, 1, memory = 60 * 1024)], [land(2, memory = 8 * 1024), dev(3, 1)], outside(0, [Ticket(5, 1)])),
+        ([running(1, 12, memory = 10 * 1024)], [land(2, memory = 8 * 1024), dev(3, 1)], marshal.NoOutside)]
     for (r, q, o) in cases
         val starting = why(r, q, o).filter(w -> w.2 == Starting).map(w -> w.0).sorted()
         assertEq(starting, marshal.schedule(budget, r, q, 0, o).sorted())

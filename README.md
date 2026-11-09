@@ -177,7 +177,7 @@ Options of `submit` and `run`:
 | `--kind <k>` | What the job is, for learning its deadline. Default: `test` when a word of the command is `test`, otherwise `build`. |
 | `--units <n>` | Its weight. Default: 4 for a `test`, 1 for anything else. |
 | `--mem <size>` | Memory it needs: `29G`, `512M` (powers of 1024). Default: its kind's learned peak (see Budget), 0 until two runs of the kind were measured. `--mem 0` reserves nothing and learns nothing. |
-| `--landing` | The landing lane: starts before every development job, outside the unit budget, at normal priority. One landing job runs at a time. |
+| `--landing` | The landing lane: starts before every development job, outside the unit budget, at normal priority, once its memory fits beside what runs; until then nothing else starts, so the running jobs drain for it. One landing job runs at a time. One whose memory alone exceeds the budget starts when nothing else runs. |
 | `--urgent` | Queues it in its lane's urgent band: ahead of every job not urgent, behind the urgent jobs already queued. |
 | `--dir <d>` | Where it runs, relative to the current directory. Default: the current directory. |
 | `--deadline <t>` | Stops it after `t`: a number of minutes, or `90s`, `30m`, `2h`. Default: learned for its kind. |
@@ -414,7 +414,9 @@ take-slot. It is off unless configured: `take_slot` in `config.json` names the d
 - **take-slot counts marshal's jobs.** A development job is written as `slot-units/<its pid>`
   holding its units, under take-slot's `slot-units.mutex`, and removed when it ends. While a job
   waits, the daemon keeps a ticket of the first waiting job's arrival in `slot-waiting`, so
-  take-slot's later runs wait behind it as they wait behind each other.
+  take-slot's later runs wait behind it as they wait behind each other. While a landing job waits
+  for memory, the ticket is the landing job's, ahead of every take-slot waiter, so take-slot admits
+  none of them until it has started.
 - **One landing lane.** A `--landing` job takes `land.lock` as take-slot does and holds it until it
   ends; while a take-slot landing holds it, marshal's landing job waits.
 - Files whose process has died are removed by whichever side meets them; a daemon that starts after
@@ -449,7 +451,8 @@ against its own budget. `marshal status` shows what take-slot holds.
   counts on between snapshots; DEADLINE is a running job's time left, yellow under a quarter of its
   deadline or five minutes and red under a tenth or one minute, and a queued job's deadline to come.
   A queued job's STATE is its place in its lane's queue and why it waits: `no units`, `no memory`,
-  `lane busy` (another landing job holds the lane), `take-slot` (what take-slot.zsh holds or a
+  `lane busy` (another landing job holds the lane), `draining` (a landing job whose memory does
+  not fit beside the running jobs: nothing else starts until they have freed it), `take-slot` (what take-slot.zsh holds or a
   take-slot run ahead of it), `behind N`, when it would fit but would delay job N at the head of
   the queue, `held` (`marshal hold`) or `queue held` (`marshal pause`). A job waiting for others
   shows `after 3,4`, one waiting to retry `retry 2`. An ended job shows `exit N` (green for 0, red

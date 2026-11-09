@@ -9,8 +9,12 @@ module dev.avinlang.marshal
 //   delay it. A later job may start ahead of a head that does not fit only if it fits now AND it is
 //   expected to end before the head could start (backfill), so the head starts no later for it.
 // - The landing lane holds one landing job at a time, outside the unit budget: a landing job starts
-//   as soon as the lane is free, whatever development jobs hold. Its memory is counted, so
-//   development jobs make room for it rather than the other way round.
+//   when the lane is free and its memory fits beside what is running, whatever units development
+//   jobs hold. When its memory does not fit, it drains the machine: nothing else starts, neither a
+//   development job (not even as backfill) nor a take-slot waiter, until running jobs have freed
+//   enough memory, so the landing job goes next. One whose memory alone exceeds the budget starts
+//   when nothing else runs. Its memory is counted, so development jobs make room for it rather than
+//   the other way round.
 // - What take-slot.zsh holds and waits for (`Outside`) shares the same budget and the same arrival
 //   order. Its holders take units and are expected to end at any moment, so nothing backfills behind
 //   a head that waits for them; its waiters stand in the queue by arrival time, and one marshal can
@@ -61,6 +65,18 @@ waits(budget: Budget, running: Vector[Started], queue: Vector[Waiting], now: lon
         out += (w.id, position, why)
     out.toVector()
 
+// The ticket the daemon keeps among take-slot's waiters, as (arrival, units), or None when nothing
+// of marshal's waits. While a landing job drains the machine, its ticket goes ahead of every
+// take-slot waiter, so take-slot admits none of them before it; otherwise the ticket is the first
+// development job's, at its arrival, so take-slot's later runs wait behind it.
+ticketFor(budget: Budget, running: Vector[Started], queue: Vector[Waiting], now: long, outside: Outside) -> Option[(long, int)]
+    val drainer = decide(budget, running, queue, now, outside).find(d -> d.why == Some(Draining)).flatMap(d -> queue.find(w -> w.id == d.id))
+    drainer match
+        Some(w) ->
+            val first = outside.waiting.map(t -> t.arrived).minOption()
+            Some((first.filter(a -> a <= w.arrived).map(a -> a - 1).getOrElse(w.arrived), w.units))
+        None -> queue.find(w -> !w.landing).map(w -> (w.arrived, w.units))
+
 // What the scheduler makes of one waiting job: start it now (no `why`), or why it waits.
 private data Decision(id: long, why: Option[Why])
 
@@ -80,14 +96,27 @@ private decide(budget: Budget, running: Vector[Started], queue: Vector[Waiting],
         if r.landing then laneBusy = true else units += r.units
         memory += r.memory
         ends += (expectedEnd(r.startedMs, r.expectedMs, now), if r.landing then 0 else r.units, r.memory)
+    // the landing job that waits for memory and drains the machine, if one does
+    var draining: Option[long] = None
     for w in queue.filter(w -> w.landing)
         if laneBusy
             out += Decision(w.id, Some(if outside.landing then ForTakeSlot else LaneBusy))
-        else
+        elif draining.isDefined()
+            out += Decision(w.id, draining.map(id -> Behind(id)))
+        elif memory + w.memory <= budget.memory || running.isEmpty()
             out += Decision(w.id, None)
             laneBusy = true
             memory += w.memory
             ends += (now + w.expectedMs, 0, w.memory)
+        else
+            out += Decision(w.id, Some(Draining))
+            draining = Some(w.id)
+    // While a landing job drains the machine, every development job waits behind it and no take-slot
+    // waiter is counted as admitted.
+    for id in draining
+        for w in queue.filter(w -> !w.landing)
+            out += Decision(w.id, Some(Behind(id)))
+        return out.toVector()
     // When the blocked head of the queue can start, and which job it is (None for a take-slot
     // waiter); None while the head has not been met.
     var head: Option[(long, Option[long])] = None
@@ -153,7 +182,8 @@ private whenFits(budget: Budget, used: int, memory: long, units: int, needs: lon
         if units <= freeUnits && needs <= freeMemory then return at
     long.MaxValue
 
-// Why a job can never start under `budget`, or None when it can.
+// Why a job can never start under `budget`, or None when it can. A landing job of any size can: one
+// whose memory exceeds the budget starts when nothing else runs.
 neverFits(budget: Budget, units: int, memory: long, landing: bool) -> Option[string]
     if units < 1 then return Some(s"a job weighs at least 1 unit, not $units")
     if memory < 0 then return Some("a job's memory is not negative")

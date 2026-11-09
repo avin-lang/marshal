@@ -6,7 +6,7 @@ module dev.avinlang.marshal.top
 import avin.time
 import dev.avinlang.marshal
 import dev.avinlang.marshal.{JobInfo, Overview, QueuedJob, Usage, Why}
-import dev.avinlang.marshal.{NoUnits, NoMemory, LaneBusy, ForTakeSlot, Behind, Starting, Held, QueueHeld}
+import dev.avinlang.marshal.{NoUnits, NoMemory, LaneBusy, Draining, ForTakeSlot, Behind, Starting, Held, QueueHeld}
 import dev.avinlang.marshal.{Exited, Signalled, TimedOut, Cancelled, Lost, DependencyFailed}
 import dev.avinlang.tui.{Black, Blue, Bold, BrightBlack, Char, Column, Ctrl, Cyan, Dim, Down, End, Enter, Escape, Event,
                          Green, Grid, Home, Key, KeyPress, Magenta, PageDown, PageUp, Rect, Red, Reverse, Rounded,
@@ -63,6 +63,7 @@ whyText(w: Why) -> string
 whyText(NoUnits) = "no units"
 whyText(NoMemory) = "no memory"
 whyText(LaneBusy) = "lane busy"
+whyText(Draining) = "draining"
 whyText(ForTakeSlot) = "take-slot"
 whyText(Behind(id)) = s"behind $id"
 whyText(Starting) = "starting"

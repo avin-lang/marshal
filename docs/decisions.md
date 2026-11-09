@@ -18,11 +18,32 @@ budgets, and a job's leftover processes being sent TERM when its main process en
 - **Expected duration** is the median of the kind's history, or half the default deadline while
   fewer than `learn_min_runs` runs are known, and never more than the job's deadline. Why: the
   deadline is meant as a bound, the median as the typical run.
-- **The landing lane holds one job, outside the unit budget and outside the memory budget, but its
-  memory counts against development jobs.** Why: take-slot's `land.lock` is one reserved slot that
-  nothing slows; counting its memory makes development jobs wait for it rather than risk swapping
-  it. Alternative: landing held to the memory budget (it could then wait behind development runs,
-  which is what the lane exists to prevent).
+- **The landing lane holds one job, outside the unit budget, and its memory counts against
+  development jobs.** Why: take-slot's `land.lock` is one reserved slot that nothing slows; counting
+  its memory makes development jobs wait for it rather than risk swapping it. (It was first outside
+  the memory budget too; see the next entry.)
+- **Proposed: a landing job starts only when its memory fits beside what runs, and while it waits
+  for memory it drains the machine.** It waits with the reason `draining`; every development job
+  waits `behind` it (no backfill past it, even for a job that fits and would end at once), a second
+  landing job waits `behind` it, and the daemon's take-slot ticket becomes the landing job's, dated
+  just ahead of take-slot's earliest waiter, so take-slot admits none of its runs either. Why: a
+  landing job started regardless of memory overcommitted the machine (a 36G landing beside 50G of
+  development jobs in a 56G budget), swapping the one run everyone waits for; draining keeps the
+  lane's promise — it goes next — without the overcommit. Alternatives: start it anyway (the old
+  rule, the bug); wait for memory but let development jobs backfill (a stream of small jobs could
+  keep it out for ever); kill or pause development jobs to make room (loses their work; pausing
+  still holds their memory). The ticket's date moves ahead of take-slot's waiters rather than
+  staying at the landing job's arrival because a waiter that arrived earlier would otherwise still
+  be admitted ahead of it.
+- **Proposed: a landing job whose memory alone exceeds the budget is accepted, and starts when
+  nothing else of marshal's runs.** It drains the machine as any landing job short of memory does,
+  and starts once the running jobs have all ended. Why: the lane is for the job that must run, the
+  budget is set below the machine's memory (8G less by default), and a reservation can be declared
+  generously; refusing it at submit would turn a cautious `--mem` into a failed landing, and a
+  budget lowered across a restart could not refuse a job already queued anyway. Alternative:
+  refuse it at submit like a development job (consistent with the development lane, but strands
+  queued jobs on a budget change and fails the run everyone is waiting for). Revisit if landing jobs
+  are routinely declared larger than the budget: that would mean the budget is wrong.
 - **A job whose units or memory exceed the budget is refused at submit**, rather than queued for
   ever or clamped. A job weighs at least 1 unit.
 

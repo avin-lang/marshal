@@ -88,8 +88,9 @@ jobs queue apart), and `waits`, why it has not started:
 | `units` | its units do not fit beside what runs |
 | `memory` | its units fit and its memory does not |
 | `lane` | a landing job, and another landing job holds the lane |
+| `draining` | a landing job whose memory does not fit beside what runs (or, over the whole budget, one that waits for nothing else to run); nothing else starts until the running jobs have freed it |
 | `take-slot` | it waits for what take-slot holds: its runs' units or landing lock, or a take-slot run that arrived before it |
-| `behind` | it fits, but starting it would delay the job at the head of the queue, whose id is `behind` |
+| `behind` | it fits, but starting it would delay the job at the head of the queue, whose id is `behind`; or a landing job, whose id is `behind`, is `draining` |
 | `starting` | it starts at the daemon's next look |
 | `held` | it is held (`hold`) |
 | `queue-held` | the whole queue is held (`pause`) |
