@@ -7,7 +7,7 @@ import dev.avinlang.marshal.{Condition, Filter, Mode, Request, Reply, Since}
 import json
 import json.Json
 
-val Ending: Vector[string] = ["finished", "timeout", "killed", "cancelled", "lost"]
+val Ending: Vector[string] = ["finished", "timeout", "quiet", "killed", "cancelled", "lost"]
 
 parsed(text: string) -> Condition = marshal.parseCondition(text).ok().get()
 
