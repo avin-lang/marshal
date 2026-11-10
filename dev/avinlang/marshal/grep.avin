@@ -3,7 +3,7 @@ module dev.avinlang.marshal
 // `marshal grep`: the lines of a job's log that match a pattern, as grep prints them. The log is
 // read one line at a time and never held whole: what is kept is the few lines of leading context
 // still waiting for a match, so a log of any size is searched in the same small space.
-import avin.regex.Regex
+import avin.regex.{MatchError, Regex}
 
 // What to print. `maxMatches` stops the search after that many matching lines (the trailing context
 // of the last one is still printed); `before` and `after` are the lines of context around a match.
@@ -14,19 +14,20 @@ val GrepPlain: GrepSpec = GrepSpec(false, false, false, None, 0, 0)
 
 // A line test for `pattern`: a regular expression, or with `fixed` the text itself; `ignoreCase`
 // makes upper and lower case the same. A pattern that is not a regular expression is the `Err`,
-// with the library's own words for what is wrong.
-grepMatcher(pattern: string, fixed: bool, ignoreCase: bool) -> Result[(string) -> bool, string]
+// with the library's own words for what is wrong. The test answers `Err` for a line on which the
+// pattern backtracks past the regex step budget, in place of trapping.
+grepMatcher(pattern: string, fixed: bool, ignoreCase: bool) -> Result[(string) -> Result[bool, MatchError], string]
     val source = if fixed then Regex.quote(pattern) else pattern
     // `i` alone folds ASCII letters only; with `u`, Unicode's simple case mapping
     val written = if ignoreCase then "(?iu)" + source else source
     Regex.compile(written) match
         Ok(r) ->
             val any = r.unanchored()
-            Ok(line -> any.matches(line))
+            Ok(line -> any.tryMatches(line))
         Err(e) -> Err(e.message())
 
 // The state of one search: which lines still to print around the matches found so far.
-private class Grepper(private val spec: GrepSpec, private val hit: (string) -> bool, private val emit: (string) -> unit)
+private class Grepper(private val spec: GrepSpec, private val hit: (string) -> Result[bool, MatchError], private val emit: (string) -> unit)
     var matches: long = 0
     private var lastShown: long = 0
     private var afterLeft = 0
@@ -38,14 +39,16 @@ private class Grepper(private val spec: GrepSpec, private val hit: (string) -> b
 
     private limitReached() -> bool = spec.maxMatches.exists(m -> matches >= m)
 
-    // Takes line number `n`.
-    feed(n: long, line: string)
+    // Takes line number `n`; the `Err` is the line on which the pattern spent the regex step budget.
+    feed(n: long, line: string) -> Result[unit, MatchError]
         if limitReached()
             // only the trailing context of the last match remains; a line in it is context
             // whether or not it would match
             show(n, line, false)
             afterLeft -= 1
-        elif hit(line) != spec.invert
+            return Ok(())
+        val found = hit(line)? != spec.invert
+        if found
             matches += 1
             if !spec.countOnly
                 while !held.isEmpty()
@@ -59,6 +62,7 @@ private class Grepper(private val spec: GrepSpec, private val hit: (string) -> b
         elif spec.before > 0 && !spec.countOnly
             held.append((n, line))
             if held.length() > spec.before then held.removeHead()
+        Ok(())
 
     // Prints a line, with `--` first where it does not follow the last one printed.
     private show(n: long, line: string, selected: bool)
@@ -72,20 +76,24 @@ private class Grepper(private val spec: GrepSpec, private val hit: (string) -> b
 
 // Searches the lines `next` gives, the first being line number `first`, calling `emit` with each
 // line to print, `--` between groups of context included. Answers how many lines matched, or what
-// stopped the reading. With `countOnly` nothing is emitted.
-grepLines(next: () -> Result[Option[string], string], first: long, hit: (string) -> bool, spec: GrepSpec, emit: (string) -> unit) -> Result[long, string]
+// stopped the search: a failed read, or a line on which the pattern backtracked past the regex step
+// budget, which ends the search there (lines already emitted stand) and is reported with its line
+// number. With `countOnly` nothing is emitted.
+grepLines(next: () -> Result[Option[string], string], first: long, hit: (string) -> Result[bool, MatchError], spec: GrepSpec, emit: (string) -> unit) -> Result[long, string]
     val g = Grepper(spec, hit, emit)
     var n = first
     while !g.finished()
         next()? match
             Some(line) ->
-                g.feed(n, line)
+                g.feed(n, line) match
+                    Ok(_) -> ()
+                    Err(e) -> return Err(s"marshal: grep: line $n: ${e.message()}")
                 n += 1
             None -> break
     Ok(g.matches)
 
 // The same over lines already in hand: the matches, and what was printed.
-grepVector(lines: Vector[string], hit: (string) -> bool, spec: GrepSpec) -> (long, Vector[string])
+grepVector(lines: Vector[string], hit: (string) -> Result[bool, MatchError], spec: GrepSpec) -> (long, Vector[string])
     val out = Buffer[string]()
     var i = 0
     val next = () ->

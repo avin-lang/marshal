@@ -188,7 +188,9 @@ time, so any size is fine. The pattern is an avin regular expression, found anyw
 | `--last <n>` | Search only the last `n` lines; `-n` still gives the log's own line numbers. |
 
 Exit codes follow grep: 0 when a line matched, 1 when none did, 2 on an error (an unknown job, no
-log, a pattern that is not a regular expression, a bad option). `--` ends the options, for a pattern
+log, a pattern that is not a regular expression, a bad option, or a line on which the pattern
+backtracks past the regex step budget: the search stops at that line, which the message names, and
+`-c` prints no count). `--` ends the options, for a pattern
 that begins with `-`: `marshal grep 7 -- -v`.
 
 Options of `submit` and `run`:
