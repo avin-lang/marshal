@@ -51,13 +51,17 @@ lacks a field or has one of the wrong type, names no job, or asks for a job that
  "state":"done","outcome":{"how":"exit","code":0},"killed":false,"queued_ms":12,
  "elapsed_ms":4200,"deadline_ms":2700000,"log":"/home/.marshal/jobs/7.log","sample":null,
  "rss":0,"peak_rss":1879048192,"started_at":1762521060000,"held":false,"priority":0,"urgent":false,
- "paused":false,"after":[],"attempt":1,"resv":0,"resv_learned":false}
+ "paused":false,"after":[],"attempt":1,"resv":0,"resv_learned":false,"resv_from":"none"}
 ```
 
 `mem` is the memory the job declared; `resv` the memory the scheduler counts for it, its effective
-reservation: `mem`, or with `resv_learned` true its kind's learned peak (the most of the kind's last
-10 measured peaks plus a tenth, once there are two, held to the budget). A job without `resv` (from
-an older daemon or log) reserves its `mem`, not learned.
+reservation: `mem`, or with `resv_learned` true its learned peak (the most of the last 10 measured
+peaks of its kind in its `dir` plus a tenth, once there are two; while the directory has fewer, the
+same of its kind's peaks in every directory; held to the budget). A job without `resv` (from an
+older daemon or log) reserves its `mem`, not learned. `resv_from` says where the reservation came
+from: `given` (`mem` was given, `0` among them), `kind+dir` (its kind's peaks in its directory),
+`kind` (its kind's peaks in every directory) or `none` (nothing learned yet); absent from an older
+daemon or log.
 
 `state` is `waiting` (for the jobs in `after` to end), `queued`, `running`, `retrying` (waiting out
 its retry delay) or `done`. `after` is what a waiting job still waits for; `attempt` counts its runs
@@ -203,7 +207,8 @@ orders the band; 0 outside it), `paused_ms` (how long the job's earlier pauses l
 paused), `attempt` and `retry_at` (when a job waiting to retry queues again), `reserved` and
 `reserved_learned` (its effective reservation, and whether its kind's peaks taught it; a job saved
 without them reads as -1 and false, and the new program learns its reservation again from the
-peaks it read in the event log), and `quiet_stopped` (a job being stopped, `timed_out`, is stopped
+peaks it read in the event log), `reserved_from` (where the reservation came from, as `resv_from`
+in a listing; absent or `""` reads as `kind` for a learned one, else `given` or `none`), and `quiet_stopped` (a job being stopped, `timed_out`, is stopped
 for its quiet timeout rather than its deadline; false when absent). A job's label is the `label`
 member of its saved `spec`, absent for none, so state saved before labels reads with no label; its
 quiet timeout is the spec's `quiet_ms` the same way. The quiet clock is not saved: the new program

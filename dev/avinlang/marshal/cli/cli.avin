@@ -54,7 +54,8 @@ Options of submit and run:
   --kind <k>        what the job is, for learning its deadline (default: test when a word of the command is `test`, else build)
   --units <n>       its weight in units (default: 4 for a test, 1 otherwise)
   --mem <size>      the memory it needs, such as 29G or 512M (default: its kind's learned
-                    peak, ~ in RESV; 0 until two runs were measured; --mem 0 reserves none)
+                    peak in its --dir, or the kind's while that dir has under two measured
+                    runs, ~ in RESV; 0 until two runs were measured; --mem 0 reserves none)
   --landing         run it in the landing lane: first, outside the unit budget, not niced
   --urgent          queue it ahead of every job not urgent in its lane, behind the urgent ones already queued
   --dir <d>         the directory to run it in, relative to this one (default: this one)

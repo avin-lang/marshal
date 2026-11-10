@@ -105,6 +105,71 @@ learnedAcrossRestart()
     assertEq(m(home, "stop", "--force").code, 0)
     cleanUp(home)
 
+// An ending event of job `id`, of kind `test`, run in `dir`, that peaked at `peak` bytes.
+dirPeakLine(id: long, dir: string, peak: long) -> string =
+    s"{\"ts\":1762000000000,\"event\":\"finished\",\"id\":$id,\"kind\":\"test\",\"landing\":false,\"dir\":\"$dir\",\"exit\":0,\"run_ms\":1000,\"peak_rss\":$peak}"
+
+// A home with a 1G budget whose log holds `test` jobs of three directories: `big` peaked at 600M
+// twice, `small` at 100M twice, and `once` at 50M once.
+dirSeededHome() -> string
+    val home = newHome("{\"memory\": \"1G\"}")
+    for d in ["big", "small", "once", "fresh"] do fs.createDir(home + "/" + d).ok().get()
+    val lines = [
+        dirPeakLine(1, home + "/big", 600 * Mi), dirPeakLine(2, home + "/small", 100 * Mi),
+        dirPeakLine(3, home + "/big", 550 * Mi), dirPeakLine(4, home + "/small", 90 * Mi),
+        dirPeakLine(5, home + "/once", 50 * Mi)]
+    fs.writeText(home + "/events.jsonl", lines.mkString("\n") + "\n").ok().get()
+    home
+
+@test("two directories of one kind learn separately; one with fewer than two peaks falls back to the kind's; --mem overrides both")
+learnedPerDir()
+    val home = dirSeededHome()
+    val big = submitted(home, "--kind", "test", "--dir", home + "/big", "--", "sleep", "30")
+    val small = submitted(home, "--kind", "test", "--dir", home + "/small", "--", "sleep", "30")
+    val once = submitted(home, "--kind", "test", "--dir", home + "/once", "--", "sleep", "30")
+    val fresh = submitted(home, "--kind", "test", "--dir", home + "/fresh", "--", "sleep", "30")
+    val given = submitted(home, "--kind", "test", "--dir", home + "/small", "--mem", "300M", "--", "sleep", "30")
+    val none = submitted(home, "--kind", "test", "--dir", home + "/big", "--mem", "0", "--", "sleep", "30")
+    val other = submitted(home, "--kind", "other", "--dir", home + "/big", "--", "sleep", "30")
+    val resv = (id: long) ->
+        val j = statusJob(home, id)
+        (j("resv").asLong().get(), j("resv_learned").asBool().get(), j("resv_from").asString().get())
+    // 600M and 100M, each with a tenth more, rounded up to a mebibyte
+    assertEq(resv(big), (660 * Mi, true, "kind+dir"))
+    assertEq(resv(small), (110 * Mi, true, "kind+dir"))
+    // one peak, or none, in the directory: the kind's most, 600M
+    assertEq(resv(once), (660 * Mi, true, "kind"))
+    assertEq(resv(fresh), (660 * Mi, true, "kind"))
+    assertEq(resv(given), (300 * Mi, false, "given"))
+    assertEq(resv(none), (long(0), false, "given"))
+    // another kind in a directory that taught `test` learns nothing from it
+    assertEq(resv(other), (long(0), false, "none"))
+    assert(lsRow(home, small).contains(" ~110M "), lsRow(home, small))
+    // the source survives a restart
+    assertEq(m(home, "restart").code, 0)
+    assertEq(resv(small), (110 * Mi, true, "kind+dir"))
+    assertEq(resv(once), (660 * Mi, true, "kind"))
+    assertEq(m(home, "stop", "--force").code, 0)
+    cleanUp(home)
+
+@test("a job the daemon ran teaches its own directory: after two small runs there, the directory's peaks win over the kind's")
+learnedPerDirLive()
+    val home = dirSeededHome()
+    for _ in 0 ..< 2
+        assertEq(m(home, "run", "--kind", "test", "--dir", home + "/fresh", "--", "sleep", "2.5").code, 0)
+    val j = statusJob(home, submitted(home, "--kind", "test", "--dir", home + "/fresh", "--", "sleep", "30"))
+    assertEq(j("resv_from").asString(), Some("kind+dir"))
+    assert(j("resv").asLong().get() < 600 * Mi, s"${j("resv")}")
+    // and the kind keeps learning from every directory
+    val k = statusJob(home, submitted(home, "--kind", "test", "--dir", home + "/once", "--", "sleep", "30"))
+    assertEq((k("resv").asLong(), k("resv_from").asString()), (Some(660 * Mi), Some("kind")))
+    // stats stays per kind: the runs of two directories make one `test` row
+    assertEq(m(home, "run", "--kind", "test", "--dir", home + "/small", "--mem", "0", "--", "true").code, 0)
+    val rows = m(home, "stats").out.lines().filter(l -> l.startsWith("test ")).toVector()
+    assertEq(rows.length(), 1)
+    assertEq(m(home, "stop", "--force").code, 0)
+    cleanUp(home)
+
 @test("the peaks of jobs the daemon itself ran and measured teach the next job of their kind")
 learnedLive()
     val home = newHome()

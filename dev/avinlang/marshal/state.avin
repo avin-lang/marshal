@@ -18,7 +18,9 @@ import json.Json
 // peaks taught it; a state saved without them reads as -1 and false, and the new image learns the
 // reservation again. `quietStopped` says a job being stopped (`timedOut`) is stopped for its quiet
 // timeout rather than its deadline; false when absent. The quiet timeout itself is the spec's, and
-// its clock is not saved: the new image starts every running job's again.
+// its clock is not saved: the new image starts every running job's again. `reservedFrom` is where
+// the reservation came from (`reservationSource`); "" when absent, and the new image works it out
+// from `reserved` and `reservedLearned`, a learned one being its kind's.
 data SavedJob(
     id: long,
     spec: JobSpec,
@@ -47,7 +49,8 @@ data SavedJob(
     retryAt: long = 0,
     reserved: long = -1,
     reservedLearned: bool = false,
-    quietStopped: bool = false)
+    quietStopped: bool = false,
+    reservedFrom: string = "")
 
 // The whole daemon: the version and process that saved it, when, when the daemon first began, the
 // next job id, the queue in order, the running jobs, the jobs that ended last (oldest first), the
@@ -96,7 +99,8 @@ encodeSavedJob(j: SavedJob) -> Json = Json.obj(
     ("retry_at", Json.num(j.retryAt)),
     ("reserved", Json.num(j.reserved)),
     ("reserved_learned", Json.Bool(j.reservedLearned)),
-    ("quiet_stopped", Json.Bool(j.quietStopped)))
+    ("quiet_stopped", Json.Bool(j.quietStopped)),
+    ("reserved_from", Json.str(j.reservedFrom)))
 
 private whole(j: Json, key: string) -> Result[long, string] = j.get(key).flatMap(v -> v.asLong()) match
     Some(n) -> Ok(n)
@@ -171,7 +175,8 @@ decodeSavedJob(j: Json) -> Result[SavedJob, string]
         wholeOrZero(j, "retry_at")?,
         wholeOr(j, "reserved", -1)?,
         truthOr(j, "reserved_learned", false)?,
-        truthOr(j, "quiet_stopped", false)?))
+        truthOr(j, "quiet_stopped", false)?,
+        maybeText(j, "reserved_from")?.getOrElse("")))
 
 encodeState(s: SavedState) -> Json = Json.obj(
     ("version", Json.str(s.version)),

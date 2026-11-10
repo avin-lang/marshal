@@ -926,6 +926,32 @@ passes it, and two builds peaking at 25–35G each were admitted together on a 6
   blue**, the text unchanged; with nothing held beyond the reservations it is drawn exactly as
   before. Alternatives: a second bar (costs a header row), RSS alone (hides what is promised).
 
+## Memory reservations learned per kind and directory (branch `mem-per-dir`)
+
+**Proposed.** Found when a small `sysl test .` suite (kind `test`) sat `queued (no memory)` with a
+learned 27.8G, because kind `test` also covers a compiler's full suite peaking near 26G: 34.1G held
+plus 27.8G came to more than the 60.1G budget while 20.9G was actually resident.
+
+- **The learned peak is keyed by kind (with `+landing`) and the job's working directory, and falls
+  back to the kind's peaks, every directory's, while the directory has fewer than two.** The
+  estimate is unchanged: the most of the last 10 peaks plus 10%, rounded up to a mebibyte; `--mem`
+  overrides both. Why: the directory is what tells two suites of one kind apart without asking the
+  user for a finer kind, and the kind's history is still the best guess for a directory not yet
+  seen. Alternatives: the command line as part of the key (`sysl test .` and `sysl test . --fast`
+  would learn apart, and an argument that changes every run would never learn); asking users to use
+  finer kinds (every caller would have to know; the kind also keys deadlines and `stats`); the
+  smaller of the two estimates (under-reserves a big directory's first run after a small one's).
+- **Old history still teaches.** Ending events already record `dir`, so a log written before this
+  change yields per-directory peaks at once; an event without `dir` teaches its kind only.
+- **`status --json` (and every job listing) carries `resv_from`**: `given`, `kind+dir`, `kind` or
+  `none`; state.json carries it as `reserved_from`, and state saved without it reads a learned
+  reservation as `kind`. Why a word rather than a bool: four cases, and a script can tell `--mem`
+  from nothing learned. Alternatives: `memFrom` (the protocol's names are snake case), a
+  `resv_dir` bool (cannot say `given` from `none`).
+- **`stats` stays per kind.** Its PEAK columns describe the kind across every directory; a row per
+  directory would multiply its rows and split its duration statistics, which deadlines still learn
+  per kind. Alternative: a `--by-dir` option (left for when someone needs it).
+
 ## Every action on a run reaches its step (branch `steps-pause-kill`)
 
 **Settled on the user's delegation 2026-11-08.** Review with the user: the remaining race, in which a
