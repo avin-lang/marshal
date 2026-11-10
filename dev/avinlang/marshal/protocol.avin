@@ -127,8 +127,8 @@ retryable(Signalled(_) | TimedOut | Quiet(_), _) = true
 retryable(_, _) = false
 
 // One job as a listing shows it. `state` is `waiting` (for the jobs it runs after), `queued`,
-// `running`, `retrying` (waiting out its retry delay) or `done`; `elapsedMs` is the time queued for
-// a waiting or queued job and the time run for the others. `memory` is the memory it declared;
+// `running`, `retrying` (waiting out its retry delay) or `done`; `elapsedMs` is the time run, 0 for a
+// waiting, queued or retrying job (`queuedMs` is how long it has waited). `memory` is the memory it declared;
 // `rss` the bytes its whole process tree held in RAM when the daemon last measured it, 0 unless it
 // runs; `peakRss` the most any measurement found, kept once it has ended; `startedAt` when it
 // started on the wall clock, in milliseconds since 1970, 0 while it waits. `held` says a waiting or

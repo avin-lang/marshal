@@ -476,7 +476,8 @@ against its own budget. `marshal status` shows what take-slot holds.
   `marshal ls` has the same column. Under 90 columns `top` leaves PEAK out and shows just `hh:mm` for
   a job that started today, so STARTED and the rest keep their room; `--json` carries `started_at` and the peak as before.
 - **Jobs**: running jobs, then queued ones, then the last ten that ended, the latest first. ELAPSED
-  counts on between snapshots; DEADLINE is a running job's time left, yellow under a quarter of its
+  is the time since the job started (a paused job's stands still), `-` for a job that has not started,
+  and counts on between snapshots; DEADLINE is a running job's time left, yellow under a quarter of its
   deadline or five minutes and red under a tenth or one minute, and a queued job's deadline to come.
   A queued job's STATE is its place in its lane's queue and why it waits: `no units`, `no memory`,
   `lane busy` (another landing job holds the lane), `draining` (a landing job whose memory does

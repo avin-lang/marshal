@@ -170,6 +170,10 @@ startedCells()
     assertEq(g.rowText(head + 1).slice(55, 66).trim(), expected)
     assertEq(g.rowText(head + 2).slice(55, 66).trim(), earlier)
     assertEq(g.rowText(head + 3).slice(55, 66).trim(), "-")
+    // ELAPSED: the run time of a running job, - for a queued one, the run time of an ended one
+    assertEq(g.rowText(head + 1).slice(68, 76).trim(), "1:00")
+    assertEq(g.rowText(head + 3).slice(68, 76).trim(), "-")
+    assertEq(g.rowText(head + 4).slice(68, 76).trim(), "1:00")
     assertEq(g.rowText(head + 4).slice(55, 66).trim(), expected)
     assertEq(g.rowText(head + 5).slice(55, 66).trim(), "-")
     // the cell is `MM-DD hh:mm` and nothing else

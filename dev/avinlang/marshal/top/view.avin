@@ -109,8 +109,8 @@ deadlineOf(l: Line, since: long) -> (string, Style)
     val left = timeLeft(j, since)
     (if left <= 0 then "over" else clock(left), leftStyle(left, j.deadlineMs))
 
-// The time a line has been queued or running, `since` milliseconds after the snapshot; a paused
-// job's run time stands still.
+// The time a line has run, `since` milliseconds after the snapshot; a paused job's run time stands
+// still.
 elapsedOf(l: Line, since: long) -> long = if l.job.outcome.isDefined() || l.job.paused then l.job.elapsedMs else l.job.elapsedMs + since
 
 // The most cells the LABEL column takes, the fewest (its heading), and the cells COMMAND keeps at
@@ -168,7 +168,7 @@ cells(l: Line, since: long, zone: time.Zone, today: string, width: int) -> Vecto
         Span(measuredText(if j.state == "running" then j.rss else 0)),
         Span(measuredText(j.peakRss)),
         Span(if showsPeak(width) then marshal.startedColumn(j, zone) else marshal.startedShort(j, zone, today)),
-        Span(clock(elapsedOf(l, since))),
+        Span(if marshal.notRunYet(j) then "-" else clock(elapsedOf(l, since))),
         styled(deadlineOf(l, since)),
         Span(j.cmd.mkString(" "))
     ]

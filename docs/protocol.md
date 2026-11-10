@@ -71,7 +71,8 @@ text the job was submitted with; it is present only for a labelled job, so an ab
 label (an older daemon's replies and events have none). Every event of a job carries it, the
 `submitted` event's `spec` too, and a reader of the log takes a label as it finds it, whatever the
 limits are now. `elapsed_ms` is
-the time since it was submitted for a waiting, queued or retrying job and the time run otherwise;
+the time run, with pauses left out, and 0 for a job that has not started (waiting, queued, held or
+retrying; `queued_ms` is how long it has waited);
 `killed` says `marshal kill` or a forced stop ended it; `sample` names the stack sample of a job
 stopped at its deadline or its quiet timeout. `rss` is the bytes the job's whole process tree (its process group, and the
 group of the step a job type's run is executing) held

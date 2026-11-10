@@ -143,7 +143,7 @@ class Job(val id: long, val spec: JobSpec, val submittedMs: long, var arrived: l
 
     info(now: long) -> JobInfo =
         val waits = state == "queued" || state == "waiting" || state == "retrying"
-        val elapsed = if waits then now - submittedMs else ran(now)
+        val elapsed = if waits then long(0) else ran(now)
         val queued = if waits then now - submittedMs else startedMs - submittedMs
         val rss = if state == "running" then resident.now else 0
         // a waiting job that asked to be urgent joins the urgent band once it queues
