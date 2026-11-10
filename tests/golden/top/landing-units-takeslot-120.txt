@@ -2,8 +2,8 @@
 |units [█████████████···························] 0 + take-slot 4 / 12   landing 3                                       |
 |mem   [                                        ] 0 / 16G   rss 0                                                        |
 |                                                                                                                        |
-|   ID STATE          KIND     UNITS   RESV   RSS  PEAK STARTED      ELAPSED DEADLINE COMMAND                            |
-|    7 landing        test*        3      -     -     - -               2:00    28:00 make -j4                           |
+|   ID STATE          KIND     UNITS   RESV   RSS  PEAK STARTED      ELAPSED DEADLINE LABEL COMMAND                      |
+|    7 landing        test*        3      -     -     - -               2:00    28:00       make -j4                     |
 |                                                                                                                        |
 |                                                                                                                        |
 |                                                                                                                        |

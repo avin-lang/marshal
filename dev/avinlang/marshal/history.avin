@@ -218,15 +218,15 @@ private table(rows: Vector[Vector[string]]) -> string
 // The table `history` prints, its times on the clocks of `zone`, or a line saying nothing matched.
 historyListing(jobs: Vector[EndedJob], zone: time.Zone) -> string
     if jobs.isEmpty() then return "marshal: no ended jobs match"
-    // the LABEL column, last because it is free text, only when some listed job has a label
-    val labelled = jobs.exists(e -> e.label.nonEmpty())
-    table([["ID", "KIND", "OUTCOME", "EXIT", "DURATION", "ENDED"] ++ (if labelled then ["LABEL"] else [])] ++ jobs.map(e -> [
+    // the LABEL column, last because it is free text, always there, empty for a job without a label
+    table([["ID", "KIND", "OUTCOME", "EXIT", "DURATION", "ENDED", "LABEL"]] ++ jobs.map(e -> [
         e.id.toString(),
         if e.landing then e.kind + "*" else e.kind,
         e.how,
         e.exit.toString(),
         formatMillis(e.runMs),
-        formatWhen(e.endedAt, zone)] ++ (if labelled then [e.label] else [])))
+        formatWhen(e.endedAt, zone),
+        e.label]))
 
 // The table `stats` prints, or a line saying nothing matched.
 statsListing(rows: Vector[KindStats]) -> string

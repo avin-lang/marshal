@@ -208,7 +208,7 @@ Options of `submit` and `run`:
 | `--after-any <ids>` | Waits until they have ended, then queues it however they ended. |
 | `--retries <n>` | Runs it again, up to `n` times, when it exits nonzero, is ended by a signal it was not sent by `kill`, or passes its deadline or its quiet timeout. Default 0. |
 | `--retry-delay <t>` | Waits `t` before each retry. Default: none. |
-| `--label <text>` | A note to find the job by, such as `train 209`: one line of 1 to 80 characters, no control characters (newline, tab), no space at either end; a longer or malformed label is refused, not cut. It shows in `ls`, `history`, `top` (a LABEL column when a listed job has one; the whole label beside the kind in the log pane) and `status --json`, and is in the events. `rerun` keeps it; `run-type` and `train` take `--label` too. Default: none. |
+| `--label <text>` | A note to find the job by, such as `train 209`: one line of 1 to 80 characters, no control characters (newline, tab), no space at either end; a longer or malformed label is refused, not cut. It shows in `ls`, `history`, `top` (a LABEL column, empty for a job without one; the whole label beside the kind in the log pane) and `status --json`, and is in the events. `rerun` keeps it; `run-type` and `train` take `--label` too. Default: none. |
 
 **Accounting.** `history` and `stats` read `events.jsonl` directly, a line at a time, so they answer
 with no daemon running and change nothing. Lines that are not events are skipped and counted on
@@ -217,7 +217,7 @@ standard error.
 | Option | Meaning |
 | --- | --- |
 | `--kind <k>` | Only jobs of this kind. |
-| `--label <text>` | Only jobs whose label contains `text` (case as written). `history` adds a LABEL column, last, when a listed job has a label. |
+| `--label <text>` | Only jobs whose label contains `text` (case as written). `history` always has a LABEL column, last, empty for a job without a label. |
 | `--since <t>` | Only jobs that ended in the last `t` (`90m`, `2h`, `3d`, `1w`; `s` too) or since a date on the caller's local clock (`2026-11-07`, `2026-11-07T14:30`; `TZ`, else the host's zone), or since a date and minute that ends in `Z` or an offset (`2026-11-07T14:30Z`, `2026-11-07T14:30+02:00`), which is taken as that instant. |
 | `--json` | One JSON object on one line. |
 | `--failed` | `history` only: jobs that did not exit 0, whatever the cause. |

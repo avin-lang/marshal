@@ -1154,3 +1154,19 @@ the reason in the state cell rather than a column.
   hand-rolled sizing counted characters, so a wide-character label overran its column and shifted
   the ones after it. Alternative: keeping `labelWidth` and counting display width by hand (a second
   copy of what the table already does).
+
+## The LABEL column always shows
+
+**Settled by the user 2026-11-10.** Replaces "only when some listed job has a label" in the label
+entries above, and the clause of the entry just above that leaves the column out where no drawn job
+has a label.
+
+- **`ls`, `history` and `top`'s job table always have the LABEL column, with an empty cell for a job
+  without a label.** Its place, heading and width and cut rules are unchanged (`ls` before COMMAND,
+  `history` last, `top` as a fit column of 5 to 24 cells that a screen too narrow to leave COMMAND 20
+  cells still drops). Why: a column that comes and goes shifts every other column the moment the
+  first labelled job appears, and a reader cannot tell "no label" from "no such column". In `top` the
+  table leaves out a fit column with nothing in any cell, so a job without a label draws a one-space
+  cell, which keeps the column at its heading's width. `status --json` and the events are unchanged:
+  they still leave `label` out for a job without one. Alternative: the old rule (listings of
+  unlabelled jobs stayed byte for byte as before).
