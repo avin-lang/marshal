@@ -240,8 +240,8 @@ statsListing(rows: Vector[KindStats]) -> string
         dash(r.max, formatMillis),
         r.timeouts.toString(),
         formatMillis(r.deadlineMs),
-        dash(r.peakP50, formatSize),
-        dash(r.peakMax, formatSize)]))
+        dash(r.peakP50, roundSize),
+        dash(r.peakMax, roundSize)]))
 
 private optNum(v: Option[long]) -> Json = v.map(n -> Json.num(n)).getOrElse(Json.Null)
 

@@ -8,7 +8,7 @@ import json
 import json.Json
 import dev.avinlang.marshal
 import dev.avinlang.marshal.cli
-import dev.avinlang.marshal.{EndedJob, HistoryFilter, JobInfo, Ledger, Outcome}
+import dev.avinlang.marshal.{EndedJob, HistoryFilter, JobInfo, KindStats, Ledger, Outcome}
 
 val Minute: long = 60000
 val Everything: HistoryFilter = HistoryFilter(None, None, false)
@@ -167,6 +167,34 @@ statsPeak()
     assertEq((rows(1).peakP50, rows(1).peakMax), (None, None))
     val text = marshal.statsListing(rows)
     assert(text.lines().toVector()(2).startsWith("old") && text.lines().toVector()(2).trim().endsWith("-"), text)
+
+@test("stats: PEAK P50 and PEAK MAX are sized alike in every row, as RESV and PEAK are, never as raw kilobytes")
+statsPeakUnits()
+    val K: long = 1024
+    val M: long = K * K
+    val G: long = M * K
+    val cases: Vector[(Option[long], Option[long], string, string)] = [
+        (Some(long(0)), Some(long(1)), "0", "1"),
+        (Some(long(512)), Some(long(1000)), "512", "1000"),
+        (Some(7320688 * K), Some(9903 * M), "7.0G", "9.7G"),
+        (Some(774096 * K), Some(2302800 * K), "756M", "2.2G"),
+        (Some(K), Some(M), "1.0K", "1.0M"),
+        (Some(M - 1), Some(G - 1), "1.0M", "1.0G"),
+        (Some(10 * M - 1), Some(10 * G), "10M", "10G"),
+        (Some(1536 * K), Some(1023 * M + M / 2), "1.5M", "1.0G"),
+        (None, None, "-", "-"),
+        (None, Some(5 * G), "-", "5.0G"),
+        (Some(5 * G), None, "5.0G", "-")]
+    for c in cases
+        val row = KindStats("k", 3, 3, 0, Some(long(1000)), Some(long(1000)), Some(long(1000)), 20 * Minute, c.0, c.1)
+        val cells = marshal.statsListing([row]).lines().toVector()(1).split("  ").filter(s -> s.nonEmpty()).map(s -> s.trim())
+        assertEq((cells(cells.length() - 2), cells(cells.length() - 1)), (c.2, c.3))
+
+@test("stats --json keeps the peaks as raw bytes")
+statsJsonPeakBytes()
+    val row = KindStats("k", 1, 1, 0, None, None, None, 20 * Minute, Some(long(7320688) * 1024), Some(long(9903) * 1024 * 1024))
+    val k = marshal.statsJson([row], 0)("kinds")(0)
+    assertEq((k("peak_p50").asLong(), k("peak_max").asLong()), (Some(long(7320688) * 1024), Some(long(9903) * 1024 * 1024)))
 
 @test("the json of history and of stats has its fields, with null where unknown")
 jsonShape()

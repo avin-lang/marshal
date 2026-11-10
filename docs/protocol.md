@@ -136,7 +136,8 @@ an instant in milliseconds whatever the caller's time zone; the table `history` 
 local time; `peak_rss` null where unknown, `outcome` one of `ok`, `failed`, `signal`, `killed`,
 `timeout`, `quiet`, `cancelled`, `lost`). `marshal stats --json` prints `{"kinds":[{"kind","count","ok","success_pct",
 "timeouts","p50_ms","p90_ms","max_ms","deadline_ms","peak_p50","peak_max"}...],"unreadable":N}`;
-the percentiles and peaks are null where no job has one. `unreadable` counts the log lines skipped.
+the percentiles and peaks are null where no job has one; `peak_p50` and `peak_max` are bytes
+(as are `peak_rss` in `history --json` and `rss` and `peak_rss` in `status --json`), where the table shows them rounded. `unreadable` counts the log lines skipped.
 
 ## Watching events
 

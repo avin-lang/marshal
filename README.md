@@ -229,7 +229,8 @@ standard error.
 learning deadlines): COUNT, OK (the share that exited 0), P50, P90 and MAX of the run times,
 TIMEOUTS, DEADLINE (what the next job of the kind would get, learned from every successful run in the
 log whatever the filters) and PEAK P50 / PEAK MAX of the memory the jobs' process trees held, `-`
-for jobs whose events do not say. Percentiles are nearest-rank, so they are always a run that
+for jobs whose events do not say; both peaks are sized as RESV and PEAK are (`756M`, `9.7G`), and
+`--json` keeps raw bytes in `peak_p50` and `peak_max`. Percentiles are nearest-rank, so they are always a run that
 happened.
 
 ```
