@@ -32,5 +32,7 @@ trap 'reap' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+# The trap above is itself tested (by running a copy of this script, which must not recurse).
+[ -n "$STUB_ROOT" ] || sh scripts/exit_trap_test.sh || exit $?
 "$avin" build . -o .avin/test/marshal || exit $?
 MARSHAL_BIN="$bin" "$avin" test . "$@"
