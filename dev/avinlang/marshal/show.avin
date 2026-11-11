@@ -66,6 +66,7 @@ whyText(Behind(id)) = s"behind $id"
 whyText(Starting) = "starting"
 whyText(Held) = "held"
 whyText(QueueHeld) = "queue held"
+whyText(QuickFull) = "quick lane full"
 
 // A job's state cell in `ls`: `stateColumn`, and for a job that is plainly `queued` and has a reason
 // in `whys` (job id, reason), the reason after it: `queued (draining)`. A job held by hand already
@@ -87,7 +88,7 @@ listing(jobs: Vector[JobInfo], whys: Vector[(long, Why)] = []) -> string
     val rows = [["ID", "STATE", "KIND", "UNITS", "RESV", "STARTED", "ELAPSED"] ++ (if labelled then ["LABEL"] else []) ++ ["COMMAND"]] ++ jobs.map(j -> [
         j.id.toString(),
         stateWithWhy(j, whys),
-        if j.landing then j.kind + "*" else j.kind,
+        laneKind(j),
         j.units.toString(),
         reservedText(j),
         startedColumn(j, zone),
@@ -96,10 +97,18 @@ listing(jobs: Vector[JobInfo], whys: Vector[(long, Why)] = []) -> string
     val widths = (0..<last).map(c -> rows.map(r -> r(c).charCount()).max())
     rows.map(r -> (0..<last).map(c -> r(c).padEnd(widths(c), ' ')).mkString("  ") + "  " + r(last)).mkString("\n")
 
-// The line `status` prints.
+// A job's kind as a listing shows it, marked with its lane: `*` after a landing job's, `^` after a
+// quick job's.
+laneKind(j: JobInfo) -> string
+    if j.landing then j.kind + "*"
+    elif j.quick then j.kind + "^"
+    else j.kind
+
+// The line `status` prints. The quick lane is named only while a quick job runs.
 usageLine(u: Usage) -> string
     val memory = if u.memoryBudget == long.MaxValue then formatSize(u.memory) else s"${formatSize(u.memory)}/${formatSize(u.memoryBudget)}"
     val lane = u.landing.map(id -> s"job $id").getOrElse("free")
     val outside = u.takeSlot.map(t -> s"; take-slot holds ${t.units} units, ${t.waiting} waiting" + (if t.landing then ", the landing lane" else "")).getOrElse("")
     val held = if u.queueHeld then "; the queue is held: nothing new starts" else ""
-    s"units ${u.units}/${u.unitBudget}, memory $memory, ${u.running} running, ${u.queued} queued, landing lane $lane$outside$held"
+    val quick = if u.quick > 0 then s", quick lane ${u.quick}/$QuickSlots" else ""
+    s"units ${u.units}/${u.unitBudget}, memory $memory, ${u.running} running, ${u.queued} queued, landing lane $lane$quick$outside$held"

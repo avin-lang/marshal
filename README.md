@@ -199,6 +199,7 @@ Options of `submit` and `run`:
 | `--units <n>` | Its weight. Default: 4 for a `test`, 1 for anything else. |
 | `--mem <size>` | Memory it needs: `29G`, `512M` (powers of 1024). Default: its kind's learned peak (see Budget), 0 until two runs of the kind were measured. `--mem 0` reserves nothing and learns nothing. |
 | `--landing` | The landing lane: starts before every development job, outside the unit budget, at normal priority, once its memory fits beside what runs; until then nothing else starts, so the running jobs drain for it. One landing job runs at a time. One whose memory alone exceeds the budget starts when nothing else runs. |
+| `--quick` | The quick lane, for a short job such as the tests of a small package: it starts at once, outside the unit budget, rather than queue for units behind long builds. At most 2 quick jobs run at a time; a third waits in the quick lane, ahead of development jobs, and `ls` shows it `queued (quick lane full)`. Its memory still counts: it starts only when its reservation (`--mem`, or its kind's learned peak) fits in the budget's free memory, and holds it while it runs, so a development job may wait for it; until then it waits `queued (no memory)` and development jobs leave that memory to it. It is niced like a development job, never passes a landing job (one that drains the machine holds the quick lane too), and its deadline is at most 2 minutes: 2m by default, a shorter `--deadline` kept, a longer one refused. Past it, it is stopped as any job past its deadline (`timeout`). `ls` and `top` mark its kind with `^`, `top` says `quick` for it running and `quick: 1/2` in the header; `status` names the lane while a quick job runs, and `status --json` has `quick` (running) and `quick_slots`, and `"quick":true` on the job. `rerun` keeps it; `run-type` and `train` take `--quick` too (a type's own deadline over the cap gives way to the cap). Not with `--landing`. When a job submitted without `--quick` is of a kind whose recent successful runs took under 2 minutes at p90 (at least 3 runs learned), `submit`, `run` and `run-type` print a one-line hint on stderr suggesting `--quick`; nothing moves the job into the lane but the option. |
 | `--urgent` | Queues it in its lane's urgent band: ahead of every job not urgent, behind the urgent jobs already queued. |
 | `--dir <d>` | Where it runs, relative to the current directory. Default: the current directory. |
 | `--deadline <t>` | Stops it after `t`: a number of minutes, or `90s`, `30m`, `2h`. Default: learned for its kind. |
@@ -238,7 +239,7 @@ $ marshal stats --kind test --json
 ```
 
 `run-type` and `train` take `--dir`, `--deadline`, `--units` and `--mem` too, which override the
-type's own, `--quiet-timeout` and `--label`, and `--submit`, which prints the job's id instead of
+type's own, `--quiet-timeout`, `--label` and `--quick`, and `--submit`, which prints the job's id instead of
 waiting. A type's parameters may not use those names.
 
 A job runs with the caller's environment, plus `MARSHAL_JOB` (its id) and `MARSHAL_HOME`, in a
@@ -482,7 +483,8 @@ against its own budget. `marshal status` shows what take-slot holds.
   `lane busy` (another landing job holds the lane), `draining` (a landing job whose memory does
   not fit beside the running jobs: nothing else starts until they have freed it), `take-slot` (what take-slot.zsh holds or a
   take-slot run ahead of it), `behind N`, when it would fit but would delay job N at the head of
-  the queue, `held` (`marshal hold`) or `queue held` (`marshal pause`). A job waiting for others
+  the queue, `held` (`marshal hold`), `queue held` (`marshal pause`) or `quick lane full` (a
+  `--quick` job, both quick slots taken). A running quick job shows `quick`. A job waiting for others
   shows `after 3,4`, one waiting to retry `retry 2`. An ended job shows `exit N` (green for 0, red
   otherwise), `killed`, `timeout`, `lost`, `cancelled`, `dep N failed` or `signal N`.
 - **Keys**: Up, Down, PgUp, PgDn, Home, End select a job; Enter or `l` opens its log in a pane under

@@ -57,6 +57,9 @@ Options of submit and run:
                     peak, ~ in RESV; 0 until two runs were measured; --mem 0 reserves none)
   --landing         run it in the landing lane: first, outside the unit budget, not niced
   --urgent          queue it ahead of every job not urgent in its lane, behind the urgent ones already queued
+  --quick           run it in the quick lane: at once, outside the unit budget, niced, while its
+                    memory fits; at most 2 at a time, and a deadline of at most 2m (default 2m;
+                    a shorter --deadline is kept, a longer one refused). Not with --landing
   --dir <d>         the directory to run it in, relative to this one (default: this one)
   --deadline <t>    stop it after t: minutes, or 90s, 30m, 2h (default: learned for the kind)
   --quiet-timeout <t>
@@ -140,7 +143,7 @@ optionsAskHelp(args, i) | i >= args.length() = false
 optionsAskHelp(args, i)
     | args(i) == "--" = false
     | isHelp(args(i)) = true
-    | args(i) == "--landing" || args(i) == "--urgent" = optionsAskHelp(args, i + 1)
+    | args(i) == "--landing" || args(i) == "--urgent" || args(i) == "--quick" = optionsAskHelp(args, i + 1)
     | args(i).startsWith("--") = optionsAskHelp(args, i + 2)
     | _ = false
 
@@ -246,6 +249,7 @@ parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]
     var memoryGiven = false
     var landing = false
     var urgent = false
+    var quick = false
     var workDir = dir
     var deadline: Option[long] = None
     var quiet: long = 0
@@ -267,6 +271,10 @@ parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]
             continue
         if word == "--urgent"
             urgent = true
+            i += 1
+            continue
+        if word == "--quick"
+            quick = true
             i += 1
             continue
         if i + 1 >= args.length() then return Err(s"`$word` needs a value")
@@ -306,7 +314,7 @@ parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]
     if cmd.isEmpty() then return Err("no command to run: give it after `--`")
     val k = kind.getOrElse(if cmd.exists(w -> w == "test") then "test" else "build")
     Ok(JobSpec(k, units.getOrElse(marshal.defaultUnits(k)), memory, landing, workDir, deadline, cmd, env, urgent,
-        after.toVector().distinct(), afterMode == Some("--after-any"), retries, retryDelay, memoryGiven, label, quiet))
+        after.toVector().distinct(), afterMode == Some("--after-any"), retries, retryDelay, memoryGiven, label, quiet, quick))
 
 // The value of `--quiet-timeout`, written as `--deadline` writes a deadline, in milliseconds.
 parseQuietTimeout(value: string) -> Result[long, string] = marshal.parseDeadline(value) match
@@ -329,7 +337,9 @@ submit(args: Vector[string], andWait: bool) -> int
         Ok(s) -> s
         Err(e) -> return complain(s"marshal: $e")
     val (id, log) = askDaemon(Request.Submit(spec)) match
-        Ok(Submitted(id, log)) -> (id, log)
+        Ok(Submitted(id, log, hint)) ->
+            if hint.nonEmpty() then eprintln(hint)
+            (id, log)
         Ok(Failed(e)) -> return complain(s"marshal: $e")
         Ok(other) -> return complain(s"marshal: unexpected reply $other")
         Err(e) -> return complain(e)
@@ -349,7 +359,7 @@ waitFor(id: long) -> int = askDaemon(Request.Wait(id)) match
 
 // `rerun <id>`: prints the id of the job that runs job `id` again.
 rerun(id: long) -> int = askDaemon(Request.Rerun(id)) match
-    Ok(Submitted(n, _)) ->
+    Ok(Submitted(n, _, _)) ->
         println(n)
         0
     Ok(Failed(e)) -> complain(s"marshal: $e")

@@ -90,7 +90,7 @@ stateOf(l: Line) -> (string, Style)
             None if waiting(l) -> (marshal.stateColumn(j), Style.fg(Yellow))
             None ->
                 if j.paused then ("paused", Style.fg(Yellow).with(Bold | Reverse))
-                else (if j.landing then "landing" else "running", Style.fg(Green).with(Bold))
+                else (if j.landing then "landing" elif j.quick then "quick" else "running", Style.fg(Green).with(Bold))
             Some(Exited(0)) -> ("exit 0", Style.fg(Green))
             Some(Exited(code)) -> (s"exit $code", Style.fg(Red).with(Bold))
             Some(Signalled(sig)) -> if j.killed then ("killed", Style.fg(Magenta).with(Bold)) else (s"signal $sig", Style.fg(Red).with(Bold))
@@ -162,7 +162,7 @@ cells(l: Line, since: long, zone: time.Zone, today: string, width: int) -> Vecto
     val all = [
         Span(j.id.toString()),
         styled(stateOf(l)),
-        Span(if j.landing then j.kind + "*" else j.kind),
+        Span(marshal.laneKind(j)),
         Span(j.units.toString()),
         Span(marshal.reservedText(j)),
         Span(measuredText(if j.state == "running" then j.rss else 0)),
@@ -538,7 +538,9 @@ val helpLines: Vector[string] = [
     "no units, no memory, lane busy (another landing job), take-slot",
     "(what take-slot.zsh holds or waits for), or behind the job at",
     "the head of the queue, which it would delay; held (marshal hold),",
-    "or queue held (marshal pause). after 3,4 waits for jobs 3 and 4",
+    "or queue held (marshal pause); quick lane full (both quick slots",
+    "taken). A quick job runs as quick, its kind marked ^; a landing",
+    "job's is marked *. after 3,4 waits for jobs 3 and 4",
     "to end; retry 2 waits to make its second attempt.",
     "DEADLINE is the time left; yellow, then red, as it nears."
 ]
@@ -557,7 +559,7 @@ drawHeader(g: Grid, o: Overview, since: long, f: Filter) -> int
         Span("  "),
         Span(s"${u.queued} queued", Some(Style.fg(Yellow)))] ++ held ++ [
         Span("   landing: "),
-        styled(laneText(o))])
+        styled(laneText(o))] ++ quickText(u))
     val shown = s"filter: ${filterName(f)}"
     if g.width > textWidth(shown) then g.text(g.width - textWidth(shown), 0, shown, Style.fg(BrightBlack))
     val barWidth = minInt(maxInt(g.width / 3, 10), 40)
@@ -589,6 +591,11 @@ landingUnits(g: Grid, x: int, y: int, o: Overview)
         for j in o.running.find(j -> j.id == id)
             val text = s"landing ${j.units}"
             if x + 3 + textWidth(text) <= g.width then g.text(x + 3, y, text, Style.fg(Cyan))
+
+// The quick lane in the header, `   quick: 1/2`, while a quick job runs; nothing otherwise.
+quickText(u: Usage) -> Vector[Span]
+    if u.quick == 0 then return []
+    [Span("   quick: "), Span(s"${u.quick}/${marshal.QuickSlots}", Some(Style.fg(Cyan).with(Bold)))]
 
 // Who holds the landing lane, as the header says it.
 laneText(o: Overview) -> (string, Style)

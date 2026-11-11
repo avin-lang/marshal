@@ -48,10 +48,10 @@ golden(name: string, g: Grid)
 gjob(id: long, kind: string = "build", state: string = "running", outcome: Option[Outcome] = None, units: int = 1,
      landing: bool = false, cmd: Vector[string] = ["make", "-j4"], elapsed: long = 2 * minuteMs, deadline: long = 30 * minuteMs,
      memory: long = 0, rss: long = 0, peak: long = 0, paused: bool = false, killed: bool = false, label: string = "",
-     after: Vector[long] = [], attempt: int = 1, reserved: long = 0, learned: bool = false) -> JobInfo =
+     after: Vector[long] = [], attempt: int = 1, reserved: long = 0, learned: bool = false, quick: bool = false) -> JobInfo =
     JobInfo(id, kind, units, memory, landing, "/w", cmd, state, outcome, killed, 0, elapsed, deadline, s"/h/jobs/$id.log", None,
             rss = rss, peakRss = peak, paused = paused, after = after, attempt = attempt, reserved = reserved,
-            reservedLearned = learned, label = label)
+            reservedLearned = learned, label = label, quick = quick)
 
 // A busy daemon: a landing job, a paused one, take-slot holding units with runs waiting, the queue
 // held, every reason to wait, jobs waiting for others or to retry, and every way a job ends.
@@ -191,6 +191,21 @@ goldenOverlays()
     app.handle(key('h'))
     app.handle(Resize(120, 30))
     golden("help-resized", drawn(app, 120, 30))
+
+@test("golden: the quick lane: running quick jobs say quick with their kind marked ^, the header counts the lane, and a third waits for it")
+goldenQuickLane()
+    val running = [
+        gjob(41, kind = "test", units = 4, cmd = ["avin", "test", "."], elapsed = 20000, deadline = 2 * minuteMs, quick = true),
+        gjob(42, kind = "test", units = 4, cmd = ["avin", "test", "lib"], elapsed = 5000, deadline = 2 * minuteMs, quick = true),
+        gjob(40, units = 12, cmd = ["make", "-j12"], elapsed = 10 * minuteMs)]
+    val queued = [
+        QueuedJob(gjob(43, kind = "test", state = "queued", units = 4, deadline = 2 * minuteMs, quick = true), 1, Why.QuickFull),
+        QueuedJob(gjob(44, state = "queued", units = 1), 1, Why.NoUnits)]
+    val o = Overview(Usage(12, 12, 0, 16 * G, 3, 2, None, None, quick = 2), 60000, running, queued, [])
+    golden("quick-lane", drawn(viewing(o), 100, 12))
+    // with no quick job running, the header says nothing of the lane
+    assert(!drawn(viewing(idleDaemon()), 100, 10).rowText(0).contains("quick"))
+    assert(drawn(viewing(o), 100, 12).rowText(0).contains("quick: 2/2"))
 
 // A daemon running only a landing job of `units`, with take-slot's use if any.
 landingOnly(units: int, takeSlot: Option[TakeSlotUse]) -> Overview =

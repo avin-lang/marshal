@@ -15,6 +15,12 @@ module dev.avinlang.marshal
 //   enough memory, so the landing job goes next. One whose memory alone exceeds the budget starts
 //   when nothing else runs. Its memory is counted, so development jobs make room for it rather than
 //   the other way round.
+// - The quick lane runs short jobs at once, outside the unit budget: at most `QuickSlots` at a time,
+//   in queue order, each when its memory fits beside what is running. Its jobs are decided after the
+//   landing lane and before every development job, so a quick job never delays a landing job (one
+//   that drains the machine holds the quick lane too) and goes ahead of development jobs. Its memory
+//   is counted while it runs; one that waits for memory keeps that memory from development jobs, so
+//   it is next to start rather than starved, and the quick jobs behind it wait behind it.
 // - What take-slot.zsh holds and waits for (`Outside`) shares the same budget and the same arrival
 //   order. Its holders take units and are expected to end at any moment, so nothing backfills behind
 //   a head that waits for them; its waiters stand in the queue by arrival time, and one marshal can
@@ -27,10 +33,11 @@ data Budget(units: int, memory: long)
 // A job waiting to start, as the scheduler weighs it: `expectedMs` is how long it is expected to run.
 // `arrived` is when it was submitted, in microseconds of the wall clock, which is how it is ordered
 // against take-slot's waiters.
-data Waiting(id: long, units: int, memory: long, landing: bool, expectedMs: long, arrived: long)
+// `quick` puts it in the quick lane.
+data Waiting(id: long, units: int, memory: long, landing: bool, expectedMs: long, arrived: long, quick: bool = false)
 
 // A job running since `startedMs` (the daemon's clock, in milliseconds).
-data Started(id: long, units: int, memory: long, landing: bool, startedMs: long, expectedMs: long)
+data Started(id: long, units: int, memory: long, landing: bool, startedMs: long, expectedMs: long, quick: bool = false)
 
 // A take-slot waiter: when it arrived (wall-clock microseconds) and the units it waits for.
 data Ticket(arrived: long, units: int)
@@ -51,18 +58,30 @@ schedule(budget: Budget, running: Vector[Started], queue: Vector[Waiting], now: 
 // what `schedule` would say of it, with `Starting` for a job it would start now.
 waits(budget: Budget, running: Vector[Started], queue: Vector[Waiting], now: long, outside: Outside = NoOutside) -> Vector[(long, int, Why)]
     val decided = decide(budget, running, queue, now, outside)
-    var landings = 0
-    var others = 0
+    val positions = lanePositions(queue)
     val out = Buffer[(long, int, Why)]()
-    for w in queue
-        val position = if w.landing
-            landings += 1
-            landings
-        else
-            others += 1
-            others
+    for (w, position) in queue.zip(positions)
         val why = decided.find(d -> d.id == w.id).flatMap(d -> d.why).getOrElse(Starting)
         out += (w.id, position, why)
+    out.toVector()
+
+// Each job's place in its own lane's queue (from 1), in the order of `queue`: the landing lane, the
+// quick lane and the development jobs each count their own.
+lanePositions(queue: Vector[Waiting]) -> Vector[int]
+    var landings = 0
+    var quicks = 0
+    var others = 0
+    val out = Buffer[int]()
+    for w in queue
+        if w.landing
+            landings += 1
+            out += landings
+        elif w.quick
+            quicks += 1
+            out += quicks
+        else
+            others += 1
+            out += others
     out.toVector()
 
 // The ticket the daemon keeps among take-slot's waiters, as (arrival, units), or None when nothing
@@ -75,7 +94,7 @@ ticketFor(budget: Budget, running: Vector[Started], queue: Vector[Waiting], now:
         Some(w) ->
             val first = outside.waiting.map(t -> t.arrived).minOption()
             Some((first.filter(a -> a <= w.arrived).map(a -> a - 1).getOrElse(w.arrived), w.units))
-        None -> queue.find(w -> !w.landing).map(w -> (w.arrived, w.units))
+        None -> queue.find(w -> !w.landing && !w.quick).map(w -> (w.arrived, w.units))
 
 // What the scheduler makes of one waiting job: start it now (no `why`), or why it waits.
 private data Decision(id: long, why: Option[Why])
@@ -92,10 +111,13 @@ private decide(budget: Budget, running: Vector[Started], queue: Vector[Waiting],
     // the units take-slot's runs hold, and its waiters that fit are to hold
     var theirs = outside.units
     if outside.units > 0 then ends += (now, outside.units, 0)
+    var quicks = 0
     for r in running
-        if r.landing then laneBusy = true else units += r.units
+        if r.landing then laneBusy = true
+        elif r.quick then quicks += 1
+        else units += r.units
         memory += r.memory
-        ends += (expectedEnd(r.startedMs, r.expectedMs, now), if r.landing then 0 else r.units, r.memory)
+        ends += (expectedEnd(r.startedMs, r.expectedMs, now), if r.landing || r.quick then 0 else r.units, r.memory)
     // the landing job that waits for memory and drains the machine, if one does
     var draining: Option[long] = None
     for w in queue.filter(w -> w.landing)
@@ -117,6 +139,7 @@ private decide(budget: Budget, running: Vector[Started], queue: Vector[Waiting],
         for w in queue.filter(w -> !w.landing)
             out += Decision(w.id, Some(Behind(id)))
         return out.toVector()
+    memory = quickLane(budget, queue, now, quicks, memory, ends, out)
     // When the blocked head of the queue can start, and which job it is (None for a take-slot
     // waiter); None while the head has not been met.
     var head: Option[(long, Option[long])] = None
@@ -136,6 +159,29 @@ private decide(budget: Budget, running: Vector[Started], queue: Vector[Waiting],
         for w in e.job
             out += Decision(w.id, if go then None else Some(waitsFor(budget, units, memory, theirs, e, fits, head)))
     out.toVector()
+
+// Decides the quick lane's jobs into `out`, `quicks` of them running, beside `memory` in use, and
+// answers the memory in use after them: what the quick jobs it starts take, and what the first one
+// that waits for memory keeps from the development jobs.
+private quickLane(budget: Budget, queue: Vector[Waiting], now: long, quicks: int, memory: long, ends: Buffer[(long, int, long)], out: Buffer[Decision]) -> long
+    var free = QuickSlots - quicks
+    var used = memory
+    var blocked: Option[long] = None
+    for w in queue.filter(w -> w.quick && !w.landing)
+        if blocked.isDefined()
+            out += Decision(w.id, blocked.map(id -> Behind(id)))
+        elif free <= 0
+            out += Decision(w.id, Some(QuickFull))
+        elif used + w.memory <= budget.memory
+            out += Decision(w.id, None)
+            free -= 1
+            used += w.memory
+            ends += (now + w.expectedMs, 0, w.memory)
+        else
+            out += Decision(w.id, Some(NoMemory))
+            blocked = Some(w.id)
+            used += w.memory
+    used
 
 // Why `e` waits. One that does not fit beside `used` units and `memory` waits for units, unless they
 // would fit but for what take-slot's runs and admitted waiters hold (`theirs`), or else for memory. One that fits waits
@@ -162,7 +208,7 @@ private arrivalOrder(queue: Vector[Waiting], tickets: Vector[Ticket]) -> Vector[
     val out = Buffer[Entry]()
     var t = 0
     for w in queue
-        if w.landing then continue
+        if w.landing || w.quick then continue
         while t < sorted.length() && sorted(t).arrived <= w.arrived
             out += Entry(None, sorted(t).units, 0, 0)
             t += 1

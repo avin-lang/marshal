@@ -1154,3 +1154,58 @@ the reason in the state cell rather than a column.
   hand-rolled sizing counted characters, so a wide-character label overran its column and shifted
   the ones after it. Alternative: keeping `labelWidth` and counting display width by hand (a second
   copy of what the table already does).
+
+## The quick lane (branch `quick-lane`)
+
+The request was the user's: a 20-second test sat queued for more than five minutes behind
+20-minute builds, waiting for units like everything else.
+
+**Settled by the user 2026-11-10:**
+
+- **A quick job waits when its reservation does not fit in the budget's free memory**, as any job
+  does (reason `memory`). Why: a quick job must not push the machine into swap; the lane is about
+  units, not memory.
+- **A running quick job's reservation counts against the memory budget**, so a development job (or
+  a landing job) may wait for it. Why: the memory it uses is in use, however briefly.
+
+**Proposed:**
+
+- **`--quick` on `submit`, `run`, `run-type` and `train`; the job starts outside the unit budget,
+  as a landing job does, and is niced like a development job.** The scheduler decides the quick lane
+  after the landing lane and before the development jobs, so it never delays a landing job (a
+  landing job that drains the machine holds the quick lane as well) and goes ahead of development
+  jobs. Take-slot is told it holds 0 units. Why: the delay was all units; a quick job is short by
+  definition, so letting it beside the unit budget costs the long jobs little.
+- **Two constants in quick.avin: `QuickSlots` 2 and `QuickCapMs` 2 minutes.** A quick job's deadline
+  is the cap, or a shorter `--deadline`; a longer one is refused by the daemon with a message saying
+  to drop `--quick`. A run-type's own deadline over the cap gives way to the cap. Past it, the job is
+  stopped as any job past its deadline (outcome `timeout`). `--quick` with `--landing` is refused.
+  Why: the cap is what keeps the lane quick, and two slots bound how far past the unit budget the
+  lane can take the machine. Alternative: configurable values in the config (deferred until
+  someone needs another number).
+- **A third quick job waits in the quick lane (`quick-lane`, shown `quick lane full`), in queue
+  order; the first quick job that waits for memory keeps that memory from development jobs, and the
+  quick jobs behind it wait behind it.** Why: otherwise a stream of development jobs could take the
+  memory a quick job waits for, and it would starve. Alternative: letting development jobs use the
+  memory (fairer to them, but a quick job could wait indefinitely).
+- **The hint**: when a job is submitted without `--quick` (and not `--landing`) and its kind's last
+  `window` successful runs (at least `minRuns`, as learned deadlines use) took under the cap at the
+  90th percentile, the daemon puts a one-line hint in the submit reply (`hint`) and the command line
+  prints it on stderr. Why: the daemon already holds the durations; the command line would have to
+  read the whole event log. Alternative: computing it in the command line from `events.jsonl` (no
+  protocol change, but a full read on every submit).
+- **Markers**: `ls` and `top` mark a quick job's kind `^` (a landing job's is `*`); `top` says
+  `quick` for a running one and `quick: n/2` in its header while one runs; `status` names the lane
+  only while one runs; the job JSON carries `"quick":true` only for a quick job, and `status` /
+  `snapshot` carry `quick` (running quick jobs), `status --json` also `quick_slots`. Why: nothing
+  changes for anyone not using the lane.
+- **Alternatives weighed for the lane itself:**
+  - *Auto-promotion by learned duration* (a job whose kind is known to be short goes quick on its
+    own): rejected for now; a kind's history does not know this run (a test of a large package has
+    the same kind), and a wrong promotion is killed at the cap. The hint offers it instead.
+  - *A separate small unit pool* (say 2 units reserved for short jobs): reserved units sit idle when
+    no short job comes, and a short job still waits when the pool is busy; the lane costs nothing
+    while unused.
+  - *Preemption* (pausing a long job to run a short one): a paused job keeps its memory, so it frees
+    nothing the short job needs but CPU, and pausing a tool mid-write is unsafe for some; niced quick
+    jobs beside the budget get the same effect.
