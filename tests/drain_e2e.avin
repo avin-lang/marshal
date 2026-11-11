@@ -28,7 +28,8 @@ drainAfterE2e()
     assert(within(5000, () -> whyOf(home, big) == Some(Why.Draining)), s"${whyOf(home, big)}")
     // past it an urgent job that fits the free unit, but would end after the big job is expected to
     // start, waits for it, and says so
-    val late = submitted(home, "--urgent", "--units", "1", "--deadline", "4s", "--", "sleep", "0.3")
+    // a kind of its own, so the early job's run teaches it nothing
+    val late = submitted(home, "--kind", "late", "--urgent", "--units", "1", "--deadline", "4s", "--", "sleep", "0.3")
     assertEq(whyOf(home, late), Some(Why.DrainingFor(big)))
     val ls = m(home, "ls").out
     assert(ls.contains(s"queued (draining for $big)"), ls)
@@ -80,7 +81,8 @@ drainBackfillPastEstimateE2e()
     // learned to take a moment, so at once past its estimate, and given a minute
     val a = submitted(home, "--kind", "w", "--units", "2", "--deadline", "60s", "--", "sleep", "60")
     assert(within(2000, () -> started(home, a)))
-    val big = submitted(home, "--units", "3", "--", "sleep", "0.2")
+    // each job a kind of its own, so none is learned from another's run
+    val big = submitted(home, "--kind", "big", "--units", "3", "--", "sleep", "0.2")
     assert(within(4000, () -> whyOf(home, big) == Some(Why.Draining)), s"${whyOf(home, big)}")
     val st = statusOf(home)
     val running = st("running").asVector().get().find(x -> x("id").asLong() == Some(a)).get()
@@ -96,12 +98,12 @@ drainBackfillPastEstimateE2e()
     // the snapshot carries it too
     assertEq(snapshotOf(home).queued.find(q -> q.job.id == big).map(q -> q.job.expectedStart > 0), Some(true))
     // a short job fits the free unit and ends long before: it backfills
-    val brief = submitted(home, "--units", "1", "--deadline", "10s", "--", "sleep", "0.2")
+    val brief = submitted(home, "--kind", "brief", "--units", "1", "--deadline", "10s", "--", "sleep", "0.2")
     assert(within(2000, () -> started(home, brief)), eventsOf(home, brief).mkString(" "))
     val ev = events(home).find(e -> e("id").asLong() == Some(brief) && e("event").asString() == Some("started")).get()
     assertEq(ev("backfilled_ahead_of").asLong(), Some(big))
     // one that would run past the running job's deadline waits for the drained job
-    val lengthy = submitted(home, "--units", "1", "--deadline", "120s", "--", "sleep", "0.2")
+    val lengthy = submitted(home, "--kind", "lengthy", "--units", "1", "--deadline", "120s", "--", "sleep", "0.2")
     assertEq(whyOf(home, lengthy), Some(Why.DrainingFor(big)))
     m(home, "kill", a.toString())
     assertEq(m(home, "wait", lengthy.toString()).code, 0)
