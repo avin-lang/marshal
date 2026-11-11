@@ -61,7 +61,8 @@ class Ledger()
                 return
         val outcome = job.outcome.getOrElse(Lost)
         val run = if outcome == Cancelled then long(0) else ev.get("run_ms").flatMap(v -> v.asLong()).getOrElse(job.elapsedMs)
-        val peak = ev.get("peak_rss").flatMap(v -> v.asLong()).getOrElse(0)
+        // an external job's peak is its tree's, not its work's, so stats leave it out
+        val peak = if job.external then 0 else ev.get("peak_rss").flatMap(v -> v.asLong()).getOrElse(0)
         val e = EndedJob(job.id, job.kind, job.landing, howWord(outcome, job.killed), exitCode(outcome), run, ts, job.deadlineMs, peak, job.label)
         position.get(job.id) match
             Some(p) -> ends(p) = e

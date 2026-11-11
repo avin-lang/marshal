@@ -148,7 +148,7 @@ class Job(val id: long, val spec: JobSpec, val submittedMs: long, var arrived: l
         val rss = if state == "running" then resident.now else 0
         // a waiting job that asked to be urgent joins the urgent band once it queues
         val urgent = urgentAt > 0 || (state == "waiting" && spec.urgent)
-        JobInfo(id, spec.kind, spec.units, spec.memory, spec.landing, spec.dir, spec.cmd, state, outcome, killed, queued, elapsed, deadlineMs, log, sample, rss, resident.peak, startedAt, held, priority, urgent, paused, after, attempt, reserved, learnedMem, spec.label, spec.quietMs)
+        JobInfo(id, spec.kind, spec.units, spec.memory, spec.landing, spec.dir, spec.cmd, state, outcome, killed, queued, elapsed, deadlineMs, log, sample, rss, resident.peak, startedAt, held, priority, urgent, paused, after, attempt, reserved, learnedMem, spec.label, spec.quietMs, spec.external)
 
 // The daemon's state, owned by its own thread.
 // `slots` is the take-slot directory it shares, if any; `ticket` the name of its waiting ticket there.
@@ -217,8 +217,9 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
                 b += peak
                 peaks(key) = b
 
-    // What admission counts a running job as holding.
-    holds(j: Job) -> long = marshal.holding(j.reserved, j.resident.now)
+    // What admission counts a running job as holding; an external job's tree is not what it uses, so
+    // it holds its reservation whatever its tree measures.
+    holds(j: Job) -> long = if j.spec.external then j.reserved else marshal.holding(j.reserved, j.resident.now)
 
     // Serves messages until the daemon has stopped.
     serve()
@@ -282,6 +283,9 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         marshal.neverFits(config.budget, spec.units, spec.memory, spec.landing) match
             Some(why) -> return Failed(why)
             None -> ()
+        marshal.externalRefusal(spec.external, spec.memoryGiven || spec.memory > 0) match
+            Some(why) -> return Failed(why)
+            None -> ()
         if !fs.isDir(spec.dir) then return Failed(s"no directory ${spec.dir}")
         if spec.retries < 0 then return Failed(s"retries are 0 or more, not ${spec.retries}")
         if spec.retryDelayMs < 0 then return Failed("a retry delay is not negative")
@@ -325,7 +329,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
                 marshal.specOf(text.lines(), id) match
                     Some(s) -> s
                     None -> return Failed(s"job $id's command is not in the event log")
-        submit(JobSpec(spec.kind, spec.units, spec.memory, spec.landing, spec.dir, spec.deadlineMs, spec.cmd, spec.env, spec.urgent, [], false, spec.retries, spec.retryDelayMs, spec.memoryGiven, spec.label, spec.quietMs), [("rerun_of", Json.num(id))])
+        submit(JobSpec(spec.kind, spec.units, spec.memory, spec.landing, spec.dir, spec.deadlineMs, spec.cmd, spec.env, spec.urgent, [], false, spec.retries, spec.retryDelayMs, spec.memoryGiven, spec.label, spec.quietMs, spec.external), [("rerun_of", Json.num(id))])
 
     // How job `id` ended: None while it has not, and an error when there is no such job or its end
     // cannot be read.
@@ -758,7 +762,8 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
     // A running job leaves the machine: the running jobs and take-slot's files.
     offMachine(job: Job)
         running.remove(running.indexOf(job))
-        rememberPeak(marshal.historyKey(job.spec.kind, job.spec.landing), job.resident.peak)
+        // an external job's tree is not where its work ran, so its peak teaches nothing
+        if !job.spec.external then rememberPeak(marshal.historyKey(job.spec.kind, job.spec.landing), job.resident.peak)
         val pid = job.pid
         if pid > 0 then slots.foreach(ts -> if job.spec.landing then ts.releaseLanding(pid) else ts.unregister(pid))
 

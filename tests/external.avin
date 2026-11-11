@@ -1,0 +1,144 @@
+module tests
+
+// Jobs whose work runs outside their process tree (`--external`): the command line refuses one
+// without `--mem` and warns of a docker command without it; the flag survives the wire, the saved
+// state and the event log; RESV shows it with `@`; and its peak is never learned from or counted.
+import dev.avinlang.marshal
+import dev.avinlang.marshal.{JobInfo, JobSpec, Outcome, SavedJob, SavedState}
+import dev.avinlang.marshal.cli
+import json
+import json.Json
+
+val Gi: long = 1024 * 1024 * 1024
+
+val externalSpec: JobSpec = JobSpec("linux", 2, 8 * Gi, false, "/w", None, ["docker", "run", "img"], [], memoryGiven = true, external = true)
+
+// What the command line makes of `args` given to submit, from directory /w.
+submission(args: string*) -> Result[JobSpec, string] = cli.parseSubmission(args.toVector(), "/w", [])
+
+@test("--external without --mem is refused, saying why; with --mem, --mem 0 included, it is accepted")
+externalNeedsMem()
+    submission("--external", "--", "docker", "run", "img") match
+        Err(e) ->
+            assert(e.contains("`--external` needs `--mem <size>`"), e)
+            assert(e.contains("outside its own processes"), e)
+        Ok(s) -> fail(s"accepted: $s")
+    submission("--external", "--kind", "linux", "--", "true") match
+        Err(e) -> assert(e.contains("`--external` needs `--mem"), e)
+        Ok(s) -> fail(s"accepted: $s")
+    val s = submission("--external", "--mem", "8G", "--", "docker", "run", "img").ok().get()
+    assertEq((s.external, s.memory, s.memoryGiven), (true, 8 * Gi, true))
+    val zero = submission("--mem", "0", "--external", "--", "true").ok().get()
+    assertEq((zero.external, zero.memory, zero.memoryGiven), (true, long(0), true))
+    assertEq(submission("--mem", "8G", "--", "true").ok().get().external, false)
+
+@test("the refusal is one rule, for the command line and the daemon alike")
+externalRefusalRule()
+    assert(marshal.externalRefusal(true, false).isDefined())
+    assertEq(marshal.externalRefusal(true, true), None)
+    assertEq(marshal.externalRefusal(false, false), None)
+    assertEq(marshal.externalRefusal(false, true), None)
+
+@test("a docker command that runs work in the engine looks external; dockerize, echo docker and other docker commands do not")
+looksExternalCases()
+    for cmd in [["docker", "run", "img"], ["/usr/local/bin/docker", "run", "--rm", "img"], ["docker", "compose", "up"],
+                ["docker", "build", "."], ["docker", "buildx", "build", "."], ["docker", "--context", "x", "run", "img"],
+                ["docker-compose", "up"], ["/opt/bin/docker-compose", "run", "x"],
+                ["sudo", "-n", "-u", "work", "-H", "docker", "run", "img"], ["/usr/bin/sudo", "docker", "compose", "up"]]
+        assert(marshal.looksExternal(cmd), cmd.mkString(" "))
+    for cmd in [Vector[string](), ["dockerize", "run"], ["echo", "docker", "run"], ["docker"], ["docker", "ps"],
+                ["docker", "images"], ["mydocker", "run"], ["docker.sh", "run"], ["sh", "-c", "docker run img"],
+                ["sudo", "make"], ["sudo", "-u", "work", "docker", "ps"], ["run", "docker"]]
+        assert(!marshal.looksExternal(cmd), cmd.mkString(" "))
+
+@test("the usage, a command's help and the README describe --external, and --external does not swallow --help")
+externalInHelp()
+    assert(cli.usage.contains("--external"), cli.usage)
+    assert(cli.commandHelp("run").get().contains("--external"))
+    assert(cli.commandHelp("submit").get().contains("--external"))
+    assert(readme().contains("| `--external`"))
+    for name in ["submit", "run"]
+        assert(cli.asksHelp(name, ["--external", "--help"]), name)
+        assert(cli.asksHelp(name, ["--external", "--mem", "8G", "-h"]), name)
+        assert(!cli.asksHelp(name, ["--external", "--", "--help"]), name)
+
+@test("an external spec reads back as itself on the wire; the member is absent for any other job, and absent reads as false")
+externalOnTheWire()
+    assertEq(marshal.decodeSpec(marshal.encodeSpec(externalSpec)), Ok(externalSpec))
+    assert(marshal.encodeSpec(externalSpec).render().contains("\"external\":true"))
+    val plain = JobSpec("build", 1, 0, false, "/w", None, ["make"], [])
+    assert(!marshal.encodeSpec(plain).render().contains("external"))
+    assertEq(marshal.decodeSpec(marshal.encodeSpec(plain)), Ok(plain))
+    assertEq(marshal.decodeRequest(marshal.encodeRequest(marshal.Request.Submit(externalSpec)).render()), Ok(marshal.Request.Submit(externalSpec)))
+    val text = marshal.encodeSpec(plain).render()
+    val open = text.slice(0, text.byteLength() - 1)
+    val explicitFalse = open + ",\"external\":false}"
+    assertEq(json.parse(explicitFalse).ok().flatMap(j -> marshal.decodeSpec(j).ok()), Some(plain))
+    val bad = open + ",\"external\":\"yes\"}"
+    assertEq(marshal.decodeSpec(json.parse(bad).ok().get()), Err("`external` is not a bool"))
+
+// An ended job, external or not, that reserved `reserved` bytes.
+externalJob(external: bool, reserved: long, peak: long = 0) -> JobInfo =
+    JobInfo(3, "linux", 2, reserved, false, "/w", ["docker", "run", "img"], "done", Some(Outcome.Exited(0)), false, 5, 1000, 60000, "/h/jobs/3.log", None, peakRss = peak, reserved = reserved, external = external)
+
+@test("a job's external mark reads back from a reply and an event, and is absent for any other job")
+externalJobReply()
+    for ext in [false, true]
+        val j = externalJob(ext, 8 * Gi, 4096)
+        assertEq(marshal.decodeJob(marshal.encodeJob(j)), Ok(j))
+        assertEq(marshal.encodeJob(j).render().contains("\"external\":true"), ext)
+        assertEq(marshal.encodeJob(j).render().contains("external"), ext)
+
+@test("RESV shows an external job's reservation with @, its --mem 0 as @0, and other jobs as before")
+externalResvText()
+    assertEq(marshal.reservedText(externalJob(true, 29 * Gi)), "@29G")
+    assertEq(marshal.reservedText(externalJob(true, 512 * 1024 * 1024)), "@512M")
+    assertEq(marshal.reservedText(externalJob(true, 0)), "@0")
+    assertEq(marshal.reservedText(externalJob(false, 29 * Gi)), "29G")
+    assertEq(marshal.reservedText(externalJob(false, 0)), "-")
+    // at most 6 cells for every size marshal rounds to, so top's RESV column keeps its width
+    for size in [long(1023), 1023 * 1024 * 1024, 999 * Gi, 1000 * Gi]
+        assert(marshal.reservedText(externalJob(true, size)).byteLength() <= 6, marshal.reservedText(externalJob(true, size)))
+
+@test("top draws an external job's RESV with @ in its 6-cell column, beside a learned and a given one")
+externalInTop()
+    val M: long = 1024 * 1024
+    val ext = JobInfo(1, "linux", 2, 29 * Gi, false, "/w", ["docker", "run", "img"], "running", None, false, 0, 60000, 1200000, "/h/jobs/1.log", None, 300 * M, 300 * M, reserved = 29 * Gi, external = true)
+    val learned = JobInfo(2, "build", 1, 0, false, "/w", ["make"], "running", None, false, 0, 60000, 1200000, "/h/jobs/2.log", None, reserved = 3 * Gi + 512 * M, reservedLearned = true)
+    val o = marshal.Overview(marshal.Usage(3, 12, 33 * Gi, long.MaxValue, 2, 1, None, None), 0, [ext, learned], [], [])
+    val g = drawn(viewing(o), 100, 30)
+    val head = rowOf(g, "ID STATE")
+    assertEq(g.rowText(head).slice(36, 54), "  RESV   RSS  PEAK")
+    assertEq(memoryCells(g, head + 1), ("@29G", "300M", "300M"))
+    assertEq(memoryCells(g, head + 2), ("~3.5G", "-", "-"))
+
+@test("an external job's state reads back, queued, running and ended; a state saved before it reads as not external; a bad mark is refused")
+externalState()
+    val queued = SavedJob(4, externalSpec, "queued", 1, 2, 0, 0, 5, 6, "/l", 0, 0, None, false, false, None, 0, 0)
+    val running = SavedJob(5, externalSpec, "running", 1, 2, 3, 0, 5, 6, "/l", 77, 77, None, false, false, None, 4096, 8192)
+    val ended = SavedJob(6, externalSpec, "done", 1, 2, 3, 4, 5, 6, "/l", 77, 77, Some(Outcome.Exited(0)), false, false, None, 0, 8192)
+    val s = SavedState("0.2.7", 1, 2, 3, 7, [queued], [running], [ended], None)
+    assertEq(marshal.decodeState(marshal.encodeState(s).render()), Ok(s))
+    val text = marshal.encodeState(s).render()
+    val old = text.replace(",\"external\":true", "")
+    assert(!old.contains("external"), old)
+    val plainSpec = JobSpec("linux", 2, 8 * Gi, false, "/w", None, ["docker", "run", "img"], [], memoryGiven = true)
+    val decoded = marshal.decodeState(old).ok().get()
+    assertEq(decoded.queue(0).spec, plainSpec)
+    marshal.decodeState(text.replace("\"external\":true", "\"external\":1")) match
+        Err(e) -> assert(e.contains("`external` is not a bool"), e)
+        Ok(r) -> fail(s"read as $r")
+
+@test("a recovering daemon learns no peak from an external job's ending, and stats leave its peak out")
+externalPeakNotLearned()
+    val ext = marshal.eventLine(1000, "finished", externalJob(true, 8 * Gi, 4096), [("run_ms", Json.num(1000)), ("exit", Json.num(0))])
+    val own = marshal.eventLine(2000, "finished", JobInfo(4, "linux", 2, 0, false, "/w", ["make"], "done", Some(Outcome.Exited(0)), false, 5, 1000, 60000, "/h/jobs/4.log", None, peakRss = 2048), [("run_ms", Json.num(1000)), ("exit", Json.num(0))])
+    val r = marshal.recover([ext, ext.replace("\"id\":3", "\"id\":5"), own])
+    assertEq(r.peaks.get("linux"), Some([long(2048)]))
+    // its run time still teaches the kind's deadline
+    assertEq(r.histories.get("linux").map(h -> h.length()), Some(3))
+    assertEq(marshal.recover([ext]).peaks.get("linux"), None)
+    val l = marshal.Ledger()
+    l.add(ext)
+    val st = marshal.kindStats(l, marshal.HistoryFilter(None, None, false))
+    assertEq(st.map(k -> k.peakMax), [None])

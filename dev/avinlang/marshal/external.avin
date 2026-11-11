@@ -1,0 +1,34 @@
+module dev.avinlang.marshal
+
+// Jobs whose work runs outside their own process tree (`--external`). `docker run` leaves only the
+// small docker client in the job's tree while the work runs in the container engine's VM, under
+// another account; measuring the tree would teach a near-zero peak and reserve almost nothing. So an
+// external job gives its memory with `--mem`, reserves exactly that, is held at that whatever its
+// tree measures, and its measured peak is never learned from.
+
+// Why a job is refused for what it says of where its work runs: an external job that gives no memory.
+externalRefusal(external: bool, memoryGiven: bool) -> Option[string] =
+    if external && !memoryGiven then Some("`--external` needs `--mem <size>`: the job's work runs outside its own processes, so marshal cannot measure the memory it uses or learn it from earlier runs") else None
+
+// The words that make a docker command start work in the container engine rather than in the client.
+val DockerWorkWords: Set[string] = {"run", "compose", "build", "buildx"}
+
+// Whether `word` names the docker client: `docker`, or a path ending in `/docker`.
+isDocker(word: string) -> bool = word == "docker" || word.endsWith("/docker")
+
+// Whether `word` names docker-compose, which always works in the container engine.
+isDockerCompose(word: string) -> bool = word == "docker-compose" || word.endsWith("/docker-compose")
+
+// Whether the command plainly starts its work in a container engine: its first word, or the first
+// after a leading `sudo`, is docker with one of `DockerWorkWords` after it, or is docker-compose.
+looksExternal(cmd: Vector[string]) -> bool
+    if cmd.isEmpty() then return false
+    val start = if cmd(0) == "sudo" || cmd(0).endsWith("/sudo") then cmd.indexWhere(w -> isDocker(w) || isDockerCompose(w)) else 0
+    if start < 0 then return false
+    val head = cmd(start)
+    if isDockerCompose(head) then return true
+    isDocker(head) && cmd.drop(start + 1).exists(w -> DockerWorkWords.contains(w))
+
+// What `submit` and `run` print to stderr for a command that `looksExternal` submitted without
+// `--external`; the job is submitted all the same.
+val ExternalWarning: string = "marshal: warning: this command runs its work in a container engine, outside the job's processes, so marshal measures only the client; give `--external --mem <size>` to reserve what it really uses"

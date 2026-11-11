@@ -16,6 +16,9 @@ val Version: string = "0.2.7"
 // reservation learned from the kind's peaks; a memory above 0 counts as given either way. `label`
 // is free text the submitter gave the job to find it by ("" for none; see `checkLabel`). `quietMs`
 // stops a running job whose log has had no new output for that long (0 for none; see quiet.avin).
+// `external` says the job's work runs outside its own process tree (a container, a VM, another
+// account's daemon), so what its tree holds is not what it uses: it reserves the memory it gave,
+// which it must give, and its measured peak is never learned from.
 data JobSpec(
     kind: string,
     units: int,
@@ -32,7 +35,8 @@ data JobSpec(
     retryDelayMs: long = 0,
     memoryGiven: bool = false,
     label: string = "",
-    quietMs: long = 0)
+    quietMs: long = 0,
+    external: bool = false)
 
 // The longest label, in characters.
 val MaxLabel: int = 80
@@ -139,6 +143,7 @@ retryable(_, _) = false
 // its runs from 1. `reserved` is the memory the scheduler counts for it, its effective reservation:
 // the memory it declared, or, with `reservedLearned`, what its kind's peaks taught (memory.avin).
 // `label` is the text its submitter gave it, "" for none; `quietMs` its quiet timeout, 0 for none.
+// `external` says its work runs outside its process tree (`JobSpec`).
 data JobInfo(
     id: long,
     kind: string,
@@ -167,13 +172,16 @@ data JobInfo(
     reserved: long = 0,
     reservedLearned: bool = false,
     label: string = "",
-    quietMs: long = 0)
+    quietMs: long = 0,
+    external: bool = false)
 
 // The memory a listing shows for a job: its reservation, `~` before one learned from its kind's
-// peaks; `-` for none. A job that says no reservation shows the memory it declared.
+// peaks, `@` before that of a job whose work runs elsewhere (`--external`); `-` for none. A job that
+// says no reservation shows the memory it declared.
 reservedText(j: JobInfo) -> string
     if j.reservedLearned && j.reserved > 0 then return "~" + roundSize(j.reserved)
     val r = if j.reserved > j.memory then j.reserved else j.memory
+    if j.external then return "@" + formatSize(r)
     if r == 0 then "-" else formatSize(r)
 
 // The budget in use. `memory` is what the running jobs reserve (declared or learned); `rss` what
@@ -312,7 +320,11 @@ encodeSpec(s: JobSpec) -> Json = Json.Obj(Json.obj(
     ("after_any", Json.Bool(s.afterAny)),
     ("retries", Json.num(s.retries)),
     ("retry_delay_ms", Json.num(s.retryDelayMs)),
-    ("mem_given", Json.Bool(s.memoryGiven))).asMembers().get() ++ labelMember(s.label) ++ quietMember(s.quietMs))
+    ("mem_given", Json.Bool(s.memoryGiven))).asMembers().get() ++ labelMember(s.label) ++ quietMember(s.quietMs) ++ externalMember(s.external))
+
+// An external job's member of an object: none for a job whose work is its own processes', as with a
+// label.
+private externalMember(external: bool) -> Vector[(string, Json)] = if external then [("external", Json.Bool(true))] else []
 
 // A label's member of an object: none for no label, so what marshal wrote before labels and what it
 // writes for a job without one are the same.
@@ -355,7 +367,9 @@ decodeSpec(j: Json) -> Result[JobSpec, string]
         optional(j, "retry_delay_ms", v -> v.asLong(), "a whole number", long(0))?,
         optional(j, "mem_given", v -> v.asBool(), "a bool", false)?,
         labelOf(j)?,
-        quietOf(j)?))
+        quietOf(j)?,
+        // absent from what marshal wrote before external jobs, and for a job that is not one
+        optional(j, "external", v -> v.asBool(), "a bool", false)?))
 
 private field[T](j: Json, key: string, read: (Json) -> Option[T], what: string) -> Result[T, string] =
     j.get(key) match
@@ -473,7 +487,7 @@ encodeJob(i: JobInfo) -> Json = Json.Obj(Json.obj(
     ("after", longs(i.after)),
     ("attempt", Json.num(i.attempt)),
     ("resv", Json.num(i.reserved)),
-    ("resv_learned", Json.Bool(i.reservedLearned))).asMembers().get() ++ labelMember(i.label) ++ quietMember(i.quietMs))
+    ("resv_learned", Json.Bool(i.reservedLearned))).asMembers().get() ++ labelMember(i.label) ++ quietMember(i.quietMs) ++ externalMember(i.external))
 
 decodeJob(j: Json) -> Result[JobInfo, string]
     val outcome = j.get("outcome") match
@@ -514,7 +528,8 @@ decodeJob(j: Json) -> Result[JobInfo, string]
         // absent from what marshal wrote before labels: no label; one already logged is read as it is
         optional(j, "label", v -> v.asString(), "a string", "")?,
         // absent from what marshal wrote before quiet timeouts, and for a job without one: none
-        quietOf(j)?))
+        quietOf(j)?,
+        optional(j, "external", v -> v.asBool(), "a bool", false)?))
 
 encodeTakeSlot(t: TakeSlotUse) -> Json = Json.obj(
     ("dir", Json.str(t.dir)),
