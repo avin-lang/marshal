@@ -1552,3 +1552,12 @@ a 12-unit job drained for it, and seven 2–4-unit jobs waited `draining for` it
 - **It says so.** A backfilled job's log begins `marshal: backfilled ahead of <id>`, and its
   `started` event adds `backfilled_ahead_of`. The jobs still held keep `draining for <id>`; `ls` and
   `top` are otherwise unchanged (no new column).
+
+## A typed job runs from its own copy of marshal and its type (branch `stable-step-path`)
+
+**Proposed.**
+
+- **`run-type` copies what the run reads into `<home>/typed/<name>` and submits the job against the copy.** The job's command was marshal's own resolved path and the type file's, and `run-steps` resolves `stock:` steps from its own executable's directory at each step, so an upgrade that removes an installation (Homebrew deletes the old Cellar version) failed a running job at its next stock step and a queued job at its start. The copy holds `bin/marshal` (a hard link of the executable: no space, and the job runs the marshal it was submitted with), `share/marshal/steps` (marshal's stock steps, as an installation lays them out, so `MARSHAL_STOCK` for the job names it), and `type/<type>.job` with each literal `avin:<path>` step it names at its relative path. A queued job submitted before an upgrade starts correctly after it, and runs the type as it was submitted.
+- **Where the copy cannot be made** (a step path with `..`, a `${}` reference or a missing source; no free disk) the job is submitted as before, from the installed files, with a note on stderr. Where only the hard link fails (another file system) the job runs the installed program through its stable path: Homebrew's `<prefix>/opt/<name>` for a path in `<prefix>/Cellar/<name>/<version>`, else the path itself, so a development build works unchanged.
+- **The copy stays until the retention sweep**, which removes `typed/*` older than the step age (30 days by default, or `clean --older-than`), because `rerun` submits the same command. It is reported with the run directories. A copy cannot be tied to the job's run directory: the job id is not known when the command is built.
+- Alternatives: only a stable path (Homebrew's `opt/marshal`; fixes brew but not other installs, and a queued job would run a newer marshal and type than it was submitted with); the runner moving the copy into the run directory at start (breaks `rerun`, and the executable's path then names the old place); copying the executable (35 MB a job); `avin:` steps that reach outside the type file's directory (cannot be placed relative to a copy without rewriting the file).
