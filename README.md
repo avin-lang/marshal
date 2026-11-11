@@ -351,8 +351,11 @@ ends: nothing polls.
   kind's learned duration, or by its deadline when nothing is learned. Meanwhile another development
   job that fits starts (backfills) when it too is expected to end by then, or when it takes only
   units and memory the drained job will leave spare; its log's first line and its `started` event
-  say `backfilled ahead of <id>` (`backfilled_ahead_of`). A running job past its estimate may end at
-  any moment, so once the drain waits on it nothing more backfills. `ls` shows the drained job
+  say `backfilled ahead of <id>` (`backfilled_ahead_of`). A job that was running before the drain
+  began and has run past its estimate is counted by its deadline; one started since (backfilled)
+  that runs past its estimate may end at any moment, so once the drain waits on it nothing more
+  backfills. `status --json` gives every job's `expected_ms` and `duration_learned`, and the drained
+  job's `expected_start_at`. `ls` shows the drained job
   `queued (draining)` and the jobs it holds back `queued (draining for <id>)`. Landing and quick
   jobs go on beside it. Time queued never counts against a job's deadline, which runs from its
   start.

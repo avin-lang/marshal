@@ -9,9 +9,10 @@ module dev.avinlang.marshal.daemon
 // process by pid and one that sleeps until its deadline, and both report back by message. So no
 // state is shared, and nothing polls: a `wait` is answered the moment the job's process ends.
 //
-// Two things are looked at on a timer, since nothing tells the daemon when they change. Take-slot's
-// runs come and go without telling marshal, so where a take-slot directory is shared, while jobs
-// wait a ticker reads its files every few seconds (`Tick`). And what the running jobs hold in RAM is
+// Two things are looked at on a timer, since nothing tells the daemon when they change. What may
+// start changes with time alone (a job waits past the bound, a running job passes its estimate), and
+// take-slot's runs come and go without telling marshal, so while jobs wait a ticker decides again
+// every few seconds, reading take-slot's files where a directory is shared (`Tick`). And what the running jobs hold in RAM is
 // measured every second (`Sample`), on a thread of its own, which reports back (`Measured`).
 //
 // A restart replaces the daemon's program in place (`process.exec`), keeping its process and so its
@@ -150,14 +151,16 @@ class Job(val id: long, val spec: JobSpec, val submittedMs: long, var arrived: l
         val pausing = if paused then until - pausedAt else 0
         until - startedMs - pausedMs - pausing
 
-    info(now: long) -> JobInfo =
+    // `expectedStart` is when it is expected to start (wall-clock milliseconds), on the job the
+    // machine drains for; 0 otherwise.
+    info(now: long, expectedStart: long = 0) -> JobInfo =
         val waits = state == "queued" || state == "waiting" || state == "retrying"
         val elapsed = if waits then long(0) else ran(now)
         val queued = if waits then now - submittedMs else startedMs - submittedMs
         val rss = if state == "running" then resident.now else 0
         // a waiting job that asked to be urgent joins the urgent band once it queues
         val urgent = urgentAt > 0 || (state == "waiting" && spec.urgent)
-        JobInfo(id, spec.kind, spec.units, spec.memory, spec.landing, spec.dir, spec.cmd, state, outcome, killed, queued, elapsed, deadlineMs, log, sample, rss, resident.peak, startedAt, held, priority, urgent, paused, after, attempt, reserved, learnedMem, spec.label, spec.quietMs, reservedFrom, spec.external, spec.quick)
+        JobInfo(id, spec.kind, spec.units, spec.memory, spec.landing, spec.dir, spec.cmd, state, outcome, killed, queued, elapsed, deadlineMs, log, sample, rss, resident.peak, startedAt, held, priority, urgent, paused, after, attempt, reserved, learnedMem, spec.label, spec.quietMs, reservedFrom, spec.external, spec.quick, expectedMs, durationLearned, expectedStart)
 
 // The daemon's state, owned by its own thread.
 // `slots` is the take-slot directory it shares, if any; `ticket` the name of its waiting ticket there.
@@ -237,6 +240,11 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
     // How long a drain counts a job as running: its learned duration, or its deadline when nothing is
     // learned of its kind.
     drainMs(j: Job) -> long = if j.durationLearned then j.expectedMs else j.deadlineMs
+
+    // The running job `j` as the scheduler weighs it at `t`: its deadline is counted from its start,
+    // the time it has spent paused added, since a pause stops its deadline's clock.
+    startedOf(j: Job, t: long) -> Started =
+        Started(j.id, j.spec.units, holds(j), j.spec.landing, j.startedMs, j.expectedMs, j.spec.quick, drainMs(j), j.deadlineMs + (t - j.startedMs - j.ran(t)))
 
     // What a `started` event adds for a job backfilled ahead of a draining job: its id.
     backfilledField(ahead: Option[long]) -> Vector[(string, Json)] = ahead match
@@ -652,7 +660,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
 
     plan(outside: Outside)
         val t = now()
-        val started = running.map(j -> Started(j.id, j.spec.units, holds(j), j.spec.landing, j.startedMs, j.expectedMs, j.spec.quick, drainMs(j))).toVector()
+        val started = running.map(j -> startedOf(j, t)).toVector()
         val waiting = eligible().map(j -> Waiting(j.id, j.spec.units, j.reserved, j.spec.landing, j.expectedMs, j.arrived, j.spec.quick, drainMs(j)))
         for (id, ahead) in marshal.starts(config.budget, started, waiting, t, outside, marshal.fairness(config, time.now().epochMicros))
             val job = jobs(id)
@@ -669,9 +677,10 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         val head = if queueHeld
             None
         else
-            val started = running.map(j -> Started(j.id, j.spec.units, holds(j), j.spec.landing, j.startedMs, j.expectedMs, j.spec.quick, drainMs(j))).toVector()
+            val t = now()
+            val started = running.map(j -> startedOf(j, t)).toVector()
             val waiting = eligible().map(j -> Waiting(j.id, j.spec.units, j.reserved, j.spec.landing, j.expectedMs, j.arrived, j.spec.quick, drainMs(j)))
-            marshal.ticketFor(config.budget, started, waiting, now(), outside, marshal.fairness(config, time.now().epochMicros))
+            marshal.ticketFor(config.budget, started, waiting, t, outside, marshal.fairness(config, time.now().epochMicros))
         val want = head.map(t -> marshal.ticketName(t.0, ts.me))
         if want == ticket then return
         ticket.foreach(name -> ts.removeTicket(name))
@@ -991,7 +1000,28 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
 
     listing() -> Vector[JobInfo]
         val t = now()
-        (running.toVector() ++ queue.toVector() ++ waitingJobs.toVector() ++ ended.takeRight(Recent)).map(j -> j.info(t))
+        val drain = drainExpected(t, outsideNow().getOrElse(marshal.NoOutside))
+        (running.toVector() ++ queue.toVector() ++ waitingJobs.toVector() ++ ended.takeRight(Recent)).map(j -> j.info(t, startsAt(drain, j.id)))
+
+    // What take-slot holds and waits for, read under its mutex; None without a take-slot directory.
+    outsideNow() -> Option[Outside] = slots.map(ts ->
+        ts.lock()
+        val o = ts.scan(ours(), config.budget.units)
+        ts.unlock()
+        o)
+
+    // The job the machine drains for and when it is expected to start, in wall-clock milliseconds;
+    // None while nothing drains, the queue is held, or the start is not known.
+    drainExpected(t: long, outside: Outside) -> Option[(long, long)]
+        if queueHeld then return None
+        val started = running.map(j -> startedOf(j, t)).toVector()
+        val waiting = eligible().map(j -> Waiting(j.id, j.spec.units, j.reserved, j.spec.landing, j.expectedMs, j.arrived, j.spec.quick, drainMs(j)))
+        val wall = time.now().epochMillis()
+        marshal.drainStart(config.budget, started, waiting, t, outside, marshal.fairness(config, time.now().epochMicros)).map(d -> (d.0, wall + (d.1 - t)))
+
+    // When the job `id` is expected to start, if it is the one the machine drains for (`drain`); 0
+    // otherwise.
+    startsAt(drain: Option[(long, long)], id: long) -> long = drain.filter(d -> d.0 == id).map(d -> d.1).getOrElse(0)
 
     usage() -> Usage = usageWith(slots.map(ts ->
         ts.lock()
@@ -1002,17 +1032,14 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
     // Everything `marshal top` shows, with what take-slot holds read once for both the budget and
     // the reasons the queued jobs wait.
     overview() -> Overview
-        val outside = slots.map(ts ->
-            ts.lock()
-            val o = ts.scan(ours(), config.budget.units)
-            ts.unlock()
-            o)
+        val outside = outsideNow()
         val t = now()
-        val started = running.map(j -> Started(j.id, j.spec.units, holds(j), j.spec.landing, j.startedMs, j.expectedMs, j.spec.quick, drainMs(j))).toVector()
+        val started = running.map(j -> startedOf(j, t)).toVector()
         val waiting = queue.map(j -> Waiting(j.id, j.spec.units, j.reserved, j.spec.landing, j.expectedMs, j.arrived, j.spec.quick, drainMs(j))).toVector()
         val held = queue.filter(j -> j.held).map(j -> j.id).toVector()
+        val drain = drainExpected(t, outside.getOrElse(marshal.NoOutside))
         val queued = marshal.queueWaits(config.budget, started, waiting, held, queueHeld, t, outside.getOrElse(marshal.NoOutside), marshal.fairness(config, time.now().epochMicros)).map(w ->
-            QueuedJob(jobs(w.0).info(t), w.1, w.2))
+            QueuedJob(jobs(w.0).info(t, startsAt(drain, w.0)), w.1, w.2))
         val recent = (earlier ++ ended.takeRight(Recent).map(j -> j.info(t))).takeRight(Recent).reverse()
         Overview(usageWith(outside), t - began, running.map(j -> j.info(t)).toVector(), queued, recent, waitingJobs.map(j -> j.info(t)).toVector())
 
@@ -1451,12 +1478,14 @@ run(home: string, resume: Option[string] = None) -> int
             term.wait()
             events.send(Terminate))
         Err(e) -> eprintln(s"marshal: cannot watch TERM: ${e.message()}")
-    if slots.isDefined()
-        spawn(() ->
-            loop
-                threads.sleep(millis(TickMs))
-                events.send(Tick)
-            ())
+    // What may start changes with time alone, not only when a job comes or goes: a job waits past the
+    // bound, a running job passes its estimate. The ticker looks again every few seconds, and reads
+    // take-slot's files when there are any.
+    spawn(() ->
+        loop
+            threads.sleep(millis(TickMs))
+            events.send(Tick)
+        ())
     spawn(() ->
         loop
             threads.sleep(millis(sweepInterval()))

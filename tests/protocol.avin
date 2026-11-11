@@ -130,6 +130,26 @@ measuredReplies()
     val q = marshal.encodeJob(job("queued", None))
     assertEq((q("rss").asLong(), q("peak_rss").asLong(), q("started_at").asLong()), (Some(long(0)), Some(long(0)), Some(long(0))))
 
+@test("a job's expected duration, whether it is learned, and a draining job's expected start read back; absent, they take their defaults")
+expectedFields()
+    val base = job("queued", None)
+    for (ms, learned, start) in [(long(1), false, long(0)), (long(800000), true, long(0)), (long(300000), false, long(1794412500000)), (long.MaxValue, true, long.MaxValue)]
+        val j = JobInfo(7, "build", 1, 0, true, "/d", ["true"], "queued", None, false, 12, 0, 1200000, "/h/jobs/7.log", None, expectedMs = ms, durationLearned = learned, expectedStart = start)
+        replyRoundTrip(Reply.Jobs([j, base]))
+        val e = marshal.encodeJob(j)
+        assertEq(e("expected_ms").asLong(), Some(ms))
+        assertEq(e("duration_learned").asBool(), Some(learned))
+        assertEq(e.get("expected_start_at").flatMap(v -> v.asLong()), if start > 0 then Some(start) else None)
+    // a job that says nothing of them leaves them out, and reads back with the defaults
+    val e = marshal.encodeJob(base)
+    assertEq((e.get("expected_ms"), e.get("duration_learned"), e.get("expected_start_at")), (None, None, None))
+    assertEq(marshal.decodeJob(e), Ok(base))
+    // a value of the wrong type is refused
+    val bad = json.parse("{\"id\":7,\"kind\":\"b\",\"units\":1,\"mem\":0,\"landing\":false,\"dir\":\"/\",\"cmd\":[],\"state\":\"queued\",\"outcome\":null,\"killed\":false,\"queued_ms\":0,\"elapsed_ms\":0,\"deadline_ms\":1,\"log\":\"/l\",\"expected_ms\":\"soon\"}").ok().get()
+    assert(marshal.decodeJob(bad).isErr())
+    val badLearned = json.parse("{\"id\":7,\"kind\":\"b\",\"units\":1,\"mem\":0,\"landing\":false,\"dir\":\"/\",\"cmd\":[],\"state\":\"queued\",\"outcome\":null,\"killed\":false,\"queued_ms\":0,\"elapsed_ms\":0,\"deadline_ms\":1,\"log\":\"/l\",\"duration_learned\":3}").ok().get()
+    assert(marshal.decodeJob(badLearned).isErr())
+
 @test("the budget's measured memory and the machine's read back in status and snapshot replies")
 measuredUsage()
     val u = Usage(8, 12, 30, 64, 3, 2, Some(5), None, long(9) * 1024 * 1024 * 1024, long(64) * 1024 * 1024 * 1024)

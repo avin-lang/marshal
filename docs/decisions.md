@@ -1552,3 +1552,39 @@ a 12-unit job drained for it, and seven 2–4-unit jobs waited `draining for` it
 - **It says so.** A backfilled job's log begins `marshal: backfilled ahead of <id>`, and its
   `started` event adds `backfilled_ahead_of`. The jobs still held keep `draining for <id>`; `ls` and
   `top` are otherwise unchanged (no new column).
+
+## A job running before the drain counts by its deadline once past its estimate (branch `backfill-live`)
+
+**Proposed.** The bug (user, live on 0.2.11): 4 of 12 units free, a 12-unit job draining, and a
+1-unit 40-minute build and a 4-unit 30-minute test waiting `draining for` it while the one job
+holding the drain had two hours to its deadline. Cause: that job, an avin gate, had run past its
+learned median (13 minutes), and the other running job, a test backfilled earlier, past its own (25
+seconds). "A running job past its estimate is expected at any moment" made the drain's expected
+start *now*, and nothing backfills ahead of a drain expected now. A median is passed by half of all
+runs, so this stopped backfill on most drains, not only after an overrun. take-slot was idle and
+not the cause.
+
+- **A job that was already running when the drain began** (the job waited past `drain_after`) and
+  has passed its estimate is counted by its **deadline** (with time paused added), the latest it can
+  end: past the median nothing learned predicts it any more, and the deadline is the bound used for
+  a kind with nothing learned. A deadline already passed counts as now (the job is being stopped).
+- **A job started since the drain began** (one backfilled ahead of it, or a landing or quick job)
+  and past its estimate is still expected at any moment, so the overrun rule keeps its purpose: an
+  overrun delays the drain by at most that job's own deadline, and delays never stack, since the
+  window for more backfill is fixed by deadlines of jobs older than the drain.
+- **The cost**: when the old job ends early, the drained job may wait for jobs backfilled into a
+  window as long as the old job's deadline. That is what backfill trades in every case; jobs that
+  end as expected leave the drain starting no later than the old job's deadline.
+- Alternatives: keep "past its estimate is expected now" (the bug); count an overdue job by twice
+  its elapsed time or some quantile (no basis in what marshal enforces, and a promise to the drained
+  job it cannot keep); mark backfilled jobs in the job's state (needs a persisted field; the start
+  time against the drain's start says the same, stateless, and a restart keeps both).
+- **The blocked head's rule before the bound is unchanged**: a running job past its estimate still
+  stops backfill behind an ordinary head, since that head is not promised a start; once it has
+  waited `drain_after`, the drain's rule above applies to it.
+- **The daemon decides again every 3 seconds whatever take-slot is.** The ticker ran only where a
+  take-slot directory was shared, so without one nothing reconsidered the queue as time passed (a job
+  passing its estimate or its wait bound) until some job came or went.
+- **`expected_ms`, `duration_learned`** are now on every job in `status --json`, the snapshot and
+  events, and **`expected_start_at`** (wall-clock ms) on the job the machine drains for, so a drain
+  can be read from outside. `ls`'s why-line is unchanged: a time would change its look.

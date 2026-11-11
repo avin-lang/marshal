@@ -36,10 +36,12 @@ module dev.avinlang.marshal
 //   it to fit, each counted by its learned duration, or by its deadline when nothing is learned of
 //   its kind (`drainMs`). In queue order, another development job that fits now starts ahead of it
 //   when it too is expected to end by then, or when it takes only units and memory the draining job
-//   will leave spare when it starts. The rest wait for it. A running job past its estimate is
-//   expected at any moment, so once the drain waits on it, nothing more backfills: an overrun delays
-//   the drain by at most that job's own deadline, and never compounds. Nothing backfills ahead of a
-//   draining job that waits behind take-slot.
+//   will leave spare when it starts. The rest wait for it. A job that was already running when the
+//   drain began and has run past its estimate is counted by its deadline, the latest it can end, as
+//   one whose kind nothing is learned of. A job started since the drain began (one backfilled ahead
+//   of it) that runs past its estimate is expected at any moment, so once the drain waits on it,
+//   nothing more backfills: an overrun delays the drain by at most that job's own deadline, and never
+//   compounds. Nothing backfills ahead of a draining job that waits behind take-slot.
 
 data Budget(units: int, memory: long)
 
@@ -57,8 +59,10 @@ val Unbounded: Fairness = Fairness(long.MaxValue, 0)
 // duration, or its deadline when nothing is learned of its kind; 0 counts it by `expectedMs`.
 data Waiting(id: long, units: int, memory: long, landing: bool, expectedMs: long, arrived: long, quick: bool = false, drainMs: long = 0)
 
-// A job running since `startedMs` (the daemon's clock, in milliseconds).
-data Started(id: long, units: int, memory: long, landing: bool, startedMs: long, expectedMs: long, quick: bool = false, drainMs: long = 0)
+// A job running since `startedMs` (the daemon's clock, in milliseconds). `deadlineMs` is how long
+// after `startedMs` it is stopped at the latest (its deadline, and any time it spent paused); 0 when
+// not known.
+data Started(id: long, units: int, memory: long, landing: bool, startedMs: long, expectedMs: long, quick: bool = false, drainMs: long = 0, deadlineMs: long = 0)
 
 // How long a drain counts a job of `expectedMs` and `drainMs` as running.
 private drainEstimate(expectedMs: long, drainMs: long) -> long = if drainMs > 0 then drainMs else expectedMs
@@ -82,6 +86,12 @@ schedule(budget: Budget, running: Vector[Started], queue: Vector[Waiting], now: 
 // during a drain.
 starts(budget: Budget, running: Vector[Started], queue: Vector[Waiting], now: long, outside: Outside = NoOutside, fair: Fairness = Unbounded) -> Vector[(long, Option[long])] =
     decide(budget, running, queue, now, outside, fair).filter(d -> d.why.isEmpty()).map(d -> (d.id, d.ahead))
+
+// The development job the machine drains for and when it is expected to start, on the clock of
+// `now`, if one drains and that is known: not while it waits behind take-slot, nor when its units or
+// memory never free.
+drainStart(budget: Budget, running: Vector[Started], queue: Vector[Waiting], now: long, outside: Outside = NoOutside, fair: Fairness = Unbounded) -> Option[(long, long)] =
+    decide(budget, running, queue, now, outside, fair).find(d -> d.at.isDefined()).map(d -> (d.id, d.at.get()))
 
 // Each waiting job's place in its lane's queue (from 1) and why it waits, in the order of `queue`:
 // what `schedule` would say of it, with `Starting` for a job it would start now.
@@ -131,8 +141,8 @@ waitedPast(queue: Vector[Waiting], fair: Fairness) -> Option[Waiting] =
     queue.find(w -> !w.landing && !w.quick && (fair.wallNow - w.arrived) / 1000 >= fair.afterMs)
 
 // What the scheduler makes of one waiting job: start it now (no `why`), or why it waits. `ahead` is
-// the draining job it is backfilled ahead of.
-private data Decision(id: long, why: Option[Why], ahead: Option[long] = None)
+// the draining job it is backfilled ahead of; `at`, on the draining job, when it is expected to start.
+private data Decision(id: long, why: Option[Why], ahead: Option[long] = None, at: Option[long] = None)
 
 // The decision for every waiting job: the landing jobs first, then the development jobs in arrival
 // order.
@@ -151,6 +161,10 @@ private decide(budget: Budget, running: Vector[Started], queue: Vector[Waiting],
         ends += (now, outside.units, 0)
         sure += (now, outside.units, 0)
     var quicks = 0
+    // The job that has waited past the bound, which the machine drains for when it does not fit, and
+    // when on the daemon's clock the drain began: when it waited past the bound.
+    val starved = waitedPast(queue, fair)
+    val began = starved.map(s -> now - ((fair.wallNow - s.arrived) / 1000 - fair.afterMs)).getOrElse(long.MinValue)
     for r in running
         if r.landing then laneBusy = true
         elif r.quick then quicks += 1
@@ -158,7 +172,7 @@ private decide(budget: Budget, running: Vector[Started], queue: Vector[Waiting],
         memory += r.memory
         val frees = if r.landing || r.quick then 0 else r.units
         ends += (expectedEnd(r.startedMs, r.expectedMs, now), frees, r.memory)
-        sure += (expectedEnd(r.startedMs, drainEstimate(r.expectedMs, r.drainMs), now), frees, r.memory)
+        sure += (drainEnd(r, now, began), frees, r.memory)
     // the landing job that waits for memory and drains the machine, if one does
     var draining: Option[long] = None
     for w in queue.filter(w -> w.landing)
@@ -187,7 +201,6 @@ private decide(budget: Budget, running: Vector[Started], queue: Vector[Waiting],
     var head: Option[(long, Option[long])] = None
     // The job that has waited past the bound goes first; while it does not fit, the development jobs
     // after it wait for it (`hold`).
-    val starved = waitedPast(queue, fair)
     val order = starved match
         Some(s) -> [s] ++ queue.filter(w -> w.id != s.id)
         None -> queue
@@ -235,7 +248,6 @@ private decide(budget: Budget, running: Vector[Started], queue: Vector[Waiting],
             elif starved.exists(s -> s.id == w.id)
                 hold = Some(w.id)
                 val why = drainingFor(waitsFor(budget, units, memory, theirs, e, fits, head))
-                out += Decision(w.id, Some(why))
                 // it is the head itself, waiting for units or memory to free: others may backfill
                 if why == Draining && head.exists(h -> h.1 == Some(w.id))
                     drainAt = whenFits(budget, units, memory, e.units, e.memory, sure)
@@ -244,6 +256,7 @@ private decide(budget: Budget, running: Vector[Started], queue: Vector[Waiting],
                         val free = freeAt(budget, units, memory, sure, drainAt)
                         spareUnits = free.0 - e.units
                         spareMemory = free.1 - e.memory
+                out += Decision(w.id, Some(why), None, if backfills then Some(drainAt) else None)
             else
                 out += Decision(w.id, Some(waitsFor(budget, units, memory, theirs, e, fits, head)))
     out.toVector()
@@ -289,6 +302,16 @@ private drainingFor(why: Why) -> Why
 drainingFor(NoUnits) = Draining
 drainingFor(NoMemory) = Draining
 drainingFor(why) = why
+
+// When a drain that began at `began` counts the running job `r` as ending: at the end of its estimate
+// (`drainMs`); once past it, at its deadline when it was already running as the drain began, and
+// otherwise (a job backfilled ahead of the drain, or one whose deadline is not known or is past) at
+// once.
+private drainEnd(r: Started, now: long, began: long) -> long
+    val end = r.startedMs + drainEstimate(r.expectedMs, r.drainMs)
+    if end > now then return end
+    val latest = r.startedMs + r.deadlineMs
+    if r.deadlineMs > 0 && r.startedMs < began && latest > now then latest else now
 
 // A running job past its expected end may end at any moment: it is expected now.
 private expectedEnd(startedMs: long, expectedMs: long, now: long) -> long =

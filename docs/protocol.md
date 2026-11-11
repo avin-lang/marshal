@@ -64,6 +64,14 @@ from: `given` (`mem` was given, `0` among them), `kind+dir` (its kind's peaks in
 daemon or log. `external` is present, and true, only for a job submitted with it: its `resv` is its `mem`, admission counts it as holding that whatever its
 `rss`, and its ending event's `peak_rss` is never learned from (nor counted by `stats`).
 
+`expected_ms` is how long the job is expected to run: the median of its kind's recent runs, or half
+its kind's default deadline while too few are known, never more than its deadline; and
+`duration_learned` says which (true for the median). A drain counts a job by `expected_ms` when it
+is learned and by `deadline_ms` otherwise. `expected_start_at` is present only on the queued job the
+machine drains for (`waits` `draining`): when it is expected to start, in milliseconds since 1970,
+absent while that is not known (it waits for take-slot). The three are absent from an older
+daemon's replies and events, and read as 0, false and 0.
+
 `state` is `waiting` (for the jobs in `after` to end), `queued`, `running`, `retrying` (waiting out
 its retry delay) or `done`. `after` is what a waiting job still waits for; `attempt` counts its runs
 from 1. `outcome` is null until

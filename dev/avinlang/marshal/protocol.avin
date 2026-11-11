@@ -148,7 +148,10 @@ retryable(_, _) = false
 // `reservedFrom` says where the reservation came from (`reservationSource`: `given`, `kind+dir`,
 // `kind` or `none`), "" from a daemon that does not say.
 // `external` says its work runs outside its process tree (`JobSpec`); `quick` says it is in the
-// quick lane.
+// quick lane. `expectedMs` is how long it is expected to run (0 where not said), `durationLearned`
+// whether that is learned from its kind's runs rather than guessed from the default deadline, and
+// `expectedStart`, on the job the machine drains for, when it is expected to start (wall-clock
+// milliseconds; 0 for any other job, or when that is not known).
 data JobInfo(
     id: long,
     kind: string,
@@ -180,7 +183,10 @@ data JobInfo(
     quietMs: long = 0,
     reservedFrom: string = "",
     external: bool = false,
-    quick: bool = false)
+    quick: bool = false,
+    expectedMs: long = 0,
+    durationLearned: bool = false,
+    expectedStart: long = 0)
 
 // The memory a listing shows for a job: its reservation, `~` before one learned from its kind's
 // peaks, `@` before that of a job whose work runs elsewhere (`--external`); `-` for none. A job that
@@ -504,10 +510,17 @@ encodeJob(i: JobInfo) -> Json = Json.Obj(Json.obj(
     ("after", longs(i.after)),
     ("attempt", Json.num(i.attempt)),
     ("resv", Json.num(i.reserved)),
-    ("resv_learned", Json.Bool(i.reservedLearned))).asMembers().get() ++ labelMember(i.label) ++ quietMember(i.quietMs) ++ resvFromMember(i.reservedFrom) ++ externalMember(i.external) ++ quickMember(i.quick))
+    ("resv_learned", Json.Bool(i.reservedLearned))).asMembers().get() ++ labelMember(i.label) ++ quietMember(i.quietMs) ++ resvFromMember(i.reservedFrom) ++ externalMember(i.external) ++ quickMember(i.quick) ++ expectedMembers(i))
 
 // `resv_from` is left out where the daemon did not say where a reservation came from.
 private resvFromMember(from: string) -> Vector[(string, Json)] = if from.isEmpty() then [] else [("resv_from", Json.str(from))]
+
+// `expected_ms` and `duration_learned` are left out where the daemon did not say how long a job is
+// expected to run; `expected_start_at` is there only on the job the machine drains for.
+private expectedMembers(i: JobInfo) -> Vector[(string, Json)]
+    val expected = if i.expectedMs > 0 then [("expected_ms", Json.num(i.expectedMs)), ("duration_learned", Json.Bool(i.durationLearned))] else Vector[(string, Json)]()
+    val start = if i.expectedStart > 0 then [("expected_start_at", Json.num(i.expectedStart))] else Vector[(string, Json)]()
+    expected ++ start
 
 decodeJob(j: Json) -> Result[JobInfo, string]
     val outcome = j.get("outcome") match
@@ -553,7 +566,12 @@ decodeJob(j: Json) -> Result[JobInfo, string]
         optional(j, "resv_from", v -> v.asString(), "a string", "")?,
         optional(j, "external", v -> v.asBool(), "a bool", false)?,
         // absent from what marshal wrote before the quick lane, and for a job not in it
-        optional(j, "quick", v -> v.asBool(), "a bool", false)?))
+        optional(j, "quick", v -> v.asBool(), "a bool", false)?,
+        // absent from what marshal wrote before it said how long a job is expected to run
+        optional(j, "expected_ms", wholeNumber, "a whole number", 0)?,
+        optional(j, "duration_learned", v -> v.asBool(), "a bool", false)?,
+        // absent on every job but the one the machine drains for
+        optional(j, "expected_start_at", wholeNumber, "a whole number", 0)?))
 
 encodeTakeSlot(t: TakeSlotUse) -> Json = Json.obj(
     ("dir", Json.str(t.dir)),
