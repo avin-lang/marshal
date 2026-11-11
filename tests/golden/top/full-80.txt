@@ -5,9 +5,9 @@
 |   ID STATE          KIND     UNITS   RESV   RSS STARTED  ELAPSED DEADLINE COMM…|
 |    1 running        build        4     1G     - -           1:00    19:00 sysl…|
 |    4 landing        test*        4      -     - -          19:00     1:00 slee…|
-|   10 #1 no units    build        1      -     - -           1:00    45:00 slee…|
-|   11 #2 behind 10   build        1      -     - -           1:00    45:00 slee…|
-|   12 #3 take-slot   build        1      -     - -           1:00    45:00 slee…|
+|   10 #1 no units    build        1      -     - -              -    45:00 slee…|
+|   11 #2 behind 10   build        1      -     - -              -    45:00 slee…|
+|   12 #3 take-slot   build        1      -     - -              -    45:00 slee…|
 |    9 exit 0         build        1      -     - -           1:00        - slee…|
 |    8 exit 3         build        1      -     - -           1:00        - slee…|
 |    7 timeout        build        1      -     - -           1:00        - slee…|

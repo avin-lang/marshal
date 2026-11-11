@@ -208,7 +208,7 @@ Options of `submit` and `run`:
 | `--after-any <ids>` | Waits until they have ended, then queues it however they ended. |
 | `--retries <n>` | Runs it again, up to `n` times, when it exits nonzero, is ended by a signal it was not sent by `kill`, or passes its deadline or its quiet timeout. Default 0. |
 | `--retry-delay <t>` | Waits `t` before each retry. Default: none. |
-| `--label <text>` | A note to find the job by, such as `train 209`: one line of 1 to 80 characters, no control characters (newline, tab), no space at either end; a longer or malformed label is refused, not cut. It shows in `ls`, `history`, `top` (a LABEL column when a listed job has one; the whole label beside the kind in the log pane) and `status --json`, and is in the events. `rerun` keeps it; `run-type` and `train` take `--label` too. Default: none. |
+| `--label <text>` | A note to find the job by, such as `train 209`: one line of 1 to 80 characters, no control characters (newline, tab), no space at either end; a longer or malformed label is refused, not cut. It shows in `ls`, `history`, `top` (a LABEL column, empty for a job without one; the whole label beside the kind in the log pane) and `status --json`, and is in the events. `rerun` keeps it; `run-type` and `train` take `--label` too. Default: none. |
 
 **Accounting.** `history` and `stats` read `events.jsonl` directly, a line at a time, so they answer
 with no daemon running and change nothing. Lines that are not events are skipped and counted on
@@ -217,7 +217,7 @@ standard error.
 | Option | Meaning |
 | --- | --- |
 | `--kind <k>` | Only jobs of this kind. |
-| `--label <text>` | Only jobs whose label contains `text` (case as written). `history` adds a LABEL column, last, when a listed job has a label. |
+| `--label <text>` | Only jobs whose label contains `text` (case as written). `history` always has a LABEL column, last, empty for a job without a label. |
 | `--since <t>` | Only jobs that ended in the last `t` (`90m`, `2h`, `3d`, `1w`; `s` too) or since a date on the caller's local clock (`2026-11-07`, `2026-11-07T14:30`; `TZ`, else the host's zone), or since a date and minute that ends in `Z` or an offset (`2026-11-07T14:30Z`, `2026-11-07T14:30+02:00`), which is taken as that instant. |
 | `--json` | One JSON object on one line. |
 | `--failed` | `history` only: jobs that did not exit 0, whatever the cause. |
@@ -476,7 +476,8 @@ against its own budget. `marshal status` shows what take-slot holds.
   `marshal ls` has the same column. Under 90 columns `top` leaves PEAK out and shows just `hh:mm` for
   a job that started today, so STARTED and the rest keep their room; `--json` carries `started_at` and the peak as before.
 - **Jobs**: running jobs, then queued ones, then the last ten that ended, the latest first. ELAPSED
-  counts on between snapshots; DEADLINE is a running job's time left, yellow under a quarter of its
+  is the time since the job started (a paused job's stands still), `-` for a job that has not started,
+  and counts on between snapshots; DEADLINE is a running job's time left, yellow under a quarter of its
   deadline or five minutes and red under a tenth or one minute, and a queued job's deadline to come.
   A queued job's STATE is its place in its lane's queue and why it waits: `no units`, `no memory`,
   `lane busy` (another landing job holds the lane), `draining` (a landing job whose memory does

@@ -7,13 +7,13 @@
 |   22 running        build        3     2G  2.5G  3.0G -              29:30     0:30 cargo build --…|
 |   23 paused         bench        1  ~1.0G     -     - -               3:00     1:00 ./bench.sh     |
 |   24 running        lint         1      -     -     - -              26:00     4:00 eslint .       |
-|   30 #1 no units    build        4      -     -     - -               2:00    45:00 make -j4       |
-|   31 #2 no memory   build        1     8G     -     - -               2:00    30:00 make -j4       |
-|   32 #3 lane busy   test*        1      -     -     - -               2:00    30:00 make -j4       |
-|   33 #4 draining    build        1      -     -     - -               2:00    30:00 make -j4       |
-|   34 #5 take-slot   build        1      -     -     - -               2:00    30:00 make -j4       |
-|   35 #6 behind 30   build        1      -     -     - -               2:00    30:00 make -j4       |
-|   36 #7 starting    build        1      -     -     - -               2:00    30:00 make -j4       |
+|   30 #1 no units    build        4      -     -     - -                  -    45:00 make -j4       |
+|   31 #2 no memory   build        1     8G     -     - -                  -    30:00 make -j4       |
+|   32 #3 lane busy   test*        1      -     -     - -                  -    30:00 make -j4       |
+|   33 #4 draining    build        1      -     -     - -                  -    30:00 make -j4       |
+|   34 #5 take-slot   build        1      -     -     - -                  -    30:00 make -j4       |
+|   35 #6 behind 30   build        1      -     -     - -                  -    30:00 make -j4       |
+|   36 #7 starting    build        1      -     -     - -                  -    30:00 make -j4       |
 |╭─job 22 log, following; PgUp PgDn Home End scroll, Esc closes─────────────────────────────────────╮|
 |│kind    build                                                                                     │|
 |│command cargo build --release                                                                     │|

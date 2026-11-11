@@ -3,9 +3,9 @@
 |mem   [██████████████▌█████▋            ] 7G / 16G   rss 6.0G   machine 64G                         |
 |                                                                                                    |
 |   ID STATE          KIND     UNITS   RESV   RSS  PEAK STARTED      ELAPSED DEADLINE COMMAND        |
-|   38 #9 queue held  build        1      -     -     - -               2:00    30:00 make -j4       |
-|   40 after 21,22    build        1      -     -     - -               2:00    30:00 make -j4       |
-|   41 retry 2        build        1      -     -     - -               2:00    30:00 make -j4       |
+|   38 #9 queue held  build        1      -     -     - -                  -    30:00 make -j4       |
+|   40 after 21,22    build        1      -     -     - -                  -    30:00 make -j4       |
+|   41 retry 2        build        1      -     -     - -                  -    30:00 make -j4       |
 |   19 quiet          build        1      -     -     - -               2:00        - make -j4       |
 |   18 dep 17 failed  build        1      -     -     - -               2:00        - make -j4       |
 |   17 exit 1         build        1      -     -     - -               2:00        - make -j4       |

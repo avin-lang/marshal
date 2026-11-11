@@ -1178,3 +1178,34 @@ the reason in the state cell rather than a column.
 - **`restart` asks the restarted daemon again when a connection closes unanswered,** until the
   usual 30 s. Why: a connection made in the same moment reaches the old listener's copy and is
   closed when that child's program starts; every other command already asks again this way.
+
+## The LABEL column always shows
+
+**Settled by the user 2026-11-10.** Replaces "only when some listed job has a label" in the label
+entries above, and the clause of the entry just above that leaves the column out where no drawn job
+has a label.
+
+- **`ls`, `history` and `top`'s job table always have the LABEL column, with an empty cell for a job
+  without a label.** Its place, heading and width and cut rules are unchanged (`ls` before COMMAND,
+  `history` last, `top` as a fit column of 5 to 24 cells that a screen too narrow to leave COMMAND 20
+  cells still drops). Why: a column that comes and goes shifts every other column the moment the
+  first labelled job appears, and a reader cannot tell "no label" from "no such column". In `top` the
+  table leaves out a fit column with nothing in any cell, so a job without a label draws a one-space
+  cell, which keeps the column at its heading's width. `status --json` and the events are unchanged:
+  they still leave `label` out for a job without one. Alternative: the old rule (listings of
+  unlabelled jobs stayed byte for byte as before).
+
+## ELAPSED counts from the start
+
+**Settled by the user 2026-11-10.** Replaces "the time queued for a waiting or queued job" in the
+ELAPSED entries above.
+
+- **ELAPSED (`ls`, `top`) and `elapsed_ms` count from when the job started, and are `-` (0 in
+  JSON) for a job that has not started: queued, held, waiting for `--after` jobs, or waiting to
+  retry.** A running job's is its run time with its pauses left out, a paused job's stands still and
+  an ended job's is its run time, all as before. Why: a queue wait ticking in the column that
+  otherwise means "how long has it been going" made a long-queued job look long-running.
+- **Proposed: the wait is not lost.** It stays in the job's `queued_ms` (which already carried it, and
+  stays in `ls --json`/`status --json`), and the STATE cell already says why it waits. `ls` and `top`
+  show no wait time of their own. Alternative: a WAITED column or a figure in the STATE text (more
+  width on every row for a number most jobs have no use for).

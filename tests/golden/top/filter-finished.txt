@@ -2,12 +2,12 @@
 |units [██████████████████████████████··········] 6 + take-slot 3 / 12, 2 waiting   landing 2                            |
 |mem   [█████████████████▌███████               ] 7G / 16G   rss 6.0G   machine 64G                                      |
 |                                                                                                                        |
-|   ID STATE          KIND     UNITS   RESV   RSS  PEAK STARTED      ELAPSED DEADLINE COMMAND                            |
-|   19 quiet          build        1      -     -     - -               2:00        - make -j4                           |
-|   18 dep 17 failed  build        1      -     -     - -               2:00        - make -j4                           |
-|   17 exit 1         build        1      -     -     - -               2:00        - make -j4                           |
-|   16 signal 9       build        1      -     -     - -               2:00        - make -j4                           |
-|   15 exit 0         build        1      -     -  700M -               2:00        - make -j4                           |
+|   ID STATE          KIND     UNITS   RESV   RSS  PEAK STARTED      ELAPSED DEADLINE LABEL COMMAND                      |
+|   19 quiet          build        1      -     -     - -               2:00        -       make -j4                     |
+|   18 dep 17 failed  build        1      -     -     - -               2:00        -       make -j4                     |
+|   17 exit 1         build        1      -     -     - -               2:00        -       make -j4                     |
+|   16 signal 9       build        1      -     -     - -               2:00        -       make -j4                     |
+|   15 exit 0         build        1      -     -  700M -               2:00        -       make -j4                     |
 |                                                                                                                        |
 |                                                                                                                        |
 |                                                                                                                        |

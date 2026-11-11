@@ -43,6 +43,13 @@ stateColumn(j: JobInfo) -> string = j.outcome match
             "retrying" -> s"retry ${j.attempt}"
             other -> other
 
+// Whether a job is still to run: queued, held, waiting for others or waiting to retry.
+notRunYet(j: JobInfo) -> bool = j.outcome.isEmpty() && (j.state == "queued" || j.state == "waiting" || j.state == "retrying")
+
+// The ELAPSED column for `ms` of run time: `-` for a job that has not started, whose wait is
+// `queued_ms` in the JSON.
+elapsedColumn(j: JobInfo, ms: long) -> string = if notRunYet(j) then "-" else formatMillis(ms)
+
 // When a job started, as the STARTED column shows it: the local date and minute, `11-07 08:31`, in
 // `zone`; `-` for a job that has not started (queued, or cancelled before it ran).
 startedColumn(j: JobInfo, zone: time.Zone) -> string
@@ -79,19 +86,20 @@ stateWithWhy(j: JobInfo, whys: Vector[(long, Why)]) -> string
         None -> state
 
 // The listing `ls` prints: a header, then one row per job. A LABEL column stands before COMMAND, and
-// only when some listed job has a label, so a listing of unlabelled jobs is as it always was. `whys`
+// always, empty for a job without a label. `whys`
 // gives the queued jobs' reasons to wait; with none, a queued job shows plain `queued`.
 listing(jobs: Vector[JobInfo], whys: Vector[(long, Why)] = []) -> string
     val zone = time.localZone()
-    val labelled = jobs.exists(j -> j.label.nonEmpty())
-    val rows = [["ID", "STATE", "KIND", "UNITS", "RESV", "STARTED", "ELAPSED"] ++ (if labelled then ["LABEL"] else []) ++ ["COMMAND"]] ++ jobs.map(j -> [
+    val rows = [["ID", "STATE", "KIND", "UNITS", "RESV", "STARTED", "ELAPSED", "LABEL", "COMMAND"]] ++ jobs.map(j -> [
         j.id.toString(),
         stateWithWhy(j, whys),
         if j.landing then j.kind + "*" else j.kind,
         j.units.toString(),
         reservedText(j),
         startedColumn(j, zone),
-        formatMillis(j.elapsedMs)] ++ (if labelled then [j.label] else []) ++ [j.cmd.mkString(" ")])
+        elapsedColumn(j, j.elapsedMs),
+        j.label,
+        j.cmd.mkString(" ")])
     val last = rows(0).length() - 1
     val widths = (0..<last).map(c -> rows.map(r -> r(c).charCount()).max())
     rows.map(r -> (0..<last).map(c -> r(c).padEnd(widths(c), ' ')).mkString("  ") + "  " + r(last)).mkString("\n")
