@@ -146,7 +146,7 @@ learnedPerDir()
     assertEq(resv(other), (long(0), false, "none"))
     assert(lsRow(home, small).contains(" ~110M "), lsRow(home, small))
     // the source survives a restart
-    assertEq(m(home, "restart").code, 0)
+    restarted(home)
     assertEq(resv(small), (110 * Mi, true, "kind+dir"))
     assertEq(resv(once), (660 * Mi, true, "kind"))
     assertEq(m(home, "stop", "--force").code, 0)
