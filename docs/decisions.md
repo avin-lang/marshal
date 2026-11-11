@@ -1413,3 +1413,18 @@ carries.
   there would size its thumb against the lines read rather than the log.
 - **An unreadable log** says `cannot read earlier jobs: <why>` on the bottom line, loads nothing,
   and is tried again on the next key.
+
+## `wait <id> --timeout` (branch `wait-timeout`)
+
+**Proposed.**
+
+- **`wait <id>` takes `--timeout <t>` before or after the id.** The help already listed it. When the
+  job has not ended by then the command prints `marshal: timed out after <t> waiting for job <id>` and
+  exits 124, as `wait --until` does; the job is left running. A job that ends first gives its own
+  status, as before. Why: one exit code for "gave up waiting" across both forms. Alternative: a new
+  code for the id form (a script would need to know which form it called).
+- **`--since` is refused with an id** (`--since goes with wait --until, not with a job id`) rather than
+  ignored. Why: a job id's wait is already answered at once for a job that has ended, so there is no
+  past for `--since` to look back into; accepting it silently would suggest it did something.
+  Alternative: ignoring it (a typo would pass unnoticed).
+- **The timer runs for the whole command**, so a daemon that has to be started counts against it.

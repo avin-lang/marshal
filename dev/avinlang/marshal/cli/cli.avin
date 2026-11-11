@@ -26,7 +26,7 @@ val Commands: Vector[(string, string)] = [
     ("run [options] -- <command...>", "submit and wait: prints the log's path, then the result; exits with the job's status"),
     ("run-type <type> [parameters]", "runs a job type's steps as one job and waits; <type> --help lists its parameters"),
     ("train [parameters] <branch...>", "run-type train: merges the branches, builds and tests them, lands them when green"),
-    ("wait <id> | --until <cond> [--timeout <t>] [--since <t>]", "waits for the job, prints one result line, exits with its status; or waits for an event, prints it, exits 0 (124 on timeout)"),
+    ("wait <id> | --until <cond> [--timeout <t>] [--since <t>]", "waits for the job (--timeout also with an id), prints one result line, exits with its status; or waits for an event (--since only here), prints it, exits 0; 124 on timeout"),
     ("events [--follow] [--since <t>] [<filter>]", "the logged events as JSON lines; --follow goes on streaming them until killed"),
     ("ls", "jobs queued, running and recently ended; a queued job's state says why it waits: queued (draining)"),
     ("kill <id>", "stops the job's whole process tree (a queued or waiting job is cancelled)"),
@@ -171,7 +171,7 @@ main(args: Vector[string]) -> int
         "run-type" -> runType(rest, None)
         "train" -> runType(rest, Some("train"))
         "run-steps" -> runSteps(rest)
-        "wait" -> if rest.contains("--until") then waitUntil(rest) else withId(rest, id -> waitFor(id))
+        "wait" -> if rest.contains("--until") then waitUntil(rest) else waitJob(rest)
         "events" -> events(rest)
         "rerun" -> withId(rest, id -> rerun(id))
         "clean" -> clean(rest)
@@ -370,6 +370,44 @@ waitFor(id: long) -> int = askDaemon(Request.Wait(id)) match
     Ok(Failed(e)) -> complain(s"marshal: $e")
     Ok(other) -> complain(s"marshal: unexpected reply $other")
     Err(e) -> complain(e)
+
+// `wait <id> [--timeout <t>]`, the option before or after the id: waits for the job as `wait <id>`
+// does; when it has not ended by the timeout, says so on one line and exits 124.
+waitJob(args: Vector[string]) -> int
+    var id: Option[long] = None
+    var timeout: Option[long] = None
+    var i = 0
+    while i < args.length()
+        args(i) match
+            "--timeout" ->
+                if i + 1 >= args.length() then return complain("marshal: --timeout needs a value")
+                if timeout.isDefined() then return complain("marshal: --timeout is given twice")
+                val value = args(i + 1)
+                timeout = marshal.parseDeadline(value) match
+                    Some(ms) -> Some(ms)
+                    None -> return complain(s"marshal: `--timeout $value`: a timeout is minutes, or a number with s, m or h, such as 90s")
+                i += 2
+            "--since" -> return complain("marshal: --since goes with wait --until, not with a job id")
+            word ->
+                if word.startsWith("--") then return complain(s"marshal: wait <id> takes --timeout, not `$word`")
+                if id.isDefined() then return complain("marshal: give one job id")
+                id = word.toLongOption() match
+                    Some(n) -> Some(n)
+                    None -> return complain(s"marshal: `$word` is not a job id")
+                i += 1
+    val job = id match
+        Some(n) -> n
+        None -> return complain("marshal: give one job id")
+    val finished = Atomic(0)
+    timeout.foreach(ms -> spawn(() ->
+        threads.sleep(millis(ms))
+        if finished.compareAndSet(0, 1)
+            eprintln(s"marshal: timed out after ${marshal.formatMillis(ms)} waiting for job $job")
+            process.exit(TimedOutWaiting)
+        ()))
+    val code = waitFor(job)
+    finished.compareAndSet(0, 1)
+    code
 
 // `rerun <id>`: prints the id of the job that runs job `id` again.
 rerun(id: long) -> int = askDaemon(Request.Rerun(id)) match

@@ -144,7 +144,7 @@ marshal submit [options] -- <command...>   queue a job; prints its id
 marshal run [options] -- <command...>      submit and wait: prints the log's path, then the result; exits with the job's status
 marshal run-type <type> [parameters]       runs a job type's steps as one job and waits; <type> --help lists its parameters
 marshal train [parameters] <branch...>     run-type train: merges the branches, builds and tests them, lands them when green
-marshal wait <id> | --until <cond> [--timeout <t>] [--since <t>]  waits for the job, prints one result line, exits with its status; or waits for an event, prints it, exits 0 (124 on timeout)
+marshal wait <id> | --until <cond> [--timeout <t>] [--since <t>]  waits for the job (--timeout also with an id), prints one result line, exits with its status; or waits for an event (--since only here), prints it, exits 0; 124 on timeout
 marshal events [--follow] [--since <t>] [<filter>]  the logged events as JSON lines; --follow goes on streaming them until killed
 marshal ls                                 jobs queued, running and recently ended; a queued job's state says why it waits: queued (draining)
 marshal kill <id>                          stops the job's whole process tree (a queued or waiting job is cancelled)
@@ -312,6 +312,10 @@ for `ended`, `failed`, `landing-done` and `any` `outcome=<ok|failed|timeout|kill
 written last and takes the rest of the filter, commas included (`ended:kind=test,label=train 209`).
 The outcome of a job that exited 0 is `ok`; of one that exited
 any other way or was ended by a signal, `failed`.
+
+`wait <id>` also takes `--timeout`, before or after the id: if the job has not ended by then it prints
+one line saying so, leaves the job running and exits 124. `--since` is for `--until` only and is
+refused with an id.
 
 `wait --until` prints the event that met the condition as one JSON line (the line the event log
 holds; for `idle`, `{"ts":...,"event":"idle","running":0,"queued":0}`; for `job=`, the ending event of
