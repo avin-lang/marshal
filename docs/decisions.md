@@ -1494,7 +1494,7 @@ the unbounded wait was not.
 
 ## An urgent job's kind is marked `!` (branch `urgent-mark`)
 
-**Proposed.**
+**Settled on the user's delegation 2026-11-11.**
 
 - **Urgency is a kind suffix, not a state**: `test!`, as `*` marks landing and `^` quick. Why:
   urgency is where a job stands in the queue and it stays on the job while it runs and after it
