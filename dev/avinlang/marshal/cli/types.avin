@@ -107,11 +107,20 @@ runType(args: Vector[string], typeName: Option[string]) -> int
     val own = process.executable() match
         Some(p) -> p
         None -> return complain("marshal: cannot find this program's own executable to run the steps with")
-    val env = process.environment().toVector().sortBy(e -> e.0)
+    var env = process.environment().toVector().sortBy(e -> e.0)
+    // the job runs from a copy of the type and of marshal, which an upgrade of the installation cannot remove
+    var program = marshal.stablePath(own)
+    var typeFile = file
+    marshal.snapshotType(home(), file, t, runner.stockDir(), own) match
+        Ok(snap) ->
+            typeFile = snap.typeFile
+            program = snap.executable.getOrElse(program)
+            for stock in snap.stock do env = env.filter(e -> e.0 != "MARSHAL_STOCK") ++ [("MARSHAL_STOCK", stock)]
+        Err(e) -> eprintln(s"marshal: note: not copying the type for the job: $e; it runs from the installed files")
     // a quick run keeps the type's own deadline only where the quick lane allows it
     val typeDeadline = if line.quick then t.deadlineMs.filter(d -> d <= marshal.QuickCapMs) else t.deadlineMs
     val spec = JobSpec(t.kind, line.units.getOrElse(t.units), line.memory.getOrElse(t.memory), t.landing, dir,
-        line.deadline.orElse(typeDeadline), [own, "run-steps", file] ++ params, env, false, [], false, 0, 0, false, line.label, line.quietMs, quick = line.quick)
+        line.deadline.orElse(typeDeadline), [program, "run-steps", typeFile] ++ params, env, false, [], false, 0, 0, false, line.label, line.quietMs, quick = line.quick)
     val (id, log) = askDaemon(Request.Submit(spec)) match
         Ok(Submitted(id, log, hint)) ->
             if hint.nonEmpty() then eprintln(hint)

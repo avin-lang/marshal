@@ -1,0 +1,125 @@
+module dev.avinlang.marshal
+
+// A typed job's own copy of what it runs from. `marshal run-type` submits `marshal run-steps <type
+// file> …`, and a package manager that upgrades marshal removes the directory those two paths name
+// while the job runs, or while it waits in the queue. So the submission copies, into
+// `<home>/typed/<name>`, everything the run reads after it starts:
+//
+//   bin/marshal                   a hard link of the executable (no copy, so no space), so the job
+//                                 runs the marshal it was submitted with
+//   share/marshal/steps           marshal's own steps (`stock:<name>`), as the installation had them
+//   type/<type>.job               the type's file, and beside it each Avin step it names
+//                                 (`avin:<path>`) at its path relative to the file
+//
+// The layout of the first two is an installation's, so the run finds its stock steps the way an
+// installed marshal does. The directory stays until the retention sweep removes it with the compiled
+// steps, because `rerun` submits the same command again.
+import avin.fs
+import avin.process
+import avin.process.Command
+import avin.time
+
+// A snapshot: its directory, the executable to run (None where it could not be linked), the type's
+// file in it, and the stock directory it holds (None where marshal has no stock steps to copy).
+data Snapshot(dir: string, executable: Option[string], typeFile: string, stock: Option[string])
+
+// Where `executable` is under a name an upgrade keeps: Homebrew's `<prefix>/opt/<name>` stands for
+// `<prefix>/Cellar/<name>/<version>`; where that does not exist, or the path is not in a Cellar,
+// `executable` itself.
+stablePath(executable: string) -> string
+    val cellar = executable.indexOf("/Cellar/")
+    if cellar < 0 then return executable
+    val inside = executable.slice(cellar + 8, executable.byteLength()).split("/").toVector()
+    if inside.length() < 3 then return executable
+    val stable = executable.slice(0, cellar) + "/opt/" + inside(0) + "/" + inside.drop(2).mkString("/")
+    if fs.isFile(stable) then stable else executable
+
+// The Avin steps (`avin:<path>`) the type names, as written, each once.
+private avinSteps(t: JobType) -> Vector[string]
+    val words = (t.steps ++ t.land ++ t.failMap.toVector() ++ t.cleanup).flatMap(s -> s.run.headOption().toVector())
+    val out = Buffer[string]()
+    for w in words
+        if w.startsWith("avin:") && !out.contains(w) then out += w
+    out.toVector()
+
+// Whether the step word `w` can be copied to the same place relative to the copied type file: a
+// literal path inside the type file's directory. An absolute path stays where it is.
+private copyable(w: string) -> bool
+    val rel = w.drop(5)
+    rel.nonEmpty() && !rel.startsWith("/") && !rel.contains("${") && !rel.split("/").toVector().contains("..")
+
+private dirOf(file: string) -> string
+    val slash = file.lastIndexOf("/")
+    if slash <= 0 then "/" else file.slice(0, slash)
+
+// Copies `from` (a file or a directory) to `to`, which does not exist yet.
+private copyTree(from: string, to: string) -> Result[unit, string]
+    fs.createDirAll(dirOf(to)).mapErr(e -> s"cannot make the directory of $to: ${e.message()}")?
+    Command("cp", "-R", from, to).run() match
+        Ok(status) if status.isSuccess() -> Ok(())
+        _ -> Err(s"cannot copy $from")
+
+// Copies what the type `t`, read from `file`, runs from into a new directory of `<home>/typed`.
+// `stock` is marshal's own directory of steps and types, `executable` the program the run would
+// start. Answers why not where something cannot be copied; the directory is then removed.
+snapshotType(home: string, file: string, t: JobType, stock: Option[string], executable: string) -> Result[Snapshot, string]
+    fs.createDirAll(home + "/typed").mapErr(e -> s"cannot make ${home}/typed: ${e.message()}")?
+    val dir = freshDir(home + "/typed")?
+    val made = copyInto(dir, file, t, stock, executable)
+    if made.isErr() then fs.removeDirAll(dir)
+    made
+
+// A new directory in `parent`, named for this process and the time, and for a counter where that is taken.
+private freshDir(parent: string) -> Result[string, string]
+    val stamp = s"${process.pid()}-${time.now().epochMillis()}"
+    var n = 0
+    loop
+        val dir = s"$parent/t-$stamp-$n"
+        fs.createDir(dir) match
+            Ok(_) -> return Ok(dir)
+            Err(e) ->
+                if !fs.exists(dir) || n >= 1000 then return Err(s"cannot make $dir: ${e.message()}")
+                n += 1
+
+private copyInto(dir: string, file: string, t: JobType, stock: Option[string], executable: string) -> Result[Snapshot, string]
+    val base = file.drop(file.lastIndexOf("/") + 1)
+    val typeDir = dir + "/type"
+    fs.createDirAll(typeDir).mapErr(e -> s"cannot make $typeDir: ${e.message()}")?
+    val text = fs.readText(file).mapErr(e -> s"cannot read $file: ${e.message()}")?
+    fs.writeText(s"$typeDir/$base", text).mapErr(e -> s"cannot write $typeDir/$base: ${e.message()}")?
+    val source = dirOf(file)
+    for w in avinSteps(t)
+        if !copyable(w) then return Err(s"`$w` names a path the copy of the type file cannot keep")
+        copyTree(s"$source/${w.drop(5)}", s"$typeDir/${w.drop(5)}")?
+    val stockCopy: Option[string] = stock match
+        Some(s) if fs.isDir(s + "/steps") ->
+            fs.createDirAll(dir + "/share/marshal").mapErr(e -> s"cannot make $dir/share/marshal: ${e.message()}")?
+            copyTree(s + "/steps", dir + "/share/marshal/steps")?
+            Some(dir + "/share/marshal")
+        _ -> None
+    // a hard link needs one file system; where the home is on another, the job runs the installed program
+    fs.createDirAll(dir + "/bin").mapErr(e -> s"cannot make $dir/bin: ${e.message()}")?
+    val linked = dir + "/bin/marshal"
+    val program = Command("ln", executable, linked).run() match
+        Ok(status) if status.isSuccess() -> Some(linked)
+        _ -> None
+    Ok(Snapshot(dir, program, s"$typeDir/$base", stockCopy))
+
+// Removes (unless `dry`) the snapshots in `<home>/typed` older than `ageMs`; their names, and the
+// bytes they held. None keeps them all.
+sweepSnapshots(home: string, now: long, ageMs: Option[long], dry: bool) -> (Vector[string], long)
+    val age = ageMs match
+        Some(a) -> a
+        None -> return ([], 0)
+    val dir = home + "/typed"
+    val removed = Buffer[string]()
+    var bytes: long = 0
+    for name in fs.listDir(dir).ok().getOrElse([])
+        val snapshot = s"$dir/$name"
+        if !fs.isDir(snapshot) then continue
+        val at = fs.modified(snapshot).ok().map(t -> t.epochMillis()).getOrElse(now)
+        if now - at >= age
+            removed += s"typed/$name"
+            bytes += fileBytes(snapshot)
+            if !dry then fs.removeDirAll(snapshot)
+    (removed.toVector(), bytes)

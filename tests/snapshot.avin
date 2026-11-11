@@ -1,0 +1,125 @@
+module tests
+
+// A typed job's copy of what it runs from: the stable path of an installed marshal, what is copied
+// and what stops the copy, and the sweep of old copies.
+import avin.fs
+import avin.time
+import dev.avinlang.marshal
+import dev.avinlang.marshal.JobType
+
+val avinStep: string = "{\"steps\": [{\"name\": \"a\", \"run\": [\"avin:steps/one.avin\"]}, {\"name\": \"b\", \"run\": [\"avin:pkg\", \"x\"]}, {\"name\": \"c\", \"run\": [\"avin:steps/one.avin\"]}], \"cleanup\": [{\"name\": \"d\", \"run\": [\"avin:tail.avin\"]}]}"
+
+typeOf(file: string, text: string) -> JobType = marshal.parseJobType("t", file, text) match
+    Ok(t) -> t
+    Err(e) -> fail(e)
+
+// A temporary directory holding a type file `t.job` with `text`, a program, a package, and a stock
+// directory with one step; its path.
+fixture(text: string) -> string
+    val dir = fs.createTempDir("marshal-snap-").ok().get()
+    fs.createDirAll(dir + "/src/steps").ok().get()
+    fs.createDirAll(dir + "/src/pkg").ok().get()
+    fs.createDirAll(dir + "/stock/steps/git").ok().get()
+    fs.createDirAll(dir + "/home").ok().get()
+    fs.writeText(dir + "/src/t.job", text).ok().get()
+    fs.writeText(dir + "/src/steps/one.avin", "one").ok().get()
+    fs.writeText(dir + "/src/pkg/main.avin", "pkg").ok().get()
+    fs.writeText(dir + "/src/tail.avin", "tail").ok().get()
+    fs.writeText(dir + "/stock/steps/git/main.avin", "git").ok().get()
+    fs.writeText(dir + "/program", "#!/bin/sh\n").ok().get()
+    dir
+
+@test("a Homebrew Cellar path is stood for by the prefix's opt path where that exists, and any other path stays")
+stable()
+    val dir = fixture(avinStep)
+    fs.createDirAll(dir + "/opt/marshal/bin").ok().get()
+    fs.createDirAll(dir + "/Cellar/marshal/0.2.10/bin").ok().get()
+    fs.writeText(dir + "/Cellar/marshal/0.2.10/bin/marshal", "x").ok().get()
+    val cellar = dir + "/Cellar/marshal/0.2.10/bin/marshal"
+    assertEq(marshal.stablePath(cellar), cellar)
+    fs.writeText(dir + "/opt/marshal/bin/marshal", "x").ok().get()
+    assertEq(marshal.stablePath(cellar), dir + "/opt/marshal/bin/marshal")
+    assertEq(marshal.stablePath(dir + "/program"), dir + "/program")
+    assertEq(marshal.stablePath("/usr/local/Cellar/marshal"), "/usr/local/Cellar/marshal")
+    assertEq(marshal.stablePath("/Cellar/marshal/bin"), "/Cellar/marshal/bin")
+    assertEq(marshal.stablePath(""), "")
+    fs.removeDirAll(dir)
+
+@test("a snapshot holds the type, each Avin step it names once, marshal's stock steps and a link of the executable; none of it depends on the originals")
+copiesEverything()
+    val dir = fixture(avinStep)
+    val file = dir + "/src/t.job"
+    val snap = marshal.snapshotType(dir + "/home", file, typeOf(file, avinStep), Some(dir + "/stock"), dir + "/program").ok().get()
+    assert(snap.dir.startsWith(dir + "/home/typed/"), snap.dir)
+    assertEq(snap.typeFile, snap.dir + "/type/t.job")
+    assertEq(snap.stock, Some(snap.dir + "/share/marshal"))
+    assertEq(snap.executable, Some(snap.dir + "/bin/marshal"))
+    fs.removeDirAll(dir + "/src").ok().get()
+    fs.removeDirAll(dir + "/stock").ok().get()
+    fs.remove(dir + "/program").ok().get()
+    assertEq(fs.readText(snap.typeFile).ok(), Some(avinStep))
+    assertEq(fs.readText(snap.dir + "/type/steps/one.avin").ok(), Some("one"))
+    assertEq(fs.readText(snap.dir + "/type/pkg/main.avin").ok(), Some("pkg"))
+    assertEq(fs.readText(snap.dir + "/type/tail.avin").ok(), Some("tail"))
+    assertEq(fs.readText(snap.dir + "/share/marshal/steps/git/main.avin").ok(), Some("git"))
+    assertEq(fs.readText(snap.dir + "/bin/marshal").ok(), Some("#!/bin/sh\n"))
+    fs.removeDirAll(dir)
+
+@test("a snapshot without marshal's stock steps has no stock directory, and a type with no Avin steps copies only itself")
+withoutStock()
+    val text = "{\"steps\": [{\"name\": \"a\", \"run\": [\"true\"]}]}"
+    val dir = fixture(text)
+    val file = dir + "/src/t.job"
+    val snap = marshal.snapshotType(dir + "/home", file, typeOf(file, text), None, dir + "/program").ok().get()
+    assertEq(snap.stock, None)
+    assert(!fs.exists(snap.dir + "/share"))
+    assertEq(fs.listDir(snap.dir + "/type").ok().get(), ["t.job"])
+    fs.removeDirAll(dir)
+
+@test("a type whose Avin step the copy cannot keep, or whose source is missing, is refused with the reason and leaves no directory")
+snapshotRefused()
+    for (word, why) in [("avin:../up.avin", "cannot keep"), ("avin:${x}/a.avin", "cannot keep"), ("avin:", "cannot keep"), ("avin:steps/missing.avin", "cannot copy")]
+        val text = "{\"params\": {\"x\": {\"default\": \"s\"}}, \"steps\": [{\"name\": \"a\", \"run\": [\"" + word + "\"]}]}"
+        val dir = fixture(text)
+        val file = dir + "/src/t.job"
+        val r = marshal.snapshotType(dir + "/home", file, typeOf(file, text), None, dir + "/program")
+        assert(r.isErr(), word)
+        assert(r.err().get().contains(why), r.err().get())
+        assertEq(fs.listDir(dir + "/home/typed").ok().get(), [])
+        fs.removeDirAll(dir)
+
+@test("a type file that cannot be read is refused")
+snapshotUnreadable()
+    val dir = fixture(avinStep)
+    val r = marshal.snapshotType(dir + "/home", dir + "/src/gone.job", typeOf(dir + "/src/t.job", avinStep), None, dir + "/program")
+    assert(r.isErr(), "")
+    assertEq(fs.listDir(dir + "/home/typed").ok().get(), [])
+    fs.removeDirAll(dir)
+
+@test("an executable that cannot be linked leaves the snapshot without one, so the job runs the installed program")
+noLink()
+    val text = "{\"steps\": [{\"name\": \"a\", \"run\": [\"true\"]}]}"
+    val dir = fixture(text)
+    val file = dir + "/src/t.job"
+    val snap = marshal.snapshotType(dir + "/home", file, typeOf(file, text), None, dir + "/not-there").ok().get()
+    assertEq(snap.executable, None)
+    fs.removeDirAll(dir)
+
+@test("the sweep removes snapshots older than the age, reports them under typed/, spares younger ones, and keeps everything for no age or a dry run")
+sweep()
+    val text = "{\"steps\": [{\"name\": \"a\", \"run\": [\"true\"]}]}"
+    val dir = fixture(text)
+    val file = dir + "/src/t.job"
+    val snap = marshal.snapshotType(dir + "/home", file, typeOf(file, text), Some(dir + "/stock"), dir + "/program").ok().get()
+    val name = snap.dir.split("/").last()
+    val now = time.now().epochMillis()
+    assertEq(marshal.sweepSnapshots(dir + "/home", now, Some(60000), false).0, [])
+    assertEq(marshal.sweepSnapshots(dir + "/home", now + 120000, None, false).0, [])
+    val dry = marshal.sweepSnapshots(dir + "/home", now + 120000, Some(60000), true)
+    assertEq(dry.0, [s"typed/$name"])
+    assert(dry.1 > 0, "bytes")
+    assert(fs.isDir(snap.dir))
+    assertEq(marshal.sweepSnapshots(dir + "/home", now + 120000, Some(60000), false).0, [s"typed/$name"])
+    assert(!fs.exists(snap.dir))
+    assertEq(marshal.sweepSnapshots(dir + "/nowhere", now, Some(1), false).0, [])
+    fs.removeDirAll(dir)
