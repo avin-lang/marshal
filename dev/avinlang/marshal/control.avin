@@ -47,16 +47,8 @@ urgentMark(now: long, band: Vector[long]) -> long
 // and otherwise what the scheduler makes of the jobs not held.
 queueWaits(budget: Budget, running: Vector[Started], queue: Vector[Waiting], held: Vector[long], queueHeld: bool, now: long, outside: Outside = NoOutside) -> Vector[(long, int, Why)]
     val decided = if queueHeld then Vector[(long, int, Why)]() else waits(budget, running, queue.filter(w -> !held.contains(w.id)), now, outside)
-    var landings = 0
-    var others = 0
     val out = Buffer[(long, int, Why)]()
-    for w in queue
-        val position = if w.landing
-            landings += 1
-            landings
-        else
-            others += 1
-            others
+    for (w, position) in queue.zip(lanePositions(queue))
         out += (w.id, position, whyWaits(w.id, held, queueHeld, decided))
     out.toVector()
 

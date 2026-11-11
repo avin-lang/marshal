@@ -21,7 +21,8 @@ data TypeLine(
     help: bool,
     rest: Vector[string],
     label: string = "",
-    quietMs: long = 0)
+    quietMs: long = 0,
+    quick: bool = false)
 
 // Takes run-type's own options out of `args` (they may stand anywhere before a `--`), leaving the
 // type's name and its parameters in order. A parameter's value that is spelt like one of these
@@ -34,6 +35,7 @@ typeLine(args: Vector[string]) -> Result[TypeLine, string]
     var label = ""
     var quiet: long = 0
     var submitOnly = false
+    var quick = false
     var help = false
     val rest = Buffer[string]()
     var i = 0
@@ -45,6 +47,9 @@ typeLine(args: Vector[string]) -> Result[TypeLine, string]
         i += 1
         if word == "--submit"
             submitOnly = true
+            continue
+        if word == "--quick"
+            quick = true
             continue
         if word == "--help" || word == "-h"
             help = true
@@ -68,7 +73,7 @@ typeLine(args: Vector[string]) -> Result[TypeLine, string]
             _ -> marshal.parseSize(value) match
                 Some(n) -> memory = Some(n)
                 None -> return Err(s"`--mem $value`: a size is a whole number with K, M, G or T, such as 29G")
-    Ok(TypeLine(dir, deadline, units, memory, submitOnly, help, rest.toVector(), label, quiet))
+    Ok(TypeLine(dir, deadline, units, memory, submitOnly, help, rest.toVector(), label, quiet, quick))
 
 // `marshal run-type <type> …`, or with `typeName` given, `marshal train …` and the like.
 runType(args: Vector[string], typeName: Option[string]) -> int
@@ -103,10 +108,14 @@ runType(args: Vector[string], typeName: Option[string]) -> int
         Some(p) -> p
         None -> return complain("marshal: cannot find this program's own executable to run the steps with")
     val env = process.environment().toVector().sortBy(e -> e.0)
+    // a quick run keeps the type's own deadline only where the quick lane allows it
+    val typeDeadline = if line.quick then t.deadlineMs.filter(d -> d <= marshal.QuickCapMs) else t.deadlineMs
     val spec = JobSpec(t.kind, line.units.getOrElse(t.units), line.memory.getOrElse(t.memory), t.landing, dir,
-        line.deadline.orElse(t.deadlineMs), [own, "run-steps", file] ++ params, env, false, [], false, 0, 0, false, line.label, line.quietMs)
+        line.deadline.orElse(typeDeadline), [own, "run-steps", file] ++ params, env, false, [], false, 0, 0, false, line.label, line.quietMs, quick = line.quick)
     val (id, log) = askDaemon(Request.Submit(spec)) match
-        Ok(Submitted(id, log)) -> (id, log)
+        Ok(Submitted(id, log, hint)) ->
+            if hint.nonEmpty() then eprintln(hint)
+            (id, log)
         Ok(Failed(e)) -> return complain(s"marshal: $e")
         Ok(other) -> return complain(s"marshal: unexpected reply $other")
         Err(e) -> return complain(e)

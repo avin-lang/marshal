@@ -1,0 +1,147 @@
+module tests
+
+// The quick lane: the scheduler's rules for quick jobs, the cap and its refusals, the hint, the
+// spec's round trips and how listings show the lane.
+import json
+import dev.avinlang.marshal
+import dev.avinlang.marshal.top
+import dev.avinlang.marshal.{Budget, JobInfo, JobSpec, Reply, Started, Usage, Waiting, Why}
+import dev.avinlang.marshal.{NoUnits, NoMemory, Draining, Behind, Starting, QuickFull}
+
+// `hour` is sched.avin's, `minute` deadline.avin's and `ids` sched.avin's.
+val qb: Budget = Budget(12, 100)
+
+qDev(id: long, units: int, expected: long = hour, memory: long = 0) -> Waiting = Waiting(id, units, memory, false, expected, id * 10)
+qJob(id: long, memory: long = 0, expected: long = minute) -> Waiting = Waiting(id, 4, memory, false, expected, id * 10, true)
+qLand(id: long, memory: long = 0) -> Waiting = Waiting(id, 4, memory, true, hour, id * 10)
+qRun(id: long, units: int, memory: long = 0) -> Started = Started(id, units, memory, false, 0, hour)
+qRunQuick(id: long, memory: long = 0) -> Started = Started(id, 4, memory, false, 0, minute, true)
+qRunLanding(id: long, memory: long = 0) -> Started = Started(id, 4, memory, true, 0, hour)
+
+qSpec(quick: bool = false, landing: bool = false, deadline: Option[long] = None, kind: string = "test") -> JobSpec =
+    JobSpec(kind, 4, 0, landing, "/w", deadline, ["avin", "test", "."], [], quick = quick)
+
+@test("a quick job starts while every unit is taken, and a development job beside it still waits")
+startsOutsideUnits()
+    assertEq(marshal.schedule(qb,[qRun(1, 12)], [qDev(2, 1), qJob(3)], 0), ids(3))
+    // its units are not counted: a development job that fits the units beside a running quick job starts
+    assertEq(marshal.schedule(qb,[qRunQuick(1)], [qDev(2, 12)], 0), ids(2))
+
+@test("a quick job goes ahead of development jobs queued before it")
+aheadOfDevelopment()
+    assertEq(marshal.schedule(qb,[qRun(1, 12)], [qDev(2, 4), qDev(3, 4), qJob(4)], 0), ids(4))
+    assertEq(marshal.waits(qb,[qRun(1, 12)], [qDev(2, 4), qJob(4)], 0), [(long(2), 1, NoUnits), (long(4), 1, Starting)])
+
+@test("two quick jobs run at once; a third waits for the quick lane, and starts when one ends")
+twoSlots()
+    assertEq(marshal.QuickSlots, 2)
+    assertEq(marshal.schedule(qb,[], [qJob(1), qJob(2), qJob(3)], 0), ids(1, 2))
+    assertEq(marshal.waits(qb,[qRunQuick(1), qRunQuick(2)], [qJob(3), qDev(4, 1)], 0), [(long(3), 1, QuickFull), (long(4), 1, Starting)])
+    assertEq(marshal.schedule(qb,[qRunQuick(1), qRunQuick(2)], [qJob(3)], 0), [])
+    assertEq(marshal.schedule(qb,[qRunQuick(2)], [qJob(3)], 0), ids(3))
+
+@test("quick jobs are placed in their own lane's queue")
+quickLanePositions()
+    assertEq(marshal.lanePositions([qDev(1, 1), qJob(2), qLand(3), qJob(4), qDev(5, 1)]), [1, 1, 1, 2, 2])
+
+@test("a quick job waits when its memory does not fit in the budget's free memory")
+memoryGatesQuick()
+    assertEq(marshal.schedule(qb,[qRun(1, 1, memory = 60)], [qJob(2, memory = 40)], 0), ids(2))
+    assertEq(marshal.schedule(qb,[qRun(1, 1, memory = 60)], [qJob(2, memory = 41)], 0), [])
+    assertEq(marshal.waits(qb,[qRun(1, 1, memory = 60)], [qJob(2, memory = 41), qJob(3, memory = 1)], 0), [(long(2), 1, NoMemory), (long(3), 2, Behind(2))])
+
+@test("a quick job waiting for memory keeps it from development jobs, which would otherwise take it")
+quickKeepsItsMemory()
+    // 40 free: dev 3 (20) would fit, but quick 2 (50) waits for the 60 that job 1 holds
+    assertEq(marshal.schedule(qb,[qRun(1, 1, memory = 60)], [qJob(2, memory = 50), qDev(3, 1, memory = 20)], 0), [])
+    // while the quick job's memory is held for it beyond what is free, even a job needing none waits,
+    // as behind a landing job that drains the machine
+    assertEq(marshal.schedule(qb,[qRun(1, 1, memory = 40)], [qJob(2, memory = 70), qDev(3, 1)], 0), [])
+
+@test("a running quick job's reservation counts, so a development job may wait for it")
+quickMemoryCounts()
+    assertEq(marshal.schedule(qb,[qRunQuick(1, memory = 60)], [qDev(2, 1, memory = 41)], 0), [])
+    assertEq(marshal.waits(qb,[qRunQuick(1, memory = 60)], [qDev(2, 1, memory = 41)], 0), [(long(2), 1, NoMemory)])
+    assertEq(marshal.schedule(qb,[qRunQuick(1, memory = 60)], [qDev(2, 1, memory = 40)], 0), ids(2))
+    // quick jobs started together count each other's memory
+    assertEq(marshal.schedule(qb,[], [qJob(1, memory = 60), qJob(2, memory = 60)], 0), ids(1))
+
+@test("a landing job is never delayed by a quick one: it is decided first, and a draining one holds the quick lane")
+landingFirst()
+    assertEq(marshal.schedule(qb,[], [qJob(1, memory = 60), qLand(2, memory = 60)], 0), ids(2))
+    assertEq(marshal.waits(qb,[qRun(1, 1, memory = 60)], [qLand(2, memory = 60), qJob(3)], 0), [(long(2), 1, Draining), (long(3), 1, Behind(2))])
+    // a running landing job leaves the quick lane open
+    assertEq(marshal.schedule(qb,[qRunLanding(1)], [qJob(2)], 0), ids(2))
+
+@test("take-slot's ticket is the first development job's, never a quick one's")
+ticketSkipsQuick()
+    assertEq(marshal.ticketFor(qb,[qRun(1, 12)], [qJob(2), qDev(3, 4)], 0, marshal.NoOutside), Some((long(30), 4)))
+    assertEq(marshal.ticketFor(qb,[], [qJob(2)], 0, marshal.NoOutside), None)
+
+@test("a quick job's deadline is the cap, or a shorter one it gave; a longer one and a landing one are refused")
+capAndRefusals()
+    assertEq(marshal.QuickCapMs, 2 * minute)
+    assertEq(marshal.quickDeadlineMs(qSpec(quick = true)), 2 * minute)
+    assertEq(marshal.quickDeadlineMs(qSpec(quick = true, deadline = Some(30000))), long(30000))
+    assertEq(marshal.quickRefusal(qSpec(quick = true, deadline = Some(2 * minute))), None)
+    assertEq(marshal.quickRefusal(qSpec(quick = true, deadline = Some(2 * minute + 1))), Some("a quick job's deadline is at most 2m00s, not 2m00s: drop --quick to give it longer"))
+    assertEq(marshal.quickRefusal(qSpec(quick = true, deadline = Some(10 * minute))), Some("a quick job's deadline is at most 2m00s, not 10m00s: drop --quick to give it longer"))
+    assertEq(marshal.quickRefusal(qSpec(quick = true, landing = true)), Some("a job is quick or landing, not both"))
+    // nothing is refused of a job not quick
+    assertEq(marshal.quickRefusal(qSpec(deadline = Some(10 * hour))), None)
+
+@test("the hint fires for a kind whose p90 is under the cap, and not otherwise")
+hint()
+    val l = marshal.defaultLearning
+    val short = [long(20000), 25000, 30000]
+    assertEq(marshal.quickHint(l, qSpec(), short), "marshal: hint: `test` jobs took 30.0s or less at p90 (under the quick lane's 2m00s cap); --quick starts one at once")
+    // not for a job already quick, nor a landing one
+    assertEq(marshal.quickHint(l, qSpec(quick = true), short), "")
+    assertEq(marshal.quickHint(l, qSpec(landing = true), short), "")
+    // too few runs learned
+    assertEq(marshal.quickHint(l, qSpec(), [long(20000), 25000]), "")
+    // a p90 at or over the cap
+    assertEq(marshal.quickHint(l, qSpec(), [long(20000), 25000, 2 * minute]), "")
+    // one slow run in ten is under the 90th percentile; two are not
+    val mostlyShort = (0 ..< 9).map(i -> long(10000)).toVector() ++ [20 * minute]
+    assert(marshal.quickHint(l, qSpec(), mostlyShort).nonEmpty())
+    assertEq(marshal.quickHint(l, qSpec(), mostlyShort ++ [20 * minute]), "")
+    // only the learning window counts: old slow runs fall out of it
+    assertEq(marshal.quickHint(l, qSpec(), (0 ..< 30).map(i -> 20 * minute).toVector() ++ short), "")
+    assert(marshal.quickHint(l, qSpec(), (0 ..< 30).map(i -> 20 * minute).toVector() ++ (0 ..< 20).map(i -> long(9000)).toVector()).nonEmpty())
+
+@test("quick goes through the spec's and the job's JSON, and is absent for a job not quick")
+roundTrips()
+    val s = qSpec(quick = true)
+    assertEq(marshal.decodeSpec(marshal.encodeSpec(s)), Ok(s))
+    assert(!marshal.encodeSpec(qSpec()).has("quick"))
+    assertEq(marshal.decodeSpec(marshal.encodeSpec(qSpec())).map(x -> x.quick), Ok(false))
+    val j = JobInfo(1, "test", 4, 0, false, "/w", ["t"], "running", None, false, 0, 0, 120000, "/l", None, quick = true)
+    assertEq(marshal.decodeJob(marshal.encodeJob(j)), Ok(j))
+    assert(!marshal.encodeJob(JobInfo(1, "test", 4, 0, false, "/w", ["t"], "running", None, false, 0, 0, 120000, "/l", None)).has("quick"))
+    // a submit reply with a hint, and one without (as an older daemon sends)
+    val r = Reply.Submitted(3, "/l", "marshal: hint: x")
+    assertEq(marshal.decodeReply(marshal.encodeReply(r).toString()), Ok(r))
+    assertEq(marshal.decodeReply("{\"ok\":true,\"id\":3,\"log\":\"/l\"}"), Ok(Reply.Submitted(3, "/l", "")))
+    assertEq(marshal.decodeReply(marshal.encodeReply(Reply.Using(Usage(0, 12, 0, 0, 1, 0, None, None, quick = 2))).toString()), Ok(Reply.Using(Usage(0, 12, 0, 0, 1, 0, None, None, quick = 2))))
+
+@test("ls marks a quick job's kind with ^ and gives the quick lane's reason; status names the lane while it runs")
+quickListings()
+    val j = JobInfo(1, "test", 4, 0, false, "/w", ["t"], "running", None, false, 0, 0, 120000, "/l", None, quick = true)
+    assertEq(marshal.laneKind(j), "test^")
+    assertEq(marshal.whyText(QuickFull), "quick lane full")
+    assertEq(marshal.whyWord(QuickFull), "quick-lane")
+    // top's 14-cell STATE column says it shorter, whole even after a two-digit queue position
+    assertEq(top.whyText(QuickFull), "quick full")
+    assert(("#99 " + top.whyText(QuickFull)).charCount() <= 14)
+    assertEq(top.whyText(NoMemory), marshal.whyText(NoMemory))
+    val q =JobInfo(2, "test", 4, 0, false, "/w", ["t"], "queued", None, false, 0, 0, 120000, "/l", None, quick = true)
+    assertEq(marshal.stateWithWhy(q, [(long(2), QuickFull)]), "queued (quick lane full)")
+    assertEq(marshal.usageLine(Usage(0, 12, 0, long.MaxValue, 1, 0, None, None, quick = 1)), "units 0/12, memory 0, 1 running, 0 queued, landing lane free, quick lane 1/2")
+    assertEq(marshal.usageLine(Usage(0, 12, 0, long.MaxValue, 0, 0, None, None)), "units 0/12, memory 0, 0 running, 0 queued, landing lane free")
+    val status = marshal.statusJson(Usage(0, 12, 0, 100, 1, 1, None, None, quick = 1), [j, q], [(long(2), QuickFull)])
+    assertEq(status("quick").asInt(), Some(1))
+    assertEq(status("quick_slots").asInt(), Some(2))
+    val queued = status("queued").asVector().get()(0)
+    assertEq(queued("why").asString(), Some("quick-lane"))
+    assertEq(queued("quick").asBool(), Some(true))

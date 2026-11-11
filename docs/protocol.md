@@ -14,13 +14,13 @@ thread of its own, so a client blocked in `wait` holds up nobody else.
 
 | `op` | Fields | Reply |
 | --- | --- | --- |
-| `submit` | `kind` (string), `units` (int), `mem` (bytes), `landing` (bool, default false), `dir` (absolute path), `deadline_ms` (number or null: learned), `cmd` (array of strings, not empty), `env` (object of strings, default `{}`), `urgent` (bool, default false: the back of the lane's urgent band), `after` (array of job ids it waits for, default `[]`), `after_any` (bool, default false: it runs only if each of them exited 0), `retries` (int, default 0), `retry_delay_ms` (number, default 0), `mem_given` (bool, default false: `mem` was given, so a `mem` of 0 reserves nothing rather than the kind's learned peak; a `mem` above 0 is given either way), `label` (string, absent or null for none: one line of 1 to 80 characters, no control characters, no space at either end; a bad one is refused), `quiet_ms` (number above 0, absent or null for none: the job is sampled and stopped, outcome `quiet`, once its log has had no new output for that long, paused time left out), `external` (bool, absent for false: the job's work runs outside its process tree, so it reserves `mem` and holds it whatever its tree measures, and its peak is never learned; refused unless `mem_given` is true or `mem` is above 0) | `{"ok":true,"id":N,"log":"<path>"}`; refused for an `after` id that is no job or is the id this job would get |
+| `submit` | `kind` (string), `units` (int), `mem` (bytes), `landing` (bool, default false), `dir` (absolute path), `deadline_ms` (number or null: learned), `cmd` (array of strings, not empty), `env` (object of strings, default `{}`), `urgent` (bool, default false: the back of the lane's urgent band), `after` (array of job ids it waits for, default `[]`), `after_any` (bool, default false: it runs only if each of them exited 0), `retries` (int, default 0), `retry_delay_ms` (number, default 0), `mem_given` (bool, default false: `mem` was given, so a `mem` of 0 reserves nothing rather than the kind's learned peak; a `mem` above 0 is given either way), `label` (string, absent or null for none: one line of 1 to 80 characters, no control characters, no space at either end; a bad one is refused), `quiet_ms` (number above 0, absent or null for none: the job is sampled and stopped, outcome `quiet`, once its log has had no new output for that long, paused time left out), `external` (bool, absent for false: the job's work runs outside its process tree, so it reserves `mem` and holds it whatever its tree measures, and its peak is never learned; refused unless `mem_given` is true or `mem` is above 0), `quick` (bool, default false: the quick lane; refused with `landing` or a `deadline_ms` above 120000) | `{"ok":true,"id":N,"log":"<path>"}`, with `"hint":"<text>"` when there is advice for the submitter (a job not `quick` whose kind's p90 duration is under the quick lane's cap; the command line prints it on stderr); refused for an `after` id that is no job or is the id this job would get |
 | `rerun` | `id` | `{"ok":true,"id":N,"log":"<path>"}`, the new job: the ended job's spec but `after`, submitted again; refused for no such job, one not ended, or one whose `submitted` event holds no spec |
 | `clean` | `older_ms` (number >= 1 or null), `keep` (number >= 0 or null), `dry_run` (bool, default false) | `{"ok":true,"cleaned":{"dry_run":bool,"jobs":[ids],"runs":[names],"steps":[names],"events":N,"event_jobs":M,"bytes":B}}`: the jobs whose logs went (none when `dry_run`: what would), the run directories and compiled steps removed, the events and jobs dropped from the event log, and `bytes`, how many bytes all of it held (what a dry run would free); a reply from an older daemon has no `bytes`, read as 0; only ended jobs are touched |
 | `wait` | `id` | `{"ok":true,"job":JOB}` once the job has ended (its last attempt); at once for a job already ended, including one an earlier daemon ran |
 | `kill` | `id` | `{"ok":true}`; the job's end is what `wait` answers |
 | `ls` | | `{"ok":true,"jobs":[JOB...]}`: running, then queued, then waiting (for other jobs or to retry), then the last ten ended |
-| `status` | | `{"ok":true,"units":U,"unit_budget":B,"mem":M,"mem_budget":MB,"rss":RSS,"mem_held":H,"machine_mem":MM,"running":R,"queued":Q,"landing":id or null,"take_slot":{"dir":D,"units":TU,"waiting":TW,"landing":bool} or null,"queue_held":bool}`; `mem` is what the running jobs reserve (declared or learned), `mem_held` what admission counts them holding (each job's reservation or its `rss`, whichever is more); a reply without `queue_held` or `mem_held` (an older daemon's) reads as false and 0 |
+| `status` | | `{"ok":true,"units":U,"unit_budget":B,"mem":M,"mem_budget":MB,"rss":RSS,"mem_held":H,"machine_mem":MM,"running":R,"queued":Q,"landing":id or null,"take_slot":{"dir":D,"units":TU,"waiting":TW,"landing":bool} or null,"queue_held":bool,"quick":QR}`; `mem` is what the running jobs reserve (declared or learned), `mem_held` what admission counts them holding (each job's reservation or its `rss`, whichever is more); `quick` how many quick jobs run (their units are not in `units`, their memory is in `mem`); a reply without `queue_held`, `mem_held` or `quick` (an older daemon's) reads as false, 0 and 0. `marshal status --json` adds `quick_slots`, how many quick jobs may run at once |
 | `snapshot` | | `{"ok":true,"snapshot":{...}}`: the fields of the `status` reply but `running` and `queued`, then `uptime_ms` (how long the daemon has run), `running` (jobs), `queued` (jobs in queue order, each with `position` and `waits`, below), `recent` (the last ten jobs that ended, earlier daemons' included, the latest first) and `waiting` (jobs waiting for others or waiting to retry, oldest first; a reader takes a missing one as `[]`) |
 | `stop` | `force` (bool), `wait` (bool) | `{"ok":true}` once the daemon has removed its socket; refused while jobs run unless one of the two is true |
 | `version` | | `{"ok":true,"version":"<marshal's version>","pid":P}`, the daemon's process |
@@ -90,19 +90,22 @@ its lane's jobs that are not urgent, and `urgent` says it is in the lane's urgen
 them all; a job without them (from an older daemon or log) is not held, at priority 0, not urgent.
 `paused` says a running job's processes are stopped by `pause`; a running job's `elapsed_ms` is
 its run time with its pauses left out, which is what its deadline counts.
+`quick` is present, and true, only for a job in the quick lane (and in its `spec`); a reader takes
+a missing one as false.
 
 A queued job in a snapshot is the job object with two fields more, and a third for one behind
-another job: `position`, its place in its lane's queue counted from 1 (landing jobs and development
-jobs queue apart), and `waits`, why it has not started:
+another job: `position`, its place in its lane's queue counted from 1 (landing jobs, quick jobs and
+development jobs queue apart), and `waits`, why it has not started:
 
 | `waits` | |
 | --- | --- |
 | `units` | its units do not fit beside what runs |
-| `memory` | its units fit and its memory does not |
+| `memory` | its units fit and its memory does not (for a quick job: its memory does not fit in the budget's free memory) |
 | `lane` | a landing job, and another landing job holds the lane |
 | `draining` | a landing job whose memory does not fit beside what runs (or, over the whole budget, one that waits for nothing else to run); nothing else starts until the running jobs have freed it |
 | `take-slot` | it waits for what take-slot holds: its runs' units or landing lock, or a take-slot run that arrived before it |
-| `behind` | it fits, but starting it would delay the job at the head of the queue, whose id is `behind`; or a landing job, whose id is `behind`, is `draining` |
+| `behind` | it fits, but starting it would delay the job at the head of the queue, whose id is `behind`; or a landing job, whose id is `behind`, is `draining`; or, for a quick job, the quick job `behind` ahead of it waits for memory |
+| `quick-lane` | a quick job, and the quick lane's 2 slots are taken |
 | `starting` | it starts at the daemon's next look |
 | `held` | it is held (`hold`) |
 | `queue-held` | the whole queue is held (`pause`) |

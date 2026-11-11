@@ -104,7 +104,7 @@ lostLine(ts: long, ev: Json, groupAlive: bool) -> Option[string] = decodeJob(ev)
     Err(_) -> None
 
 // Job `j` as its `lost` event describes it.
-asLost(j: JobInfo) -> JobInfo = JobInfo(j.id, j.kind, j.units, j.memory, j.landing, j.dir, j.cmd, "done", Some(Lost), j.killed, j.queuedMs, j.elapsedMs, j.deadlineMs, j.log, j.sample, 0, j.peakRss, j.startedAt, j.held, j.priority, j.urgent, false, [], j.attempt, 0, false, j.label, j.quietMs, j.reservedFrom, j.external)
+asLost(j: JobInfo) -> JobInfo = JobInfo(j.id, j.kind, j.units, j.memory, j.landing, j.dir, j.cmd, "done", Some(Lost), j.killed, j.queuedMs, j.elapsedMs, j.deadlineMs, j.log, j.sample, 0, j.peakRss, j.startedAt, j.held, j.priority, j.urgent, false, [], j.attempt, 0, false, j.label, j.quietMs, j.reservedFrom, j.external, j.quick)
 
 // Whether an event ends its job for good: an ending, and not one of an attempt that runs again.
 endsJob(ev: Json) -> bool =

@@ -1,0 +1,37 @@
+module dev.avinlang.marshal
+
+// The quick lane (`--quick`): short jobs that start at once rather than queue for units behind long
+// ones. A quick job runs outside the unit budget, niced like any development job, and at most
+// `QuickSlots` of them run at a time (sched.avin decides them). Its memory is still counted: it
+// starts only when its reservation fits in the memory the budget has free, and holds it while it
+// runs. Its deadline is never more than `QuickCapMs`, so the lane stays quick.
+
+// How many quick jobs run at once.
+val QuickSlots: int = 2
+
+// The longest a quick job may run, in milliseconds: its deadline is this, or a shorter `--deadline`.
+val QuickCapMs: long = 2 * 60000
+
+// Why a job cannot go into the quick lane, or None when it can (or does not ask to): a landing job
+// has its own lane, and a deadline above the cap would not be quick.
+quickRefusal(spec: JobSpec) -> Option[string]
+    if !spec.quick then return None
+    if spec.landing then return Some("a job is quick or landing, not both")
+    for d in spec.deadlineMs
+        if d > QuickCapMs then return Some(s"a quick job's deadline is at most ${formatMillis(QuickCapMs)}, not ${formatMillis(d)}: drop --quick to give it longer")
+    None
+
+// The deadline of a quick job: the one it gave (at most the cap), else the cap.
+quickDeadlineMs(spec: JobSpec) -> long = spec.deadlineMs.getOrElse(QuickCapMs)
+
+// The hint `submit` and `run` print for a job not submitted `--quick`, or "" for none: when its
+// kind's recent successful runs (`history`, oldest first; the last `learning.window` of them, and at
+// least `learning.minRuns`) took under the cap at the 90th percentile, it suggests the quick lane.
+// A landing job never gets one; neither is it moved into the lane for the submitter.
+quickHint(learning: Learning, spec: JobSpec, history: Vector[long]) -> string
+    if spec.quick || spec.landing then return ""
+    val runs = history.takeRight(learning.window)
+    if runs.length() < learning.minRuns then return ""
+    val p90 = percentile(runs, 90)
+    if p90 >= QuickCapMs then return ""
+    s"marshal: hint: `${spec.kind}` jobs took ${formatMillis(p90)} or less at p90 (under the quick lane's ${formatMillis(QuickCapMs)} cap); --quick starts one at once"
