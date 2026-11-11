@@ -1100,9 +1100,8 @@ fixed there: the budget becomes a failure the caller sees, and then `grep` exits
 - **A final line with no newline is a line, as is a half-written one in a running job's log; a
   `\r` before the `\n` is dropped; bytes that are not UTF-8 read as U+FFFD.** All as the library's
   `readLine` does.
-- **A pattern that exhausts the regex library's step budget traps rather than returning an
-  error**, so `marshal grep` would end with the trap's status, not 2. Left as the library has it;
-  the budget is large (at least 10,000,000 steps per attempt).
+- **A pattern that exhausts the regex library's step budget is an error, exit 2** (superseded the
+  earlier trap; see "Regex budget" below).
 
 ## The landing job's units on top's units line (branch `top-tui020`)
 
@@ -1209,3 +1208,16 @@ ELAPSED entries above.
   stays in `ls --json`/`status --json`), and the STATE cell already says why it waits. `ls` and `top`
   show no wait time of their own. Alternative: a WAITED column or a figure in the STATE text (more
   width on every row for a number most jobs have no use for).
+
+## Regex budget in `marshal grep` (branch `grep-exit2`)
+
+**Proposed.**
+
+- **A line on which the pattern spends the regex step budget ends the whole search with exit 2.**
+  The message on stderr is `marshal: grep: line N: pattern `P` backtracked too far …`; lines already
+  printed stand, `-c` prints no count, and no later line is read. Why: a count or a match list
+  that silently skipped a line would be wrong in a way the caller cannot see, and GNU grep ends a
+  search the same way when its matcher gives up. Alternatives: skip the line, say so, and go on
+  to exit 2 at the end (more output, still a partial answer); treat the line as not matching
+  (a wrong answer with exit 0 or 1).
+- **The test is avin's `tryMatches`**, so the budget is a value the search sees, not a trap.

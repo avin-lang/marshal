@@ -214,6 +214,31 @@ grepBadPattern()
         assert(marshal.grepMatcher(p, false, false).isErr(), p)
     assert(marshal.grepMatcher("(", false, false).err().get().nonEmpty())
 
+@test("a line that spends the regex step budget ends grepLines with an error naming the pattern and the line")
+grepBudget()
+    val out = Buffer[string]()
+    val hit = marshal.grepMatcher("(a+)+?$", false, false).ok().get()
+    val lines = ["aaa", "b", "a".repeat(60) + "b", "aaa"]
+    var i = 0
+    val next = () ->
+        i += 1
+        Ok(if i <= lines.length() then Some(lines(i - 1)) else None)
+    val r = marshal.grepLines(next, 1, hit, GrepPlain, l -> out.addOne(l))
+    assert(r.isErr())
+    val message = r.err().get()
+    assert(message.contains("line 3:"), message)
+    assert(message.contains("`(a+)+?$`"), message)
+    assertEq(out.toVector(), ["aaa"])
+    assertEq(i, 3)
+
+@test("the matcher answers Err for an over-budget line and Ok otherwise, with -F never over budget")
+grepBudgetMatcher()
+    val long = "a".repeat(60) + "b"
+    assert(marshal.grepMatcher("(a+)+?$", false, false).ok().get()(long).isErr())
+    assertEq(marshal.grepMatcher("(a+)+?$", false, false).ok().get()("aaa"), Ok(true))
+    assertEq(marshal.grepMatcher("(a+)+?$", true, false).ok().get()(long), Ok(false))
+    assertEq(marshal.grepMatcher("a+b$", false, false).ok().get()(long), Ok(true))
+
 @test("grep is a command: its usage names every option and the exit codes, and the README has its line")
 grepHelp()
     val help = cli.commandHelp("grep").get()

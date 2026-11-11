@@ -90,7 +90,8 @@ searched alike, and no daemon is needed; the log is read a line at a time, never
   --          the id and pattern follow; a pattern that begins with - goes after it
 
 Exits 0 when a line matched, 1 when none did, 2 on an error: an unknown job, no log, a pattern
-that is not a regular expression, a bad option.\
+that is not a regular expression, a bad option, or a line on which the pattern backtracks past the
+regular expression step budget (the search stops there; the message names the line).\
 """
 
 // The options of `history` and `stats`.
