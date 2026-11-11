@@ -636,15 +636,26 @@ restart() -> int
         Ok(None) -> ()
         Err(e) -> return complain(e)
     conn.close()
-    val again = reconnect(time.monotonic() + Reconnecting) match
-        Ok(c) -> c
-        Err(e) -> return complain(e)
-    hello(again) match
+    restartedHello() match
         Ok((now, p)) if p == pid ->
             println(s"marshal: daemon $pid restarted: version $old, now $now")
             0
         Ok((_, p)) -> complain(s"marshal: daemon $pid ended instead of restarting; daemon $p took its place, and its jobs were lost; see ${home()}/daemon.log")
         Err(e) -> complain(e)
+
+// The restarted daemon's version and process id, once it listens. A connection made while the
+// image before it still held the socket closes unanswered, and is made again.
+restartedHello() -> Result[(string, long), string]
+    val limit = time.monotonic() + Reconnecting
+    loop
+        val again = reconnect(limit)?
+        val answer = exchange(again, Request.Hello)
+        again.close()
+        answer? match
+            Some(Hi(v, p)) -> return Ok((v, p))
+            Some(Failed(e)) -> return Err(s"marshal: the daemon does not say its version ($e): it is older than this marshal; `marshal stop --wait` and start it again")
+            Some(other) -> return Err(s"marshal: unexpected reply $other")
+            None -> if time.monotonic() >= limit then return Err(s"marshal: the daemon went away and did not come back within ${Reconnecting.toMillis() / 1000}s")
 
 // `version`: this marshal's version, and the daemon's when one is running.
 version() -> int

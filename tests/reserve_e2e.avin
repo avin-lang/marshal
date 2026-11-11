@@ -97,7 +97,7 @@ learnedAcrossRestart()
     val home = seededHome()
     val a = submitted(home, "--kind", "big", "--", "sleep", "30")
     val b = submitted(home, "--kind", "big", "--", "sleep", "30")
-    assertEq(m(home, "restart").code, 0)
+    restarted(home)
     for id in [a, b]
         val j = statusJob(home, id)
         assertEq((j("resv").asLong(), j("resv_learned").asBool()), (Some(660 * Mi), Some(true)))

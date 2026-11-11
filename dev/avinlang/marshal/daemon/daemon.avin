@@ -49,6 +49,8 @@ data Message
     Due(id: long, gen: int)
     // job `id`'s retry delay, set for its attempt `attempt`
     Retry(id: long, attempt: int)
+    // job `id`'s group stopped again, for the pause that made sleeper `gen`
+    Restop(id: long, gen: int)
     Written
     Terminate
     Tick
@@ -91,6 +93,9 @@ watchedOwner() -> Option[long] = process.env("MARSHAL_TEST_WATCH_PID").flatMap(t
 
 // How often the running jobs' memory is measured, in milliseconds.
 val SampleMs: long = 1000
+
+// The pauses, one after another, before a paused job's groups are stopped again (see `restopSoon`).
+val RestopMs: Vector[long] = [10, 40, 150]
 
 // `arrived` is when it joined the queue on the wall clock, in microseconds: when it was submitted,
 // ready after the jobs it waited for, or queued again to retry. `pid` is its main process;
@@ -231,10 +236,12 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
                 Exit(id, status) -> exited(id, status)
                 Due(id, gen) -> due(id, gen)
                 Retry(id, attempt) -> retryDue(id, attempt)
+                Restop(id, gen) -> restop(id, gen)
                 Written -> unwritten -= 1
                 Tick -> if queue.nonEmpty() then schedule()
                 Sweep -> sweep()
                 Sample ->
+                    holdPaused()
                     quietCheck()
                     measure()
                 Measured(sizes) -> measured(sizes)
@@ -507,8 +514,38 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         else
             unpause(job)
         armDeadline(job)
+        if on then restopSoon(job)
         record(if on then "paused" else "resumed", job)
         Done
+
+    // A STOP sent to a group can miss a process: one that is between fork and exec as it goes,
+    // as a job is when it has only just started or its shell is starting a command, carries on
+    // running. So a paused job's groups are stopped again shortly after the pause, and then at
+    // every sample for as long as it stays paused (`holdPaused`). A process already stopped is
+    // not changed by another STOP; one continued by hand is stopped again.
+    restopSoon(job: Job)
+        val events = self.events
+        val id = job.id
+        val gen = job.dueGen
+        spawn(() ->
+            for pause in RestopMs
+                threads.sleep(millis(pause))
+                events.send(Restop(id, gen)))
+
+    // Stops job `id`'s groups again, while the pause that armed `gen` still holds.
+    restop(id: long, gen: int)
+        val job = jobs(id)
+        if job.state != "running" || !job.paused || job.killed || job.timedOut || gen != job.dueGen then return
+        stopGroups(job)
+
+    // Every paused job's groups are stopped again.
+    holdPaused()
+        for job in running.toVector()
+            if job.paused && !job.killed && !job.timedOut then stopGroups(job)
+
+    stopGroups(job: Job)
+        process.signal(-job.pgid, signal.Stop)
+        marshal.signalGroups(home, job.id, job.pgid, signal.Stop)
 
     // Holds the queue (`on`) or releases it. A release starts what fits at once.
     holdQueue(on: bool) -> Reply
@@ -1099,6 +1136,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             Some(Exit(id, status)) -> exited(id, status)
             Some(Due(id, gen)) -> due(id, gen)
             Some(Retry(id, attempt)) -> retryDue(id, attempt)
+            Some(Restop(id, gen)) -> restop(id, gen)
             Some(Written) -> unwritten -= 1
             Some(Terminate) -> termed = true
             Some(Tick) -> ()
@@ -1176,6 +1214,11 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             running += job
             watch(job)
             if job.killed || job.timedOut then terminate(home, job.id, job.pgid, None)
+            // the old image's stopping again went with it: a job paused just before the restart
+            // may have a process the STOP missed
+            if job.paused && !job.killed && !job.timedOut
+                stopGroups(job)
+                restopSoon(job)
         // A waiting job waits again for those of its jobs that have not ended, which may be none by
         // now; a job waiting to retry waits out what is left of its delay.
         val waits = s.waiting.map(sj ->
@@ -1301,6 +1344,10 @@ run(home: string, resume: Option[string] = None) -> int
     val saved = resume.flatMap(resumed)
     // A restarted daemon already leads its session.
     if resume.isEmpty() then process.newSession()
+    // A restarted image owns the socket's path. What may still answer there is the image before
+    // it: a child that image was starting, forked but not yet running its program, holds a copy of
+    // its listener until it does. So the path is taken over rather than asked whether it is in use.
+    if resume.nonEmpty() then fs.remove(home + "/sock")
     val listener = UnixListener.bindReplacing(home + "/sock") match
         Ok(l) -> l
         Err(IoError.AlreadyExists) ->

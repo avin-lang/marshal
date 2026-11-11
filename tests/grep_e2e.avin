@@ -194,7 +194,7 @@ grepEndedAcrossRestart()
     val id = submitted(home, "--", "sh", "-c", "printf 'one\\ntwo\\nthree\\n'")
     assertEq(m(home, "wait", id.toString()).code, 0)
     assertEq(linesOf(m(home, "grep", id.toString(), "t", "-n")), ["2:two", "3:three"])
-    assertEq(m(home, "restart").code, 0)
+    restarted(home)
     assertEq(linesOf(m(home, "grep", id.toString(), "t", "-n")), ["2:two", "3:three"])
     cleanUp(home)
 

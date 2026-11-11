@@ -89,7 +89,7 @@ labelRestart()
     val home = newHome("{\"units\": 1}")
     val a = submitted(home, "--label", "running one", "--", "sleep", "30")
     val b = submitted(home, "--label", "queued one", "--", "sh", "-c", "exit 0")
-    assertEq(m(home, "restart").code, 0)
+    restarted(home)
     val status = m(home, "status", "--json").out
     assert(status.contains("\"label\":\"running one\"") && status.contains("\"label\":\"queued one\""), status)
     val ls = m(home, "ls").out
