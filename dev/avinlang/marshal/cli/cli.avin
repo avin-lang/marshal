@@ -56,6 +56,9 @@ Options of submit and run:
   --mem <size>      the memory it needs, such as 29G or 512M (default: its kind's learned
                     peak in its --dir, or the kind's while that dir has under two measured
                     runs, ~ in RESV; 0 until two runs were measured; --mem 0 reserves none)
+  --external       its work runs outside its own processes (docker run, a VM, sudo to another
+                    account's daemon): it reserves exactly --mem, which it must give, and its
+                    measured peak is never learned (@ in RESV)
   --landing         run it in the landing lane: first, outside the unit budget, not niced
   --urgent          queue it ahead of every job not urgent in its lane, behind the urgent ones already queued
   --dir <d>         the directory to run it in, relative to this one (default: this one)
@@ -142,7 +145,7 @@ optionsAskHelp(args, i) | i >= args.length() = false
 optionsAskHelp(args, i)
     | args(i) == "--" = false
     | isHelp(args(i)) = true
-    | args(i) == "--landing" || args(i) == "--urgent" = optionsAskHelp(args, i + 1)
+    | args(i) == "--landing" || args(i) == "--urgent" || args(i) == "--external" = optionsAskHelp(args, i + 1)
     | args(i).startsWith("--") = optionsAskHelp(args, i + 2)
     | _ = false
 
@@ -256,6 +259,7 @@ parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]
     var retries = 0
     var retryDelay: long = 0
     var label = ""
+    var external = false
     var i = 0
     while i < args.length()
         val word = args(i)
@@ -269,6 +273,10 @@ parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]
             continue
         if word == "--urgent"
             urgent = true
+            i += 1
+            continue
+        if word == "--external"
+            external = true
             i += 1
             continue
         if i + 1 >= args.length() then return Err(s"`$word` needs a value")
@@ -306,9 +314,12 @@ parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]
         i += 2
     val cmd = args.drop(i)
     if cmd.isEmpty() then return Err("no command to run: give it after `--`")
+    marshal.externalRefusal(external, memoryGiven) match
+        Some(why) -> return Err(why)
+        None -> ()
     val k = kind.getOrElse(if cmd.exists(w -> w == "test") then "test" else "build")
     Ok(JobSpec(k, units.getOrElse(marshal.defaultUnits(k)), memory, landing, workDir, deadline, cmd, env, urgent,
-        after.toVector().distinct(), afterMode == Some("--after-any"), retries, retryDelay, memoryGiven, label, quiet))
+        after.toVector().distinct(), afterMode == Some("--after-any"), retries, retryDelay, memoryGiven, label, quiet, external))
 
 // The value of `--quiet-timeout`, written as `--deadline` writes a deadline, in milliseconds.
 parseQuietTimeout(value: string) -> Result[long, string] = marshal.parseDeadline(value) match
@@ -330,6 +341,7 @@ submit(args: Vector[string], andWait: bool) -> int
     val spec = parseSubmission(args, dir, env) match
         Ok(s) -> s
         Err(e) -> return complain(s"marshal: $e")
+    if !spec.external && marshal.looksExternal(spec.cmd) then eprintln(marshal.ExternalWarning)
     val (id, log) = askDaemon(Request.Submit(spec)) match
         Ok(Submitted(id, log)) -> (id, log)
         Ok(Failed(e)) -> return complain(s"marshal: $e")

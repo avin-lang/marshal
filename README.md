@@ -200,6 +200,7 @@ Options of `submit` and `run`:
 | `--kind <k>` | What the job is, for learning its deadline. Default: `test` when a word of the command is `test`, otherwise `build`. |
 | `--units <n>` | Its weight. Default: 4 for a `test`, 1 for anything else. |
 | `--mem <size>` | Memory it needs: `29G`, `512M` (powers of 1024). Default: the learned peak of its kind in its directory, or of its kind while the directory has fewer than two measured runs (see Budget); 0 until two runs of the kind were measured. `--mem 0` reserves nothing and learns nothing. |
+| `--external` | Its work runs outside its own processes: `docker run`, a VM, or a command run as another account through `sudo` (see Work outside the job's processes). It needs `--mem`, and is refused without it; it reserves exactly that and holds it whatever its process tree measures; its measured peak is never learned from, so its kind's later jobs are not taught a near-zero peak. `ls` and `top` show its RESV with `@` before it (`@29G`), `status --json` gives `"external": true`, and `rerun` keeps it. A command whose first word (or the first after `sudo`) is `docker` with `run`, `compose`, `build` or `buildx`, or `docker-compose`, submitted without it gets a warning on stderr and is submitted all the same. |
 | `--landing` | The landing lane: starts before every development job, outside the unit budget, at normal priority, once its memory fits beside what runs; until then nothing else starts, so the running jobs drain for it. One landing job runs at a time. One whose memory alone exceeds the budget starts when nothing else runs. |
 | `--urgent` | Queues it in its lane's urgent band: ahead of every job not urgent, behind the urgent jobs already queued. |
 | `--dir <d>` | Where it runs, relative to the current directory. Default: the current directory. |
@@ -345,7 +346,19 @@ ends: nothing polls.
   learned reservation above the whole budget is held to the budget, so the job starts once nothing
   else holds memory and runs alone. `--mem 0` opts out. A running job counts as holding its
   reservation or what it was last measured holding, whichever is more, so a job that reserved
-  nothing but holds 27G keeps a 30G one out of a 56G budget.
+  nothing but holds 27G keeps a 30G one out of a 56G budget. A job submitted with `--external`
+  holds exactly its `--mem`, and its peak is never learned.
+- **Work outside the job's processes.** Marshal measures a job's own process tree, so work that a
+  job hands to something else is invisible to it: `docker run` leaves only the docker client in the
+  tree while the container uses the VM's CPU and memory. Such a job is submitted with
+  `--external --mem <size>`. The same goes for work that must run as another account, such as a
+  Docker Desktop or a Homebrew owned by another user: it goes through your own marshal, as
+  `marshal run --external --mem 8G -- sudo -n -u builder -H docker run …`, with a sudoers rule that
+  lets you run exactly that command as that account and nothing else. Marshal's socket is yours
+  alone (`~/.marshal/sock` under a home other accounts cannot enter), and it stays so: an account
+  that could submit to your daemon could make it run commands as you. A second daemon under the
+  other account is not the answer either: two daemons are two budgets, each admitting jobs as if the
+  machine were its own, which is the overcommitment marshal exists to prevent.
 - **Deadlines.** A kind's deadline is twice the median of its last 20 successful runs, never under 5
   minutes; until it has 3 runs it is 20 minutes for a build, 45 for a test, 30 for anything else and
   120 for a landing job. A job past its deadline has its busiest process sampled (where the system
@@ -474,7 +487,8 @@ against its own budget. `marshal status` shows what take-slot holds.
   budget, what the running jobs reserve in cyan and what they hold beyond their reservations in
   blue, then the reserved total, what they hold in RAM (`rss`) and the machine's memory.
 - **Memory**: RESV is the memory a job reserves: what it declared with `--mem`, or with `~` before
-  it (`~29G`) its learned peak (its kind's in its directory, or its kind's). RSS is what a running job's whole
+  it (`~29G`) its learned peak (its kind's in its directory, or its kind's), or with `@` before it
+  (`@29G`) what a job submitted with `--external` declared. RSS is what a running job's whole
   process tree holds in RAM, measured by the daemon every second, and PEAK the most it was measured
   holding, kept once it ends; `-` where there is none.
 - **Started**: STARTED is when the job started, in the terminal's local time zone (`TZ`, else the

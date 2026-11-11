@@ -62,7 +62,8 @@ recover(lines: Iterable[string], keep: int = 10) -> Recovered
                 position(id) = last.length()
                 last += (id, ev)
         val peak = ev.get("peak_rss").flatMap(v -> v.asLong()).getOrElse(0)
-        if endings.contains(kind) && peak > 0
+        // an external job's peak is its tree's, not its work's: never learned from
+        if endings.contains(kind) && peak > 0 && ev.get("external").flatMap(v -> v.asBool()) != Some(true)
             val evKind = ev.get("kind").flatMap(v -> v.asString()).getOrElse("")
             val evLanding = ev.get("landing").flatMap(v -> v.asBool()).getOrElse(false)
             // an event without a directory teaches its kind only
@@ -103,7 +104,7 @@ lostLine(ts: long, ev: Json, groupAlive: bool) -> Option[string] = decodeJob(ev)
     Err(_) -> None
 
 // Job `j` as its `lost` event describes it.
-asLost(j: JobInfo) -> JobInfo = JobInfo(j.id, j.kind, j.units, j.memory, j.landing, j.dir, j.cmd, "done", Some(Lost), j.killed, j.queuedMs, j.elapsedMs, j.deadlineMs, j.log, j.sample, 0, j.peakRss, j.startedAt, j.held, j.priority, j.urgent, false, [], j.attempt, 0, false, j.label, j.quietMs)
+asLost(j: JobInfo) -> JobInfo = JobInfo(j.id, j.kind, j.units, j.memory, j.landing, j.dir, j.cmd, "done", Some(Lost), j.killed, j.queuedMs, j.elapsedMs, j.deadlineMs, j.log, j.sample, 0, j.peakRss, j.startedAt, j.held, j.priority, j.urgent, false, [], j.attempt, 0, false, j.label, j.quietMs, j.reservedFrom, j.external)
 
 // Whether an event ends its job for good: an ending, and not one of an attempt that runs again.
 endsJob(ev: Json) -> bool =

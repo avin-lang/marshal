@@ -1247,3 +1247,56 @@ ELAPSED entries above.
   to exit 2 at the end (more output, still a partial answer); treat the line as not matching
   (a wrong answer with exit 0 or 1).
 - **The test is avin's `tryMatches`**, so the budget is a value the search sees, not a trap.
+
+## Jobs whose work runs outside their processes (branch `external-mem`)
+
+**Proposed.** Found running Linux checks in Docker under marshal: `docker run` leaves only the
+small docker client in the job's tree, and the work runs in Docker Desktop's VM, under another
+account, so marshal learned a near-zero peak and reserved almost nothing.
+
+- **`--external` declares that a job's work runs outside its own process tree.** Such a job
+  reserves exactly its `--mem`, is held at that by admission whatever its tree measures, and its
+  peak is never learned: the daemon does not remember it, and a daemon recovering from the event
+  log skips an ending event marked `"external": true` (`stats` leaves its peak out too). Its run
+  time still teaches its kind's deadline, since how long it took is real. Why: a measurement of the
+  wrong processes is worse than none; one external run would otherwise pull its kind's learned
+  reservation down for every later job of the kind. Alternatives: `--mem-only` or `--unmeasured`
+  (name the mechanism rather than the reason; `--external` says what the submitter knows);
+  excluding the job's peak only when it looks small (a guess); reading the Docker VM's RSS (out of
+  scope: the VM's memory is reserved up front for the whole VM and is not per job, so it says
+  nothing about one container).
+- **`--external` without `--mem` is refused**, by the command line and by the daemon (a raw
+  `submit` with `"external": true` and no `mem_given`/`mem`), with a message saying the work runs
+  outside the job's processes so marshal can neither measure nor learn it. `--mem 0` is accepted:
+  it is an explicit choice to reserve nothing. Why: an external job has no other source for its
+  reservation. Alternative: defaulting to the kind's learned peak (learned from other, non-external
+  jobs of the kind, or from nothing).
+- **`ls` and `top` show its RESV with `@` before it (`@29G`); `status --json` and every event
+  carry `"external": true`, absent for other jobs; `rerun` and `marshal restart` keep it.** Why: one
+  character fits `top`'s 6-cell RESV column beside `~` (learned), so no column moves. Alternatives:
+  `29G ext` (as the request suggested; does not fit `top`'s column without widening it for every
+  job), a separate flag column.
+- **A command that plainly runs its work in a container engine, submitted without `--external`,
+  gets a warning on stderr, and is submitted all the same.** It is the first word, or the first
+  after a leading `sudo`, being `docker` (or a path ending in `/docker`) with `run`, `compose`,
+  `build` or `buildx` after it, or `docker-compose`. `dockerize` and `echo docker run` do not count.
+  Why: the warning catches the common mistake without second-guessing a submitter who knows better
+  (a `docker build` with a tiny context, a remote engine). Alternatives: refusing (blocks legitimate
+  uses), marking such jobs external automatically (they still need a `--mem`, so it would turn into
+  a refusal), no detection (the mistake is silent until the budget is overcommitted); recognising
+  podman, nerdctl and the rest (left until someone needs them).
+
+## Another account's work goes through your own marshal (branch `external-mem`)
+
+**Proposed.** Another account cannot submit: `~/.marshal/sock` is its owner's, under a home others
+cannot enter.
+
+- **The socket stays its owner's alone.** Work that must run as another account (a Docker Desktop
+  or a Homebrew owned by another user) is submitted to the owner's marshal as
+  `marshal run --external --mem <size> -- sudo -n -u <account> -H <command>`, with a sudoers rule
+  that names exactly that command; the README says so. Why: an account that can submit to a daemon
+  can make it run any command as the daemon's owner, so opening the socket crosses a privilege
+  boundary, while a sudoers rule grants one command and nothing more. Alternatives: a group-readable
+  socket in a shared directory (the privilege hole above); a second daemon under the other account
+  (two budgets, each admitting jobs as if the machine were its own: the overcommitment marshal
+  exists to prevent); a daemon that runs jobs as the account that submitted them (needs root).
