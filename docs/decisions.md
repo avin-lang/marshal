@@ -1555,7 +1555,7 @@ a 12-unit job drained for it, and seven 2–4-unit jobs waited `draining for` it
 
 ## A typed job runs from its own copy of marshal and its type (branch `stable-step-path`)
 
-**Proposed.**
+**Settled on the user's delegation 2026-11-11.**
 
 - **`run-type` copies what the run reads into `<home>/typed/<name>` and submits the job against the copy.** The job's command was marshal's own resolved path and the type file's, and `run-steps` resolves `stock:` steps from its own executable's directory at each step, so an upgrade that removes an installation (Homebrew deletes the old Cellar version) failed a running job at its next stock step and a queued job at its start. The copy holds `bin/marshal` (a hard link of the executable: no space, and the job runs the marshal it was submitted with), `share/marshal/steps` (marshal's stock steps, as an installation lays them out, so `MARSHAL_STOCK` for the job names it), and `type/<type>.job` with each literal `avin:<path>` step it names at its relative path. A queued job submitted before an upgrade starts correctly after it, and runs the type as it was submitted.
 - **Where the copy cannot be made** (a step path with `..`, a `${}` reference or a missing source; no free disk) the job is submitted as before, from the installed files, with a note on stderr. Where only the hard link fails (another file system) the job runs the installed program through its stable path: Homebrew's `<prefix>/opt/<name>` for a path in `<prefix>/Cellar/<name>/<version>`, else the path itself, so a development build works unchanged.
