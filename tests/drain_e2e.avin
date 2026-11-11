@@ -1,0 +1,90 @@
+module tests
+
+// End to end, the bound on waiting (`drain_after`): before it an urgent job jumps a big job that does
+// not fit; past it the big job says `draining`, an urgent job that would fit waits `draining for` it
+// in `ls` and the snapshot, and starts after it with its whole deadline, since time queued is not
+// time run; killing the big job releases the hold; and the hold outlives `marshal restart`. The
+// helpers are e2e.avin's, top_pty.avin's and landing_e2e.avin's.
+import avin.fs
+import avin.threads
+import avin.time.millis
+import dev.avinlang.marshal.Why
+
+@test("past drain_after a big job drains the machine: an urgent job that jumped it before now waits, and starts after it with its whole deadline")
+drainAfterE2e()
+    val home = newHome("{\"units\": 2, \"drain_after\": \"2s\"}")
+    val a = submitted(home, "--units", "1", "--", "sleep", "4")
+    assert(within(2000, () -> started(home, a)))
+    val big = submitted(home, "--units", "2", "--", "sleep", "0.5")
+    // before the bound an urgent job takes the free unit at once
+    val early = submitted(home, "--urgent", "--units", "1", "--", "sleep", "0.2")
+    assert(within(1500, () -> started(home, early)), eventsOf(home, early).mkString(" "))
+    assertEq(whyOf(home, big), Some(Why.NoUnits))
+    assert(within(5000, () -> whyOf(home, big) == Some(Why.Draining)), s"${whyOf(home, big)}")
+    // past it an urgent job that fits the free unit waits for the big job, and says so
+    val late = submitted(home, "--urgent", "--units", "1", "--deadline", "2s", "--", "sleep", "0.3")
+    assertEq(whyOf(home, late), Some(Why.DrainingFor(big)))
+    val ls = m(home, "ls").out
+    assert(ls.contains(s"queued (draining for $big)"), ls)
+    assert(ls.contains("queued (draining)"), ls)
+    threads.sleep(millis(500))
+    assert(!started(home, late))
+    // it waits longer than its own deadline, and still finishes: the deadline counts from its start
+    assertEq(m(home, "wait", late.toString()).code, 0)
+    assert(eventsOf(home, late).contains("finished"), eventsOf(home, late).mkString(" "))
+    assert(at(home, a, "finished") < at(home, big, "started"), s"${eventsOf(home, a)} ${eventsOf(home, big)}")
+    assert(at(home, big, "finished") < at(home, late, "started"), s"${eventsOf(home, big)} ${eventsOf(home, late)}")
+    cleanUp(home)
+
+@test("killing the job the machine drains for releases the jobs it held")
+drainKillReleases()
+    val home = newHome("{\"units\": 2, \"drain_after\": \"1s\"}")
+    val a = submitted(home, "--units", "1", "--", "sleep", "60")
+    assert(within(2000, () -> started(home, a)))
+    val big = submitted(home, "--units", "2", "--", "sleep", "0.5")
+    assert(within(4000, () -> whyOf(home, big) == Some(Why.Draining)), s"${whyOf(home, big)}")
+    val late = submitted(home, "--urgent", "--units", "1", "--", "sleep", "0.1")
+    assertEq(whyOf(home, late), Some(Why.DrainingFor(big)))
+    assertEq(m(home, "kill", big.toString()).code, 0)
+    assertEq(m(home, "wait", late.toString()).code, 0)
+    assert(!ended(home, a))
+    m(home, "kill", a.toString())
+    cleanUp(home)
+
+@test("the hold outlives marshal restart, since a job's arrival is kept")
+drainAcrossRestart()
+    val home = newHome("{\"units\": 2, \"drain_after\": \"1s\"}")
+    val a = submitted(home, "--units", "1", "--", "sleep", "60")
+    assert(within(2000, () -> started(home, a)))
+    val big = submitted(home, "--units", "2", "--", "sleep", "0.2")
+    assert(within(4000, () -> whyOf(home, big) == Some(Why.Draining)), s"${whyOf(home, big)}")
+    val late = submitted(home, "--urgent", "--units", "1", "--", "sleep", "0.1")
+    restarted(home)
+    assertEq(whyOf(home, big), Some(Why.Draining))
+    assertEq(whyOf(home, late), Some(Why.DrainingFor(big)))
+    m(home, "kill", a.toString())
+    assertEq(m(home, "wait", late.toString()).code, 0)
+    assert(at(home, big, "started") < at(home, late, "started"))
+    cleanUp(home)
+
+@test("drain_after \"never\" lets urgent jobs jump a big job however long it waits")
+drainNever()
+    val home = newHome("{\"units\": 2, \"drain_after\": \"never\"}")
+    val a = submitted(home, "--units", "1", "--", "sleep", "60")
+    assert(within(2000, () -> started(home, a)))
+    val big = submitted(home, "--units", "2", "--", "sleep", "0.1")
+    threads.sleep(millis(1500))
+    val late = submitted(home, "--urgent", "--units", "1", "--", "sleep", "0.1")
+    assertEq(m(home, "wait", late.toString()).code, 0)
+    assertEq(whyOf(home, big), Some(Why.NoUnits))
+    m(home, "kill", a.toString())
+    cleanUp(home)
+
+@test("a bad drain_after stops the daemon from starting, naming the setting")
+drainAfterBad()
+    val home = newHome("{\"drain_after\": \"soon\"}")
+    val r = m(home, "status")
+    assertEq(r.code, 2)
+    assert(r.out.contains("did not start"), r.out)
+    assert(r.out.contains("`drain_after` is a wait"), r.out)
+    fs.removeDirAll(home)

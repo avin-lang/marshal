@@ -15,7 +15,7 @@ everyReasonInLs()
     val cases: Vector[(Why, string)] = [
         (Why.NoUnits, "no units"), (Why.NoMemory, "no memory"), (Why.LaneBusy, "lane busy"),
         (Why.Draining, "draining"), (Why.ForTakeSlot, "take-slot"), (Why.Behind(405), "behind 405"),
-        (Why.Starting, "starting"), (Why.QueueHeld, "queue held")]
+        (Why.DrainingFor(1567), "draining for 1567"), (Why.Starting, "starting"), (Why.QueueHeld, "queue held")]
     for c in cases
         val text = marshal.listing([whyJob(7)], [(7, c.0)])
         assert(text.lines().toVector()(1).contains(s"queued (${c.1})"), text)
@@ -48,7 +48,7 @@ emptyQueueLs()
 everyReasonInJson()
     val cases: Vector[(Why, string)] = [
         (Why.NoUnits, "units"), (Why.NoMemory, "memory"), (Why.LaneBusy, "lane"), (Why.Draining, "draining"),
-        (Why.ForTakeSlot, "take-slot"), (Why.Behind(405), "behind"), (Why.Starting, "starting"), (Why.Held, "held"),
+        (Why.ForTakeSlot, "take-slot"), (Why.Behind(405), "behind"), (Why.DrainingFor(1567), "draining-for"), (Why.Starting, "starting"), (Why.Held, "held"),
         (Why.QueueHeld, "queue-held")]
     for c in cases
         val queued = marshal.statusJson(whyUsage(), [whyJob(7)], [(7, c.0)])("queued").asVector().get()
@@ -56,6 +56,8 @@ everyReasonInJson()
         assertEq(queued(0)("why").asString(), Some(c.1))
         assertEq(queued(0).has("behind"), c.1 == "behind")
         if c.1 == "behind" then assertEq(queued(0)("behind").asLong(), Some(long(405)))
+        assertEq(queued(0).has("draining_for"), c.1 == "draining-for")
+        if c.1 == "draining-for" then assertEq(queued(0)("draining_for").asLong(), Some(long(1567)))
 
 @test("status --json has no why on running jobs, none on a queued job without a reason, and an empty queue is empty")
 noWhyInJson()

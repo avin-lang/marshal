@@ -220,7 +220,9 @@ data TakeSlotUse(dir: string, units: int, waiting: int, landing: bool)
 // for running jobs to free it while nothing else starts, it waits for what take-slot holds or for a
 // take-slot run ahead of it, it fits but starting it would delay job `id` at the head of the queue
 // (or a landing job `id` drains the machine), or it starts at the daemon's next look; or it is held,
-// or the whole queue is; or it is a quick job and the quick lane's slots are all taken.
+// or the whole queue is; or it is a quick job and the quick lane's slots are all taken; or the
+// development job `id` has waited past the bound and the machine drains for it (`DrainingFor`).
+// The job the machine drains for waits `Draining` too.
 data Why
     NoUnits
     NoMemory
@@ -228,6 +230,7 @@ data Why
     Draining
     ForTakeSlot
     Behind(id: long)
+    DrainingFor(id: long)
     Starting
     Held
     QueueHeld
@@ -588,10 +591,7 @@ statusJson(u: Usage, jobs: Vector[JobInfo], whys: Vector[(long, Why)] = []) -> J
 
 private withWhy(j: JobInfo, whys: Vector[(long, Why)]) -> Json = whys.find(w -> w.0 == j.id) match
     Some((_, why)) ->
-        val behind = why match
-            Behind(id) -> [("behind", Json.num(id))]
-            _ -> Vector[(string, Json)]()
-        Json.Obj(encodeJob(j).asMembers().get() ++ [("why", Json.str(whyWord(why)))] ++ behind)
+        Json.Obj(encodeJob(j).asMembers().get() ++ [("why", Json.str(whyWord(why)))] ++ whyId(why))
     None -> encodeJob(j)
 
 encodeReply(r: Reply) -> Json
@@ -666,16 +666,21 @@ whyWord(LaneBusy) = "lane"
 whyWord(Draining) = "draining"
 whyWord(ForTakeSlot) = "take-slot"
 whyWord(Behind(_)) = "behind"
+whyWord(DrainingFor(_)) = "draining-for"
 whyWord(Starting) = "starting"
 whyWord(Held) = "held"
 whyWord(QueueHeld) = "queue-held"
 whyWord(QuickFull) = "quick-lane"
 
-private encodeQueued(q: QueuedJob) -> Json
-    val extra = q.why match
-        Behind(id) -> [("behind", Json.num(id))]
-        _ -> Vector[(string, Json)]()
-    Json.Obj(encodeJob(q.job).asMembers().get() ++ [("position", Json.num(q.position)), ("waits", Json.str(whyWord(q.why)))] ++ extra)
+// The job a reason names, as the field beside its word: `behind` for `Behind`, `draining_for` for
+// `DrainingFor`, nothing for the rest.
+private whyId(why: Why) -> Vector[(string, Json)]
+whyId(Behind(id)) = [("behind", Json.num(id))]
+whyId(DrainingFor(id)) = [("draining_for", Json.num(id))]
+whyId(_) = Vector[(string, Json)]()
+
+private encodeQueued(q: QueuedJob) -> Json =
+    Json.Obj(encodeJob(q.job).asMembers().get() ++ [("position", Json.num(q.position)), ("waits", Json.str(whyWord(q.why)))] ++ whyId(q.why))
 
 private decodeWhy(j: Json) -> Result[Why, string]
     field(j, "waits", v -> v.asString(), "a string")? match
@@ -685,6 +690,7 @@ private decodeWhy(j: Json) -> Result[Why, string]
         "draining" -> Ok(Draining)
         "take-slot" -> Ok(ForTakeSlot)
         "behind" -> Ok(Behind(field(j, "behind", v -> v.asLong(), "a whole number")?))
+        "draining-for" -> Ok(DrainingFor(field(j, "draining_for", v -> v.asLong(), "a whole number")?))
         "starting" -> Ok(Starting)
         "held" -> Ok(Held)
         "queue-held" -> Ok(QueueHeld)

@@ -45,8 +45,8 @@ urgentMark(now: long, band: Vector[long]) -> long
 // Each queued job's place in its lane's queue (from 1, held jobs counted) and why it waits, in the
 // order of `queue`: `Held` for a job in `held`, `QueueHeld` for any other while the queue is held,
 // and otherwise what the scheduler makes of the jobs not held.
-queueWaits(budget: Budget, running: Vector[Started], queue: Vector[Waiting], held: Vector[long], queueHeld: bool, now: long, outside: Outside = NoOutside) -> Vector[(long, int, Why)]
-    val decided = if queueHeld then Vector[(long, int, Why)]() else waits(budget, running, queue.filter(w -> !held.contains(w.id)), now, outside)
+queueWaits(budget: Budget, running: Vector[Started], queue: Vector[Waiting], held: Vector[long], queueHeld: bool, now: long, outside: Outside = NoOutside, fair: Fairness = Unbounded) -> Vector[(long, int, Why)]
+    val decided = if queueHeld then Vector[(long, int, Why)]() else waits(budget, running, queue.filter(w -> !held.contains(w.id)), now, outside, fair)
     val out = Buffer[(long, int, Why)]()
     for (w, position) in queue.zip(lanePositions(queue))
         out += (w.id, position, whyWaits(w.id, held, queueHeld, decided))

@@ -94,7 +94,7 @@ its run time with its pauses left out, which is what its deadline counts.
 a missing one as false.
 
 A queued job in a snapshot is the job object with two fields more, and a third for one behind
-another job: `position`, its place in its lane's queue counted from 1 (landing jobs, quick jobs and
+another job (`behind`) or held while another drains the machine (`draining_for`): `position`, its place in its lane's queue counted from 1 (landing jobs, quick jobs and
 development jobs queue apart), and `waits`, why it has not started:
 
 | `waits` | |
@@ -102,16 +102,17 @@ development jobs queue apart), and `waits`, why it has not started:
 | `units` | its units do not fit beside what runs |
 | `memory` | its units fit and its memory does not (for a quick job: its memory does not fit in the budget's free memory) |
 | `lane` | a landing job, and another landing job holds the lane |
-| `draining` | a landing job whose memory does not fit beside what runs (or, over the whole budget, one that waits for nothing else to run); nothing else starts until the running jobs have freed it |
+| `draining` | a landing job whose memory does not fit beside what runs (or, over the whole budget, one that waits for nothing else to run); nothing else starts until the running jobs have freed it. Or a development job that has waited past `drain_after` and does not fit: no other development job starts until it has |
 | `take-slot` | it waits for what take-slot holds: its runs' units or landing lock, or a take-slot run that arrived before it |
 | `behind` | it fits, but starting it would delay the job at the head of the queue, whose id is `behind`; or a landing job, whose id is `behind`, is `draining`; or, for a quick job, the quick job `behind` ahead of it waits for memory |
+| `draining-for` | a development job that would otherwise be decided as usual, held while the development job whose id is `draining_for` has waited past `drain_after` and is `draining` |
 | `quick-lane` | a quick job, and the quick lane's 2 slots are taken |
 | `starting` | it starts at the daemon's next look |
 | `held` | it is held (`hold`) |
 | `queue-held` | the whole queue is held (`pause`) |
 
 `marshal status --json` gives a queued job the same reason as `why` (the words in the table, with
-`behind` when `why` is `behind`); `ls` and `status --json` read it from a `snapshot` request, and a
+`behind` when `why` is `behind` and `draining_for` when it is `draining-for`); `ls` and `status --json` read it from a `snapshot` request, and a
 job that started in between has none.
 
 **Across a restart.** The daemon writes every reply it has given before it restarts, and carries

@@ -290,6 +290,7 @@ whyWords()
     assertEq(top.whyText(Why.Draining), "draining")
     assertEq(top.whyText(Why.ForTakeSlot), "take-slot")
     assertEq(top.whyText(Why.Behind(42)), "behind 42")
+    assertEq(top.whyText(Why.DrainingFor(42)), "draining for 42")
     assertEq(top.whyText(Why.Starting), "starting")
 
 @test("the screen draws at every size without failing, and small ones keep the header and the keys")

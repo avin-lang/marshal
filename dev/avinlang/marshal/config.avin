@@ -17,11 +17,22 @@ module dev.avinlang.marshal
 //   take_slot       take-slot.zsh's lock directory, whose budget and landing lane marshal shares;
 //                   "" or no setting shares none, and `MARSHAL_TAKE_SLOT_DIR` overrides it
 //                   (see `takeSlotDir`)
+//   drain_after     how long a development job may wait before the machine drains for it ("10m");
+//                   "never" never drains (see `Fairness`)
 import json
 import json.Json
 
-// `takeSlot` is what config.json says, None where it says nothing.
-data Config(budget: Budget, learning: Learning, takeSlot: Option[string], retention: Retention = defaultRetention)
+// `takeSlot` is what config.json says, None where it says nothing. `drainAfterMs` is the bound on a
+// development job's wait, None for none.
+data Config(budget: Budget, learning: Learning, takeSlot: Option[string], retention: Retention = defaultRetention, drainAfterMs: Option[long] = Some(DefaultDrainAfter))
+
+// How long a development job waits before the machine drains for it, unless config.json says.
+val DefaultDrainAfter: long = 10 * 60000
+
+// The bound `config` sets on waiting, at `wallNow` (wall-clock microseconds).
+fairness(config: Config, wallNow: long) -> Fairness = config.drainAfterMs match
+    Some(ms) -> Fairness(ms, wallNow)
+    None -> Unbounded
 
 private val DefaultReserve: long = 8 * 1024 * 1024 * 1024
 
@@ -33,7 +44,7 @@ readConfig(text: string, machineMemory: long) -> Result[Config, string]
         Err(e) -> return Err(s"config.json is not JSON: $e")
     if j.asMembers().isEmpty() then return Err("config.json holds an object")
     for key in j.keys()
-        if !["units", "memory", "reserve", "deadline_floor", "learn_window", "learn_min_runs", "take_slot", "keep_logs", "keep_jobs", "keep_events", "keep_steps"].contains(key)
+        if !["units", "memory", "reserve", "deadline_floor", "learn_window", "learn_min_runs", "take_slot", "keep_logs", "keep_jobs", "keep_events", "keep_steps", "drain_after"].contains(key)
             return Err(s"config.json: no setting `$key`")
     val units = whole(j, "units", 12)?
     if units < 1 then return Err("config.json: `units` is at least 1")
@@ -58,7 +69,15 @@ readConfig(text: string, machineMemory: long) -> Result[Config, string]
         countSetting(j, "keep_jobs", defaultRetention.jobs)?,
         ageSetting(j, "keep_events", defaultRetention.eventsMs)?,
         ageSetting(j, "keep_steps", defaultRetention.stepsMs)?)
-    Ok(Config(Budget(units, memory), Learning(window, minRuns, defaultLearning.factor, floor), takeSlot, retention))
+    val drainAfter = j.get("drain_after") match
+        None -> Some(DefaultDrainAfter)
+        Some(v) -> v.asString() match
+            Some("never") -> None
+            Some(t) -> parseDeadline(t) match
+                Some(ms) -> Some(ms)
+                None -> return Err("config.json: `drain_after` is a wait such as \"10m\" or \"90s\", or \"never\"")
+            None -> return Err("config.json: `drain_after` is a wait such as \"10m\" or \"90s\", or \"never\"")
+    Ok(Config(Budget(units, memory), Learning(window, minRuns, defaultLearning.factor, floor), takeSlot, retention, drainAfter))
 
 private ageSetting(j: Json, key: string, absent: Option[long]) -> Result[Option[long], string] = j.get(key) match
     None -> Ok(absent)

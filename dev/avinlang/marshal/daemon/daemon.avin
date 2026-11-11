@@ -642,7 +642,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         val t = now()
         val started = running.map(j -> Started(j.id, j.spec.units, holds(j), j.spec.landing, j.startedMs, j.expectedMs, j.spec.quick)).toVector()
         val waiting = eligible().map(j -> Waiting(j.id, j.spec.units, j.reserved, j.spec.landing, j.expectedMs, j.arrived, j.spec.quick))
-        for id in marshal.schedule(config.budget, started, waiting, t, outside)
+        for id in marshal.schedule(config.budget, started, waiting, t, outside, marshal.fairness(config, time.now().epochMicros))
             val job = jobs(id)
             // a job that could not be started schedules again, which may have started this one
             if job.state != "queued" then continue
@@ -659,7 +659,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         else
             val started = running.map(j -> Started(j.id, j.spec.units, holds(j), j.spec.landing, j.startedMs, j.expectedMs, j.spec.quick)).toVector()
             val waiting = eligible().map(j -> Waiting(j.id, j.spec.units, j.reserved, j.spec.landing, j.expectedMs, j.arrived, j.spec.quick))
-            marshal.ticketFor(config.budget, started, waiting, now(), outside)
+            marshal.ticketFor(config.budget, started, waiting, now(), outside, marshal.fairness(config, time.now().epochMicros))
         val want = head.map(t -> marshal.ticketName(t.0, ts.me))
         if want == ticket then return
         ticket.foreach(name -> ts.removeTicket(name))
@@ -993,7 +993,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         val started = running.map(j -> Started(j.id, j.spec.units, holds(j), j.spec.landing, j.startedMs, j.expectedMs, j.spec.quick)).toVector()
         val waiting = queue.map(j -> Waiting(j.id, j.spec.units, j.reserved, j.spec.landing, j.expectedMs, j.arrived, j.spec.quick)).toVector()
         val held = queue.filter(j -> j.held).map(j -> j.id).toVector()
-        val queued = marshal.queueWaits(config.budget, started, waiting, held, queueHeld, t, outside.getOrElse(marshal.NoOutside)).map(w ->
+        val queued = marshal.queueWaits(config.budget, started, waiting, held, queueHeld, t, outside.getOrElse(marshal.NoOutside), marshal.fairness(config, time.now().epochMicros)).map(w ->
             QueuedJob(jobs(w.0).info(t), w.1, w.2))
         val recent = (earlier ++ ended.takeRight(Recent).map(j -> j.info(t))).takeRight(Recent).reverse()
         Overview(usageWith(outside), t - began, running.map(j -> j.info(t)).toVector(), queued, recent, waitingJobs.map(j -> j.info(t)).toVector())

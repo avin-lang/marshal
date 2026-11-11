@@ -1445,3 +1445,49 @@ carries.
 - **A user who moved the selection down keeps their job**, as before, including a job that ends and
   moves into the ended section and a job in loaded earlier pages. A filter change keeps the selected
   job where the new filter lists it, and follows the top if that is row 0. The look is unchanged.
+
+## Waiting is bounded: the machine drains for a job that has waited too long (branch `no-starve`)
+
+**Proposed.** The bug: a 12-unit job waited indefinitely, `queued (no units)`, while urgent jobs
+submitted after it started one after another; each took a unit or four as others ended, so the
+units never all came free at once. The urgent band and priorities put later jobs ahead by design;
+the unbounded wait was not.
+
+- **The bound is a time, `drain_after` in `config.json`, 10 minutes by default (`"never"` turns it
+  off).** Once the first development job in queue order has waited that long since it queued, it goes
+  ahead of every other development job, urgent ones included. If it fits, it starts and nothing else
+  changes. If not, the machine drains for it: no other development job starts, not even as backfill,
+  until it has started. Why time: it is what the user notices, is the same for a 1-unit and a 12-unit
+  job, and survives `restart` with no new state (a job's arrival is already kept). Alternatives: a
+  count of times passed over (needs a new counter kept across restarts, and "passed" is ill-defined
+  when several jobs start in one look); a bound proportional to the job's deadline (a long job would
+  wait longer to start, the opposite of what it needs; a learned deadline also moves); dropping
+  backfill only (does not help: urgent jobs are not backfill, they are ahead in the queue).
+- **Which job: the first in queue order past the bound**, so among several the urgent band and
+  priorities still decide, and a job that queued earlier but sits further back (a lower priority)
+  is bounded too. Two big jobs past the bound drain one after the other.
+- **The wait is counted from when the job last queued** (`arrived`: submitted, ready after its
+  `--after` jobs, or a retry). A job held by hand counts the time it was held; once released it may
+  drain at once. Alternative: not counting held time (a new field; holding is rare and deliberate).
+- **The landing lane and the quick lane go on beside a draining job.** A landing job (a train) takes
+  the landing lane, which is outside the unit budget: it never holds the units the draining job waits
+  for, so starting it delays nothing, and everyone waits on the train. Quick jobs are outside the
+  budget too, at most 2 and 2 minutes each. Both still count memory, so a draining job short of
+  memory can be delayed by them; that wait is bounded by the lanes' own limits (one train, two short
+  quick jobs at a time). Alternative: holding them too (would stall landings behind a benchmark, and
+  a train's reserved lane exists so that it is never stalled by development work).
+- **`ls` and `top` say why.** The draining job shows `queued (draining)`, the word a landing job
+  short of memory already uses for "nothing else starts until I do"; each development job it holds
+  back shows `queued (draining for 1567)`. The protocol word is `draining-for`, with the job's id in
+  `draining_for`, as `behind` carries `behind`. A job the drain makes wait for take-slot still says
+  `take-slot`. Nothing else in either view changes.
+- **Deadlines are untouched: a job's deadline counts from its start**, so an urgent job held by a
+  drain loses none of it, however long it waited. The hold is never silent (`draining for N`), and it
+  is bounded by the running jobs' own deadlines, since the draining job starts once they end. A
+  `marshal wait --timeout` on a held job times out as it would for any queued one.
+- **take-slot**: while a job drains, the daemon's ticket is that job's, at its own arrival, so
+  take-slot runs that came after it wait; take-slot waiters that came before it keep their place.
+  Alternative: the ticket ahead of every take-slot waiter, as a draining landing job takes (would let
+  a late development job jump take-slot runs that waited longer).
+- **Killing the draining job releases the hold at once**: the next look finds the next job past
+  the bound, if any.

@@ -343,6 +343,13 @@ ends: nothing polls.
   its units and memory fit beside what runs. The queue is first come, first served; a later job
   may start ahead of a head that does not fit only when it fits now and is expected to end before
   the head could start, so it never delays the head.
+- **Bounded waiting.** The urgent band and priorities let later jobs start ahead of earlier ones, so
+  a big job could wait for ever while small ones keep taking the units as they free. Once a
+  development job has waited `drain_after` (10 minutes by default; `config.json`) since it queued,
+  it goes ahead of every other development job, and while it does not fit the machine drains for it:
+  no other development job starts, urgent or backfill, until it has. `ls` shows it `queued
+  (draining)` and the jobs it holds back `queued (draining for <id>)`. Landing and quick jobs go on
+  beside it. Time queued never counts against a job's deadline, which runs from its start.
 - **Memory reservations.** A job without `--mem` reserves its learned peak: the most memory any of
   the last 10 measured jobs of its kind in its directory (`--dir`) held, whatever their outcome,
   plus a tenth, once two have been measured there. A directory with fewer than two learns from the
@@ -416,8 +423,9 @@ ends: nothing polls.
   daemon's, and neither starts a daemon.
 
 `config.json` in marshal's home changes the defaults: `units`, `memory` (`"56G"` or bytes),
-`reserve`, `deadline_floor` (`"5m"`), `learn_window`, `learn_min_runs` and `take_slot` (below),
-and the retention settings (next).
+`reserve`, `deadline_floor` (`"5m"`), `learn_window`, `learn_min_runs`, `drain_after` (`"10m"`, or
+`"never"`: how long a job waits before the machine drains for it) and `take_slot` (below), and the
+retention settings (next).
 
 **Retention.** Marshal's home would grow for ever, so the daemon removes old files when it starts
 and every hour, and `marshal clean` does it on request. Only a job that has ended for good is ever
@@ -447,9 +455,11 @@ declared or learned), `mem_budget`, `rss` (what the running jobs hold in RAM, in
 job's id or null), `take_slot` (`dir`, `units`, `waiting`, `landing`, or null when none is shared),
 `queue_held`, and `running` and `queued`, arrays of jobs as [the protocol](docs/protocol.md) writes
 them; a queued job also has `why`, the protocol's word for why it has not started (`units`,
-`memory`, `lane`, `draining`, `take-slot`, `behind`, `starting`, `held`, `queue-held`), and `behind`,
-the job's id, when `why` is `behind`. In `marshal ls` the same reason follows `queued` in the state
-cell, in the words `top` shows: `queued (no units)`, `queued (behind 405)`, `queued (queue held)`.
+`memory`, `lane`, `draining`, `take-slot`, `behind`, `draining-for`, `starting`, `held`,
+`queue-held`), and `behind`, the job's id, when `why` is `behind`, or `draining_for` when it is
+`draining-for`. In `marshal ls` the same reason follows `queued` in the state cell, in the words
+`top` shows: `queued (no units)`, `queued (behind 405)`, `queued (draining for 1567)`,
+`queued (queue held)`.
 A job held by hand says just `held`.
 
 ## Sharing the machine with take-slot.zsh
@@ -508,9 +518,10 @@ against its own budget. `marshal status` shows what take-slot holds.
   deadline or five minutes and red under a tenth or one minute, and a queued job's deadline to come.
   A queued job's STATE is its place in its lane's queue and why it waits: `no units`, `no memory`,
   `lane busy` (another landing job holds the lane), `draining` (a landing job whose memory does
-  not fit beside the running jobs: nothing else starts until they have freed it), `take-slot` (what take-slot.zsh holds or a
+  not fit beside the running jobs: nothing else starts until they have freed it; or a job that has
+  waited past `drain_after`: no other development job starts until it has), `take-slot` (what take-slot.zsh holds or a
   take-slot run ahead of it), `behind N`, when it would fit but would delay job N at the head of
-  the queue, `held` (`marshal hold`), `queue held` (`marshal pause`) or `quick lane full` (a
+  the queue, `draining for N` (job N has waited past `drain_after` and goes first), `held` (`marshal hold`), `queue held` (`marshal pause`) or `quick lane full` (a
   `--quick` job, both quick slots taken). A running quick job shows `quick`. A job waiting for others
   shows `after 3,4`, one waiting to retry `retry 2`. An ended job shows `exit N` (green for 0, red
   otherwise), `killed`, `timeout`, `lost`, `cancelled`, `dep N failed` or `signal N`.
