@@ -1494,7 +1494,7 @@ the unbounded wait was not.
 
 ## A drain backfills (branch `drain-backfill`)
 
-**Proposed.** The bug (user, on 0.2.10): one 1-unit build ran with most of an hour to its deadline,
+**Settled on the user's delegation 2026-11-11.** The bug (user, on 0.2.10): one 1-unit build ran with most of an hour to its deadline,
 a 12-unit job drained for it, and seven 2–4-unit jobs waited `draining for` it on 11 idle units.
 "If it's draining, then shouldn't it let queued jobs run if they can".
 
