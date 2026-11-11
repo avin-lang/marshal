@@ -94,6 +94,20 @@ historyFilters()
     assertEq(ids(marshal.selectEnded(l, HistoryFilter(Some("test"), Some(2500), true), 20)), [long(5)])
     assertEq(ids(marshal.selectEnded(l, HistoryFilter(Some("test"), Some(2500), true), 0)), [])
 
+// An ending event of an urgent and/or quick/landing job.
+markedEnd(id: long, landing: bool = false, quick: bool = false, urgent: bool = false, kind: string = "test") -> string =
+    val j = JobInfo(id, kind, 4, 0, landing, "/d", ["make"], "done", Some(Outcome.Exited(0)), false, 5, 1000, 60000, s"/h/jobs/$id.log", None, urgent = urgent, quick = quick)
+    marshal.eventLine(id, "finished", j, [("run_ms", Json.num(1000)), ("exit", Json.num(0))])
+
+@test("the listing marks an urgent job's kind with !, after its lane's mark, and a job that is not urgent as before")
+historyKindMarks()
+    val lines = [markedEnd(1, urgent = true), markedEnd(2, quick = true, urgent = true), markedEnd(3, landing = true, urgent = true),
+                 markedEnd(4), markedEnd(5, quick = true), markedEnd(6, landing = true)]
+    val rows = marshal.historyListing(marshal.selectEnded(ledgerOf(lines), Everything, 20), zoneNamed("UTC")).lines().toVector()
+    val kinds = rows.drop(1).map(r -> r.split(" ").filter(w -> w.nonEmpty())(1))
+    assertEq(kinds.toSet(), ["test!", "test^!", "test*!", "test", "test^", "test*"].toSet())
+    assertEq(kinds.length(), 6)
+
 @test("a landing job is marked with a star in the listing")
 landingStar()
     val text = marshal.historyListing(marshal.selectEnded(ledgerOf([endLine(1, 1, landing = true), endLine(2, 2)]), Everything, 20), zoneNamed("UTC"))

@@ -48,10 +48,10 @@ golden(name: string, g: Grid)
 gjob(id: long, kind: string = "build", state: string = "running", outcome: Option[Outcome] = None, units: int = 1,
      landing: bool = false, cmd: Vector[string] = ["make", "-j4"], elapsed: long = 2 * minuteMs, deadline: long = 30 * minuteMs,
      memory: long = 0, rss: long = 0, peak: long = 0, paused: bool = false, killed: bool = false, label: string = "",
-     after: Vector[long] = [], attempt: int = 1, reserved: long = 0, learned: bool = false, quick: bool = false) -> JobInfo =
+     after: Vector[long] = [], attempt: int = 1, reserved: long = 0, learned: bool = false, quick: bool = false, urgent: bool = false) -> JobInfo =
     JobInfo(id, kind, units, memory, landing, "/w", cmd, state, outcome, killed, 0, elapsed, deadline, s"/h/jobs/$id.log", None,
             rss = rss, peakRss = peak, paused = paused, after = after, attempt = attempt, reserved = reserved,
-            reservedLearned = learned, label = label, quick = quick)
+            reservedLearned = learned, label = label, quick = quick, urgent = urgent)
 
 // A busy daemon: a landing job, a paused one, take-slot holding units with runs waiting, the queue
 // held, every reason to wait, jobs waiting for others or to retry, and every way a job ends.
@@ -206,6 +206,25 @@ goldenQuickLane()
     // with no quick job running, the header says nothing of the lane
     assert(!drawn(viewing(idleDaemon()), 100, 10).rowText(0).contains("quick"))
     assert(drawn(viewing(o), 100, 12).rowText(0).contains("quick: 2/2"))
+
+@test("golden: an urgent job's kind is marked !, after its lane's mark, running, queued and ended; a long kind is cut as build* is")
+goldenUrgentMarks()
+    val running = [
+        gjob(51, kind = "test", urgent = true, cmd = ["make", "test"]),
+        gjob(52, kind = "test", units = 4, cmd = ["avin", "test", "."], elapsed = 20000, deadline = 2 * minuteMs, quick = true, urgent = true),
+        gjob(53, kind = "test", landing = true, urgent = true, cmd = ["sysl", "test", "compiler"]),
+        gjob(54, kind = "funl-test", urgent = true, cmd = ["sbt", "test"]),
+        gjob(55, kind = "build", landing = false, cmd = ["make"])]
+    val queued = [
+        QueuedJob(gjob(56, kind = "test", state = "queued", urgent = true), 1, Why.NoUnits),
+        QueuedJob(gjob(57, kind = "test", state = "queued", quick = true, urgent = true, deadline = 2 * minuteMs), 1, Why.QuickFull),
+        QueuedJob(gjob(58, state = "queued"), 2, Why.NoUnits)]
+    val ended = [gjob(50, kind = "test", state = "done", outcome = Some(Outcome.Exited(0)), urgent = true)]
+    val o = Overview(Usage(8, 12, 0, 16 * G, 5, 3, Some(53), None, quick = 1), 60000, running, queued, ended)
+    golden("urgent-marks", drawn(viewing(o), 120, 20))
+    golden("urgent-marks-80", drawn(viewing(o), 80, 20))
+    assert(drawn(viewing(o), 120, 20).rowText(5).contains("test!"))
+    assert(drawn(viewing(o), 120, 20).rowText(8).contains("funl-t…!"))
 
 // A daemon running only a landing job of `units`, with take-slot's use if any.
 landingOnly(units: int, takeSlot: Option[TakeSlotUse]) -> Overview =

@@ -138,10 +138,13 @@ val LabelCap: int = 24
 val LabelMin: int = 5
 val CommandMin: int = 20
 
+// The KIND column's width. A kind and its marks wider than it are cut in the kind's name, never the marks.
+val KindWidth: int = 8
+
 val columns: Vector[Column] = [
     Column("ID", 5, 1),
     Column("STATE", 14),
-    Column("KIND", 8),
+    Column("KIND", KindWidth),
     Column("UNITS", 5, 1),
     Column("RESV", 6, 1),
     Column("RSS", 5, 1),
@@ -181,7 +184,7 @@ cells(l: Line, since: long, zone: time.Zone, today: string, width: int) -> Vecto
     val all = [
         Span(j.id.toString()),
         styled(stateOf(l)),
-        Span(marshal.laneKind(j)),
+        Span(marshal.fittedKind(j, KindWidth)),
         Span(j.units.toString()),
         Span(marshal.reservedText(j)),
         Span(measuredText(if j.state == "running" then j.rss else 0)),
@@ -657,7 +660,8 @@ val helpLines: Vector[string] = [
     "the head of the queue, which it would delay; held (marshal hold),",
     "or queue held (marshal pause); quick full (both quick slots",
     "taken). A quick job runs as quick, its kind marked ^; a landing",
-    "job's is marked *. after 3,4 waits for jobs 3 and 4",
+    "job's is marked *; an urgent job's ! (^! and *! together).",
+    "after 3,4 waits for jobs 3 and 4",
     "to end; retry 2 waits to make its second attempt.",
     "DEADLINE is the time left; yellow, then red, as it nears."
 ]

@@ -1491,3 +1491,31 @@ the unbounded wait was not.
   a late development job jump take-slot runs that waited longer).
 - **Killing the draining job releases the hold at once**: the next look finds the next job past
   the bound, if any.
+
+## An urgent job's kind is marked `!` (branch `urgent-mark`)
+
+**Proposed.**
+
+- **Urgency is a kind suffix, not a state**: `test!`, as `*` marks landing and `^` quick. Why:
+  urgency is where a job stands in the queue and it stays on the job while it runs and after it
+  ends; the STATE column already says where a queued job waits and why, and a job that runs has no
+  state left to carry it. Alternative: a state word (`urgent` in place of `queued`), which would
+  hide the reason it waits and say nothing once it runs.
+- **The marks combine, in a fixed order: the lane's, then `!`** (`test^!`, `test*!`). Why: urgent
+  joins the urgent band of the job's own lane, and `submit` refuses only quick with landing, so
+  quick+urgent and landing+urgent are both legal jobs; a job is never both quick and landing, so at
+  most one lane mark precedes the `!`. Alternative: `!` instead of the lane mark, which would hide
+  which lane a job runs in.
+- **Everywhere the kind is shown**: `ls`, `top` (live rows and the earlier ones scrolled back to) and
+  `history` use one function. `history` reads `urgent` and `quick` from the ended job's event; it did
+  not show `^` for a quick job before, and now does, as `ls` and `top` do. The job JSON already
+  carries `urgent`; no JSON spells the suffix.
+- **A kind too long for `top`'s 8-cell KIND column is cut in its NAME, and the marks stay whole
+  after the ellipsis** (`avin-g…*`, `funl-t…!`, `test-s…^!`), where the table's own cut at the right
+  edge used to drop them (`avin-ga…`). Only a column narrower than the ellipsis and the marks cuts
+  the marks, from the right (`…^!`, `…^`, `…`). `ls` pads its columns to the widest cell and never
+  cuts, so its kinds are always whole. Why: the mark says how the job is treated, and the name is
+  what can be spared. Alternative: widen the column to the longest marked kind, which moves every
+  other column.
+- **The mark follows the band**: `priority <id> --urgent` adds `!`; a number removes it; a job
+  submitted `--urgent` keeps it to the end.
