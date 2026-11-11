@@ -1300,3 +1300,16 @@ cannot enter.
   socket in a shared directory (the privilege hole above); a second daemon under the other account
   (two budgets, each admitting jobs as if the machine were its own: the overcommitment marshal
   exists to prevent); a daemon that runs jobs as the account that submitted them (needs root).
+
+## `stats` sizes both peak columns with the rounded formatter (branch `stats-units`)
+
+**Proposed.**
+
+- **PEAK P50 and PEAK MAX in `stats` use `roundSize`, the formatter `top` uses for PEAK.** Why: they
+  used `formatSize`, which shows a size in the largest unit that divides it exactly, so a measured
+  peak (never a round number) printed as raw kilobytes (`7320688K`) while another in the same row
+  printed `9903M`. A measurement is shown rounded, one decimal under ten of a unit (`7.0G`, `756M`).
+  `--json` is unchanged: `peak_p50`, `peak_max`, `peak_rss` and `rss` are bytes, now said in
+  protocol.md. Alternatives: renaming the JSON keys with a `_bytes` suffix (breaks readers for a
+  clearer name); keeping `formatSize` and rounding the peaks to a mebibyte first (a second rounding
+  rule beside `roundSize`).
