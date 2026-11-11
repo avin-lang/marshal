@@ -1431,7 +1431,7 @@ carries.
 
 ## `top` stays at the top as jobs arrive (branch `watch-scroll`)
 
-**Proposed:**
+**Settled on the user's delegation 2026-11-11:**
 
 - **A table whose selection is on the first line keeps it there across snapshots.** Before, the
   selection followed its job's id, so each new job above it pushed the selected row down and the
