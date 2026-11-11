@@ -228,8 +228,6 @@ labelColumnWidth()
     val cells = [Span("1"), Span("cmd")]
     // the label is whole in its cell: the table sizes the column to the longest and cuts it with an ellipsis
     assertEq(top.withLabelCell(cells, "a long label"), [Span("1"), Span("a long label"), Span("cmd")])
-    // no label: a one-space cell, which keeps the table from leaving the column out
-    assertEq(top.withLabelCell(cells, ""), [Span("1"), Span(" "), Span("cmd")])
     // 120 cells: the fixed columns take 75 and 11 separators, and COMMAND keeps 20, leaving 14
     assertEq(labelCells("abc", 120), 5)
     assertEq(labelCells("123456789", 120), 9)

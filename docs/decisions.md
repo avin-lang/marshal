@@ -1215,8 +1215,7 @@ has a label.
   `history` last, `top` as a fit column of 5 to 24 cells that a screen too narrow to leave COMMAND 20
   cells still drops). Why: a column that comes and goes shifts every other column the moment the
   first labelled job appears, and a reader cannot tell "no label" from "no such column". In `top` the
-  table leaves out a fit column with nothing in any cell, so a job without a label draws a one-space
-  cell, which keeps the column at its heading's width. `status --json` and the events are unchanged:
+  column keeps its heading's width when every cell is empty (tui 0.2.2). `status --json` and the events are unchanged:
   they still leave `label` out for a job without one. Alternative: the old rule (listings of
   unlabelled jobs stayed byte for byte as before).
 

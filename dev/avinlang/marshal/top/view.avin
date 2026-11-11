@@ -182,9 +182,9 @@ val LabelColumn: Column = Column("LABEL", 0, min = LabelMin, max = LabelCap, fit
 // The columns `base` (the last of them COMMAND) with LABEL put before COMMAND.
 withLabelColumn(base: Vector[Column]) -> Vector[Column] = base.slice(0, base.length() - 1) ++ [LabelColumn, base(base.length() - 1)]
 
-// A row of `cells` with the label put before the command, the last cell. A job without a label gets a
-// single space, so the table, which leaves out a fit column with nothing in any cell, still draws it.
-withLabelCell(cells: Vector[Span], label: string) -> Vector[Span] = cells.slice(0, cells.length() - 1) ++ [Span(if label.isEmpty() then " " else label), cells(cells.length() - 1)]
+// A row of `cells` with the label put before the command, the last cell; empty for a job without a
+// label, which the table still draws at its heading's width.
+withLabelCell(cells: Vector[Span], label: string) -> Vector[Span] = cells.slice(0, cells.length() - 1) ++ [Span(label), cells(cells.length() - 1)]
 
 // How long, in milliseconds, the selected row stays highlighted after the last key.
 val IdleHideMs: long = 5000
