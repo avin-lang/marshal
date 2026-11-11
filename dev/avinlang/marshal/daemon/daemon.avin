@@ -140,6 +140,8 @@ class Job(val id: long, val spec: JobSpec, val submittedMs: long, var arrived: l
     var learnedMem = false
     // where the reservation came from (`reservationSource`)
     var reservedFrom = ""
+    // whether `expectedMs` was learned from its kind's runs; a drain counts a guessed one by its deadline
+    var durationLearned = false
     val waiters = Buffer[Channel[Reply]]()
 
     // How long it has run by `now`, its pauses left out.
@@ -232,6 +234,15 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
     // it holds its reservation whatever its tree measures.
     holds(j: Job) -> long = if j.spec.external then j.reserved else marshal.holding(j.reserved, j.resident.now)
 
+    // How long a drain counts a job as running: its learned duration, or its deadline when nothing is
+    // learned of its kind.
+    drainMs(j: Job) -> long = if j.durationLearned then j.expectedMs else j.deadlineMs
+
+    // What a `started` event adds for a job backfilled ahead of a draining job: its id.
+    backfilledField(ahead: Option[long]) -> Vector[(string, Json)] = ahead match
+        Some(id) -> [("backfilled_ahead_of", Json.num(id))]
+        None -> []
+
     // Serves messages until the daemon has stopped.
     serve()
         loop
@@ -317,6 +328,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         val id = nextId
         nextId += 1
         val job = Job(id, spec, now(), time.now().epochMicros, deadline, expected, s"$home/jobs/$id.log")
+        job.durationLearned = marshal.durationLearned(config.learning, past)
         reserve(job)
         jobs(id) = job
         if spec.after.isEmpty()
@@ -640,15 +652,15 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
 
     plan(outside: Outside)
         val t = now()
-        val started = running.map(j -> Started(j.id, j.spec.units, holds(j), j.spec.landing, j.startedMs, j.expectedMs, j.spec.quick)).toVector()
-        val waiting = eligible().map(j -> Waiting(j.id, j.spec.units, j.reserved, j.spec.landing, j.expectedMs, j.arrived, j.spec.quick))
-        for id in marshal.schedule(config.budget, started, waiting, t, outside, marshal.fairness(config, time.now().epochMicros))
+        val started = running.map(j -> Started(j.id, j.spec.units, holds(j), j.spec.landing, j.startedMs, j.expectedMs, j.spec.quick, drainMs(j))).toVector()
+        val waiting = eligible().map(j -> Waiting(j.id, j.spec.units, j.reserved, j.spec.landing, j.expectedMs, j.arrived, j.spec.quick, drainMs(j)))
+        for (id, ahead) in marshal.starts(config.budget, started, waiting, t, outside, marshal.fairness(config, time.now().epochMicros))
             val job = jobs(id)
             // a job that could not be started schedules again, which may have started this one
             if job.state != "queued" then continue
             if job.spec.landing && !slots.forall(ts -> ts.takeLanding()) then continue
             queue.remove(queue.indexOf(job))
-            start(job)
+            start(job, ahead)
 
     // While a development job waits, take-slot sees a ticket of the first one's arrival, so its
     // later runs wait behind it as they wait behind each other. While a landing job drains the
@@ -657,21 +669,27 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         val head = if queueHeld
             None
         else
-            val started = running.map(j -> Started(j.id, j.spec.units, holds(j), j.spec.landing, j.startedMs, j.expectedMs, j.spec.quick)).toVector()
-            val waiting = eligible().map(j -> Waiting(j.id, j.spec.units, j.reserved, j.spec.landing, j.expectedMs, j.arrived, j.spec.quick))
+            val started = running.map(j -> Started(j.id, j.spec.units, holds(j), j.spec.landing, j.startedMs, j.expectedMs, j.spec.quick, drainMs(j))).toVector()
+            val waiting = eligible().map(j -> Waiting(j.id, j.spec.units, j.reserved, j.spec.landing, j.expectedMs, j.arrived, j.spec.quick, drainMs(j)))
             marshal.ticketFor(config.budget, started, waiting, now(), outside, marshal.fairness(config, time.now().epochMicros))
         val want = head.map(t -> marshal.ticketName(t.0, ts.me))
         if want == ticket then return
         ticket.foreach(name -> ts.removeTicket(name))
         ticket = head.map(t -> ts.putTicket(t.0, t.1))
 
-    start(job: Job)
+    // Starts `job`; `ahead` is the draining job it is backfilled ahead of, which its log and its
+    // `started` event say.
+    start(job: Job, ahead: Option[long] = None)
         val spec = job.spec
         val program = if spec.landing then Command(spec.cmd(0), spec.cmd.drop(1)*) else Command("nice", (["-n", "15"] ++ spec.cmd)*)
         // A retry's output follows the earlier attempts' in the job's log.
         if job.attempt > 1 then fs.appendText(job.log, s"marshal: attempt ${job.attempt} of ${spec.retries + 1}\n")
+        val first = job.attempt == 1
+        for id in ahead
+            val line = s"marshal: backfilled ahead of $id\n"
+            if first then fs.writeText(job.log, line) else fs.appendText(job.log, line)
         val placed = program.inDir(spec.dir)
-        var command = (if job.attempt > 1 then placed.appendTo(job.log) else placed.toFile(job.log)).errorsToOutput().inNewGroup()
+        var command = (if job.attempt > 1 || ahead.isDefined() then placed.appendTo(job.log) else placed.toFile(job.log)).errorsToOutput().inNewGroup()
         for (name, value) in spec.env do command = command.withEnv(name, value)
         // every job knows its id and marshal's home: a type's run keeps its files under both
         command = command.withEnv("MARSHAL_JOB", job.id.toString()).withEnv("MARSHAL_HOME", home)
@@ -689,7 +707,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
                 val pid = job.pid
                 // a quick job, like a landing one, holds none of the units take-slot shares
                 slots.foreach(ts -> if spec.landing then ts.landed(pid) else ts.register(pid, if spec.quick then 0 else spec.units))
-                record("started", job, [("pgid", Json.num(job.pgid)), ("pid", Json.num(job.pid))])
+                record("started", job, [("pgid", Json.num(job.pgid)), ("pid", Json.num(job.pid))] ++ backfilledField(ahead))
                 watch(job)
             Err(e) ->
                 if spec.landing then slots.foreach(ts -> ts.releaseLanding(0))
@@ -990,8 +1008,8 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             ts.unlock()
             o)
         val t = now()
-        val started = running.map(j -> Started(j.id, j.spec.units, holds(j), j.spec.landing, j.startedMs, j.expectedMs, j.spec.quick)).toVector()
-        val waiting = queue.map(j -> Waiting(j.id, j.spec.units, j.reserved, j.spec.landing, j.expectedMs, j.arrived, j.spec.quick)).toVector()
+        val started = running.map(j -> Started(j.id, j.spec.units, holds(j), j.spec.landing, j.startedMs, j.expectedMs, j.spec.quick, drainMs(j))).toVector()
+        val waiting = queue.map(j -> Waiting(j.id, j.spec.units, j.reserved, j.spec.landing, j.expectedMs, j.arrived, j.spec.quick, drainMs(j))).toVector()
         val held = queue.filter(j -> j.held).map(j -> j.id).toVector()
         val queued = marshal.queueWaits(config.budget, started, waiting, held, queueHeld, t, outside.getOrElse(marshal.NoOutside), marshal.fairness(config, time.now().epochMicros)).map(w ->
             QueuedJob(jobs(w.0).info(t), w.1, w.2))
@@ -1175,7 +1193,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             j.resident.now, j.resident.peak, j.held, j.priority, j.urgentAt,
             j.pausedMs, if j.paused then wall(j.pausedAt) else 0,
             j.attempt, if j.state == "retrying" then wall(j.retryAt) else 0,
-            j.reserved, j.learnedMem, j.quietStopped, j.reservedFrom)
+            j.reserved, j.learnedMem, j.quietStopped, j.reservedFrom, j.durationLearned)
         SavedState(reportedVersion(), process.pid(), wallNow, wall(began), nextId,
             queue.map(saved).toVector(), running.map(saved).toVector(), ended.takeRight(Recent).map(saved).toVector(), ticket, queueHeld,
             waitingJobs.map(saved).toVector())
@@ -1215,6 +1233,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             job.paused = sj.pausedAt > 0
             job.pausedAt = if job.paused then mono(sj.pausedAt) else 0
             job.attempt = sj.attempt
+            job.durationLearned = sj.durationLearned
             // a state saved before reservations were recorded: learned again from the peaks
             if sj.reserved < 0
                 reserve(job)

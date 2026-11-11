@@ -47,3 +47,6 @@ deadlineMs(learning: Learning, kind: string, landing: bool, history: Vector[long
 expectedMs(learning: Learning, kind: string, landing: bool, history: Vector[long]) -> long
     val runs = recent(learning, history)
     if runs.length() < learning.minRuns then defaultDeadlineMs(kind, landing) / 2 else median(runs)
+
+// Whether `expectedMs` is learned from the history rather than guessed from the default deadline.
+durationLearned(learning: Learning, history: Vector[long]) -> bool = recent(learning, history).length() >= learning.minRuns

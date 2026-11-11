@@ -230,3 +230,18 @@ savedReservedFrom()
     assertEq(marshal.decodeState(s"{$head, \"queue\": [$old], \"running\": [], \"ended\": []}"), Ok(SavedState("0.2.7", 1, 2, 3, 4, [reservedJob(22, true)], [], [], None, false)))
     val nulled = full.replace("\"reserved_from\":\"\"", "\"reserved_from\":null")
     assertEq(marshal.decodeState(s"{$head, \"queue\": [$nulled], \"running\": [], \"ended\": []}"), Ok(SavedState("0.2.7", 1, 2, 3, 4, [reservedJob(22, true)], [], [], None, false)))
+
+@test("whether a job's duration was learned reads back; a state saved without it, or with null, reads as not learned; a wrong type is refused")
+savedDurationLearned()
+    for learned in [true, false]
+        val j = SavedJob(5, JobSpec("build", 1, 0, false, "/w", None, ["make"], []), "running", 1, 2, 3, 0, 5, 6, "/l", 7, 7, None, false, false, None, 0, 0, durationLearned = learned)
+        stateRoundTrip(stateOf([j], [j], [j]))
+    val head = "\"version\": \"0.2.10\", \"pid\": 1, \"saved_at\": 2, \"began_at\": 3, \"next_id\": 4"
+    val job = (learned: bool) -> SavedJob(9, savedSpec, "running", 1, 2, 3, 0, 1_800_000, 600_000, "/h/jobs/9.log", 70, 70, None, false, false, None, 0, 0, durationLearned = learned)
+    val full = marshal.encodeSavedJob(job(true)).render()
+    assert(full.contains(",\"duration_learned\":true"), full)
+    val withJob = (j: string) -> s"{$head, \"queue\": [], \"running\": [$j], \"ended\": []}"
+    val unlearned = job(false)
+    assertEq(marshal.decodeState(withJob(full.replace(",\"duration_learned\":true", ""))), Ok(SavedState("0.2.10", 1, 2, 3, 4, [], [unlearned], [], None, false)))
+    assertEq(marshal.decodeState(withJob(full.replace("\"duration_learned\":true", "\"duration_learned\":null"))), Ok(SavedState("0.2.10", 1, 2, 3, 4, [], [unlearned], [], None, false)))
+    stateRefused(withJob(full.replace("\"duration_learned\":true", "\"duration_learned\":1")), "`duration_learned` is not a bool")

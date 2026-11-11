@@ -1456,8 +1456,8 @@ the unbounded wait was not.
 - **The bound is a time, `drain_after` in `config.json`, 10 minutes by default (`"never"` turns it
   off).** Once the first development job in queue order has waited that long since it queued, it goes
   ahead of every other development job, urgent ones included. If it fits, it starts and nothing else
-  changes. If not, the machine drains for it: no other development job starts, not even as backfill,
-  until it has started. Why time: it is what the user notices, is the same for a 1-unit and a 12-unit
+  changes. If not, the machine drains for it: no other development job starts until it has started,
+  except as backfill (the next section). Why time: it is what the user notices, is the same for a 1-unit and a 12-unit
   job, and survives `restart` with no new state (a job's arrival is already kept). Alternatives: a
   count of times passed over (needs a new counter kept across restarts, and "passed" is ill-defined
   when several jobs start in one look); a bound proportional to the job's deadline (a long job would
@@ -1491,3 +1491,36 @@ the unbounded wait was not.
   a late development job jump take-slot runs that waited longer).
 - **Killing the draining job releases the hold at once**: the next look finds the next job past
   the bound, if any.
+
+## A drain backfills (branch `drain-backfill`)
+
+**Proposed.** The bug (user, on 0.2.10): one 1-unit build ran with most of an hour to its deadline,
+a 12-unit job drained for it, and seven 2–4-unit jobs waited `draining for` it on 11 idle units.
+"If it's draining, then shouldn't it let queued jobs run if they can".
+
+- **The drained job's expected start** is when enough running jobs are expected to have ended for
+  it to fit (units and memory both). Each running job is counted by its kind's **learned** duration
+  (the median `expected_ms`), or by its **deadline** when too few runs are known: the guess used
+  elsewhere (half the default deadline) is not good enough to promise a drained job anything, and
+  a deadline is a bound marshal enforces. Whether the duration was learned is a new job field,
+  `duration_learned`, kept across `restart` (absent reads as not learned, the cautious side).
+- **A job backfills** when it fits now and either (a) it too is expected to end by then, counted the
+  same way, or (b) it takes only units and memory the drained job will leave spare at its expected
+  start (0 when it needs the whole machine), whatever its length. Candidates are taken in queue
+  order (urgent first), as before; one that may not start does not block those behind it. This is
+  EASY backfilling, the rule the queue already uses for a blocked head, now applied to the drain.
+- **Overrun is accepted, and bounded.** A learned duration is a median, so a backfilled job will
+  sometimes run past it. A running job past its estimate is expected at any moment, so once the
+  drain waits on it the expected start is "now", and nothing further backfills: the drained job is
+  delayed by at most that one job's overrun, which its own deadline bounds, and delays never stack.
+  A job of an unlearned kind is counted by its deadline and so can never overrun into the drain.
+  Alternatives: backfilling only with a margin (e.g. twice the median; halves the idle units
+  recovered for a risk already bounded by the deadline), only kinds with a learned duration (the
+  screenshot's jobs would have run anyway by their deadlines, and the deadline form is exact), or
+  only by deadlines (safe, but a learned 5-minute test with a 40-minute deadline would never fit).
+  Revisit if drains are seen to run late.
+- **Nothing backfills ahead of a drained job that waits for take-slot**, as nothing overtakes a
+  job waiting on take-slot's runs elsewhere: they may end at any moment.
+- **It says so.** A backfilled job's log begins `marshal: backfilled ahead of <id>`, and its
+  `started` event adds `backfilled_ahead_of`. The jobs still held keep `draining for <id>`; `ls` and
+  `top` are otherwise unchanged (no new column).
