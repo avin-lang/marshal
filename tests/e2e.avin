@@ -102,10 +102,15 @@ reapOrphans() -> int
 reapAfterTest()
     reapOrphans()
 
+// The id `submit` prints, which is its last line: `m` merges standard error in, where a hint may
+// come first.
 submitted(home: string, args: string*) -> long
     val r = m(home, (["submit"] ++ args.toVector())*)
     assertEq(r.code, 0)
-    r.out.trim().toLong()
+    idIn(r.out)
+
+// The job id on the last line of a command's output.
+idIn(out: string) -> long = out.trim().lines().toVector().last().trim().toLong()
 
 events(home: string) -> Vector[Json] =
     fs.readText(home + "/events.jsonl").getOrElse("").lines().filter(l -> l.nonEmpty()).map(l -> json.parse(l).ok().get()).toVector()

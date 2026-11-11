@@ -275,7 +275,7 @@ automaticRetention()
     for text in ["two", "three"]
         val id = mWith(home, env, "submit", "--", "sh", "-c", s"echo $text").out.trim()
         assertEq(mWith(home, env, "wait", id).code, 0)
-    val blocker = mWith(home, env, "submit", "--units", "12", "--", "sleep", "30").out.trim().toLong()
+    val blocker = idIn(mWith(home, env, "submit", "--units", "12", "--", "sleep", "30").out)
     for _ in 1..50
         if !hasLog(home, 1) && !hasLog(home, 2) then break
         threads.sleep(millis(100))
