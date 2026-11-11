@@ -1154,3 +1154,27 @@ the reason in the state cell rather than a column.
   hand-rolled sizing counted characters, so a wide-character label overran its column and shifted
   the ones after it. Alternative: keeping `labelWidth` and counting display width by hand (a second
   copy of what the table already does).
+
+## A pause that holds, and a restart that keeps its socket (branch `restart-flakes`)
+
+**Proposed.**
+
+- **A paused job's groups are stopped again 10, 50 and 200 ms after the pause, at every sample
+  (each second) while it stays paused, and at once by a restarted image.** Why: on macOS a STOP sent
+  to a group misses a process that is between fork and exec as it arrives, so a job paused just
+  after it started, or while its shell starts a command, ran on with `pause` having answered that it
+  was paused. Sending STOP again does nothing to a stopped process and stops one that was missed or
+  continued by hand. Alternatives: checking each member's state after the STOP (no portable call
+  answers it, and `ps` per pause is a process per check), or refusing a pause until the job has run
+  a moment (a job's shell forks for the whole of its life, so it narrows the window without closing
+  it).
+- **A restarted image takes over its socket's path, removing whatever is there, rather than asking
+  whether a listener answers.** Why: a child the old image was starting, forked but not yet running
+  its program, holds a copy of the old listener until it does, so under load the new image found
+  the path answered, took it for another daemon, and exited, losing its jobs. The image that
+  restarts is the daemon: the `starting` lock and its pid keep any other from starting meanwhile.
+  Alternative: waiting in the old image for no start to be in flight before it execs (a start can
+  be begun by any thread, and a missed one still loses everything).
+- **`restart` asks the restarted daemon again when a connection closes unanswered,** until the
+  usual 30 s. Why: a connection made in the same moment reaches the old listener's copy and is
+  closed when that child's program starts; every other command already asks again this way.

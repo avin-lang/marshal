@@ -432,6 +432,10 @@ waitAcrossRestart()
 // What the home's daemon has written to its log.
 daemonLog(home: string) -> string = fs.readText(home + "/daemon.log").getOrElse("")
 
+// The time, in milliseconds since the epoch, of job `id`'s first event `name`; 0 when it has none.
+tsOf(home: string, id: long, name: string) -> long =
+    events(home).find(e -> e("id").asLong() == Some(id) && e("event").asString() == Some(name)).flatMap(e -> e("ts").asLong()).getOrElse(0)
+
 // `restart`, which must succeed; a failure says what the command and the daemon said.
 restarted(home: string) -> Ran
     val r = m(home, "restart")
@@ -485,16 +489,21 @@ restartIdle()
 @test("a deadline set before a restart fires after it, on time, not counted again from the restart")
 restartKeepsDeadline()
     val home = newHome()
-    val began = time.monotonic()
     val id = submitted(home, "--deadline", "4s", "--", "sleep", "60")
     threads.sleep(millis(3000))
     restarted(home)
-    val until = began + millis(20000)
-    while !daemonLog(home).contains(s"job $id passed its deadline") && time.monotonic() < until do threads.sleep(millis(50))
-    val firedAfter = (time.monotonic() - began).toMillis()
-    assert(firedAfter < 6000, s"the deadline fired after ${firedAfter}ms, not about 4000")
+    // how long after its start the restart was over, by the clock the daemon's events use
+    val started = tsOf(home, id, "started")
+    val restartedAfter = time.now().epochMillis() - started
+    // on time: from the job's start, not counted again from the restart, which would be
+    // `restartedAfter` later; the deadline's line is looked for until the job has ended
+    val until = time.monotonic() + millis(30000)
+    while !daemonLog(home).contains(s"job $id passed its deadline") && time.monotonic() < until do threads.sleep(millis(20))
+    val firedAfter = time.now().epochMillis() - started
     val r = m(home, "wait", id.toString())
     assertEq(r.code, 124)
+    assert(4000 <= firedAfter, s"the deadline fired ${firedAfter}ms after the start, before its 4000")
+    assert(firedAfter < restartedAfter + 4000, s"the deadline fired ${firedAfter}ms after the start, counted again from the restart ${restartedAfter}ms after it")
     assert(r.out.contains("timed out"), r.out)
     assert(!groupAlive(pgidOf(home, id)))
     assertEq(eventsOf(home, id), ["submitted", "started", "timeout"])
