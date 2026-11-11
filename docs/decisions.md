@@ -1373,7 +1373,7 @@ The request was the user's: a 20-second test sat queued for more than five minut
 The request was the user's: top's job list could not go back past the ten ended jobs the snapshot
 carries.
 
-**Proposed:**
+**Settled on the user's delegation 2026-11-11:**
 
 - **Where the earlier jobs come from: top reads `events.jsonl` itself**, as `marshal history` does
   (each job as its last ending event describes it, a retried attempt skipped, ordered by when it
