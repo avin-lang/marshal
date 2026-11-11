@@ -1416,7 +1416,7 @@ carries.
 
 ## `wait <id> --timeout` (branch `wait-timeout`)
 
-**Proposed.**
+**Settled on the user's delegation 2026-11-11:**
 
 - **`wait <id>` takes `--timeout <t>` before or after the id.** The help already listed it. When the
   job has not ended by then the command prints `marshal: timed out after <t> waiting for job <id>` and
