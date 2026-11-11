@@ -2,15 +2,15 @@
 |│ Up, Down, PgUp, PgDn, Home, End   select a job │|
 |│                 (after 5 seconds without a key │|
 |│                 such key or Enter only shows it│|
+|│                 Down or PgDn on the last job lo│|
+|│                 event log; End goes to the very│|
+|│                 says which jobs show, `jobs 41–│|
 |│ Enter  l        the selected job's log, followi│|
 |│                 (open: PgUp PgDn Home End scrol│|
 |│ k               kill the selected job, after y │|
 |│ f               show all jobs, running, queued │|
 |│ h  ?            this help                      │|
 |│ q               quit                           │|
-|│                                                │|
-|│ A queued job's STATE is its place in the queue │|
-|│ no units, no memory, lane busy (another landing│|
 |╰────────────────────────────────────────────────╯|
 --
 0 0..50 Basic(6)/Default/0

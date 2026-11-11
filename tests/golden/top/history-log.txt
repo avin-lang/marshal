@@ -1,0 +1,109 @@
+|marshal  up 0:05   1 running  0 queued   landing: free                                                       filter: all|
+|units [███·····································] 1 / 12                                                                 |
+|mem   [                                        ] 0 / 16G   rss 0                                                        |
+|                                                                                                                        |
+|   ID STATE          KIND     UNITS   RESV   RSS  PEAK STARTED      ELAPSED DEADLINE LABEL COMMAND                      |
+| 1010 exit 0         build        1      -     -     - -               1:00        -       sleep 30                    │|
+| 1009 exit 0         build        1      -     -     - -               1:00        -       sleep 30                    █|
+| 1008 exit 0         build        1      -     -     - -               1:00        -       sleep 30                    █|
+| 1007 exit 0         build        1      -     -     - -               1:00        -       sleep 30                    █|
+| 1006 exit 0         build        1      -     -     - -               1:00        -       sleep 30                    █|
+| 1005 exit 0         build        1      -     -     - -               1:00        -       sleep 30                    █|
+| 1004 exit 0         build        1      -     -     - -               1:00        -       sleep 30                    █|
+| 1003 exit 0         build        1      -     -     - -               1:00        -       sleep 30                    │|
+| 1002 exit 0         build        1      -     -     - -               1:00        -       sleep 30                    │|
+| 1001 exit 0         build        1      -     -     - -               1:00        -       sleep 30                    │|
+| 1000 exit 0         build        1      -     -     - -               1:00        -       sleep 30                    │|
+|╭─job 1000 log, following; PgUp PgDn Home End scroll, Esc closes───────────────────────────────────────────────────────╮|
+|│kind    build                                                                                                         │|
+|│command sleep 30                                                                                                      │|
+|│──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────│|
+|│(nothing in the log yet)                                                                                              │|
+|│                                                                                                                      │|
+|│                                                                                                                      │|
+|│                                                                                                                      │|
+|│                                                                                                                      │|
+|│                                                                                                                      │|
+|│                                                                                                                      │|
+|│                                                                                                                      │|
+|╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯|
+|hHelp EnterLog kKill fFilter qQuit                                                                       jobs 2–12 of 21|
+--
+0 0..7 Default/Default/1
+0 19..28 Basic(2)/Default/0
+0 30..38 Basic(3)/Default/0
+0 50..54 Basic(8)/Default/0
+0 109..120 Basic(8)/Default/0
+1 7..10 Basic(2)/Default/0
+1 10..47 Basic(8)/Default/0
+2 7..47 Basic(8)/Default/0
+4 0..120 Default/Default/17
+5 6..20 Basic(2)/Default/0
+5 76..84 Basic(8)/Default/0
+5 119..120 Basic(8)/Default/0
+6 6..20 Basic(2)/Default/0
+6 76..84 Basic(8)/Default/0
+7 6..20 Basic(2)/Default/0
+7 76..84 Basic(8)/Default/0
+8 6..20 Basic(2)/Default/0
+8 76..84 Basic(8)/Default/0
+9 6..20 Basic(2)/Default/0
+9 76..84 Basic(8)/Default/0
+10 6..20 Basic(2)/Default/0
+10 76..84 Basic(8)/Default/0
+11 6..20 Basic(2)/Default/0
+11 76..84 Basic(8)/Default/0
+12 6..20 Basic(2)/Default/0
+12 76..84 Basic(8)/Default/0
+12 119..120 Basic(8)/Default/0
+13 6..20 Basic(2)/Default/0
+13 76..84 Basic(8)/Default/0
+13 119..120 Basic(8)/Default/0
+14 6..20 Basic(2)/Default/0
+14 76..84 Basic(8)/Default/0
+14 119..120 Basic(8)/Default/0
+15 0..6 Default/Default/16
+15 6..20 Basic(2)/Default/16
+15 20..76 Default/Default/16
+15 76..84 Basic(8)/Default/16
+15 84..119 Default/Default/16
+15 119..120 Basic(8)/Default/0
+16 0..120 Basic(6)/Default/0
+17 0..1 Basic(6)/Default/0
+17 1..5 Default/Default/1
+17 9..14 Basic(8)/Default/0
+17 119..120 Basic(6)/Default/0
+18 0..1 Basic(6)/Default/0
+18 1..8 Default/Default/1
+18 9..17 Basic(8)/Default/0
+18 119..120 Basic(6)/Default/0
+19 0..120 Basic(6)/Default/0
+20 0..1 Basic(6)/Default/0
+20 1..25 Basic(8)/Default/0
+20 119..120 Basic(6)/Default/0
+21 0..1 Basic(6)/Default/0
+21 119..120 Basic(6)/Default/0
+22 0..1 Basic(6)/Default/0
+22 119..120 Basic(6)/Default/0
+23 0..1 Basic(6)/Default/0
+23 119..120 Basic(6)/Default/0
+24 0..1 Basic(6)/Default/0
+24 119..120 Basic(6)/Default/0
+25 0..1 Basic(6)/Default/0
+25 119..120 Basic(6)/Default/0
+26 0..1 Basic(6)/Default/0
+26 119..120 Basic(6)/Default/0
+27 0..1 Basic(6)/Default/0
+27 119..120 Basic(6)/Default/0
+28 0..120 Basic(6)/Default/0
+29 0..1 Default/Default/1
+29 1..6 Basic(0)/Basic(6)/0
+29 6..11 Default/Default/1
+29 11..15 Basic(0)/Basic(6)/0
+29 15..16 Default/Default/1
+29 16..21 Basic(0)/Basic(6)/0
+29 21..22 Default/Default/1
+29 22..29 Basic(0)/Basic(6)/0
+29 29..30 Default/Default/1
+29 30..35 Basic(0)/Basic(6)/0
+29 105..120 Basic(8)/Default/0

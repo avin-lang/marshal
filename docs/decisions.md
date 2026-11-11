@@ -1367,3 +1367,49 @@ The request was the user's: a 20-second test sat queued for more than five minut
   - *Preemption* (pausing a long job to run a short one): a paused job keeps its memory, so it frees
     nothing the short job needs but CPU, and pausing a tool mid-write is unsafe for some; niced quick
     jobs beside the budget get the same effect.
+
+## `top` scrolls back through every ended job (branch `top-history`)
+
+The request was the user's: top's job list could not go back past the ten ended jobs the snapshot
+carries.
+
+**Proposed:**
+
+- **Where the earlier jobs come from: top reads `events.jsonl` itself**, as `marshal history` does
+  (each job as its last ending event describes it, a retried attempt skipped, ordered by when it
+  ended and then by id). Why: top already reads job logs from their files, so it is a client on the
+  daemon's machine and home by design; `history` never asks the daemon; the daemon, which serves
+  every job, is not made to read a growing log on a viewer's keypress; and there is no protocol
+  change, so a top against an older daemon still scrolls back. Alternative: a `history` request with
+  `before`/`limit` answered by the daemon (usable by other clients, but the daemon pays the read,
+  and a new request an older daemon refuses).
+- **Read once, paged from memory**: the first page reads the whole log and keeps its ended jobs;
+  later pages are slices of it. Jobs that end after that come in the snapshots, so the pages before
+  them never change. The read is synchronous: `marshal history --limit 5000`, which parses the same
+  lines the same way, takes 75 ms on this machine's 5.4 MB, 1,057-job log. Alternatives: reading
+  the log again per page (75 ms per page and growing), or a reader thread (no visible pause on a
+  far larger log, but state shared with the drawing loop for a pause not yet seen).
+- **A page is 100 jobs**, loaded when Down or PgDn is pressed on the last line, the selection put on
+  the first job loaded (PgDn too, so a page never skips past jobs the user has not seen). A page whose
+  jobs are all already listed is followed by the next. Why: a few screens per load, and every line
+  is drawn each frame, so loading only what is scrolled to keeps the frame cheap.
+- **End loads every page and goes to the very oldest job**, rather than jumping to the oldest page
+  and leaving a hole. Why: End means the bottom of the list, and the list stays one contiguous
+  sequence. Cost: on a log of tens of thousands of jobs every line is in the table afterwards.
+- **The pages stay through every snapshot until the filter changes.** Once a page is loaded, a job
+  that drops out of the snapshot's ten joins the loaded jobs, so the list has no hole; the selection
+  stays on its job as before. Without pages loaded nothing changes from before. The running and
+  queued filters list no ended jobs and load none; changing the filter drops the pages, as the
+  request asked. Alternative: keeping pages across filters (cheaper to come back, but the request
+  named the filter change as the end).
+- **The position on the bottom line**: `jobs 41–60 of 1,234` at the right end, dim, where it fits
+  beside the keys (a message is cut before it); shown while the lines overflow the table or earlier
+  jobs may be loaded, so a table that fits with nothing more to load looks as before. `+` follows the
+  count until the first page says how many are left; after it the count is exact. Alternative: in
+  the header beside the filter (the header is full on a narrow screen).
+- **The scroll bar** is tui 0.2.3's `Table.scrollbar`, on for the job table; it measures the lines
+  loaded, while the position counts the whole history. It is not on for the log pane: the pane is
+  given only the last lines it shows plus how far it is scrolled back, not the whole log, so a bar
+  there would size its thumb against the lines read rather than the log.
+- **An unreadable log** says `cannot read earlier jobs: <why>` on the bottom line, loads nothing,
+  and is tried again on the next key.

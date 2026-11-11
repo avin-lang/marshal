@@ -3,12 +3,12 @@
 |mem   [█████▊██▏    ] 7G / 16G   rss 6.0|
 |                                        |
 |   ID STATE          KIND     UNITS   RE|
-|   21 landing        test*        2     |
-|   22 running        build        3     |
-|   23 paused         bench        1  ~1.|
-|   24 running        lint         1     |
-|   30 #1 no units    build        4     |
-|   31 #2 no memory   build        1     |
+|   21 landing        test*        2    █|
+|   22 running        build        3    █|
+|   23 paused         bench        1  ~1│|
+|   24 running        lint         1    │|
+|   30 #1 no units    build        4    │|
+|   31 #2 no memory   build        1    │|
 |Kill job 21 (sysl test compiler --timeou|
 --
 0 0..7 Default/Default/1
@@ -23,10 +23,14 @@
 4 0..40 Default/Default/17
 5 0..6 Default/Default/16
 5 6..20 Basic(2)/Default/17
-5 20..40 Default/Default/16
+5 20..39 Default/Default/16
 6 6..20 Basic(2)/Default/1
 7 6..20 Basic(3)/Default/17
+7 39..40 Basic(8)/Default/0
 8 6..20 Basic(2)/Default/1
+8 39..40 Basic(8)/Default/0
 9 6..20 Basic(3)/Default/0
+9 39..40 Basic(8)/Default/0
 10 6..20 Basic(3)/Default/0
+10 39..40 Basic(8)/Default/0
 11 0..40 Basic(0)/Basic(1)/1

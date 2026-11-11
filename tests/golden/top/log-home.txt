@@ -2,20 +2,20 @@
 |units [██████████████████████████████··········] 6 + take-slot 3 / 12, 2 waiting   landing 2                            |
 |mem   [█████████████████▌███████               ] 7G / 16G   rss 6.0G   machine 64G                                      |
 |                                                                                                                        |
-|   ID STATE          KIND     UNITS   RESV   RSS  PEAK STARTED      ELAPSED DEADLINE LABEL          COMMAND             |
-|   21 landing        test*        2     4G  3.0G  5.0G -              25:00     5:00 release 0.3 t… sysl test compiler …|
-|   22 running        build        3     2G  2.5G  3.0G -              29:30     0:30                cargo build --relea…|
-|   23 paused         bench        1  ~1.0G     -     - -               3:00     1:00                ./bench.sh          |
-|   24 running        lint         1      -     -     - -              26:00     4:00                eslint .            |
-|   30 #1 no units    build        4      -     -     - -                  -    45:00                make -j4            |
-|   31 #2 no memory   build        1     8G     -     - -                  -    30:00                make -j4            |
-|   32 #3 lane busy   test*        1      -     -     - -                  -    30:00                make -j4            |
-|   33 #4 draining    build        1      -     -     - -                  -    30:00                make -j4            |
-|   34 #5 take-slot   build        1      -     -     - -                  -    30:00                make -j4            |
-|   35 #6 behind 30   build        1      -     -     - -                  -    30:00                make -j4            |
-|   36 #7 starting    build        1      -     -     - -                  -    30:00                make -j4            |
-|   37 #8 held        build        1      -     -     - -                  -    30:00 日本語のラベ…  make -j4            |
-|   38 #9 queue held  build        1      -     -     - -                  -    30:00                make -j4            |
+|   ID STATE          KIND     UNITS   RESV   RSS  PEAK STARTED      ELAPSED DEADLINE LABEL         COMMAND              |
+|   21 landing        test*        2     4G  3.0G  5.0G -              25:00     5:00 release 0.3 … sysl test compiler …█|
+|   22 running        build        3     2G  2.5G  3.0G -              29:30     0:30               cargo build --relea…█|
+|   23 paused         bench        1  ~1.0G     -     - -               3:00     1:00               ./bench.sh          █|
+|   24 running        lint         1      -     -     - -              26:00     4:00               eslint .            █|
+|   30 #1 no units    build        4      -     -     - -                  -    45:00               make -j4            █|
+|   31 #2 no memory   build        1     8G     -     - -                  -    30:00               make -j4            █|
+|   32 #3 lane busy   test*        1      -     -     - -                  -    30:00               make -j4            █|
+|   33 #4 draining    build        1      -     -     - -                  -    30:00               make -j4            █|
+|   34 #5 take-slot   build        1      -     -     - -                  -    30:00               make -j4            │|
+|   35 #6 behind 30   build        1      -     -     - -                  -    30:00               make -j4            │|
+|   36 #7 starting    build        1      -     -     - -                  -    30:00               make -j4            │|
+|   37 #8 held        build        1      -     -     - -                  -    30:00 日本語のラベ… make -j4            │|
+|   38 #9 queue held  build        1      -     -     - -                  -    30:00               make -j4            │|
 |╭─job 21 log, 10000 lines back; PgUp PgDn Home End scroll, Esc closes──────────────────────────────────────────────────╮|
 |│kind    test   label  release 0.3 train                                                                               │|
 |│command sysl test compiler --timeout 1800                                                                             │|
@@ -31,7 +31,7 @@
 |│line 9 of the build output                                                                                            │|
 |│line 10 of the build output                                                                                           │|
 |╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯|
-|hHelp EnterLog kKill fFilter qQuit                                                                                      |
+|hHelp EnterLog kKill fFilter qQuit                                                                       jobs 1–13 of 20|
 --
 0 0..7 Default/Default/1
 0 23..32 Basic(2)/Default/0
@@ -51,7 +51,7 @@
 5 6..20 Basic(2)/Default/17
 5 20..76 Default/Default/16
 5 76..84 Basic(3)/Default/16
-5 84..120 Default/Default/16
+5 84..119 Default/Default/16
 6 6..20 Basic(2)/Default/1
 6 76..84 Basic(1)/Default/1
 7 6..20 Basic(3)/Default/17
@@ -68,14 +68,19 @@
 12 76..84 Basic(8)/Default/0
 13 6..20 Basic(3)/Default/0
 13 76..84 Basic(8)/Default/0
+13 119..120 Basic(8)/Default/0
 14 6..20 Basic(3)/Default/0
 14 76..84 Basic(8)/Default/0
+14 119..120 Basic(8)/Default/0
 15 6..20 Basic(3)/Default/0
 15 76..84 Basic(8)/Default/0
+15 119..120 Basic(8)/Default/0
 16 6..20 Basic(3)/Default/0
 16 76..84 Basic(8)/Default/0
+16 119..120 Basic(8)/Default/0
 17 6..20 Basic(3)/Default/0
 17 76..84 Basic(8)/Default/0
+17 119..120 Basic(8)/Default/0
 18 0..120 Basic(6)/Default/0
 19 0..1 Basic(6)/Default/0
 19 1..5 Default/Default/1
@@ -119,3 +124,4 @@
 33 22..29 Basic(0)/Basic(6)/0
 33 29..30 Default/Default/1
 33 30..35 Basic(0)/Basic(6)/0
+33 105..120 Basic(8)/Default/0

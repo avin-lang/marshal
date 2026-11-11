@@ -497,7 +497,8 @@ against its own budget. `marshal status` shows what take-slot holds.
   system's) to the minute, as `MM-DD hh:mm` (`11-07 08:31`); `-` for a job that has not started.
   `marshal ls` has the same column. Under 90 columns `top` leaves PEAK out and shows just `hh:mm` for
   a job that started today, so STARTED and the rest keep their room; `--json` carries `started_at` and the peak as before.
-- **Jobs**: running jobs, then queued ones, then the last ten that ended, the latest first. ELAPSED
+- **Jobs**: running jobs, then queued ones, then the last ten that ended, the latest first, then the
+  earlier ones scrolled back to (see Scrolling back). ELAPSED
   is the time since the job started (a paused job's stands still), `-` for a job that has not started,
   and counts on between snapshots; DEADLINE is a running job's time left, yellow under a quarter of its
   deadline or five minutes and red under a tenth or one minute, and a queued job's deadline to come.
@@ -513,6 +514,14 @@ against its own budget. `marshal status` shows what take-slot holds.
   the table, following the end as it grows (PgUp, PgDn, Home, End scroll it while it is open, Esc
   closes it); `k` kills the selected job after `y`; `f` shows all jobs, the running, the queued or
   the ended ones; `h` the keys; `q` quits.
+- **Scrolling back**: the snapshot carries only the last ten ended jobs. Down or PgDn on the last
+  line loads the next 100 that ended before them from the event log (what `marshal history` reads)
+  and selects the first of them; End loads every page and goes to the very oldest job; Home goes
+  back to the top. The pages stay while top runs, through every snapshot (a job that drops out of
+  the last ten stays in the list), until `f` changes the filter; the running and queued filters
+  list no ended jobs and load none. The table draws a scroll bar down its right edge while its lines
+  overflow, and the bottom line says which lines show, `jobs 41–60 of 1,234`, with `+` after the
+  count while earlier jobs may be there that are not loaded yet.
 - **Log pane header**: the pane opens with the job's `kind` and its whole `command` (wrapped to the
   pane, never cut off, which the table has to do), bold labels and dim values, ruled off from the
   log. The header stays put while the log scrolls under it; in a very short pane the command is

@@ -10,7 +10,7 @@ import dev.avinlang.marshal.{NoUnits, NoMemory, LaneBusy, Draining, ForTakeSlot,
 import dev.avinlang.marshal.{Exited, Signalled, TimedOut, Cancelled, Lost, DependencyFailed, Quiet}
 import dev.avinlang.tui.{Black, Blue, Bold, BrightBlack, Char, Column, Ctrl, Cyan, Dim, Down, End, Enter, Escape, Event,
                          Fill, Fixed, Green, Grid, Home, Key, KeyPress, Magenta, Modal, ModalStack, PageDown, PageUp,
-                         Rect, Red, Reverse, Rounded, ScrollView, Segment, Span, Stop, Style, Table, Up, Yellow, textWidth,
+                         Rect, Red, Reverse, Rounded, Scrollbar, ScrollView, Segment, Span, Stop, Style, Table, Up, Yellow, textWidth,
                          wrapChars}
 
 // Which jobs the table lists.
@@ -55,6 +55,22 @@ lines(o: Overview, f: Filter) -> Vector[Line]
         ShowRunning -> running
         ShowQueued -> queued ++ waits
         ShowFinished -> recent
+
+// Whether the table under `f` lists ended jobs, and so the earlier ones scrolled back to.
+admitsHistory(f: Filter) -> bool = f == ShowAll || f == ShowFinished
+
+// The text that says which of the table's lines show: `jobs 41–60 of 1,234`, the first and the last
+// line shown (counted from 1) and how many there are, `+` after the count while earlier jobs may be
+// there that are not loaded yet.
+positionText(first: int, last: int, total: int, more: bool) -> string =
+    s"jobs ${grouped(first)}–${grouped(last)} of ${grouped(total)}${if more then "+" else ""}"
+
+// `n` with a comma between each three digits: `1,234`.
+grouped(n: int) -> string
+    val digits = n.toString()
+    if n < 0 then return "-" + grouped(-n)
+    if digits.charCount() <= 3 then return digits
+    grouped(n / 1000) + "," + digits.drop(digits.charCount() - 3)
 
 // Whether a line is a job waiting for others or waiting to retry.
 waiting(l: Line) -> bool = l.job.outcome.isEmpty() && (l.job.state == "waiting" || l.job.state == "retrying")
@@ -234,9 +250,23 @@ class App(val sock: string)
     // Rows of the table's page and of the log pane at the last draw, which page keys move by.
     var page = 1
     var logRows = 10
+    // Where the jobs that ended before the snapshot's come from (none: the table stops at the
+    // snapshot's), the pages of them loaded, the latest first, and how many more there are (None:
+    // none asked for yet). The pages stay until the filter changes.
+    var history: Option[HistorySource] = None
+    var older: Vector[JobInfo] = []
+    var olderLeft: Option[int] = None
+    // What the bottom line says of the table's scroll, as the last draw found it ("" for nothing).
+    var position = ""
 
     // A new snapshot.
     update(o: Overview)
+        // once earlier jobs are loaded, the ended jobs the snapshot no longer carries join them, so
+        // the list scrolled back through has no hole
+        for before in overview
+            if olderLeft.isDefined()
+                val now = (o.recent ++ o.running ++ o.waiting ++ o.queued.map(q -> q.job)).map(j -> j.id).toSet()
+                older = before.recent.filter(j -> !now.contains(j.id)) ++ older
         overview = Some(o)
         problem = None
         noDaemon = false
@@ -250,7 +280,8 @@ class App(val sock: string)
 
     // The lines shown again, the selection kept on its job and the log pane on its own.
     private refresh()
-        shown = overview.map(o -> lines(o, filter)).getOrElse([])
+        val live = overview.map(o -> lines(o, filter)).getOrElse([])
+        shown = if admitsHistory(filter) && older.nonEmpty() then live ++ earlier(live) else live
         val at = selectedId match
             Some(id) -> shown.indexWhere(l -> l.job.id == id)
             None -> -1
@@ -260,6 +291,40 @@ class App(val sock: string)
             for o in overview
                 val now = lines(o, ShowAll).find(l -> l.job.id == j.id)
                 if now.isDefined() then logOf = now.map(l -> l.job)
+
+    // The loaded earlier jobs as lines, leaving out any that `live` already lists.
+    private earlier(live: Vector[Line]) -> Vector[Line]
+        val ids = live.map(l -> l.job.id).toSet()
+        older.filter(j -> !ids.contains(j.id)).map(j -> Line(j, None))
+
+    // Whether scrolling past the last line may load earlier jobs: there is a history, the filter lists
+    // ended jobs, and it is not known to hold no more.
+    pageable() -> bool = history.isDefined() && admitsHistory(filter) && olderLeft != Some(0)
+
+    // Loads the next page of earlier jobs after the oldest ended job listed; how many lines it adds.
+    // Jobs already listed are left out, and a page that adds none is followed by the next while there
+    // are more. A history that cannot be read says why on the bottom line and adds none.
+    loadPage() -> int
+        val source = history match
+            Some(s) -> s
+            None -> return 0
+        val before = shown.length()
+        val ended = shown.filter(l -> l.job.outcome.isDefined())
+        var cursor = if older.nonEmpty() then older.lastOption().map(j -> j.id) else ended.lastOption().map(l -> l.job.id)
+        loop
+            if olderLeft == Some(0) then break
+            source(cursor, HistoryPageSize) match
+                Ok(p) ->
+                    val listed = (shown.map(l -> l.job.id) ++ older.map(j -> j.id)).toSet()
+                    older = older ++ p.jobs.filter(j -> !listed.contains(j.id))
+                    olderLeft = Some(p.left)
+                    refresh()
+                    if shown.length() > before || p.jobs.isEmpty() then break
+                    cursor = p.jobs.lastOption().map(j -> j.id)
+                Err(why) ->
+                    message = s"cannot read earlier jobs: $why"
+                    break
+        shown.length() - before
 
     private remember()
         selectedId = selected().map(j -> j.id)
@@ -325,11 +390,11 @@ class App(val sock: string)
     key(Escape) = closeLog()
     key(Char('s')) = if noDaemon then StartDaemon else Stay
     key(Up) = move(-1)
-    key(Down) = move(1)
+    key(Down) = if atBottom() then scrollBack() else move(1)
     key(PageUp) = if logOf.isDefined() then scrollLog(PageUp) else move(-page)
-    key(PageDown) = if logOf.isDefined() then scrollLog(PageDown) else move(page)
+    key(PageDown) = if logOf.isDefined() then scrollLog(PageDown) elif atBottom() then scrollBack() else move(page)
     key(Home) = if logOf.isDefined() then scrollLog(Home) else moveTo(0)
-    key(End) = if logOf.isDefined() then scrollLog(End) else moveTo(shown.length() - 1)
+    key(End) = if logOf.isDefined() then scrollLog(End) else oldest()
     key(_) = Stay
 
     private showHelp() -> Action
@@ -338,8 +403,26 @@ class App(val sock: string)
 
     private cycleFilter() -> Action
         filter = nextFilter(filter)
+        older = []
+        olderLeft = None
         refresh()
         Stay
+
+    // Whether the selection is on the last line, or there are none.
+    private atBottom() -> bool = table.selected >= shown.length() - 1
+
+    // Down or PgDn on the last line: the next page of earlier jobs, the selection on the first of them.
+    private scrollBack() -> Action
+        val first = shown.length()
+        if pageable() && loadPage() > 0 then return moveTo(first)
+        if history.isDefined() && admitsHistory(filter) && message.isEmpty() then message = "no earlier jobs"
+        moveTo(shown.length() - 1)
+
+    // End: the oldest job, every page of earlier jobs loaded first.
+    private oldest() -> Action
+        while pageable() && loadPage() > 0
+            ()
+        moveTo(shown.length() - 1)
 
     private askKill() -> Action
         selected() match
@@ -395,6 +478,8 @@ class App(val sock: string)
             val startedWidth = if rows.exists(r -> r(PeakColumn).text.charCount() > 7) then 11 else 7
             val base = columnsFor(area.w, startedWidth)
             val drawing = Table(withLabelColumn(base))
+            // a bar down the right edge while the lines overflow the rows, over the lines loaded
+            drawing.scrollbar = Some(Scrollbar())
             drawing.selected = table.selected
             drawing.offset = table.offset
             drawing.selectedStyle = if highlighted(now) then Style.plain().with(Reverse) else drawing.rowStyle
@@ -402,12 +487,25 @@ class App(val sock: string)
             table.selected = drawing.selected
             table.offset = drawing.offset
             remember()
+            position = positionOf(area.h - 1)
             for j in logOf
                 drawLog(g, parts(1), j)
         else
+            position = ""
             drawProblem(g)
         drawFooter(g)
         modals.draw(g, g.area())
+
+    // What the bottom line says of the table's scroll with `visible` rows for lines: which lines show,
+    // of how many, while they do not all fit or earlier jobs may be loaded; "" otherwise.
+    positionOf(visible: int) -> string
+        val count = shown.length()
+        if count == 0 || (count <= visible && !pageable()) then return ""
+        val first = table.offset + 1
+        val last = minInt(table.offset + maxInt(visible, 1), count)
+        val more = pageable() && olderLeft.isEmpty()
+        val total = count + (if pageable() then olderLeft.getOrElse(0) else 0)
+        positionText(first, last, total, more)
 
     // The log pane: a box titled with the job, its log's lines at the pane's scroll inside.
     private drawLog(g: Grid, r: Rect, j: JobInfo)
@@ -480,8 +578,12 @@ class App(val sock: string)
             g.text(0, y, s"Kill job ${j.id} (${j.cmd.mkString(" ")})? y/n", Style(Black, Red, Bold), line)
             return
         val x = g.keyHints(0, y, footerKeys, Style.plain().with(Bold), Style(Black, Cyan, 0), line, sep = 0, gap = 0, cut = true)
-        if message.nonEmpty() && x + 1 < g.width
-            g.textIn(x + 1, y, g.width - x - 1, message, Style.fg(Yellow), 1, line)
+        // the scroll position at the right end, where it fits beside the keys; the message before it
+        val right = if position.nonEmpty() && x + 2 + textWidth(position) <= g.width then g.width - textWidth(position) else g.width
+        if right < g.width then g.text(right, y, position, Style.fg(BrightBlack), line)
+        val room = (if right < g.width then right - 1 else g.width) - x - 1
+        if message.nonEmpty() && room > 0
+            g.textIn(x + 1, y, room, message, Style.fg(Yellow), 1, line)
 
 // The help, over the screen: the lines one column in from its border, cut at the box's edge where the
 // screen is too small, and closed by any key.
@@ -531,6 +633,9 @@ val helpLines: Vector[string] = [
     "Up, Down, PgUp, PgDn, Home, End   select a job",
     "                (after 5 seconds without a key the highlight hides; the first",
     "                such key or Enter only shows it again, on the same job)",
+    "                Down or PgDn on the last job loads earlier ones from the",
+    "                event log; End goes to the very oldest; the bottom line",
+    "                says which jobs show, `jobs 41–60 of 1,234`",
     "Enter  l        the selected job's log, following its end",
     "                (open: PgUp PgDn Home End scroll it, Esc closes)",
     "k               kill the selected job, after y",

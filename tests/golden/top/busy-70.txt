@@ -3,25 +3,25 @@
 |mem   [██████████▏███▍        ] 7G / 16G   rss 6.0G   machine 64G     |
 |                                                                      |
 |   ID STATE          KIND     UNITS   RESV   RSS STARTED  ELAPSED DEAD|
-|   21 landing        test*        2     4G  3.0G -          25:00     |
-|   22 running        build        3     2G  2.5G -          29:30     |
-|   23 paused         bench        1  ~1.0G     - -           3:00     |
-|   24 running        lint         1      -     - -          26:00     |
-|   30 #1 no units    build        4      -     - -              -    4|
-|   31 #2 no memory   build        1     8G     - -              -    3|
-|   32 #3 lane busy   test*        1      -     - -              -    3|
-|   33 #4 draining    build        1      -     - -              -    3|
-|   34 #5 take-slot   build        1      -     - -              -    3|
-|   35 #6 behind 30   build        1      -     - -              -    3|
-|   36 #7 starting    build        1      -     - -              -    3|
-|   37 #8 held        build        1      -     - -              -    3|
-|   38 #9 queue held  build        1      -     - -              -    3|
-|   40 after 21,22    build        1      -     - -              -    3|
-|   41 retry 2        build        1      -     - -              -    3|
-|   19 quiet          build        1      -     - -           2:00     |
-|   18 dep 17 failed  build        1      -     - -           2:00     |
-|   17 exit 1         build        1      -     - -           2:00     |
-|hHelp EnterLog kKill fFilter qQuit                                    |
+|   21 landing        test*        2     4G  3.0G -          25:00    █|
+|   22 running        build        3     2G  2.5G -          29:30    █|
+|   23 paused         bench        1  ~1.0G     - -           3:00    █|
+|   24 running        lint         1      -     - -          26:00    █|
+|   30 #1 no units    build        4      -     - -              -    █|
+|   31 #2 no memory   build        1     8G     - -              -    █|
+|   32 #3 lane busy   test*        1      -     - -              -    █|
+|   33 #4 draining    build        1      -     - -              -    █|
+|   34 #5 take-slot   build        1      -     - -              -    █|
+|   35 #6 behind 30   build        1      -     - -              -    █|
+|   36 #7 starting    build        1      -     - -              -    █|
+|   37 #8 held        build        1      -     - -              -    █|
+|   38 #9 queue held  build        1      -     - -              -    █|
+|   40 after 21,22    build        1      -     - -              -    █|
+|   41 retry 2        build        1      -     - -              -    █|
+|   19 quiet          build        1      -     - -           2:00    █|
+|   18 dep 17 failed  build        1      -     - -           2:00    │|
+|   17 exit 1         build        1      -     - -           2:00    │|
+|hHelp EnterLog kKill fFilter qQuit                     jobs 1–18 of 20|
 --
 0 0..7 Default/Default/1
 0 23..32 Basic(2)/Default/0
@@ -38,37 +38,37 @@
 5 0..6 Default/Default/16
 5 6..20 Basic(2)/Default/17
 5 20..66 Default/Default/16
-5 66..70 Basic(3)/Default/16
+5 66..69 Basic(3)/Default/16
 6 6..20 Basic(2)/Default/1
-6 66..70 Basic(1)/Default/1
+6 66..69 Basic(1)/Default/1
 7 6..20 Basic(3)/Default/17
-7 66..70 Basic(3)/Default/0
+7 66..69 Basic(3)/Default/0
 8 6..20 Basic(2)/Default/1
-8 66..70 Basic(3)/Default/0
+8 66..69 Basic(3)/Default/0
 9 6..20 Basic(3)/Default/0
-9 66..70 Basic(8)/Default/0
+9 66..69 Basic(8)/Default/0
 10 6..20 Basic(3)/Default/0
-10 66..70 Basic(8)/Default/0
+10 66..69 Basic(8)/Default/0
 11 6..20 Basic(3)/Default/0
-11 66..70 Basic(8)/Default/0
+11 66..69 Basic(8)/Default/0
 12 6..20 Basic(3)/Default/0
-12 66..70 Basic(8)/Default/0
+12 66..69 Basic(8)/Default/0
 13 6..20 Basic(3)/Default/0
-13 66..70 Basic(8)/Default/0
+13 66..69 Basic(8)/Default/0
 14 6..20 Basic(3)/Default/0
-14 66..70 Basic(8)/Default/0
+14 66..69 Basic(8)/Default/0
 15 6..20 Basic(3)/Default/0
-15 66..70 Basic(8)/Default/0
+15 66..69 Basic(8)/Default/0
 16 6..20 Basic(3)/Default/0
-16 66..70 Basic(8)/Default/0
+16 66..69 Basic(8)/Default/0
 17 6..20 Basic(3)/Default/0
-17 66..70 Basic(8)/Default/0
+17 66..69 Basic(8)/Default/0
 18 6..20 Basic(3)/Default/0
-18 66..70 Basic(8)/Default/0
+18 66..69 Basic(8)/Default/0
 19 6..20 Basic(3)/Default/0
-19 66..70 Basic(8)/Default/0
+19 66..69 Basic(8)/Default/0
 20 6..20 Basic(1)/Default/17
-20 66..70 Basic(8)/Default/0
+20 66..69 Basic(8)/Default/0
 21 6..20 Basic(8)/Default/0
 21 66..70 Basic(8)/Default/0
 22 6..20 Basic(1)/Default/1
@@ -83,3 +83,4 @@
 23 22..29 Basic(0)/Basic(6)/0
 23 29..30 Default/Default/1
 23 30..35 Basic(0)/Basic(6)/0
+23 55..70 Basic(8)/Default/0

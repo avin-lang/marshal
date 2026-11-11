@@ -12,7 +12,7 @@ import avin.time.millis
 import dev.avinlang.marshal
 import dev.avinlang.marshal.Request
 import dev.avinlang.marshal.{Viewed, Failed, Done}
-import dev.avinlang.marshal.top.{App, KillJob, Quit, StartDaemon, Stay}
+import dev.avinlang.marshal.top.{App, KillJob, Quit, StartDaemon, Stay, logHistory}
 import dev.avinlang.tui
 import dev.avinlang.tui.Terminal
 
@@ -33,6 +33,7 @@ top(args: Vector[string]) -> int
 watch(term: Terminal)
     val sock = home() + "/sock"
     val app = App(sock)
+    app.history = Some(logHistory(home() + "/events.jsonl"))
     for n in process.env("MARSHAL_TEST_TOP_IDLE_MS").flatMap(t -> t.toLongOption()).filter(n -> n >= 1)
         app.hideAfter = n
     var conn: Option[UnixStream] = None

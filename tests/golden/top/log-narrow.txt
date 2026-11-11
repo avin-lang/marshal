@@ -3,19 +3,19 @@
 |mem   [██████████      ] 7G / 16G   rss 6.0G   mac|
 |                                                  |
 |   ID STATE          KIND     UNITS   RESV   RSS S|
-|   21 landing        test*        2     4G  3.0G -|
-|   22 running        build        3     2G  2.5G -|
-|   23 paused         bench        1  ~1.0G     - -|
-|   24 running        lint         1      -     - -|
-|   30 #1 no units    build        4      -     - -|
-|   31 #2 no memory   build        1     8G     - -|
-|   32 #3 lane busy   test*        1      -     - -|
-|   33 #4 draining    build        1      -     - -|
-|   34 #5 take-slot   build        1      -     - -|
-|   35 #6 behind 30   build        1      -     - -|
-|   36 #7 starting    build        1      -     - -|
-|   37 #8 held        build        1      -     - -|
-|   38 #9 queue held  build        1      -     - -|
+|   21 landing        test*        2     4G  3.0G █|
+|   22 running        build        3     2G  2.5G █|
+|   23 paused         bench        1  ~1.0G     - █|
+|   24 running        lint         1      -     - █|
+|   30 #1 no units    build        4      -     - █|
+|   31 #2 no memory   build        1     8G     - █|
+|   32 #3 lane busy   test*        1      -     - █|
+|   33 #4 draining    build        1      -     - █|
+|   34 #5 take-slot   build        1      -     - │|
+|   35 #6 behind 30   build        1      -     - │|
+|   36 #7 starting    build        1      -     - │|
+|   37 #8 held        build        1      -     - │|
+|   38 #9 queue held  build        1      -     - │|
 |╭─job 21 log, following; PgUp PgDn Home End scr…─╮|
 |│kind    test   label  release 0.3 train         │|
 |│command sysl test compiler --timeout 1800       │|
@@ -46,7 +46,7 @@
 4 0..50 Default/Default/17
 5 0..6 Default/Default/16
 5 6..20 Basic(2)/Default/17
-5 20..50 Default/Default/16
+5 20..49 Default/Default/16
 6 6..20 Basic(2)/Default/1
 7 6..20 Basic(3)/Default/17
 8 6..20 Basic(2)/Default/1
@@ -55,10 +55,15 @@
 11 6..20 Basic(3)/Default/0
 12 6..20 Basic(3)/Default/0
 13 6..20 Basic(3)/Default/0
+13 49..50 Basic(8)/Default/0
 14 6..20 Basic(3)/Default/0
+14 49..50 Basic(8)/Default/0
 15 6..20 Basic(3)/Default/0
+15 49..50 Basic(8)/Default/0
 16 6..20 Basic(3)/Default/0
+16 49..50 Basic(8)/Default/0
 17 6..20 Basic(3)/Default/0
+17 49..50 Basic(8)/Default/0
 18 0..50 Basic(6)/Default/0
 19 0..1 Basic(6)/Default/0
 19 1..5 Default/Default/1

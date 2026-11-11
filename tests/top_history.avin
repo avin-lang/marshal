@@ -1,0 +1,304 @@
+module tests
+
+// `marshal top` scrolled back past the snapshot's ended jobs: the pages of earlier ones, read from
+// the event log or from a history made to order, the position the bottom line gives, and goldens.
+import avin.fs
+import json.Json
+import dev.avinlang.marshal
+import dev.avinlang.marshal.{JobInfo, Outcome, Overview, Usage}
+import dev.avinlang.marshal.top
+import dev.avinlang.marshal.top.{App, HistorySource, Page, ShowAll, ShowFinished, ShowRunning}
+import dev.avinlang.tui.{Down, End, Grid, Home, PageDown, Up}
+
+// An ended job.
+ended(id: long) -> JobInfo = snapJob(id, "done", Some(Outcome.Exited(0)))
+
+// Ended jobs `from` down to `to`, the latest first.
+endedRange(from: long, to: long) -> Vector[JobInfo]
+    val out = Buffer[JobInfo]()
+    var id = from
+    while id >= to
+        out += ended(id)
+        id -= 1
+    out.toVector()
+
+// A daemon running job 2000 whose snapshot carries the ten that ended last, 1010 to 1001.
+liveTen() -> Overview = Overview(Usage(1, 12, 0, 16 * G, 1, 0, None, None), 5000, [snapJob(2000)], [], endedRange(1010, 1001))
+
+// A history of the log's ended jobs `all`, which counts the pages asked of it.
+// While `failing` says why, it cannot be read.
+class FakeHistory(val all: Vector[JobInfo])
+    var asked = 0
+    var failing: Option[string] = None
+    source() -> HistorySource = (before, limit) -> page(before, limit)
+    page(before: Option[long], limit: int) -> Result[Page, string]
+        asked += 1
+        for why in failing
+            return Err(why)
+        Ok(top.pageOf(all, before, limit))
+
+// `o` in a top whose history is `h`, the selection on the last line.
+scrolledToBottom(o: Overview, h: FakeHistory) -> App
+    val app = viewing(o)
+    app.handle(press(End), 0)
+    app.history = Some(h.source())
+    app
+
+// A log of 1,000 jobs that ended before the snapshot's ten, the ten in it too.
+thousand() -> FakeHistory = FakeHistory(endedRange(1010, 1))
+
+selectedId(app: App) -> long = app.selected().map(j -> j.id).getOrElse(-1)
+
+footer(g: Grid) -> string = g.rowText(g.height - 1).trim()
+
+@test("a page of the log's jobs starts after the job it is asked for, or at the latest, and says how many are left")
+pages()
+    val all = endedRange(5, 1)
+    val ids = (p: Page) -> p.jobs.map(j -> j.id)
+    assertEq(ids(top.pageOf(all, None, 2)), [long(5), long(4)])
+    assertEq(top.pageOf(all, None, 2).left, 3)
+    assertEq(ids(top.pageOf(all, Some(4), 2)), [long(3), long(2)])
+    assertEq(top.pageOf(all, Some(4), 2).left, 1)
+    assertEq(ids(top.pageOf(all, Some(2), 5)), [long(1)])
+    assertEq(top.pageOf(all, Some(2), 5).left, 0)
+    assertEq(top.pageOf(all, Some(1), 5), Page([], 0))
+    // a job the log does not hold: from the latest
+    assertEq(ids(top.pageOf(all, Some(99), 2)), [long(5), long(4)])
+    assertEq(top.pageOf([], None, 100), Page([], 0))
+    assertEq(top.pageOf(all, None, 100).left, 0)
+
+@test("the event log's ended jobs, the latest ending first: the last ending stands, a retried attempt and other lines are skipped, no outcome is lost")
+endedJobsOfALog()
+    val dir = fs.createTempDir("marshal-top-history-").ok().get()
+    val noOutcome = JobInfo(6, "test", 1, 0, false, "/d", ["make"], "done", None, false, 0, 0, 60000, "/h/jobs/6.log", None)
+    val retrying = marshal.eventLine(250, "finished", JobInfo(3, "test", 1, 0, false, "/d", ["make"], "done", Some(Outcome.Exited(1)), false, 0, 0, 60000, "/h/jobs/3.log", None), [("retrying", Json.Bool(true))])
+    val lines = [endLine(100, 1), endLine(300, 2, Outcome.Exited(3)), retrying, endLine(200, 3), "not json", "",
+                 endLine(150, 4, event = "submitted"), endLine(300, 5), endLine(400, 1, Outcome.TimedOut, event = "timeout"),
+                 marshal.eventLine(500, "lost", noOutcome, [])]
+    fs.writeText(dir + "/events.jsonl", lines.mkString("\n") + "\n").ok().get()
+    val got = top.endedJobs(dir + "/events.jsonl").ok().get()
+    assertEq(got.map(j -> j.id), [long(6), long(1), long(5), long(2), long(3)])
+    assertEq(got(0).outcome, Some(Outcome.Lost))
+    assertEq(got(1).outcome, Some(Outcome.TimedOut))
+    assertEq(got(4).outcome, Some(Outcome.Exited(0)))
+    assertEq(got(1).cmd, ["make"])
+    assertEq(top.endedJobs(dir + "/none.jsonl").ok().get(), [])
+    // read once: the pages after the first come from what the first read
+    val source = top.logHistory(dir + "/events.jsonl")
+    assertEq(source(Some(1), 2).ok().get().jobs.map(j -> j.id), [long(5), long(2)])
+    fs.writeText(dir + "/events.jsonl", "").ok().get()
+    val next = source(Some(2), 2).ok().get()
+    assertEq(next.jobs.map(j -> j.id), [long(3)])
+    assertEq(next.left, 0)
+    assertEq(top.logHistory(dir + "/none.jsonl")(None, 5).ok().get(), Page([], 0))
+    fs.removeDirAll(dir)
+
+@test("Down on the last job loads the next page of earlier jobs and selects the first of them; Down within them only moves")
+pagingPastTheEnd()
+    val h = thousand()
+    val app = scrolledToBottom(liveTen(), h)
+    assertEq(selectedId(app), long(1001))
+    assertEq(h.asked, 0)
+    assertEq(app.handle(press(Down), 0), top.Stay)
+    assertEq(h.asked, 1)
+    assertEq(selectedId(app), long(1000))
+    assertEq(app.older.length(), top.HistoryPageSize)
+    assertEq(app.olderLeft, Some(900))
+    assertEq(app.shown.length(), 111)
+    app.handle(press(Down), 0)
+    assertEq(selectedId(app), long(999))
+    assertEq(h.asked, 1)
+    // Up goes back to the live jobs, the page staying
+    for _ in 0 ..< 2 do app.handle(press(Up), 0)
+    assertEq(selectedId(app), long(1001))
+    assertEq(app.shown.length(), 111)
+
+@test("PgDn on the last job loads the next page too, and lands on its first job")
+pageDownPastTheEnd()
+    val h = thousand()
+    val app = scrolledToBottom(liveTen(), h)
+    app.handle(press(PageDown), 0)
+    assertEq(selectedId(app), long(1000))
+    app.handle(press(End), 0)
+    app.handle(press(Home), 0)
+    assertEq(selectedId(app), long(2000))
+
+@test("End goes to the very oldest job, every page loaded on the way; Home goes back to the top")
+endLoadsEverything()
+    val h = thousand()
+    val app = viewing(liveTen())
+    app.history = Some(h.source())
+    app.handle(press(End), 0)
+    assertEq(selectedId(app), long(1))
+    assertEq(h.asked, 10)
+    assertEq(app.olderLeft, Some(0))
+    assertEq(app.shown.length(), 1011)
+    // nothing more to ask for
+    app.handle(press(Down), 0)
+    app.handle(press(End), 0)
+    assertEq(h.asked, 10)
+    assertEq(selectedId(app), long(1))
+    assertEq(app.message, "")
+    app.handle(press(Home), 0)
+    assertEq(selectedId(app), long(2000))
+    assertEq(app.shown.length(), 1011)
+
+@test("the finished filter pages back too; changing the filter drops the pages, and the running and queued filters never load")
+filterAndPaging()
+    val h = thousand()
+    val app = viewing(liveTen())
+    app.history = Some(h.source())
+    app.handle(key('f'), 0)
+    assertEq(app.filter, ShowRunning)
+    app.handle(press(Down), 0)
+    app.handle(press(End), 0)
+    assertEq(h.asked, 0)
+    assertEq(app.message, "")
+    assertEq(app.positionOf(20), "")
+    for _ in 0 ..< 2 do app.handle(key('f'), 0)
+    assertEq(app.filter, ShowFinished)
+    app.handle(press(End), 0)
+    assertEq(selectedId(app), long(1))
+    assertEq(app.shown.length(), 1010)
+    assert(app.shown.forall(l -> l.job.outcome.isDefined()))
+    app.handle(key('f'), 0)
+    assertEq(app.filter, ShowAll)
+    assertEq(app.older, [])
+    assertEq(app.olderLeft, None)
+    assertEq(app.shown.length(), 11)
+    app.handle(press(End), 0)
+    assertEq(app.shown.length(), 1011)
+    assertEq(h.asked, 20)
+
+@test("a snapshot while scrolled back keeps the selection and the pages, and a job the snapshot no longer carries stays listed")
+refreshWhileScrolledBack()
+    val h = thousand()
+    val app = scrolledToBottom(liveTen(), h)
+    app.handle(press(Down), 0)
+    for _ in 0 ..< 5 do app.handle(press(Down), 0)
+    assertEq(selectedId(app), long(995))
+    // job 2000 ends, so 1001 falls out of the ten
+    app.update(Overview(Usage(0, 12, 0, 16 * G, 0, 0, None, None), 6000, [], [], [ended(2000)] ++ endedRange(1010, 1002)))
+    assertEq(selectedId(app), long(995))
+    assertEq(app.shown.map(l -> l.job.id).filter(id -> id == 1001).length(), 1)
+    assertEq(app.shown.length(), 111)
+    assertEq(app.shown(10).job.id, long(1001))
+    assertEq(app.shown(11).job.id, long(1000))
+    // the same snapshot again changes nothing
+    app.update(Overview(Usage(0, 12, 0, 16 * G, 0, 0, None, None), 7000, [], [], [ended(2000)] ++ endedRange(1010, 1002)))
+    assertEq(app.shown.length(), 111)
+    assertEq(selectedId(app), long(995))
+    // the next page follows on from the last loaded
+    app.handle(press(End), 0)
+    assertEq(selectedId(app), long(1))
+    assertEq(app.shown.length(), 1011)
+
+@test("without pages loaded, a snapshot drops what falls out of the ten, as before")
+refreshWithoutPages()
+    val app = viewing(liveTen())
+    app.history = Some(thousand().source())
+    app.update(Overview(Usage(0, 12, 0, 16 * G, 0, 0, None, None), 6000, [], [], [ended(2000)] ++ endedRange(1010, 1002)))
+    assertEq(app.shown.length(), 10)
+    assertEq(app.older, [])
+
+@test("no history at all: Down on the last job says there are no earlier jobs and stays; with no jobs either, nothing is selected")
+noHistory()
+    val h = FakeHistory([])
+    val app = scrolledToBottom(liveTen(), h)
+    app.handle(press(Down), 0)
+    assertEq(app.message, "no earlier jobs")
+    assertEq(selectedId(app), long(1001))
+    assertEq(app.olderLeft, Some(0))
+    assertEq(app.positionOf(20), "")
+    app.handle(press(Down), 0)
+    assertEq(h.asked, 1)
+    val empty = viewing(idleDaemon())
+    empty.history = Some(FakeHistory([]).source())
+    empty.handle(press(Down), 0)
+    assertEq(empty.message, "no earlier jobs")
+    assert(footer(drawn(empty, 100, 12)).endsWith(" no earlier jobs"), footer(drawn(empty, 100, 12)))
+    empty.handle(press(End), 0)
+    assertEq(empty.selected(), None)
+    assertEq(empty.message, "")
+
+@test("a snapshot with no ended jobs pages from the log's latest")
+historyWithNoRecent()
+    val app = viewing(Overview(Usage(0, 12, 0, 16 * G, 0, 0, None, None), 5000, [], [], []))
+    app.history = Some(FakeHistory(endedRange(150, 1)).source())
+    app.handle(press(Down), 0)
+    assertEq(selectedId(app), long(150))
+    assertEq(app.shown.length(), 100)
+    assertEq(app.olderLeft, Some(50))
+
+@test("exactly one page: it loads whole, the count is exact, and the next Down asks no more")
+exactlyOnePage()
+    val h = FakeHistory(endedRange(1010, 1001) ++ endedRange(1000, 901))
+    val app = scrolledToBottom(liveTen(), h)
+    app.handle(press(Down), 0)
+    assertEq(app.olderLeft, Some(0))
+    assertEq(app.shown.length(), 111)
+    assertEq(app.positionOf(20), "jobs 1–20 of 111")
+    app.handle(press(End), 0)
+    assertEq(selectedId(app), long(901))
+    app.handle(press(Down), 0)
+    assertEq(app.message, "no earlier jobs")
+    assertEq(h.asked, 1)
+
+@test("a history that cannot be read says why on the bottom line, loads nothing, and is asked again next time")
+unreadableHistory()
+    val h = thousand()
+    h.failing = Some("events.jsonl: permission denied")
+    val app = scrolledToBottom(liveTen(), h)
+    app.handle(press(Down), 0)
+    assertEq(app.message, "cannot read earlier jobs: events.jsonl: permission denied")
+    assertEq(app.olderLeft, None)
+    assertEq(selectedId(app), long(1001))
+    app.handle(press(Down), 0)
+    assertEq(h.asked, 2)
+    // readable again: the page comes
+    h.failing = None
+    app.handle(press(Down), 0)
+    assertEq(selectedId(app), long(1000))
+
+@test("the position: which lines show of how many, `+` while earlier jobs may be there, nothing while all fit and no more can come")
+positionHint()
+    assertEq(top.grouped(0), "0")
+    assertEq(top.grouped(999), "999")
+    assertEq(top.grouped(1000), "1,000")
+    assertEq(top.grouped(1234567), "1,234,567")
+    assertEq(top.positionText(41, 60, 1234, false), "jobs 41–60 of 1,234")
+    assertEq(top.positionText(1, 11, 11, true), "jobs 1–11 of 11+")
+    val h = thousand()
+    val app = viewing(liveTen())
+    assertEq(app.positionOf(20), "")
+    assertEq(app.positionOf(5), "jobs 1–5 of 11")
+    app.history = Some(h.source())
+    assertEq(app.positionOf(20), "jobs 1–11 of 11+")
+    val first = footer(drawn(app, 120, 30))
+    assert(first.startsWith("hHelp EnterLog kKill fFilter qQuit "), first)
+    assert(first.endsWith(" jobs 1–11 of 11+"), first)
+    app.handle(press(End), 0)
+    app.handle(press(Home), 0)
+    app.handle(press(Down), 0)
+    assertEq(app.olderLeft, Some(0))
+    assertEq(footer(drawn(app, 120, 30)).endsWith("jobs 1–24 of 1,011"), true)
+    app.handle(press(End), 0)
+    assertEq(footer(drawn(app, 120, 30)).endsWith("jobs 988–1,011 of 1,011"), true)
+    // a page loaded with more to come: the count is exact
+    val partly = scrolledToBottom(liveTen(), thousand())
+    partly.handle(press(Down), 0)
+    assertEq(footer(drawn(partly, 120, 30)).endsWith("jobs 1–24 of 1,011"), true)
+    // too narrow for it beside the keys: left out, the keys kept
+    assertEq(footer(drawn(partly, 50, 30)), "hHelp EnterLog kKill fFilter qQuit")
+
+@test("golden: scrolled back into the loaded pages, and at the very oldest, with the scroll bar and the position")
+goldenHistory()
+    val app = scrolledToBottom(liveTen(), thousand())
+    for _ in 0 ..< 30 do app.handle(press(Down), 0)
+    golden("history-back", drawn(app, 120, 30))
+    app.handle(press(End), 0)
+    golden("history-oldest", drawn(app, 100, 20))
+    val one = scrolledToBottom(liveTen(), FakeHistory(endedRange(1010, 1001) ++ endedRange(1000, 991)))
+    one.handle(press(Down), 0)
+    one.handle(key('l'), 0)
+    golden("history-log", drawn(one, 120, 30))
