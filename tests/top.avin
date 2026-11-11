@@ -764,3 +764,114 @@ logHeaderEdges()
     // closing the log removes the header
     app.handle(press(Escape))
     assertEq(rowOf(drawn(app, 80, 30), "command"), -1)
+
+// A snapshot with job `run` running and the ended jobs `from` down to `from - count + 1` listed
+// latest first, each named by its command `done<id>`.
+endedRun(run: long, from: long, count: int) -> Overview
+    val o = full()
+    val recent = (0 ..< count).map(i -> snapJob(from - long(i), "done", Some(Outcome.Exited(0)), cmd = [s"done${from - long(i)}"])).toVector()
+    Overview(o.usage, o.uptimeMs, [snapJob(run, cmd = [s"run$run"])], [], recent)
+
+@test("a table left at the top stays at the top as newer jobs arrive above its first job")
+topFollowsNewJobsWhenLeftAtTop()
+    val app = App("/h/sock")
+    app.update(endedRun(1, 40, 40))
+    var from: long = 40
+    for step in 0 ..< 30
+        from = from + 3
+        app.update(endedRun(1, from, 40))
+        val g = drawn(app, 80, 10)
+        assert(rowOf(g, "run1") >= 0)
+        assert(rowOf(g, s" $from ") >= 0)
+        assertEq(app.selected().map(j -> j.id), Some(long(1)))
+
+@test("after Home the table follows the top again")
+topFollowsAfterHome()
+    val app = viewing(endedRun(1, 40, 40))
+    drawn(app, 80, 10)
+    app.handle(press(End))
+    drawn(app, 80, 10)
+    app.handle(press(Home))
+    drawn(app, 80, 10)
+    app.update(endedRun(1, 60, 40))
+    assert(rowOf(drawn(app, 80, 10), "run1") >= 0)
+
+@test("a view the user scrolled down keeps its selected job on screen as newer jobs arrive")
+scrolledViewKeepsItsJob()
+    val app = viewing(endedRun(1, 40, 40))
+    drawn(app, 80, 10)
+    for i in 0 ..< 20
+        app.handle(press(Down))
+    drawn(app, 80, 10)
+    val id = app.selected().map(j -> j.id)
+    var from: long = 40
+    for step in 0 ..< 5
+        from = from + 4
+        app.update(endedRun(1, from, 60))
+        val g = drawn(app, 80, 10)
+        assertEq(app.selected().map(j -> j.id), id)
+        assert(rowOf(g, s" ${id.getOrElse(0)} ") >= 0)
+
+@test("a selected job that ends moves into the ended section and stays selected")
+selectedJobThatEnds()
+    val app = viewing(endedRun(1, 40, 10))
+    drawn(app, 80, 20)
+    app.handle(press(Down))
+    app.handle(press(Down))
+    val id = app.selected().map(j -> j.id)
+    assertEq(id, Some(long(39)))
+    // job 40 is the second ended job here; a newer one arrives and job 1 ends, so both rows move
+    val ended = [snapJob(1, "done", Some(Outcome.Exited(0)), cmd = ["run1"]), snapJob(41, "done", Some(Outcome.Exited(0)), cmd = ["done41"])] ++ endedRun(1, 40, 10).recent
+    val o = full()
+    app.update(Overview(o.usage, o.uptimeMs, [], [], ended))
+    assertEq(app.selected().map(j -> j.id), Some(long(39)))
+    assert(rowOf(drawn(app, 80, 20), " 39 ") >= 0)
+
+@test("earlier jobs loaded from history do not move a view left at the top, and a scrolled one keeps its job")
+topWithHistoryLoaded()
+    val all = (0 ..< 60).map(i -> snapJob(long(500) - long(i), "done", Some(Outcome.Exited(0)), cmd = [s"old${500 - i}"])).toVector()
+    val app = viewing(endedRun(1, 900, 10))
+    app.history = Some((before, limit) -> Ok(top.pageOf(all, before, limit)))
+    drawn(app, 80, 10)
+    app.handle(press(End))
+    drawn(app, 80, 10)
+    assert(app.shown.length() > 20)
+    // scrolled to the oldest job: new snapshots keep it
+    val oldest = app.selected().map(j -> j.id)
+    app.update(endedRun(1, 905, 10))
+    assertEq(app.selected().map(j -> j.id), oldest)
+    app.handle(press(Home))
+    drawn(app, 80, 10)
+    app.update(endedRun(1, 910, 10))
+    app.update(endedRun(1, 915, 10))
+    val g = drawn(app, 80, 10)
+    assert(rowOf(g, "run1") >= 0)
+    assert(rowOf(g, " 915 ") >= 0)
+
+@test("a filter change keeps a view that was at the top at the top")
+topAcrossFilterChange()
+    val app = viewing(endedRun(1, 40, 40))
+    drawn(app, 80, 10)
+    app.handle(key('f'))
+    app.update(endedRun(1, 44, 40))
+    assert(rowOf(drawn(app, 80, 10), "run1") >= 0)
+    app.handle(key('f'))
+    app.handle(key('f'))
+    app.handle(key('f'))
+    app.update(endedRun(1, 50, 40))
+    // the finished filter put the first ended job on row 0; back on all, the selection stays on that job
+    assertEq(app.selected().map(j -> j.id), Some(long(44)))
+    assert(rowOf(drawn(app, 80, 10), " 44 ") >= 0)
+    app.handle(press(Home))
+    app.update(endedRun(1, 55, 40))
+    assertEq(app.selected().map(j -> j.id), Some(long(1)))
+    assert(rowOf(drawn(app, 80, 10), " 55 ") >= 0)
+
+@test("more new jobs in one snapshot than the page holds leave a top view on its first rows")
+topWithMoreNewJobsThanRows()
+    val app = viewing(endedRun(1, 40, 40))
+    drawn(app, 80, 8)
+    app.update(endedRun(1, 90, 40))
+    val g = drawn(app, 80, 8)
+    assert(rowOf(g, "run1") >= 0)
+    assert(rowOf(g, " 90 ") >= 0)

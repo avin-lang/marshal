@@ -237,6 +237,9 @@ class App(val sock: string)
     val table: Table = Table(columns)
     var shown: Vector[Line] = []
     var selectedId: Option[long] = None
+    // Whether the selection is on the first line because nothing has moved it off (or a key put it
+    // back), so a new snapshot leaves it there rather than following the job that was first.
+    private var followsTop = true
     // When the last key came, on the clock `handle` and `draw` are given (milliseconds), and how long
     // after it the selected row stops being highlighted. With no key yet, it is not highlighted.
     var lastKeyAt: Option[long] = None
@@ -278,13 +281,15 @@ class App(val sock: string)
         problem = Some(why)
         noDaemon = startable
 
-    // The lines shown again, the selection kept on its job and the log pane on its own.
+    // The lines shown again, the selection kept on its job and the log pane on its own. A table that
+    // follows the top (the start, and wherever a key last left the selection on the first line) keeps
+    // the first line selected, so it goes on showing the newest jobs as more arrive above.
     private refresh()
         val live = overview.map(o -> lines(o, filter)).getOrElse([])
         shown = if admitsHistory(filter) && older.nonEmpty() then live ++ earlier(live) else live
         val at = selectedId match
-            Some(id) -> shown.indexWhere(l -> l.job.id == id)
-            None -> -1
+            Some(id) -> if followsTop then 0 else shown.indexWhere(l -> l.job.id == id)
+            None -> if followsTop then 0 else -1
         table.select(if at >= 0 then at else table.selected, shown.length())
         remember()
         for j in logOf
@@ -405,7 +410,9 @@ class App(val sock: string)
         filter = nextFilter(filter)
         older = []
         olderLeft = None
+        followsTop = false
         refresh()
+        followsTop = table.selected <= 0
         Stay
 
     // Whether the selection is on the last line, or there are none.
@@ -453,6 +460,7 @@ class App(val sock: string)
 
     private moveTo(i: int) -> Action
         table.select(i, shown.length())
+        followsTop = table.selected == 0
         remember()
         // the pane follows the selection
         if logOf.isDefined() && selected().map(j -> j.id) != logOf.map(j -> j.id)

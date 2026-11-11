@@ -1428,3 +1428,20 @@ carries.
   past for `--since` to look back into; accepting it silently would suggest it did something.
   Alternative: ignoring it (a typo would pass unnoticed).
 - **The timer runs for the whole command**, so a daemon that has to be started counts against it.
+
+## `top` stays at the top as jobs arrive (branch `watch-scroll`)
+
+**Proposed:**
+
+- **A table whose selection is on the first line keeps it there across snapshots.** Before, the
+  selection followed its job's id, so each new job above it pushed the selected row down and the
+  table scrolled to keep it visible: left open for hours, the running jobs crept out of view. Now a
+  flag is set at the start and whenever a key (Home, Up, a filter change) leaves the selection on the
+  first line, and cleared by any key that moves it elsewhere; while set, a snapshot leaves row 0
+  selected, so the newest and running rows stay visible. Why: it needs no clock, and idle time alone
+  would not tell a user parked on a job from one who never touched it. Alternatives: returning to the
+  top once the highlight has hidden (the view would jump under a user who is reading a row); keeping
+  the selected job on screen only while the highlight shows.
+- **A user who moved the selection down keeps their job**, as before, including a job that ends and
+  moves into the ended section and a job in loaded earlier pages. A filter change keeps the selected
+  job where the new filter lists it, and follows the top if that is row 0. The look is unchanged.
