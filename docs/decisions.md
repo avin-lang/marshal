@@ -928,7 +928,7 @@ passes it, and two builds peaking at 25–35G each were admitted together on a 6
 
 ## Memory reservations learned per kind and directory (branch `mem-per-dir`)
 
-**Proposed.** Found when a small `sysl test .` suite (kind `test`) sat `queued (no memory)` with a
+**Settled on the user's delegation 2026-11-10.** Found when a small `sysl test .` suite (kind `test`) sat `queued (no memory)` with a
 learned 27.8G, because kind `test` also covers a compiler's full suite peaking near 26G: 34.1G held
 plus 27.8G came to more than the 60.1G budget while 20.9G was actually resident.
 
@@ -1182,7 +1182,7 @@ the reason in the state cell rather than a column.
 
 ## A pause that holds, and a restart that keeps its socket (branch `restart-flakes`)
 
-**Proposed.**
+**Settled on the user's delegation 2026-11-10.**
 
 - **A paused job's groups are stopped again 10, 50 and 200 ms after the pause, at every sample
   (each second) while it stays paused, and at once by a restarted image.** Why: on macOS a STOP sent
@@ -1229,14 +1229,14 @@ ELAPSED entries above.
   retry.** A running job's is its run time with its pauses left out, a paused job's stands still and
   an ended job's is its run time, all as before. Why: a queue wait ticking in the column that
   otherwise means "how long has it been going" made a long-queued job look long-running.
-- **Proposed: the wait is not lost.** It stays in the job's `queued_ms` (which already carried it, and
+- **Settled on the user's delegation 2026-11-10: the wait is not lost.** It stays in the job's `queued_ms` (which already carried it, and
   stays in `ls --json`/`status --json`), and the STATE cell already says why it waits. `ls` and `top`
   show no wait time of their own. Alternative: a WAITED column or a figure in the STATE text (more
   width on every row for a number most jobs have no use for).
 
 ## Regex budget in `marshal grep` (branch `grep-exit2`)
 
-**Proposed.**
+**Settled on the user's delegation 2026-11-10.**
 
 - **A line on which the pattern spends the regex step budget ends the whole search with exit 2.**
   The message on stderr is `marshal: grep: line N: pattern `P` backtracked too far …`; lines already
@@ -1249,7 +1249,7 @@ ELAPSED entries above.
 
 ## Jobs whose work runs outside their processes (branch `external-mem`)
 
-**Proposed.** Found running Linux checks in Docker under marshal: `docker run` leaves only the
+**Settled on the user's delegation 2026-11-10.** Found running Linux checks in Docker under marshal: `docker run` leaves only the
 small docker client in the job's tree, and the work runs in Docker Desktop's VM, under another
 account, so marshal learned a near-zero peak and reserved almost nothing.
 
@@ -1287,7 +1287,7 @@ account, so marshal learned a near-zero peak and reserved almost nothing.
 
 ## Another account's work goes through your own marshal (branch `external-mem`)
 
-**Proposed.** Another account cannot submit: `~/.marshal/sock` is its owner's, under a home others
+**Settled on the user's delegation 2026-11-10.** Another account cannot submit: `~/.marshal/sock` is its owner's, under a home others
 cannot enter.
 
 - **The socket stays its owner's alone.** Work that must run as another account (a Docker Desktop
@@ -1302,7 +1302,7 @@ cannot enter.
 
 ## `stats` sizes both peak columns with the rounded formatter (branch `stats-units`)
 
-**Proposed.**
+**Settled on the user's delegation 2026-11-10.**
 
 - **PEAK P50 and PEAK MAX in `stats` use `roundSize`, the formatter `top` uses for PEAK.** Why: they
   used `formatSize`, which shows a size in the largest unit that divides it exactly, so a measured
@@ -1326,7 +1326,7 @@ The request was the user's: a 20-second test sat queued for more than five minut
 - **A running quick job's reservation counts against the memory budget**, so a development job (or
   a landing job) may wait for it. Why: the memory it uses is in use, however briefly.
 
-**Proposed:**
+**Settled on the user's delegation 2026-11-10:**
 
 - **`--quick` on `submit`, `run`, `run-type` and `train`; the job starts outside the unit budget,
   as a landing job does, and is niced like a development job.** The scheduler decides the quick lane
