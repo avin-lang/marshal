@@ -1448,7 +1448,7 @@ carries.
 
 ## Waiting is bounded: the machine drains for a job that has waited too long (branch `no-starve`)
 
-**Proposed.** The bug: a 12-unit job waited indefinitely, `queued (no units)`, while urgent jobs
+**Settled on the user's delegation 2026-11-11.** The bug: a 12-unit job waited indefinitely, `queued (no units)`, while urgent jobs
 submitted after it started one after another; each took a unit or four as others ended, so the
 units never all came free at once. The urgent band and priorities put later jobs ahead by design;
 the unbounded wait was not.
