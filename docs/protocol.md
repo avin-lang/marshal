@@ -102,7 +102,7 @@ development jobs queue apart), and `waits`, why it has not started:
 | `units` | its units do not fit beside what runs |
 | `memory` | its units fit and its memory does not (for a quick job: its memory does not fit in the budget's free memory) |
 | `lane` | a landing job, and another landing job holds the lane |
-| `draining` | a landing job whose memory does not fit beside what runs (or, over the whole budget, one that waits for nothing else to run); nothing else starts until the running jobs have freed it. Or a development job that has waited past `drain_after` and does not fit: no other development job starts until it has |
+| `draining` | a landing job whose memory does not fit beside what runs (or, over the whole budget, one that waits for nothing else to run); nothing else starts until the running jobs have freed it. Or a development job that has waited past `drain_after` and does not fit: no other development job starts until it has, but one that backfills (expected to end before it can start, or fitting in what it leaves spare) |
 | `take-slot` | it waits for what take-slot holds: its runs' units or landing lock, or a take-slot run that arrived before it |
 | `behind` | it fits, but starting it would delay the job at the head of the queue, whose id is `behind`; or a landing job, whose id is `behind`, is `draining`; or, for a quick job, the quick job `behind` ahead of it waits for memory |
 | `draining-for` | a development job that would otherwise be decided as usual, held while the development job whose id is `draining_for` has waited past `drain_after` and is `draining` |
@@ -131,7 +131,8 @@ refuses it with `no such request: `snapshot``.
 `rerun` `rerun_of`, the job run again), `ready` (a job that waited for others joins the queue),
 `held`, `released` and `prioritized` (a hold by hand begins or ends, a queued job is given a
 priority), `paused` and `resumed` (a running job's), `started` (adds `pgid` and `pid`, the job's
-main process), and one ending, `finished`, `timeout` (its deadline), `quiet` (its quiet timeout),
+main process, and `backfilled_ahead_of`, the id of the draining job it started ahead of, when it
+backfilled during a drain), and one ending, `finished`, `timeout` (its deadline), `quiet` (its quiet timeout),
 `killed`, `cancelled` (a job whose dependency failed) or `lost`, which adds `run_ms` and `exit`, the status `wait` exits with. `lost`
 also adds `pgid` and `group_alive`, whether the job's processes were still running when the new
 daemon looked. A job that is retried ends each attempt with its ending event, which adds
@@ -215,8 +216,10 @@ paused), `attempt` and `retry_at` (when a job waiting to retry queues again), `r
 `reserved_learned` (its effective reservation, and whether its kind's peaks taught it; a job saved
 without them reads as -1 and false, and the new program learns its reservation again from the
 peaks it read in the event log), `reserved_from` (where the reservation came from, as `resv_from`
-in a listing; absent or `""` reads as `kind` for a learned one, else `given` or `none`), and `quiet_stopped` (a job being stopped, `timed_out`, is stopped
-for its quiet timeout rather than its deadline; false when absent). A job's label is the `label`
+in a listing; absent or `""` reads as `kind` for a learned one, else `given` or `none`), `quiet_stopped` (a job being stopped, `timed_out`, is stopped
+for its quiet timeout rather than its deadline; false when absent), and `duration_learned` (whether
+`expected_ms` was learned from its kind's runs; false when absent, so a drain counts the job by its
+deadline). A job's label is the `label`
 member of its saved `spec`, absent for none, so state saved before labels reads with no label; its
 quiet timeout is the spec's `quiet_ms` the same way. The quiet clock is not saved: the new program
 starts every running job's again, from its log as it finds it. State written

@@ -20,7 +20,9 @@ import json.Json
 // timeout rather than its deadline; false when absent. The quiet timeout itself is the spec's, and
 // its clock is not saved: the new image starts every running job's again. `reservedFrom` is where
 // the reservation came from (`reservationSource`); "" when absent, and the new image works it out
-// from `reserved` and `reservedLearned`, a learned one being its kind's.
+// from `reserved` and `reservedLearned`, a learned one being its kind's. `durationLearned` says
+// `expectedMs` was learned from its kind's runs rather than guessed; false when absent, so a drain
+// counts such a job by its deadline.
 data SavedJob(
     id: long,
     spec: JobSpec,
@@ -50,7 +52,8 @@ data SavedJob(
     reserved: long = -1,
     reservedLearned: bool = false,
     quietStopped: bool = false,
-    reservedFrom: string = "")
+    reservedFrom: string = "",
+    durationLearned: bool = false)
 
 // The whole daemon: the version and process that saved it, when, when the daemon first began, the
 // next job id, the queue in order, the running jobs, the jobs that ended last (oldest first), the
@@ -100,7 +103,8 @@ encodeSavedJob(j: SavedJob) -> Json = Json.obj(
     ("reserved", Json.num(j.reserved)),
     ("reserved_learned", Json.Bool(j.reservedLearned)),
     ("quiet_stopped", Json.Bool(j.quietStopped)),
-    ("reserved_from", Json.str(j.reservedFrom)))
+    ("reserved_from", Json.str(j.reservedFrom)),
+    ("duration_learned", Json.Bool(j.durationLearned)))
 
 private whole(j: Json, key: string) -> Result[long, string] = j.get(key).flatMap(v -> v.asLong()) match
     Some(n) -> Ok(n)
@@ -176,7 +180,8 @@ decodeSavedJob(j: Json) -> Result[SavedJob, string]
         wholeOr(j, "reserved", -1)?,
         truthOr(j, "reserved_learned", false)?,
         truthOr(j, "quiet_stopped", false)?,
-        maybeText(j, "reserved_from")?.getOrElse("")))
+        maybeText(j, "reserved_from")?.getOrElse(""),
+        truthOr(j, "duration_learned", false)?))
 
 encodeState(s: SavedState) -> Json = Json.obj(
     ("version", Json.str(s.version)),

@@ -346,10 +346,16 @@ ends: nothing polls.
 - **Bounded waiting.** The urgent band and priorities let later jobs start ahead of earlier ones, so
   a big job could wait for ever while small ones keep taking the units as they free. Once a
   development job has waited `drain_after` (10 minutes by default; `config.json`) since it queued,
-  it goes ahead of every other development job, and while it does not fit the machine drains for it:
-  no other development job starts, urgent or backfill, until it has. `ls` shows it `queued
-  (draining)` and the jobs it holds back `queued (draining for <id>)`. Landing and quick jobs go on
-  beside it. Time queued never counts against a job's deadline, which runs from its start.
+  it goes ahead of every other development job, and while it does not fit the machine drains for it.
+  The drained job is expected to start once enough running jobs have ended, each counted by its
+  kind's learned duration, or by its deadline when nothing is learned. Meanwhile another development
+  job that fits starts (backfills) when it too is expected to end by then, or when it takes only
+  units and memory the drained job will leave spare; its log's first line and its `started` event
+  say `backfilled ahead of <id>` (`backfilled_ahead_of`). A running job past its estimate may end at
+  any moment, so once the drain waits on it nothing more backfills. `ls` shows the drained job
+  `queued (draining)` and the jobs it holds back `queued (draining for <id>)`. Landing and quick
+  jobs go on beside it. Time queued never counts against a job's deadline, which runs from its
+  start.
 - **Memory reservations.** A job without `--mem` reserves its learned peak: the most memory any of
   the last 10 measured jobs of its kind in its directory (`--dir`) held, whatever their outcome,
   plus a tenth, once two have been measured there. A directory with fewer than two learns from the
@@ -519,7 +525,8 @@ against its own budget. `marshal status` shows what take-slot holds.
   A queued job's STATE is its place in its lane's queue and why it waits: `no units`, `no memory`,
   `lane busy` (another landing job holds the lane), `draining` (a landing job whose memory does
   not fit beside the running jobs: nothing else starts until they have freed it; or a job that has
-  waited past `drain_after`: no other development job starts until it has), `take-slot` (what take-slot.zsh holds or a
+  waited past `drain_after`: no other development job starts until it has, but those that
+  backfill), `take-slot` (what take-slot.zsh holds or a
   take-slot run ahead of it), `behind N`, when it would fit but would delay job N at the head of
   the queue, `draining for N` (job N has waited past `drain_after` and goes first), `held` (`marshal hold`), `queue held` (`marshal pause`) or `quick lane full` (a
   `--quick` job, both quick slots taken). A running quick job shows `quick`. A job waiting for others
