@@ -199,7 +199,7 @@ Options of `submit` and `run`:
 | --- | --- |
 | `--kind <k>` | What the job is, for learning its deadline. Default: `test` when a word of the command is `test`, otherwise `build`. |
 | `--units <n>` | Its weight. Default: 4 for a `test`, 1 for anything else. |
-| `--mem <size>` | Memory it needs: `29G`, `512M` (powers of 1024). Default: its kind's learned peak (see Budget), 0 until two runs of the kind were measured. `--mem 0` reserves nothing and learns nothing. |
+| `--mem <size>` | Memory it needs: `29G`, `512M` (powers of 1024). Default: the learned peak of its kind in its directory, or of its kind while the directory has fewer than two measured runs (see Budget); 0 until two runs of the kind were measured. `--mem 0` reserves nothing and learns nothing. |
 | `--landing` | The landing lane: starts before every development job, outside the unit budget, at normal priority, once its memory fits beside what runs; until then nothing else starts, so the running jobs drain for it. One landing job runs at a time. One whose memory alone exceeds the budget starts when nothing else runs. |
 | `--urgent` | Queues it in its lane's urgent band: ahead of every job not urgent, behind the urgent jobs already queued. |
 | `--dir <d>` | Where it runs, relative to the current directory. Default: the current directory. |
@@ -231,7 +231,8 @@ standard error.
 learning deadlines): COUNT, OK (the share that exited 0), P50, P90 and MAX of the run times,
 TIMEOUTS, DEADLINE (what the next job of the kind would get, learned from every successful run in the
 log whatever the filters) and PEAK P50 / PEAK MAX of the memory the jobs' process trees held, `-`
-for jobs whose events do not say. Percentiles are nearest-rank, so they are always a run that
+for jobs whose events do not say. The peaks are the kind's across every directory, though a
+reservation learns per directory. Percentiles are nearest-rank, so they are always a run that
 happened.
 
 ```
@@ -335,9 +336,12 @@ ends: nothing polls.
   its units and memory fit beside what runs. The queue is first come, first served; a later job
   may start ahead of a head that does not fit only when it fits now and is expected to end before
   the head could start, so it never delays the head.
-- **Memory reservations.** A job without `--mem` reserves its kind's learned peak: the most memory
-  any of the kind's last 10 measured jobs held, whatever their outcome, plus a tenth, once two have
-  been measured (0 before that; a landing job of a kind learns apart from the development ones). A
+- **Memory reservations.** A job without `--mem` reserves its learned peak: the most memory any of
+  the last 10 measured jobs of its kind in its directory (`--dir`) held, whatever their outcome,
+  plus a tenth, once two have been measured there. A directory with fewer than two learns from the
+  kind's jobs in every directory instead, and with fewer than two of those reserves 0. So a small
+  package's `test` suite does not reserve what a compiler's `test` suite peaks at. A landing job of
+  a kind learns apart from the development ones. `status --json` says which in `resv_from`. A
   learned reservation above the whole budget is held to the budget, so the job starts once nothing
   else holds memory and runs alone. `--mem 0` opts out. A running job counts as holding its
   reservation or what it was last measured holding, whichever is more, so a job that reserved
@@ -470,7 +474,7 @@ against its own budget. `marshal status` shows what take-slot holds.
   budget, what the running jobs reserve in cyan and what they hold beyond their reservations in
   blue, then the reserved total, what they hold in RAM (`rss`) and the machine's memory.
 - **Memory**: RESV is the memory a job reserves: what it declared with `--mem`, or with `~` before
-  it (`~29G`) its kind's learned peak. RSS is what a running job's whole
+  it (`~29G`) its learned peak (its kind's in its directory, or its kind's). RSS is what a running job's whole
   process tree holds in RAM, measured by the daemon every second, and PEAK the most it was measured
   holding, kept once it ends; `-` where there is none.
 - **Started**: STARTED is when the job started, in the terminal's local time zone (`TZ`, else the

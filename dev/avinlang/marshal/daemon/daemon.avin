@@ -138,6 +138,8 @@ class Job(val id: long, val spec: JobSpec, val submittedMs: long, var arrived: l
     // the memory the scheduler counts for it, and whether its kind's peaks taught it
     var reserved: long = 0
     var learnedMem = false
+    // where the reservation came from (`reservationSource`)
+    var reservedFrom = ""
     val waiters = Buffer[Channel[Reply]]()
 
     // How long it has run by `now`, its pauses left out.
@@ -153,7 +155,7 @@ class Job(val id: long, val spec: JobSpec, val submittedMs: long, var arrived: l
         val rss = if state == "running" then resident.now else 0
         // a waiting job that asked to be urgent joins the urgent band once it queues
         val urgent = urgentAt > 0 || (state == "waiting" && spec.urgent)
-        JobInfo(id, spec.kind, spec.units, spec.memory, spec.landing, spec.dir, spec.cmd, state, outcome, killed, queued, elapsed, deadlineMs, log, sample, rss, resident.peak, startedAt, held, priority, urgent, paused, after, attempt, reserved, learnedMem, spec.label, spec.quietMs)
+        JobInfo(id, spec.kind, spec.units, spec.memory, spec.landing, spec.dir, spec.cmd, state, outcome, killed, queued, elapsed, deadlineMs, log, sample, rss, resident.peak, startedAt, held, priority, urgent, paused, after, attempt, reserved, learnedMem, spec.label, spec.quietMs, reservedFrom)
 
 // The daemon's state, owned by its own thread.
 // `slots` is the take-slot directory it shares, if any; `ticket` the name of its waiting ticket there.
@@ -202,15 +204,19 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
     history(spec: JobSpec) -> Vector[long] =
         histories.get(marshal.historyKey(spec.kind, spec.landing)).map(b -> b.toVector()).getOrElse([])
 
-    // The peaks of the jobs of `spec`'s history key, oldest first.
-    peakHistory(spec: JobSpec) -> Vector[long] =
-        peaks.get(marshal.historyKey(spec.kind, spec.landing)).map(b -> b.toVector()).getOrElse([])
+    // The peaks of the jobs of `key`, oldest first.
+    peaksOf(key: string) -> Vector[long] = peaks.get(key).map(b -> b.toVector()).getOrElse([])
 
-    // Gives `job` its reservation: the memory it gave, or its kind's learned peak.
+    // Gives `job` its reservation: the memory it gave, or the peak learned in its directory, or of
+    // its kind while its directory has too few.
     reserve(job: Job)
-        val r = marshal.reservationFor(marshal.defaultMemoryLearning, job.spec.memory, job.spec.memoryGiven, peakHistory(job.spec), config.budget.memory)
+        val s = job.spec
+        val learning = marshal.defaultMemoryLearning
+        val h = marshal.memoryHistory(learning, peaksOf(marshal.memoryDirKey(s.kind, s.landing, s.dir)), peaksOf(marshal.historyKey(s.kind, s.landing)))
+        val r = marshal.reservationFor(learning, s.memory, s.memoryGiven, h.peaks, config.budget.memory)
         job.reserved = r.bytes
         job.learnedMem = r.learned
+        job.reservedFrom = marshal.reservationSource(s.memory, s.memoryGiven, r, h.from)
 
     // Remembers the peak a job of `key` reached, for the reservations of the jobs after it.
     rememberPeak(key: string, peak: long)
@@ -796,6 +802,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
     offMachine(job: Job)
         running.remove(running.indexOf(job))
         rememberPeak(marshal.historyKey(job.spec.kind, job.spec.landing), job.resident.peak)
+        rememberPeak(marshal.memoryDirKey(job.spec.kind, job.spec.landing, job.spec.dir), job.resident.peak)
         val pid = job.pid
         if pid > 0 then slots.foreach(ts -> if job.spec.landing then ts.releaseLanding(pid) else ts.unregister(pid))
 
@@ -1159,7 +1166,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             j.resident.now, j.resident.peak, j.held, j.priority, j.urgentAt,
             j.pausedMs, if j.paused then wall(j.pausedAt) else 0,
             j.attempt, if j.state == "retrying" then wall(j.retryAt) else 0,
-            j.reserved, j.learnedMem, j.quietStopped)
+            j.reserved, j.learnedMem, j.quietStopped, j.reservedFrom)
         SavedState(reportedVersion(), process.pid(), wallNow, wall(began), nextId,
             queue.map(saved).toVector(), running.map(saved).toVector(), ended.takeRight(Recent).map(saved).toVector(), ticket, queueHeld,
             waitingJobs.map(saved).toVector())
@@ -1205,6 +1212,9 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             else
                 job.reserved = sj.reserved
                 job.learnedMem = sj.reservedLearned
+                // a state saved before the source was recorded: only kinds were learned then
+                val before = marshal.reservationSource(sj.spec.memory, sj.spec.memoryGiven, marshal.Reservation(sj.reserved, sj.reservedLearned), "kind")
+                job.reservedFrom = if sj.reservedFrom.nonEmpty() then sj.reservedFrom else before
             jobs(job.id) = job
             job
         for sj in s.ended do ended += rebuilt(sj)

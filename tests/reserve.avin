@@ -2,8 +2,9 @@ module tests
 
 // Reservations learned from a kind's peaks, and admission counting each running job as its
 // reservation or its measured memory, whichever is more.
+import json
 import dev.avinlang.marshal
-import dev.avinlang.marshal.{Budget, JobInfo, JobSpec, MemoryLearning, Overview, Reply, Request, Reservation, Started, Usage, Waiting}
+import dev.avinlang.marshal.{Budget, JobInfo, JobSpec, MemoryHistory, MemoryLearning, Overview, Reply, Request, Reservation, Started, Usage, Waiting}
 
 val M: long = 1024 * 1024
 val learning0: MemoryLearning = marshal.defaultMemoryLearning
@@ -83,6 +84,62 @@ resvAdmission()
     assertEq(marshal.schedule(b, [], [Waiting(1, 1, 30 * G, false, hour, 10), Waiting(2, 1, 30 * G, false, hour, 20)], 0), [long(1)])
     assertEq(marshal.schedule(b, [], [Waiting(1, 1, G, false, hour, 10), Waiting(2, 1, G, false, hour, 20)], 0), [long(1), long(2)])
 
+@test("a directory with two peaks learns from its own; with fewer, from its kind's")
+dirHistory()
+    val small: Vector[long] = [G, 2 * G]
+    val big: Vector[long] = [26 * G, 20 * G, G, 2 * G]
+    assertEq(marshal.memoryHistory(learning0, small, big), MemoryHistory(small, "kind+dir"))
+    assertEq(marshal.memoryHistory(learning0, [G], big), MemoryHistory(big, "kind"))
+    assertEq(marshal.memoryHistory(learning0, [], big), MemoryHistory(big, "kind"))
+    // peaks of 0 do not count toward the two
+    assertEq(marshal.memoryHistory(learning0, [0, G, 0], big), MemoryHistory(big, "kind"))
+    // a kind with too few peaks still learns nothing through the fallback
+    val fallback = marshal.memoryHistory(learning0, [G], [G])
+    assertEq(marshal.reservationFor(learning0, 0, false, fallback.peaks, 60 * G), Reservation(0, false))
+    // the directory's estimate is the same rule: the most of its last ten, a tenth more
+    val own = marshal.memoryHistory(learning0, small, big)
+    assertEq(marshal.reservationFor(learning0, 0, false, own.peaks, 60 * G), Reservation(marshal.learnedPeak(learning0, small).get(), true))
+    assertEq(marshal.learnedPeak(learning0, small), Some(2 * G + 205 * M))
+    // the minimum follows the learning's minRuns
+    assertEq(marshal.memoryHistory(MemoryLearning(10, 1, 10), [G], big).from, "kind+dir")
+    assertEq(marshal.memoryHistory(MemoryLearning(10, 3, 10), small, big).from, "kind")
+
+@test("a directory key never equals a kind's key, and differs by lane and directory")
+dirKey()
+    assertEq(marshal.memoryDirKey("test", false, "/a"), "test\n/a")
+    assertEq(marshal.memoryDirKey("test", true, "/a"), "test+landing\n/a")
+    assert(marshal.memoryDirKey("test", false, "/a") != marshal.memoryDirKey("test", false, "/b"), "dirs")
+    assert(marshal.memoryDirKey("test", false, "") != marshal.historyKey("test", false), "empty dir")
+
+@test("where a reservation came from: given (--mem, 0 among them) wins, else the key learned from, else none")
+resvSource()
+    val learned = Reservation(22 * G, true)
+    assertEq(marshal.reservationSource(4 * G, true, Reservation(4 * G, false), "kind+dir"), "given")
+    assertEq(marshal.reservationSource(0, true, Reservation(0, false), "kind+dir"), "given")
+    assertEq(marshal.reservationSource(4 * G, false, Reservation(4 * G, false), "kind"), "given")
+    assertEq(marshal.reservationSource(0, false, learned, "kind+dir"), "kind+dir")
+    assertEq(marshal.reservationSource(0, false, learned, "kind"), "kind")
+    assertEq(marshal.reservationSource(0, false, Reservation(0, false), "kind"), "none")
+
+// An ending event of job `id` of kind `test`, in `dir` (none for an event that names no directory).
+peakEvent(id: long, peak: long, dir: Option[string]) -> string =
+    val d = dir.map(x -> s",\"dir\":\"$x\"").getOrElse("")
+    s"{\"ts\":1,\"event\":\"finished\",\"id\":$id,\"kind\":\"test\",\"landing\":false$d,\"exit\":0,\"run_ms\":10,\"peak_rss\":$peak}"
+
+@test("the log's peaks are recovered under the kind and under the kind in each directory; an event without dir teaches its kind only")
+recoverDirPeaks()
+    val r = marshal.recover([
+        peakEvent(1, 26 * G, Some("/c")), peakEvent(2, G, Some("/g")), peakEvent(3, 25 * G, Some("/c")),
+        peakEvent(4, 2 * G, Some("/g")), peakEvent(5, 3 * G, None), peakEvent(6, 0, Some("/g"))])
+    assertEq(r.peaks.get("test"), Some([26 * G, G, 25 * G, 2 * G, 3 * G]))
+    assertEq(r.peaks.get(marshal.memoryDirKey("test", false, "/c")), Some([26 * G, 25 * G]))
+    assertEq(r.peaks.get(marshal.memoryDirKey("test", false, "/g")), Some([G, 2 * G]))
+    assertEq(r.peaks.get(marshal.memoryDirKey("test", false, "")), None)
+    // a log written before directories were learned (no dir) still teaches the kind
+    val old = marshal.recover([peakEvent(1, 26 * G, None), peakEvent(2, 20 * G, None)])
+    assertEq(old.peaks.keys().toVector(), ["test"])
+    assertEq(marshal.reservationFor(learning0, 0, false, marshal.memoryHistory(learning0, [], old.peaks("test")).peaks, 60 * G), Reservation(marshal.learnedPeak(learning0, [26 * G, 20 * G]).get(), true))
+
 job(memory: long, reserved: long, learned: bool) -> JobInfo =
     JobInfo(1, "build", 1, memory, false, "/", ["true"], "queued", None, false, 0, 0, 0, "/l", None, reserved = reserved, reservedLearned = learned)
 
@@ -94,6 +151,17 @@ resvText()
     assertEq(marshal.reservedText(job(0, 0, false)), "-")
     // a job from a daemon that sent no reservation shows the memory it declared
     assertEq(marshal.reservedText(job(512 * M, 0, false)), "512M")
+
+@test("a job's resv_from reads back; one that is \"\" is left out, and a listing without it reads as \"\"")
+resvFromProtocol()
+    for from in ["given", "kind+dir", "kind", "none"]
+        val j = JobInfo(1, "build", 1, 0, false, "/", ["true"], "queued", None, false, 0, 0, 0, "/l", None, reserved = 22 * G, reservedLearned = true, reservedFrom = from)
+        assertEq(marshal.encodeJob(j)("resv_from").asString(), Some(from))
+        assertEq(marshal.decodeReply(marshal.encodeReply(Reply.Jobs([j])).render()), Ok(Reply.Jobs([j])))
+    val unsaid = marshal.encodeJob(job(0, 22 * G, true))
+    assert(!unsaid.render().contains("resv_from"), unsaid.render())
+    assertEq(marshal.decodeJob(unsaid).map(j -> j.reservedFrom), Ok(""))
+    assert(marshal.decodeJob(json.parse(unsaid.render().replace("\"resv\":", "\"resv_from\":7,\"resv\":")).ok().get()).err().exists(e -> e.contains("`resv_from` is not a string")))
 
 @test("a job's reservation and learned mark, the held memory and the memory-given flag read back")
 protocol()

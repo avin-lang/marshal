@@ -33,7 +33,7 @@ impl Resident
     measured(bytes: long) -> Resident = Resident(bytes, if bytes > peak then bytes else peak)
 
 // Reservations learned from the peaks jobs of a kind reached. A job that gives no memory reserves
-// its history key's learned peak: the most of the last `window` peaks, plus `marginPercent`, rounded
+// its history key's learned peak (its kind's in its directory, or its kind's: `memoryHistory`): the most of the last `window` peaks, plus `marginPercent`, rounded
 // up to a whole mebibyte, once the key has at least `minRuns` peaks; nothing before that. Every job
 // that ran and was measured is history, whatever its outcome: a failed build holds the memory it
 // holds.
@@ -65,6 +65,24 @@ reservationFor(learning: MemoryLearning, memory: long, given: bool, peaks: Vecto
     learnedPeak(learning, peaks) match
         Some(p) -> Reservation(if p > budget then budget else p, true)
         None -> Reservation(0, false)
+
+// The history key of the jobs of a kind run in one working directory: one kind covers suites of
+// very different sizes (a small package's tests and a compiler's), so a directory learns its own
+// peaks. A line feed parts the two, so it never equals a `historyKey`.
+memoryDirKey(kind: string, landing: bool, dir: string) -> string = historyKey(kind, landing) + "\n" + dir
+
+// The peaks a job learns its reservation from, and which key they are: its directory's (`kind+dir`)
+// once that has `minRuns` peaks, and its kind's (`kind`) until then.
+data MemoryHistory(peaks: Vector[long], from: string)
+
+memoryHistory(learning: MemoryLearning, dirPeaks: Vector[long], kindPeaks: Vector[long]) -> MemoryHistory =
+    if dirPeaks.filter(p -> p > 0).length() >=learning.minRuns then MemoryHistory(dirPeaks, "kind+dir") else MemoryHistory(kindPeaks, "kind")
+
+// Where a job's reservation came from, as `status --json` shows it in `resv_from`: `given` for a
+// memory it gave (`--mem`, `0` among them), the key its learned peak came from (`kind+dir` or
+// `kind`), or `none` while nothing has been learned.
+reservationSource(memory: long, given: bool, r: Reservation, from: string) -> string =
+    if given || memory > 0 then "given" elif r.learned then from else "none"
 
 // What admission counts a running job as holding: its reservation, or what it was last measured
 // holding where that is more. A job holding more than it reserved delays the next start; one

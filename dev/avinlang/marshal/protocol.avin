@@ -139,6 +139,8 @@ retryable(_, _) = false
 // its runs from 1. `reserved` is the memory the scheduler counts for it, its effective reservation:
 // the memory it declared, or, with `reservedLearned`, what its kind's peaks taught (memory.avin).
 // `label` is the text its submitter gave it, "" for none; `quietMs` its quiet timeout, 0 for none.
+// `reservedFrom` says where the reservation came from (`reservationSource`: `given`, `kind+dir`,
+// `kind` or `none`), "" from a daemon that does not say.
 data JobInfo(
     id: long,
     kind: string,
@@ -167,7 +169,8 @@ data JobInfo(
     reserved: long = 0,
     reservedLearned: bool = false,
     label: string = "",
-    quietMs: long = 0)
+    quietMs: long = 0,
+    reservedFrom: string = "")
 
 // The memory a listing shows for a job: its reservation, `~` before one learned from its kind's
 // peaks; `-` for none. A job that says no reservation shows the memory it declared.
@@ -473,7 +476,10 @@ encodeJob(i: JobInfo) -> Json = Json.Obj(Json.obj(
     ("after", longs(i.after)),
     ("attempt", Json.num(i.attempt)),
     ("resv", Json.num(i.reserved)),
-    ("resv_learned", Json.Bool(i.reservedLearned))).asMembers().get() ++ labelMember(i.label) ++ quietMember(i.quietMs))
+    ("resv_learned", Json.Bool(i.reservedLearned))).asMembers().get() ++ labelMember(i.label) ++ quietMember(i.quietMs) ++ resvFromMember(i.reservedFrom))
+
+// `resv_from` is left out where the daemon did not say where a reservation came from.
+private resvFromMember(from: string) -> Vector[(string, Json)] = if from.isEmpty() then [] else [("resv_from", Json.str(from))]
 
 decodeJob(j: Json) -> Result[JobInfo, string]
     val outcome = j.get("outcome") match
@@ -514,7 +520,9 @@ decodeJob(j: Json) -> Result[JobInfo, string]
         // absent from what marshal wrote before labels: no label; one already logged is read as it is
         optional(j, "label", v -> v.asString(), "a string", "")?,
         // absent from what marshal wrote before quiet timeouts, and for a job without one: none
-        quietOf(j)?))
+        quietOf(j)?,
+        // absent from what marshal wrote before it learned per directory: not said
+        optional(j, "resv_from", v -> v.asString(), "a string", "")?))
 
 encodeTakeSlot(t: TakeSlotUse) -> Json = Json.obj(
     ("dir", Json.str(t.dir)),
