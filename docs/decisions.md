@@ -1555,7 +1555,7 @@ a 12-unit job drained for it, and seven 2–4-unit jobs waited `draining for` it
 
 ## A job running before the drain counts by its deadline once past its estimate (branch `backfill-live`)
 
-**Proposed.** The bug (user, live on 0.2.11): 4 of 12 units free, a 12-unit job draining, and a
+**Settled on the user's delegation 2026-11-11.** The bug (user, live on 0.2.11): 4 of 12 units free, a 12-unit job draining, and a
 1-unit 40-minute build and a 4-unit 30-minute test waiting `draining for` it while the one job
 holding the drain had two hours to its deadline. Cause: that job, an avin gate, had run past its
 learned median (13 minutes), and the other running job, a test backfilled earlier, past its own (25
