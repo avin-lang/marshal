@@ -143,6 +143,12 @@ class Job(val id: long, val spec: JobSpec, val submittedMs: long, var arrived: l
     var reservedFrom = ""
     // whether `expectedMs` was learned from its kind's runs; a drain counts a guessed one by its deadline
     var durationLearned = false
+    // an exclusive job's `--quiet-load`: the load last read (None until read, or where it cannot be),
+    // and since when it has stayed below the job's quiet load (the daemon's clock)
+    var load: Option[real] = None
+    var calm: Option[long] = None
+    // when a running exclusive job's log was last given a sample line (the daemon's clock)
+    var sampledMs: long = 0
     val waiters = Buffer[Channel[Reply]]()
 
     // How long it has run by `now`, its pauses left out.
@@ -160,7 +166,7 @@ class Job(val id: long, val spec: JobSpec, val submittedMs: long, var arrived: l
         val rss = if state == "running" then resident.now else 0
         // a waiting job that asked to be urgent joins the urgent band once it queues
         val urgent = urgentAt > 0 || (state == "waiting" && spec.urgent)
-        JobInfo(id, spec.kind, spec.units, spec.memory, spec.landing, spec.dir, spec.cmd, state, outcome, killed, queued, elapsed, deadlineMs, log, sample, rss, resident.peak, startedAt, held, priority, urgent, paused, after, attempt, reserved, learnedMem, spec.label, spec.quietMs, reservedFrom, spec.external, spec.quick, expectedMs, durationLearned, expectedStart)
+        JobInfo(id, spec.kind, spec.units, spec.memory, spec.landing, spec.dir, spec.cmd, state, outcome, killed, queued, elapsed, deadlineMs, log, sample, rss, resident.peak, startedAt, held, priority, urgent, paused, after, attempt, reserved, learnedMem, spec.label, spec.quietMs, reservedFrom, spec.external, spec.quick, expectedMs, durationLearned, expectedStart, spec.exclusive, spec.quietLoad)
 
 // The daemon's state, owned by its own thread.
 // `slots` is the take-slot directory it shares, if any; `ticket` the name of its waiting ticket there.
@@ -244,7 +250,13 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
     // The running job `j` as the scheduler weighs it at `t`: its deadline is counted from its start,
     // the time it has spent paused added, since a pause stops its deadline's clock.
     startedOf(j: Job, t: long) -> Started =
-        Started(j.id, j.spec.units, holds(j), j.spec.landing, j.startedMs, j.expectedMs, j.spec.quick, drainMs(j), j.deadlineMs + (t - j.startedMs - j.ran(t)))
+        Started(j.id, j.spec.units, holds(j), j.spec.landing, j.startedMs, j.expectedMs, j.spec.quick, drainMs(j), j.deadlineMs + (t - j.startedMs - j.ran(t)), j.spec.exclusive)
+
+    // The queued job `j` as the scheduler weighs it at `t`; an exclusive one with a quiet load says
+    // why the load holds it back, until it no longer does.
+    waitingOf(j: Job, t: long) -> Waiting
+        val unsettled = if j.spec.exclusive && j.spec.quietLoad > 0.0 then marshal.loadWhy(j.load, j.spec.quietLoad, j.calm, marshal.quietLoadWindowMs(), t) else None
+        Waiting(j.id, j.spec.units, j.reserved, j.spec.landing, j.expectedMs, j.arrived, j.spec.quick, drainMs(j), j.spec.exclusive, unsettled)
 
     // What a `started` event adds for a job backfilled ahead of a draining job: its id.
     backfilledField(ahead: Option[long]) -> Vector[(string, Json)] = ahead match
@@ -269,6 +281,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
                 Sample ->
                     holdPaused()
                     quietCheck()
+                    exclusiveCheck()
                     measure()
                 Measured(sizes) -> measured(sizes)
                 Unwatch(out) -> unwatch(out)
@@ -310,9 +323,13 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
 
     // Queues a job, or keeps it waiting while the jobs it runs after have not all ended. `extra` goes into
     // its `submitted` event.
-    submit(spec: JobSpec, extra: Vector[(string, Json)] = []) -> Reply
+    submit(given: JobSpec, extra: Vector[(string, Json)] = []) -> Reply
         if stopping || draining then return Failed("the daemon is stopping and takes no new jobs")
-        marshal.neverFits(config.budget, spec.units, spec.memory, spec.landing) match
+        for why in marshal.exclusiveRefusal(given) do return Failed(why)
+        // an exclusive job is the only one running, so it weighs the whole budget
+        val spec = if given.exclusive then marshal.exclusiveSpec(given, config.budget.units) else given
+        // a landing job, and an exclusive one, of any memory can start: when nothing else runs
+        marshal.neverFits(config.budget, spec.units, spec.memory, spec.landing || spec.exclusive) match
             Some(why) -> return Failed(why)
             None -> ()
         marshal.externalRefusal(spec.external, spec.memoryGiven || spec.memory > 0) match
@@ -338,6 +355,8 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         val job = Job(id, spec, now(), time.now().epochMicros, deadline, expected, s"$home/jobs/$id.log")
         job.durationLearned = marshal.durationLearned(config.learning, past)
         reserve(job)
+        // its quiet load's clock starts with the load as it is now
+        if spec.quietLoad > 0.0 then settleSeen(job, marshal.loadAverages().headOption(), now())
         jobs(id) = job
         if spec.after.isEmpty()
             enqueue(job)
@@ -363,7 +382,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
                 marshal.specOf(text.lines(), id) match
                     Some(s) -> s
                     None -> return Failed(s"job $id's command is not in the event log")
-        submit(JobSpec(spec.kind, spec.units, spec.memory, spec.landing, spec.dir, spec.deadlineMs, spec.cmd, spec.env, spec.urgent, [], false, spec.retries, spec.retryDelayMs, spec.memoryGiven, spec.label, spec.quietMs, spec.external, spec.quick), [("rerun_of", Json.num(id))])
+        submit(JobSpec(spec.kind, spec.units, spec.memory, spec.landing, spec.dir, spec.deadlineMs, spec.cmd, spec.env, spec.urgent, [], false, spec.retries, spec.retryDelayMs, spec.memoryGiven, spec.label, spec.quietMs, spec.external, spec.quick, spec.exclusive, spec.quietLoad), [("rerun_of", Json.num(id))])
 
     // How job `id` ended: None while it has not, and an error when there is no such job or its end
     // cannot be read.
@@ -661,7 +680,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
     plan(outside: Outside)
         val t = now()
         val started = running.map(j -> startedOf(j, t)).toVector()
-        val waiting = eligible().map(j -> Waiting(j.id, j.spec.units, j.reserved, j.spec.landing, j.expectedMs, j.arrived, j.spec.quick, drainMs(j)))
+        val waiting = eligible().map(j -> waitingOf(j, t))
         for (id, ahead) in marshal.starts(config.budget, started, waiting, t, outside, marshal.fairness(config, time.now().epochMicros))
             val job = jobs(id)
             // a job that could not be started schedules again, which may have started this one
@@ -679,7 +698,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         else
             val t = now()
             val started = running.map(j -> startedOf(j, t)).toVector()
-            val waiting = eligible().map(j -> Waiting(j.id, j.spec.units, j.reserved, j.spec.landing, j.expectedMs, j.arrived, j.spec.quick, drainMs(j)))
+            val waiting = eligible().map(j -> waitingOf(j, t))
             marshal.ticketFor(config.budget, started, waiting, t, outside, marshal.fairness(config, time.now().epochMicros))
         val want = head.map(t -> marshal.ticketName(t.0, ts.me))
         if want == ticket then return
@@ -690,15 +709,22 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
     // `started` event say.
     start(job: Job, ahead: Option[long] = None)
         val spec = job.spec
-        val program = if spec.landing then Command(spec.cmd(0), spec.cmd.drop(1)*) else Command("nice", (["-n", "15"] ++ spec.cmd)*)
+        // a landing job, and an exclusive one (a benchmark, alone on the machine), is not niced
+        val program = if spec.landing || spec.exclusive then Command(spec.cmd(0), spec.cmd.drop(1)*) else Command("nice", (["-n", "15"] ++ spec.cmd)*)
         // A retry's output follows the earlier attempts' in the job's log.
         if job.attempt > 1 then fs.appendText(job.log, s"marshal: attempt ${job.attempt} of ${spec.retries + 1}\n")
         val first = job.attempt == 1
         for id in ahead
             val line = s"marshal: backfilled ahead of $id\n"
             if first then fs.writeText(job.log, line) else fs.appendText(job.log, line)
+        // An exclusive job's log begins with what else the machine is doing as it starts; the job's
+        // own processes are not started yet, so none of them is in it.
+        if spec.exclusive
+            val line = sampleNow(job) + "\n"
+            if first then fs.writeText(job.log, line) else fs.appendText(job.log, line)
+            job.sampledMs = now()
         val placed = program.inDir(spec.dir)
-        var command = (if job.attempt > 1 || ahead.isDefined() then placed.appendTo(job.log) else placed.toFile(job.log)).errorsToOutput().inNewGroup()
+        var command = (if job.attempt > 1 || ahead.isDefined() || spec.exclusive then placed.appendTo(job.log) else placed.toFile(job.log)).errorsToOutput().inNewGroup()
         for (name, value) in spec.env do command = command.withEnv(name, value)
         // every job knows its id and marshal's home: a type's run keeps its files under both
         command = command.withEnv("MARSHAL_JOB", job.id.toString()).withEnv("MARSHAL_HOME", home)
@@ -791,6 +817,34 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             if marshal.quietPassed(job.quiet, job.spec.quietMs, t)
                 job.quietStopped = true
                 outOfTime(job, s"has had no output for ${marshal.formatMillis(job.spec.quietMs)}")
+
+    // The sample line for the exclusive job `job`: the load averages and the busiest processes that
+    // are not marshal's, the job's own tree and the daemon's among them.
+    sampleNow(job: Job) -> string
+        val groups = if job.pgid > 0 then marshal.groupsOf(home, job.id, job.pgid) else []
+        marshal.sampleLine(marshal.loadAverages(), marshal.outsiders(marshal.listProcs(), process.pid(), groups, marshal.SampleTop))
+
+    // `job`'s quiet-load clock, after the load is read as `load` at `t`.
+    settleSeen(job: Job, load: Option[real], t: long)
+        if load.isDefined() then job.load = load
+        job.calm = marshal.calmSince(job.calm, load, job.spec.quietLoad, t)
+
+    // Once a second: the load is read for the queued exclusive jobs that wait for it to settle, and
+    // the queue looked at again when one has; and each running exclusive job whose last sample is
+    // `exclusiveSampleMs` old is given another.
+    exclusiveCheck()
+        val t = now()
+        // jobs still waiting for others, or to retry, are watched too, so a clock is never stale
+        val settling = (queue.toVector() ++ waitingJobs.toVector()).filter(j -> j.spec.quietLoad > 0.0)
+        if settling.nonEmpty()
+            val load = marshal.loadAverages().headOption()
+            for job in settling do settleSeen(job, load, t)
+            schedule()
+        val every = marshal.exclusiveSampleMs()
+        for job in running.toVector()
+            if job.spec.exclusive && !job.paused && t - job.sampledMs >= every
+                fs.appendText(job.log, sampleNow(job) + "\n")
+                job.sampledMs = t
 
     // Stops a running job that ran out of time, at its deadline or its quiet timeout (`why`): its
     // busiest process is sampled, then its groups are stopped.
@@ -1015,7 +1069,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
     drainExpected(t: long, outside: Outside) -> Option[(long, long)]
         if queueHeld then return None
         val started = running.map(j -> startedOf(j, t)).toVector()
-        val waiting = eligible().map(j -> Waiting(j.id, j.spec.units, j.reserved, j.spec.landing, j.expectedMs, j.arrived, j.spec.quick, drainMs(j)))
+        val waiting = eligible().map(j -> waitingOf(j, t))
         val wall = time.now().epochMillis()
         marshal.drainStart(config.budget, started, waiting, t, outside, marshal.fairness(config, time.now().epochMicros)).map(d -> (d.0, wall + (d.1 - t)))
 
@@ -1035,7 +1089,7 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
         val outside = outsideNow()
         val t = now()
         val started = running.map(j -> startedOf(j, t)).toVector()
-        val waiting = queue.map(j -> Waiting(j.id, j.spec.units, j.reserved, j.spec.landing, j.expectedMs, j.arrived, j.spec.quick, drainMs(j))).toVector()
+        val waiting = queue.map(j -> waitingOf(j, t)).toVector()
         val held = queue.filter(j -> j.held).map(j -> j.id).toVector()
         val drain = drainExpected(t, outside.getOrElse(marshal.NoOutside))
         val queued = marshal.queueWaits(config.budget, started, waiting, held, queueHeld, t, outside.getOrElse(marshal.NoOutside), marshal.fairness(config, time.now().epochMicros)).map(w ->
@@ -1058,7 +1112,8 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             machineMemory,
             queueHeld,
             running.map(j -> holds(j)).sum(),
-            running.filter(j -> j.spec.quick).length())
+            running.filter(j -> j.spec.quick).length(),
+            running.find(j -> j.spec.exclusive).map(j -> j.id))
 
     // A stop asks for the daemon to end: at once when nothing is queued or running; with `force`,
     // after killing what runs and cancelling what waits; with `drain`, once what is queued and
@@ -1292,6 +1347,12 @@ class Daemon(val home: string, val config: Config, val events: Channel[Message],
             if job.state == "retrying" then job.retryAt = mono(sj.retryAt)
             waitingJobs += job
             job)
+        // an exclusive job waiting for the load to settle waits a whole window again: the calm the
+        // old image saw is not carried over
+        val settling = (queue.toVector() ++ waits).filter(j -> j.spec.quietLoad > 0.0)
+        if settling.nonEmpty()
+            val load = marshal.loadAverages().headOption()
+            for job in settling do settleSeen(job, load, t)
         for job in waits
             if job.state == "retrying" then armRetry(job) else reconsider(job)
         schedule()

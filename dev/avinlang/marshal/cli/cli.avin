@@ -64,6 +64,15 @@ Options of submit and run:
   --quick           run it in the quick lane: at once, outside the unit budget, niced, while its
                     memory fits; at most 2 at a time, and a deadline of at most 2m (default 2m;
                     a shorter --deadline is kept, a longer one refused). Not with --landing
+  --exclusive       own the machine, for a benchmark: start once no other job runs in any lane,
+                    and start nothing else until it ends. It stops nobody: it waits for the
+                    running jobs, and jobs queued after it wait for it, but a landing job
+                    queued before it starts still goes first. It weighs the whole unit budget
+                    (--units is not needed), is not niced, and its log gets a `marshal exclusive:`
+                    line with the load and the busiest processes outside marshal at its start and
+                    every 30s; # in KIND. Not with --landing or --quick
+  --quiet-load <n>  with --exclusive: also wait until the 1-minute load average has stayed below
+                    n for a whole minute (ls says why it waits: load 7.9 ≥ 4)
   --dir <d>         the directory to run it in, relative to this one (default: this one)
   --deadline <t>    stop it after t: minutes, or 90s, 30m, 2h (default: learned for the kind)
   --quiet-timeout <t>
@@ -148,7 +157,7 @@ optionsAskHelp(args, i) | i >= args.length() = false
 optionsAskHelp(args, i)
     | args(i) == "--" = false
     | isHelp(args(i)) = true
-    | args(i) == "--landing" || args(i) == "--urgent" || args(i) == "--external" || args(i) == "--quick" = optionsAskHelp(args, i + 1)
+    | args(i) == "--landing" || args(i) == "--urgent" || args(i) == "--external" || args(i) == "--quick" || args(i) == "--exclusive" = optionsAskHelp(args, i + 1)
     | args(i).startsWith("--") = optionsAskHelp(args, i + 2)
     | _ = false
 
@@ -264,6 +273,8 @@ parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]
     var retryDelay: long = 0
     var label = ""
     var external = false
+    var exclusive = false
+    var quietLoad = 0.0
     var i = 0
     while i < args.length()
         val word = args(i)
@@ -285,6 +296,10 @@ parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]
             continue
         if word == "--quick"
             quick = true
+            i += 1
+            continue
+        if word == "--exclusive"
+            exclusive = true
             i += 1
             continue
         if i + 1 >= args.length() then return Err(s"`$word` needs a value")
@@ -318,6 +333,9 @@ parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]
                 Some(ms) -> retryDelay = ms
                 None -> return Err(s"`--retry-delay $value`: a delay is minutes, or a number with s, m or h, such as 90s")
             "--label" -> label = marshal.checkLabel(value).mapErr(e -> s"`--label`: $e")?
+            "--quiet-load" -> value.toRealOption() match
+                Some(n) if n > 0.0 -> quietLoad = n
+                _ -> return Err(s"`--quiet-load $value`: a load average is a number above 0, such as 4 or 2.5")
             _ -> return Err(s"no option `$word`")
         i += 2
     val cmd = args.drop(i)
@@ -326,8 +344,10 @@ parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]
         Some(why) -> return Err(why)
         None -> ()
     val k = kind.getOrElse(if cmd.exists(w -> w == "test") then "test" else "build")
-    Ok(JobSpec(k, units.getOrElse(marshal.defaultUnits(k)), memory, landing, workDir, deadline, cmd, env, urgent,
-        after.toVector().distinct(), afterMode == Some("--after-any"), retries, retryDelay, memoryGiven, label, quiet, external, quick))
+    val spec = JobSpec(k, units.getOrElse(marshal.defaultUnits(k)), memory, landing, workDir, deadline, cmd, env, urgent,
+        after.toVector().distinct(), afterMode == Some("--after-any"), retries, retryDelay, memoryGiven, label, quiet, external, quick, exclusive, quietLoad)
+    for why in marshal.exclusiveRefusal(spec) do return Err(why)
+    Ok(spec)
 
 // The value of `--quiet-timeout`, written as `--deadline` writes a deadline, in milliseconds.
 parseQuietTimeout(value: string) -> Result[long, string] = marshal.parseDeadline(value) match

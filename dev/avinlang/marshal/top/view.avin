@@ -109,7 +109,7 @@ stateOf(l: Line) -> (string, Style)
             None if waiting(l) -> (marshal.stateColumn(j), Style.fg(Yellow))
             None ->
                 if j.paused then ("paused", Style.fg(Yellow).with(Bold | Reverse))
-                else (if j.landing then "landing" elif j.quick then "quick" else "running", Style.fg(Green).with(Bold))
+                else (if j.landing then "landing" elif j.quick then "quick" elif j.exclusive then "exclusive" else "running", Style.fg(Green).with(Bold))
             Some(Exited(0)) -> ("exit 0", Style.fg(Green))
             Some(Exited(code)) -> (s"exit $code", Style.fg(Red).with(Bold))
             Some(Signalled(sig)) -> if j.killed then ("killed", Style.fg(Magenta).with(Bold)) else (s"signal $sig", Style.fg(Red).with(Bold))

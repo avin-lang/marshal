@@ -1597,3 +1597,78 @@ not the cause.
 - **Where the copy cannot be made** (a step path with `..`, a `${}` reference or a missing source; no free disk) the job is submitted as before, from the installed files, with a note on stderr. Where only the hard link fails (another file system) the job runs the installed program through its stable path: Homebrew's `<prefix>/opt/<name>` for a path in `<prefix>/Cellar/<name>/<version>`, else the path itself, so a development build works unchanged.
 - **The copy stays until the retention sweep**, which removes `typed/*` older than the step age (30 days by default, or `clean --older-than`), because `rerun` submits the same command. It is reported with the run directories. A copy cannot be tied to the job's run directory: the job id is not known when the command is built.
 - Alternatives: only a stable path (Homebrew's `opt/marshal`; fixes brew but not other installs, and a queued job would run a newer marshal and type than it was submitted with); the runner moving the copy into the run directory at start (breaks `rerun`, and the executable's path then names the old place); copying the executable (35 MB a job); `avin:` steps that reach outside the type file's directory (cannot be placed relative to a copy without rewriting the file).
+
+## Exclusive jobs, for benchmarks (branch `exclusive`)
+
+**Settled by the user 2026-11-12** (the design): `marshal run --exclusive` starts a job only when no
+marshal job runs in any lane, and nothing else starts while it runs; it never pauses or kills a
+running job; `--quiet-load <n>` also waits for the one-minute load average to stay below `n` for a
+minute; while it runs its log gets the load and the busiest processes outside marshal at intervals;
+a landing job queued before the exclusive one starts goes first, and one arriving while it runs
+waits; `--deadline` still applies.
+
+**Proposed** (choices the design left open):
+
+- **What an exclusive job holds back while it waits: every job queued behind it, in queue order —
+  development jobs, quick jobs and later exclusive jobs — but never a landing job.** The jobs ahead
+  of it (and take-slot's waiters that arrived before it) are decided as if it and the jobs behind it
+  were not there; it starts once nothing runs or starts, nothing ahead of it waits, and take-slot
+  holds nothing. Why: without it a stream of short jobs (two quick slots refilling every few seconds,
+  development backfill) could keep the machine from ever emptying; holding back from the moment it
+  queues, not only once it heads the queue, bounds its wait by the jobs already ahead of it.
+  Alternatives: hold back only once it is the queue's head (a stream of jobs ahead of it in the
+  urgent band could still delay it, and the jobs between could start, then run long); let quick jobs
+  through (the quick lane alone can keep the machine busy). An urgent job submitted later still goes
+  ahead of it in the queue, since that is what `--urgent` means — the user may want to revisit this.
+- **A waiting exclusive job never holds the landing lane; only a running one does.** A landing job
+  queued at any time before the exclusive job starts goes first, even while other jobs still run.
+  Why: a benchmark must never delay a release train, and the landing lane is outside the unit budget
+  anyway. Alternative: holding landing jobs that arrive after the exclusive job queued (a train
+  would wait for the machine to empty and a benchmark to run).
+- **An exclusive job weighs the whole unit budget.** The daemon sets its units to the budget at
+  submit, whatever `--units` said (no refusal: a script passing `--units` everywhere keeps working),
+  and records that spec; `ls` and `status` show the budget in use, and take-slot is told it holds
+  every unit, so take-slot's runs wait for it. Its memory is not limited by the budget, as a landing
+  job's is not: it runs alone. Alternatives: refusing `--units` with `--exclusive`; keeping its own
+  units (misleading `status`, and take-slot would start runs beside it).
+- **Not niced**, as a landing job is not: a benchmark measures the machine, and nothing of marshal's
+  runs beside it. Alternative: niced like a development job (it would lose to background work
+  outside marshal, which is what it measures against).
+- **`--quiet-load`: the load is read once a second** (on the daemon's existing one-second tick,
+  `sysctl -n vm.loadavg`, the first figure), for every exclusive job waiting with one — queued, or
+  still waiting for others or to retry, so its clock is never stale. The clock starts when a reading
+  falls below `n` and stops at any reading at or above it; the job may start once it has run for the
+  window (60 s). A reading is taken at submit, so the first decision has one. The clock is not
+  carried across `marshal restart` (the window starts again, as the quiet-timeout clock does). A
+  load that cannot be read holds nothing back. Why: the one-minute average is already smoothed, so a
+  second's resolution loses nothing; a missing `sysctl` must not hold a job for ever. `ls` shows
+  `queued (load 7.9 ≥ 4)` while it is at or above, and `queued (load 3.5 < 4 for 20.0s)` while the
+  window runs; `emptying` comes first while jobs still run. Alternatives: sampling on the 3-second
+  scheduling tick (coarser `ls`), or counting the window only once the machine has emptied (a load
+  that is low while marshal's jobs drain counts toward it here, which is what was asked: the load,
+  whoever makes it).
+- **The sample line: `marshal exclusive: load <1m> <5m> <15m>; busiest outside marshal: <name>
+  <pid> <cpu>%, …`**, written as the job starts (before its own output) and then every 30 s (looked
+  at on the one-second tick), naming the 5 busiest processes with any processor use. The job's log is
+  opened for appending, so the lines and the job's output interleave whole. Why: the `marshal
+  exclusive:` prefix is what a result-reading script greps; the load figures and the process names
+  are enough to tell a disturbed run from a quiet one; 30 s is often enough for a multi-minute
+  benchmark and adds nothing measurable. Alternatives: a separate `<id>.samples` file (one more file
+  to find and clean), or `top`-style per-second sampling (noise in the log).
+- **"Outside marshal" is every process except the daemon, its descendants (every job's tree), and
+  the members of the job's own process groups** (its step group among them, which catches a process
+  the job started that left its parent). `ps -A -o pid=,ppid=,pgid=,%cpu=,comm=` is read once a
+  sample; descent is followed by parent pid. Why: jobs are the daemon's children, so descent covers
+  marshal's own work; the group check covers a daemonised child. Take-slot's runs are outside
+  marshal and do show. Alternatives: excluding by process group alone (misses a job that makes new
+  groups); naming every process (unreadable).
+- **`--exclusive` with `--landing` or `--quick` is refused**, and so is `--quiet-load` without
+  `--exclusive` or not above 0. `ls` and `top` mark an exclusive job's kind `#` (before the urgent
+  `!`; `history` does not, as the event log's ended jobs do not carry it); `top` says `exclusive` for it running; `status` adds `; exclusive job N owns the
+  machine: nothing else starts`; the job JSON has `"exclusive":true` and `quiet_load`, `status` and
+  the snapshot `exclusive` (the running one's id, or null). New reasons to wait: `emptying`, `load`
+  (with `load`, `load_limit`, `calm_ms`) and `exclusive` (with `exclusive_id`), shown `emptying`,
+  `load …` and `exclusive N`. The quick hint is never given to an exclusive job.
+- **The test hooks**: `$MARSHAL_TEST_LOAD_FILE` (the load read from a file), `$MARSHAL_TEST_PS_FILE`
+  (the process table from a file), `$MARSHAL_TEST_QUIET_LOAD_MS` (the window) and
+  `$MARSHAL_TEST_EXCLUSIVE_SAMPLE_MS` (the interval), as the existing `$MARSHAL_TEST_*` hooks.

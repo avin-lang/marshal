@@ -1,0 +1,310 @@
+module tests
+
+// End to end, exclusive jobs: one waits for the running jobs of every lane, and stops none of them;
+// while it runs nothing starts in any lane, a landing job among them; a landing job queued before it
+// starts goes first; the jobs queued behind it cannot starve it; `--quiet-load` waits for the load
+// (read from a file the test writes, so no real load is made) to stay below its limit for the
+// window; its log gets sample lines naming processes outside marshal and none of its own; its
+// deadline, kill, two in turn, `marshal restart`, the refusals, `ls`, `status` and `rerun`. The
+// helpers are e2e.avin's, landing_e2e.avin's and quick_e2e.avin's.
+import avin.fs
+import avin.process
+import avin.threads
+import avin.time
+import avin.time.millis
+import dev.avinlang.marshal
+import dev.avinlang.marshal.Why
+
+// Whether every one of `ids` has ended (finished, or killed) before job `x` started.
+allEndedBefore(home: string, ids: Vector[long], x: long) -> bool =
+    ids.forall(id -> 0 <= at(home, id, "finished") < at(home, x, "started"))
+
+// Whether every one of `ids` started after job `x` ended.
+allStartedAfter(home: string, ids: Vector[long], x: long, ending: string = "finished") -> bool =
+    ids.forall(id -> at(home, id, "started") > at(home, x, ending) >= 0)
+
+// The lines marshal wrote into job `id`'s log as an exclusive job.
+sampleLinesOf(home: string, id: long) -> Vector[string] =
+    fs.readText(s"$home/jobs/$id.log").getOrElse("").lines().filter(l -> l.startsWith(marshal.ExclusiveMark)).toVector()
+
+@test("an exclusive job waits for the running jobs of every lane, emptying, stops none of them, and starts once they have all ended")
+exclE2eWaitsForEveryLane()
+    val home = newHome("{\"units\": 4}")
+    val a = submitted(home, "--kind", "a", "--units", "2", "--", "sleep", "1.5")
+    val q = submitted(home, "--quick", "--kind", "q", "--", "sleep", "2")
+    val l = submitted(home, "--landing", "--kind", "l", "--", "sleep", "2.5")
+    assert(within(2000, () -> started(home, a) && started(home, q) && started(home, l)))
+    val x = submitted(home, "--exclusive", "--kind", "bench", "--", "true")
+    assertEq(whyOf(home, x), Some(Why.Emptying))
+    assert(m(home, "ls").out.contains("queued (emptying)"), m(home, "ls").out)
+    assertEq(statusOf(home)("queued").asVector().get()(0)("why").asString(), Some("emptying"))
+    assertEq(m(home, "wait", x.toString()).code, 0)
+    assert(allEndedBefore(home, [a, q, l], x), events(home).map(e -> e.render()).mkString("\n"))
+    // none of them was stopped for it
+    for id in [a, q, l] do assertEq(eventsOf(home, id), ["submitted", "started", "finished"])
+    cleanUp(home)
+
+@test("a running exclusive job holds every lane: development, quick and landing jobs wait for it, and ls, status and top say so")
+exclE2eHoldsEveryLane()
+    val home = newHome("{\"units\": 4}")
+    val x = submitted(home, "--exclusive", "--kind", "bench", "--", "sh", "-c", "ps -o nice= -p $$; sleep 2")
+    assert(within(2000, () -> started(home, x)))
+    val d = submitted(home, "--units", "1", "--", "true")
+    val q = submitted(home, "--quick", "--", "true")
+    val l = submitted(home, "--landing", "--", "sh", "-c", "ps -o nice= -p $$")
+    for id in [d, q, l] do assertEq(whyOf(home, id), Some(Why.ForExclusive(x)))
+    val ls = m(home, "ls").out
+    assert(ls.contains(s"queued (exclusive $x)") && ls.contains("bench#"), ls)
+    val status = statusOf(home)
+    assertEq(status("exclusive").asLong(), Some(x))
+    val running = status("running").asVector().get()(0)
+    assertEq(running("exclusive").asBool(), Some(true))
+    // it weighs the whole budget
+    assertEq(running("units").asInt(), Some(4))
+    assertEq(status("units").asInt(), Some(4))
+    assert(m(home, "status").out.contains(s"exclusive job $x owns the machine: nothing else starts"), m(home, "status").out)
+    assertEq(snapshotOf(home).usage.exclusive, Some(x))
+    assertEq(m(home, "wait", l.toString()).code, 0)
+    assertEq(m(home, "wait", d.toString()).code, 0)
+    assertEq(m(home, "wait", q.toString()).code, 0)
+    assert(allStartedAfter(home, [d, q, l], x), events(home).map(e -> e.render()).mkString("\n"))
+    // not niced, as a landing job is not
+    val niceOf = (id: long) -> fs.readText(s"$home/jobs/$id.log").ok().get().lines().filter(t -> !t.startsWith(marshal.ExclusiveMark)).toVector()(0).trim().toInt()
+    assertEq(niceOf(x), niceOf(l))
+    cleanUp(home)
+
+@test("a landing job queued when the running jobs drain starts before the exclusive job; one arriving while it runs waits for it")
+exclE2eLandingFirst()
+    val home = newHome("{\"units\": 4}")
+    val l1 = submitted(home, "--landing", "--", "sleep", "1.5")
+    assert(within(2000, () -> started(home, l1)))
+    val x = submitted(home, "--exclusive", "--", "sleep", "1.5")
+    val l2 = submitted(home, "--landing", "--", "sleep", "0.5")
+    assertEq(whyOf(home, l2), Some(Why.LaneBusy))
+    assertEq(whyOf(home, x), Some(Why.Emptying))
+    assert(within(5000, () -> started(home, x)))
+    assert(at(home, l2, "started") < at(home, x, "started"), events(home).map(e -> e.render()).mkString("\n"))
+    assert(at(home, l2, "finished") < at(home, x, "started"))
+    // a landing job arriving while it runs waits for it
+    val l3 = submitted(home, "--landing", "--", "true")
+    assertEq(whyOf(home, l3), Some(Why.ForExclusive(x)))
+    assertEq(m(home, "wait", l3.toString()).code, 0)
+    assert(at(home, x, "finished") < at(home, l3, "started"))
+    cleanUp(home)
+
+@test("a stream of small jobs queued behind an exclusive job cannot keep it waiting: they wait for it, and it starts once the running job ends")
+exclE2eNoStarvation()
+    val home = newHome("{\"units\": 4}")
+    val a = submitted(home, "--units", "1", "--", "sleep", "1.5")
+    assert(within(2000, () -> started(home, a)))
+    val x = submitted(home, "--exclusive", "--", "sleep", "0.5")
+    val stream = Buffer[long]()
+    for i in 0 ..< 6
+        val opts = if i % 2 == 0 then ["--quick"] else ["--units", "1"]
+        stream += submitted(home, (opts ++ ["--", "true"])*)
+        threads.sleep(millis(200))
+    for id in stream do assertEq(whyOf(home, id).getOrElse(Why.Starting), Why.ForExclusive(x))
+    for id in stream do assertEq(m(home, "wait", id.toString()).code, 0)
+    assert(at(home, a, "finished") < at(home, x, "started"))
+    assert(allStartedAfter(home, stream.toVector(), x), events(home).map(e -> e.render()).mkString("\n"))
+    cleanUp(home)
+
+@test("--quiet-load waits while the load is at or above it, waits the window again when it rises before the window ends, and starts once it stays below")
+exclE2eQuietLoad()
+    val home = newHome("{\"units\": 4}")
+    val loadFile = home + "/load"
+    fs.writeText(loadFile, "{ 7.9 6.5 5.0 }").ok().get()
+    val env = [("MARSHAL_TEST_LOAD_FILE", loadFile), ("MARSHAL_TEST_QUIET_LOAD_MS", "3000")]
+    val r = mWith(home, env, "submit", "--exclusive", "--quiet-load", "4", "--", "true")
+    assertEq(r.code, 0)
+    val x = idIn(r.out)
+    assertEq(whyOf(home, x), Some(Why.Load(7.9, 4.0, 0)))
+    assert(m(home, "ls").out.contains("queued (load 7.9 ≥ 4)"), m(home, "ls").out)
+    val queued = statusOf(home)("queued").asVector().get()(0)
+    assertEq(queued("why").asString(), Some("load"))
+    assertEq(queued("quiet_load").asReal(), Some(4.0))
+    // jobs behind it wait for it while it waits for the load
+    val d = submitted(home, "--", "true")
+    assertEq(whyOf(home, d), Some(Why.ForExclusive(x)))
+    threads.sleep(millis(2000))
+    assert(!started(home, x))
+    // below for less than the window, then above again: the window starts again
+    fs.writeText(loadFile, "3.5").ok().get()
+    assert(within(2000, () -> whyOf(home, x).exists(w -> w match
+        Why.Load(load, _, _) -> load < 4.0
+        _ -> false)))
+    assert(m(home, "ls").out.contains("queued (load 3.5 < 4 for"), m(home, "ls").out)
+    threads.sleep(millis(500))
+    fs.writeText(loadFile, "8").ok().get()
+    // longer than the window, counted from when the load fell: had the rise not started it again, the job would have started
+    threads.sleep(millis(3500))
+    assert(!started(home, x), eventsOf(home, x).mkString(" "))
+    fs.writeText(loadFile, "3").ok().get()
+    val wrote = time.now().epochMillis()
+    assertEq(m(home, "wait", x.toString()).code, 0)
+    assert(tsOf(home, x, "started") - wrote >= 2900, s"started ${tsOf(home, x, "started") - wrote}ms after the load fell")
+    assertEq(m(home, "wait", d.toString()).code, 0)
+    assert(at(home, x, "finished") < at(home, d, "started"))
+    cleanUp(home)
+
+@test("a sample line goes into the exclusive job's log as it starts and at every interval, naming processes outside marshal and none of marshal's")
+exclE2eSamplesFromTable()
+    val home = newHome("{\"units\": 4}")
+    val loadFile = home + "/load"
+    val psFile = home + "/ps"
+    fs.writeText(loadFile, "{ 1.50 1.25 1.00 }").ok().get()
+    fs.writeText(psFile, "").ok().get()
+    val env = [("MARSHAL_TEST_LOAD_FILE", loadFile), ("MARSHAL_TEST_PS_FILE", psFile), ("MARSHAL_TEST_EXCLUSIVE_SAMPLE_MS", "300")]
+    assertEq(mWith(home, env, "run", "--", "true").code, 0)
+    val daemon = fs.readText(home + "/daemon.pid").ok().get().trim().toLong()
+    fs.writeText(psFile, s"1 0 1 0.5 /sbin/launchd\n4242 1 4242 55.5 /usr/bin/outsider\n4243 $daemon 4243 77.0 /bin/marshalchild\n").ok().get()
+    val x = submitted(home, "--exclusive", "--", "sh", "-c", "echo out; sleep 2.5")
+    assertEq(m(home, "wait", x.toString()).code, 0)
+    // at its start, then at the daemon's once-a-second look once the interval has passed
+    val lines = sampleLinesOf(home, x)
+    assert(lines.length() >= 2, lines.mkString("\n"))
+    for line in lines do assertEq(line, "marshal exclusive: load 1.5 1.25 1; busiest outside marshal: outsider 4242 55.5%, launchd 1 0.5%")
+    // the first is written before the job's own output
+    val log = fs.readText(s"$home/jobs/$x.log").ok().get().lines().toVector()
+    assert(log(0).startsWith(marshal.ExclusiveMark) && log.contains("out"), log.mkString("\n"))
+    // a job that is not exclusive gets none
+    val plain = submitted(home, "--", "sleep", "0.8")
+    assertEq(m(home, "wait", plain.toString()).code, 0)
+    assertEq(sampleLinesOf(home, plain), [])
+    cleanUp(home)
+
+@test("with the machine's own ps and load, the sample lines name real loads and never the job's own busy processes")
+exclE2eSamplesReal()
+    val home = newHome("{\"units\": 4}")
+    val env = [("MARSHAL_TEST_EXCLUSIVE_SAMPLE_MS", "300")]
+    // busy until its deadline, so its own process is among the machine's busiest
+    val r = mWith(home, env, "submit", "--exclusive", "--deadline", "3s", "--", "sh", "-c", "while :; do :; done")
+    assertEq(r.code, 0)
+    val x = idIn(r.out)
+    assertEq(m(home, "wait", x.toString()).code, 124)
+    val lines = sampleLinesOf(home, x)
+    assert(lines.length() >= 2, lines.mkString("\n"))
+    val pid = events(home).find(e -> e("id").asLong() == Some(x) && e("event").asString() == Some("started")).get()("pid").asLong().get()
+    val daemon = fs.readText(home + "/daemon.pid").ok().get().trim().toLong()
+    for line in lines
+        assert(line.startsWith("marshal exclusive: load ") && !line.startsWith("marshal exclusive: load unknown"), line)
+        assert(line.contains("; busiest outside marshal: "), line)
+        assert(!line.contains(s" $pid ") && !line.contains(s" $daemon "), line)
+    cleanUp(home)
+
+@test("an exclusive job's deadline still stops it, and the jobs waiting for it start after")
+exclE2eDeadline()
+    val home = newHome("{\"units\": 4}")
+    val x = submitted(home, "--exclusive", "--deadline", "1s", "--", "sleep", "30")
+    assert(within(2000, () -> started(home, x)))
+    val d = submitted(home, "--", "true")
+    assertEq(m(home, "wait", x.toString()).code, 124)
+    assertEq(eventsOf(home, x), ["submitted", "started", "timeout"])
+    assertEq(m(home, "wait", d.toString()).code, 0)
+    assert(allStartedAfter(home, [d], x, "timeout"))
+    cleanUp(home)
+
+@test("killing a waiting exclusive job cancels it and frees the jobs behind it; killing a running one frees every lane")
+exclE2eKill()
+    val home = newHome("{\"units\": 4}")
+    val a = submitted(home, "--units", "1", "--", "sleep", "3")
+    assert(within(2000, () -> started(home, a)))
+    val x = submitted(home, "--exclusive", "--", "true")
+    val d = submitted(home, "--units", "1", "--", "true")
+    assertEq(whyOf(home, d), Some(Why.ForExclusive(x)))
+    assertEq(m(home, "kill", x.toString()).code, 0)
+    // the job behind it starts beside the running one
+    assertEq(m(home, "wait", d.toString()).code, 0)
+    assert(!ended(home, a))
+    assert(!started(home, x))
+    assertEq(m(home, "kill", a.toString()).code, 0)
+    val y = submitted(home, "--exclusive", "--", "sleep", "30")
+    assert(within(2000, () -> started(home, y)))
+    val l = submitted(home, "--landing", "--", "true")
+    assertEq(whyOf(home, l), Some(Why.ForExclusive(y)))
+    assertEq(m(home, "kill", y.toString()).code, 0)
+    assertEq(m(home, "wait", l.toString()).code, 0)
+    assert(at(home, y, "killed") < at(home, l, "started"))
+    cleanUp(home)
+
+@test("two exclusive jobs run one after the other, and a job queued after both waits for the second")
+exclE2eTwoInTurn()
+    val home = newHome("{\"units\": 4}")
+    val x1 = submitted(home, "--exclusive", "--", "sleep", "1")
+    val x2 = submitted(home, "--exclusive", "--", "sleep", "0.5")
+    val d = submitted(home, "--", "true")
+    assert(within(2000, () -> started(home, x1)))
+    assertEq(whyOf(home, x2), Some(Why.ForExclusive(x1)))
+    assertEq(m(home, "wait", d.toString()).code, 0)
+    assert(at(home, x1, "finished") < at(home, x2, "started"))
+    assert(at(home, x2, "finished") < at(home, d, "started"))
+    cleanUp(home)
+
+@test("an exclusive job stays exclusive across marshal restart: queued, it still waits for the machine and holds back what is behind it; running, it still holds every lane")
+exclE2eAcrossRestart()
+    val home = newHome("{\"units\": 4}")
+    val a = submitted(home, "--units", "1", "--", "sleep", "2.5")
+    assert(within(2000, () -> started(home, a)))
+    val x = submitted(home, "--exclusive", "--", "sleep", "2.5")
+    val d = submitted(home, "--", "true")
+    restarted(home)
+    assertEq(whyOf(home, x), Some(Why.Emptying))
+    assertEq(whyOf(home, d), Some(Why.ForExclusive(x)))
+    assert(within(5000, () -> started(home, x)))
+    restarted(home)
+    assertEq(whyOf(home, d), Some(Why.ForExclusive(x)))
+    assertEq(statusOf(home)("exclusive").asLong(), Some(x))
+    assertEq(m(home, "wait", d.toString()).code, 0)
+    assert(at(home, a, "finished") < at(home, x, "started"))
+    assert(at(home, x, "finished") < at(home, d, "started"))
+    cleanUp(home)
+
+@test("an exclusive job waiting for the load still waits for it after marshal restart, the window counted again")
+exclE2eQuietLoadAcrossRestart()
+    val home = newHome()
+    val loadFile = home + "/load"
+    fs.writeText(loadFile, "9").ok().get()
+    val env = [("MARSHAL_TEST_LOAD_FILE", loadFile), ("MARSHAL_TEST_QUIET_LOAD_MS", "1000")]
+    val r = mWith(home, env, "submit", "--exclusive", "--quiet-load", "2.5", "--", "true")
+    val x = idIn(r.out)
+    assertEq(whyOf(home, x), Some(Why.Load(9.0, 2.5, 0)))
+    restarted(home)
+    assertEq(whyOf(home, x), Some(Why.Load(9.0, 2.5, 0)))
+    fs.writeText(loadFile, "1").ok().get()
+    assertEq(m(home, "wait", x.toString()).code, 0)
+    cleanUp(home)
+
+@test("--exclusive with --landing or --quick, and --quiet-load without --exclusive or not above 0, are refused")
+exclE2eRefused()
+    val home = newHome()
+    val cases = [
+        (["--exclusive", "--landing"], "a job is exclusive or landing, not both"),
+        (["--exclusive", "--quick"], "a job is exclusive or quick, not both"),
+        (["--quiet-load", "4"], "`--quiet-load` waits for a quiet machine before an exclusive job: give `--exclusive` too"),
+        (["--exclusive", "--quiet-load", "0"], "`--quiet-load 0`: a load average is a number above 0, such as 4 or 2.5"),
+        (["--exclusive", "--quiet-load", "high"], "`--quiet-load high`: a load average is a number above 0, such as 4 or 2.5")]
+    for (opts, words) in cases
+        val r = m(home, (["submit"] ++ opts ++ ["--", "true"])*)
+        assertEq(r.code, 2)
+        assert(r.out.contains(words), r.out)
+    // help names the options, and --exclusive takes no value
+    val help = m(home, "run", "--help").out
+    assert(help.contains("--exclusive") && help.contains("--quiet-load <n>"), help)
+    assert(m(home, "run", "--exclusive", "--help").out.contains("--quiet-load"))
+    cleanUp(home)
+
+@test("an exclusive job's spec records the whole budget, --units or not, and rerun keeps it exclusive with its quiet load")
+exclE2eSpecAndRerun()
+    val home = newHome("{\"units\": 4}")
+    assertEq(m(home, "run", "--exclusive", "--units", "1", "--", "true").code, 0)
+    assertEq(specOf(home, 1)("units").asInt(), Some(4))
+    assertEq(specOf(home, 1)("exclusive").asBool(), Some(true))
+    val again = m(home, "rerun", "1")
+    assertEq(again.code, 0)
+    val id = again.out.trim().toLong()
+    assertEq(m(home, "wait", id.toString()).code, 0)
+    assertEq(specOf(home, id)("exclusive").asBool(), Some(true))
+    // the hint never suggests the quick lane to an exclusive job
+    for _ in 0 ..< 3 do assertEq(m(home, "run", "--kind", "tiny", "--", "true").code, 0)
+    assertEq(split(home, "submit", "--exclusive", "--kind", "tiny", "--", "true").err, "")
+    cleanUp(home)

@@ -75,6 +75,10 @@ whyText(Starting) = "starting"
 whyText(Held) = "held"
 whyText(QueueHeld) = "queue held"
 whyText(QuickFull) = "quick lane full"
+whyText(Emptying) = "emptying"
+whyText(Load(load, limit, calmMs)) =
+    if load >= limit then s"load ${loadText(load)} ≥ ${loadText(limit)}" else s"load ${loadText(load)} < ${loadText(limit)} for ${formatMillis(calmMs)}"
+whyText(ForExclusive(id)) = s"exclusive $id"
 
 // A job's state cell in `ls`: `stateColumn`, and for a job that is plainly `queued` and has a reason
 // in `whys` (job id, reason), the reason after it: `queued (draining)`. A job held by hand already
@@ -107,32 +111,36 @@ listing(jobs: Vector[JobInfo], whys: Vector[(long, Why)] = []) -> string
     rows.map(r -> (0..<last).map(c -> r(c).padEnd(widths(c), ' ')).mkString("  ") + "  " + r(last)).mkString("\n")
 
 // A job's kind as a listing shows it, marked with its lane: `*` after a landing job's, `^` after a
-// quick job's, and `!` after that for a job in the urgent band (`test^!`, `test*!`).
-laneKind(j: JobInfo) -> string = kindMarked(j.kind, j.landing, j.quick, j.urgent)
+// quick job's, `#` after an exclusive job's, and `!` after that for a job in the urgent band
+// (`test^!`, `test*!`, `bench#!`).
+laneKind(j: JobInfo) -> string = kindMarked(j.kind, j.landing, j.quick, j.urgent, j.exclusive)
 
 // A job's kind and marks fitted to a column `width` cells wide: unchanged when they fit; otherwise the
 // kind's name is cut and ends in `…`, and every mark follows whole (`avin-g…*`, `funl-t…!`, `te…^!`).
 // Only where the marks and the ellipsis alone are wider than the column are the marks cut, from the right.
-fittedKind(j: JobInfo, width: int) -> string = fittedMarked(j.kind, j.landing, j.quick, j.urgent, width)
+fittedKind(j: JobInfo, width: int) -> string = fittedMarked(j.kind, j.landing, j.quick, j.urgent, width, j.exclusive)
 
-fittedMarked(kind: string, landing: bool, quick: bool, urgent: bool, width: int) -> string
-    val marks = kindMarked("", landing, quick, urgent)
+fittedMarked(kind: string, landing: bool, quick: bool, urgent: bool, width: int, exclusive: bool = false) -> string
+    val marks = kindMarked("", landing, quick, urgent, exclusive)
     val whole = kind + marks
     if whole.charCount() <= width then return whole
     val room = width - marks.charCount() - 1
     if room < 0 then return ("…" + marks).take(if width < 0 then 0 else width)
     kind.take(room) + "…" + marks
 
-// A kind with its marks: the lane's (`*` landing, `^` quick; a job is not both), then `!` for urgent.
-kindMarked(kind: string, landing: bool, quick: bool, urgent: bool) -> string
-    val lane = if landing then "*" elif quick then "^" else ""
+// A kind with its marks: the lane's (`*` landing, `^` quick, `#` exclusive; a job is in one), then
+// `!` for urgent.
+kindMarked(kind: string, landing: bool, quick: bool, urgent: bool, exclusive: bool = false) -> string
+    val lane = if landing then "*" elif quick then "^" elif exclusive then "#" else ""
     kind + lane + (if urgent then "!" else "")
 
-// The line `status` prints. The quick lane is named only while a quick job runs.
+// The line `status` prints. The quick lane is named only while a quick job runs, and an exclusive job
+// only while it runs.
 usageLine(u: Usage) -> string
     val memory = if u.memoryBudget == long.MaxValue then formatSize(u.memory) else s"${formatSize(u.memory)}/${formatSize(u.memoryBudget)}"
     val lane = u.landing.map(id -> s"job $id").getOrElse("free")
     val outside = u.takeSlot.map(t -> s"; take-slot holds ${t.units} units, ${t.waiting} waiting" + (if t.landing then ", the landing lane" else "")).getOrElse("")
     val held = if u.queueHeld then "; the queue is held: nothing new starts" else ""
     val quick = if u.quick > 0 then s", quick lane ${u.quick}/$QuickSlots" else ""
-    s"units ${u.units}/${u.unitBudget}, memory $memory, ${u.running} running, ${u.queued} queued, landing lane $lane$quick$outside$held"
+    val exclusive = u.exclusive.map(id -> s"; exclusive job $id owns the machine: nothing else starts").getOrElse("")
+    s"units ${u.units}/${u.unitBudget}, memory $memory, ${u.running} running, ${u.queued} queued, landing lane $lane$quick$outside$exclusive$held"

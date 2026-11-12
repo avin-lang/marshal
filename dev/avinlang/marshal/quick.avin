@@ -27,9 +27,10 @@ quickDeadlineMs(spec: JobSpec) -> long = spec.deadlineMs.getOrElse(QuickCapMs)
 // The hint `submit` and `run` print for a job not submitted `--quick`, or "" for none: when its
 // kind's recent successful runs (`history`, oldest first; the last `learning.window` of them, and at
 // least `learning.minRuns`) took under the cap at the 90th percentile, it suggests the quick lane.
-// A landing job never gets one; neither is it moved into the lane for the submitter.
+// A landing job never gets one, nor an exclusive one; neither is it moved into the lane for the
+// submitter.
 quickHint(learning: Learning, spec: JobSpec, history: Vector[long]) -> string
-    if spec.quick || spec.landing then return ""
+    if spec.quick || spec.landing || spec.exclusive then return ""
     val runs = history.takeRight(learning.window)
     if runs.length() < learning.minRuns then return ""
     val p90 = percentile(runs, 90)

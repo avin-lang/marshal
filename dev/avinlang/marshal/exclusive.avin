@@ -1,0 +1,136 @@
+module dev.avinlang.marshal
+
+// Exclusive jobs (`--exclusive`): a job that owns the machine, for a benchmark. It starts only when
+// no other marshal job runs, in any lane, and while it runs nothing else starts (sched.avin decides
+// both). It never stops a job to start: it waits for the running ones to end, and the jobs queued
+// behind it wait for it, so a stream of small jobs cannot keep it waiting for ever.
+//
+// `--quiet-load <n>` also waits out work marshal does not run: the job starts only once the
+// one-minute load average has stayed below `n` for `QuietLoadWindowMs`. The daemon reads the load
+// every second while such a job waits (`calmSince`, `loadWhy`).
+//
+// While it runs, the daemon writes into its log, at its start and every `ExclusiveSampleMs`, a line
+// beginning `ExclusiveMark` with the load averages and the busiest processes that are not marshal's
+// (`outsiders`), so its result can say whether anything disturbed it.
+import avin.fs
+import avin.process
+import avin.process.Command
+
+// What every line marshal writes into an exclusive job's log begins with.
+val ExclusiveMark: string = "marshal exclusive:"
+
+// How long the load must stay below `--quiet-load` before the job starts, in milliseconds, unless
+// `$MARSHAL_TEST_QUIET_LOAD_MS` names another, which is how the tests wait out a short window.
+quietLoadWindowMs() -> long = process.env("MARSHAL_TEST_QUIET_LOAD_MS").flatMap(t -> t.toLongOption()).filter(n -> n >= 1).getOrElse(60000)
+
+// How often a running exclusive job's log is given a sample line, in milliseconds, unless
+// `$MARSHAL_TEST_EXCLUSIVE_SAMPLE_MS` names another.
+exclusiveSampleMs() -> long = process.env("MARSHAL_TEST_EXCLUSIVE_SAMPLE_MS").flatMap(t -> t.toLongOption()).filter(n -> n >= 1).getOrElse(30000)
+
+// How many of the busiest processes outside marshal a sample line names.
+val SampleTop: int = 5
+
+// Why a job cannot be exclusive as it asks, or None when it can (or does not ask to): an exclusive
+// job has a lane of its own, the whole machine, so it is neither landing nor quick; `--quiet-load`
+// is a condition on an exclusive job's start and means nothing without one.
+exclusiveRefusal(spec: JobSpec) -> Option[string]
+    if spec.quietLoad < 0.0 then return Some("a quiet load is a number above 0")
+    if !spec.exclusive
+        return if spec.quietLoad > 0.0 then Some("`--quiet-load` waits for a quiet machine before an exclusive job: give `--exclusive` too") else None
+    if spec.landing then return Some("a job is exclusive or landing, not both")
+    if spec.quick then return Some("a job is exclusive or quick, not both")
+    None
+
+// The spec of an exclusive job as the daemon keeps it: it weighs the whole unit budget, `units`,
+// whatever it said, since it is the only job running.
+exclusiveSpec(s: JobSpec, units: int) -> JobSpec =
+    JobSpec(s.kind, units, s.memory, s.landing, s.dir, s.deadlineMs, s.cmd, s.env, s.urgent, s.after, s.afterAny,
+        s.retries, s.retryDelayMs, s.memoryGiven, s.label, s.quietMs, s.external, s.quick, s.exclusive, s.quietLoad)
+
+// The load averages `text` holds, as `sysctl -n vm.loadavg` prints them (`{ 1.52 1.40 1.31 }`) or as
+// bare numbers; empty when it holds none.
+parseLoads(text: string) -> Vector[real] =
+    text.split(" ").map(w -> w.trim()).filter(w -> w.nonEmpty() && w != "{" && w != "}").map(w -> w.toRealOption()).takeWhile(r -> r.isDefined()).map(r -> r.get()).toVector()
+
+// The machine's load averages (1, 5 and 15 minutes), or empty where they cannot be read. A test
+// names a file to read them from instead (`$MARSHAL_TEST_LOAD_FILE`), so no real load is needed.
+loadAverages() -> Vector[real] = process.env("MARSHAL_TEST_LOAD_FILE") match
+    Some(file) -> parseLoads(fs.readText(file).getOrElse(""))
+    None -> parseLoads(Command("sysctl", "-n", "vm.loadavg").output().getOrElse(""))
+
+// Since when the load has stayed below `limit`, after it is read as `load` at `now`: unchanged while
+// it stays below, `now` when it falls below, None while it is at or above the limit. A load that
+// cannot be read leaves it as it was.
+calmSince(since: Option[long], load: Option[real], limit: real, now: long) -> Option[long] = load match
+    None -> since
+    Some(l) if l >= limit -> None
+    Some(_) -> since.orElse(Some(now))
+
+// Why a job with `--quiet-load limit` still waits for the load, or None once it may start: the load
+// last read was `load` and has been below the limit since `since`; it may start once that is
+// `windowMs` ago. A load that cannot be read holds nothing back.
+loadWhy(load: Option[real], limit: real, since: Option[long], windowMs: long, now: long) -> Option[Why]
+    val l = load match
+        Some(l) -> l
+        None -> return None
+    since match
+        Some(s) if now - s >= windowMs -> None
+        Some(s) -> Some(Why.Load(l, limit, now - s))
+        None -> Some(Why.Load(l, limit, 0))
+
+// A load or a limit as `ls` and the sample lines write it: at most two decimals, and no trailing
+// zeros (`4`, `2.5`, `7.93`).
+loadText(x: real) -> string
+    var text = f"${x}%.2f"
+    while text.endsWith("0") do text = text.dropRight(1)
+    text.stripSuffix(".")
+
+// A process as a sample weighs it: its pid, parent, group, processor use (percent, as `ps` gives it)
+// and the name of its program.
+data Proc(pid: long, ppid: long, pgid: long, cpu: real, name: string)
+
+// The processes `ps -A -o pid=,ppid=,pgid=,%cpu=,comm=` lists, each line one; a line that does not
+// read is left out. The name is the program's file name, the rest of its path left off.
+parseProcs(text: string) -> Vector[Proc]
+    val out = Buffer[Proc]()
+    for line in text.lines()
+        val words = line.trim().split(" ").filter(w -> w.nonEmpty()).toVector()
+        if words.length() < 5 then continue
+        val name = words.drop(4).mkString(" ").split("/").toVector().last()
+        (words(0).toLongOption(), words(1).toLongOption(), words(2).toLongOption(), words(3).toRealOption()) match
+            (Some(pid), Some(ppid), Some(pgid), Some(cpu)) -> out += Proc(pid, ppid, pgid, cpu, name)
+            _ -> ()
+    out.toVector()
+
+// The busiest `n` of `procs` that are not marshal's, busiest first (the lower pid first on a tie):
+// marshal's are the daemon (`daemon`) and every process descended from it, every job's tree among
+// them, and every process in one of the job's process `groups`, which holds what the job started
+// that has left its parent. Processes using no processor time are left out.
+outsiders(procs: Vector[Proc], daemon: long, groups: Vector[long], n: int) -> Vector[Proc]
+    val parent = procs.map(p -> (p.pid, p.ppid)).toMap()
+    procs.filter(p -> p.cpu > 0.0 && !marshals(p, parent, daemon, groups)).sortBy(p -> (-p.cpu, p.pid)).take(n)
+
+// Whether `p` is marshal's: in one of `groups`, or the daemon or one of its descendants by the
+// `parent` of each pid. A chain of parents longer than the table (a loop) is not marshal's.
+private marshals(p: Proc, parent: Map[long, long], daemon: long, groups: Vector[long]) -> bool
+    if groups.contains(p.pgid) then return true
+    var at = p.pid
+    var steps = 0
+    while at > 1 && steps <= parent.size()
+        if at == daemon then return true
+        at = parent.get(at).getOrElse(0)
+        steps += 1
+    false
+
+// The processes as `ps` lists them now, or as the file `$MARSHAL_TEST_PS_FILE` holds them for a test.
+listProcs() -> Vector[Proc] = process.env("MARSHAL_TEST_PS_FILE") match
+    Some(file) -> parseProcs(fs.readText(file).getOrElse(""))
+    None -> parseProcs(Command("ps", "-A", "-o", "pid=,ppid=,pgid=,%cpu=,comm=").output().getOrElse(""))
+
+// The line a sample writes into an exclusive job's log: `ExclusiveMark`, the load averages, and the
+// busiest processes outside marshal as `name pid percent%`:
+// `marshal exclusive: load 1.52 1.4 1.31; busiest outside marshal: WindowServer 412 12.3%, mds 88 5%`.
+sampleLine(loads: Vector[real], busiest: Vector[Proc]) -> string
+    val load = if loads.isEmpty() then "load unknown" else "load " + loads.map(loadText).mkString(" ")
+    val procs = if busiest.isEmpty() then "none" else busiest.map(p -> s"${p.name} ${p.pid} ${loadText(p.cpu)}%").mkString(", ")
+    s"$ExclusiveMark $load; busiest outside marshal: $procs"
