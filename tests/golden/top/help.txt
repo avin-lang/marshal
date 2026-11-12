@@ -20,12 +20,12 @@
 |   41 retry 2      │ the head of the queue, which it would delay; held (marshal hold),             │make -j4            |
 |   19 quiet        │ or queue held (marshal pause); quick full (both quick slots                   │make -j4            |
 |   18 dep 17 failed│ taken). A quick job runs as quick, its kind marked ^; a landing               │make -j4            |
-|   17 exit 1       │ job's is marked *; an urgent job's ! (^! and *! together).                    │make -j4            |
-|   16 signal 9     │ after 3,4 waits for jobs 3 and 4                                              │make -j4            |
-|   15 exit 0       │ to end; retry 2 waits to make its second attempt.                             │make -j4            |
+|   17 exit 1       │ job's is marked *; an exclusive job's #; an urgent job's ! (^!,               │make -j4            |
+|   16 signal 9     │ *! and #! together).                                                          │make -j4            |
+|   15 exit 0       │ after 3,4 waits for jobs 3 and 4                                              │make -j4            |
+|                   │ to end; retry 2 waits to make its second attempt.                             │                    |
 |                   │ DEADLINE is the time left; yellow, then red, as it nears.                     │                    |
 |                   ╰───────────────────────────────────────────────────────────────────────────────╯                    |
-|                                                                                                                        |
 |                                                                                                                        |
 |hHelp EnterLog kKill fFilter qQuit                                                                                      |
 --
@@ -110,7 +110,9 @@
 24 99..100 Basic(6)/Default/0
 25 19..20 Basic(6)/Default/0
 25 99..100 Basic(6)/Default/0
-26 19..100 Basic(6)/Default/0
+26 19..20 Basic(6)/Default/0
+26 99..100 Basic(6)/Default/0
+27 19..100 Basic(6)/Default/0
 29 0..1 Default/Default/1
 29 1..6 Basic(0)/Basic(6)/0
 29 6..11 Default/Default/1

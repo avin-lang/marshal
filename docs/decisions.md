@@ -1673,3 +1673,10 @@ an urgent job submitted later still starts ahead of a queued exclusive job.
 - **The test hooks**: `$MARSHAL_TEST_LOAD_FILE` (the load read from a file), `$MARSHAL_TEST_PS_FILE`
   (the process table from a file), `$MARSHAL_TEST_QUIET_LOAD_MS` (the window) and
   `$MARSHAL_TEST_EXCLUSIVE_SAMPLE_MS` (the interval), as the existing `$MARSHAL_TEST_*` hooks.
+
+## `history` marks an exclusive job's kind `#` (branch `exclusive-mark`)
+
+- **`history` and `top`'s history view mark an exclusive job's kind `#`, as `ls` and `top` do**, `!`
+  after it for an urgent one (`bench#!`), and `top`'s help lists `#` beside `^`, `*` and `!`.
+  Why: a job's kind reads the same wherever it is listed. Alternative: leaving ended jobs unmarked,
+  which hides after the fact that a result was measured on an owned machine.
