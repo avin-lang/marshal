@@ -10,7 +10,7 @@ import json.Json
 
 // The ELAPSED cell of job `id` in `ls`.
 elapsedCell(home: string, id: long) -> string
-    val rows = m(home, "ls").out.lines().toVector()
+    val rows = m(home, "ls").out.lines().toVector
     val from = rows(0).indexOf("ELAPSED")
     val to = rows(0).indexOf("LABEL")
     rows.find(r -> r.startsWith(id.toString() + " ")).get().slice(from, to).trim()

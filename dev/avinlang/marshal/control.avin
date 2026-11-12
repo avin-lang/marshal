@@ -39,7 +39,7 @@ compareLongs(_, _) = 0
 // than every mark in `band`, the urgent jobs already queued, so it goes behind them all even when
 // the clock has stepped back.
 urgentMark(now: long, band: Vector[long]) -> long
-    val last = band.maxOption().getOrElse(0)
+    val last = band.maxOption.getOrElse(0)
     if now > last then now else last + 1
 
 // Each queued job's place in its lane's queue (from 1, held jobs counted) and why it waits, in the
@@ -50,7 +50,7 @@ queueWaits(budget: Budget, running: Vector[Started], queue: Vector[Waiting], hel
     val out = Buffer[(long, int, Why)]()
     for (w, position) in queue.zip(lanePositions(queue))
         out += (w.id, position, whyWaits(w.id, held, queueHeld, decided))
-    out.toVector()
+    out.toVector
 
 private whyWaits(id: long, held: Vector[long], queueHeld: bool, decided: Vector[(long, int, Why)]) -> Why
     if held.contains(id) then Held

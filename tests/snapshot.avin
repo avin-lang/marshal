@@ -111,7 +111,7 @@ sweep()
     val dir = fixture(text)
     val file = dir + "/src/t.job"
     val snap = marshal.snapshotType(dir + "/home", file, typeOf(file, text), Some(dir + "/stock"), dir + "/program").ok().get()
-    val name = snap.dir.split("/").last()
+    val name = snap.dir.split("/").last
     val now = time.now().epochMillis()
     assertEq(marshal.sweepSnapshots(dir + "/home", now, Some(60000), false).0, [])
     assertEq(marshal.sweepSnapshots(dir + "/home", now + 120000, None, false).0, [])

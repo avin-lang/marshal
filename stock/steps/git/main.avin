@@ -30,14 +30,14 @@ options(args: Vector[string]) -> Result[Options, string]
     var head = ""
     val branches = Buffer[string]()
     var i = 0
-    while i < args.length()
+    while i < args.length
         val word = args(i)
         i += 1
         if !["--remote", "--target", "--tree", "--head"].contains(word)
             if word.startsWith("--") then return Err(s"no option `$word`")
             branches += word
             continue
-        if i >= args.length() then return Err(s"`$word` needs a value")
+        if i >= args.length then return Err(s"`$word` needs a value")
         val value = args(i)
         i += 1
         word match
@@ -45,7 +45,7 @@ options(args: Vector[string]) -> Result[Options, string]
             "--target" -> target = value
             "--tree" -> tree = value
             _ -> head = value
-    Ok(Options(remote, target, tree, head, branches.toVector()))
+    Ok(Options(remote, target, tree, head, branches.toVector))
 
 // Runs git with `args`, its output and errors with ours, the command shown first; answers whether it
 // succeeded.
@@ -95,7 +95,7 @@ worktrees() -> Vector[Worktree]
             dir = ""
             branch = ""
     if dir.nonEmpty() then out += Worktree(dir, branch)
-    out.toVector()
+    out.toVector
 
 refused(message: string) -> int
     println(message)
@@ -106,7 +106,7 @@ merge(o: Options) -> int
         Ok(t) -> t
         Err(e) -> return refused(e)
     if o.tree.isEmpty() then return refused("merge needs --tree, where the merged tree is made")
-    if o.branches.isEmpty() then return refused("merge needs at least one branch")
+    if o.branches.isEmpty then return refused("merge needs at least one branch")
     println("=== STEP fetch")
     if !git("fetch", o.remote) then return refused(s"cannot fetch `${o.remote}`")
     val base = commitOf(s"refs/remotes/${o.remote}/$target") match
@@ -187,7 +187,7 @@ teardown(o: Options) -> int
             println(s"kept $b: git would not delete the branch with -d")
             continue
         println(s"tore down $b")
-    if kept.isEmpty() then return 0
+    if kept.isEmpty then return 0
     for b in kept do println(s"=== FAIL teardown $b")
     refused(s"kept ${kept.mkString(" ")}")
 
@@ -202,7 +202,7 @@ cleanup(o: Options) -> int
     0
 
 main(args: Vector[string]) -> int
-    if args.isEmpty()
+    if args.isEmpty
         eprintln("usage: git (merge | land | teardown | cleanup) [options] [<branch>...]")
         return 2
     val o = options(args.drop(1)) match

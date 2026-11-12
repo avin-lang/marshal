@@ -219,7 +219,7 @@ execStep(argv: Vector[string], dir: string, env: Vector[(string, string)], log: 
             Some(Ok(s)) -> said += s
             Some(Err(why)) -> println(s"marshal: a line the step said is not read: $why")
             None -> ()
-    StepEnd(codeOf(status.get()), timedOut, said.toVector())
+    StepEnd(codeOf(status.get()), timedOut, said.toVector)
 
 // One run of a type: its parameters' values, where it runs, and its passes so far.
 class Run(val t: JobType, val params: Map[string, Vector[string]], val jobDir: string, val runDir: string, val home: string, val current: Atomic[long])
@@ -243,7 +243,7 @@ class Run(val t: JobType, val params: Map[string, Vector[string]], val jobDir: s
             println(s"marshal: step ${s.name}: skipped")
             return StepSkipped
         val argv = s.run.flatMap(w -> marshal.expandWord(w, v))
-        if argv.isEmpty() || argv(0).isEmpty()
+        if argv.isEmpty || argv(0).isEmpty()
             println(s"marshal: step ${s.name}: its command comes to nothing")
             return StepFailed
         val program = resolveProgram(argv(0), t.file, home) match
@@ -267,7 +267,7 @@ class Run(val t: JobType, val params: Map[string, Vector[string]], val jobDir: s
         val log = s"$work/$index-${s.name}.log"
         println(s"marshal: step ${s.name}: ${argv.mkString(" ")}" + (if dir == jobDir then "" else s" (in $dir)"))
         val started = time.monotonic()
-        val ran = execStep([program] ++ argv.drop(1), dir, env.toVector(), log, deadline, current, home, runDir.split("/").last())
+        val ran = execStep([program] ++ argv.drop(1), dir, env.toVector, log, deadline, current, home, runDir.split("/").last)
         // a step ended by the runner's own stop is not followed: the run ends as stopped
         if stopping.load() then process.exit(143)
         val took = (time.monotonic() - started).micros / 1000
@@ -297,8 +297,8 @@ class Run(val t: JobType, val params: Map[string, Vector[string]], val jobDir: s
         val gate = marshal.runSteps(t.steps, s -> step(s), word)
         if !marshal.isGreen(gate) then t.failMap.foreach(s -> step(s))
         val landing = if land && gate == PassEnd.Green(true) then Some(marshal.runSteps(t.land, s -> step(s), word)) else None
-        if t.cleanup.nonEmpty() then marshal.runSteps(t.cleanup, s -> step(s), word)
-        PassResult(gate, landing, fails.toVector(), head)
+        if t.cleanup.nonEmpty then marshal.runSteps(t.cleanup, s -> step(s), word)
+        PassResult(gate, landing, fails.toVector, head)
 
 // Runs the type in `file` with the parameters `args`, as the job `$MARSHAL_JOB` of the marshal home
 // `$MARSHAL_HOME`; answers 0 where the run is green, 1 where it is red, and 2 where the type or the
@@ -339,7 +339,7 @@ main(file: string, args: Vector[string]) -> int
     println(s"marshal: ${t.name} from ${t.file}, run directory $runDir")
     val run = Run(t, params, jobDir, runDir, home, current)
     val values = t.bisect.map(b -> params.getOrElse(b, [])).getOrElse([])
-    val report = marshal.runType(t.bisect.isDefined(), t.land.headOption().map(s -> s.name).getOrElse(""), values,(vs, land) -> run.pass(vs, land))
+    val report = marshal.runType(t.bisect.isDefined(), t.land.headOption.map(s -> s.name).getOrElse(""), values,(vs, land) -> run.pass(vs, land))
     val rendered = marshal.renderReport(t.name, report) + "\n"
     fs.writeText(runDir + "/report.json", marshal.encodeReport(t.name, report).render() + "\n")
     fs.writeText(runDir + "/report.txt", rendered)

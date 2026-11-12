@@ -24,12 +24,12 @@ parseQuery(command: string, args: Vector[string], nowMs: long, zone: time.Zone) 
     var limit = DefaultLimit
     var json = false
     var i = 0
-    while i < args.length()
+    while i < args.length
         val word = args(i)
         val takes = word == "--kind" || word == "--since" || word == "--label" || (word == "--limit" && command == "history")
         if takes
             i += 1
-            if i >= args.length() then return Err(s"marshal: $word needs a value")
+            if i >= args.length then return Err(s"marshal: $word needs a value")
             val value = args(i)
             word match
                 "--kind" ->

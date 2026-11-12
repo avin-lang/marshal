@@ -22,13 +22,13 @@ states(pids: Vector[string]) -> Vector[string] =
 // Waits up to five seconds for the group to have `count` processes, and answers its pids.
 waitForGroup(pgid: long, count: int) -> Vector[string]
     val until = time.monotonic() + millis(5000)
-    while groupPids(pgid).length() < count && time.monotonic() < until do threads.sleep(millis(50))
+    while groupPids(pgid).length < count && time.monotonic() < until do threads.sleep(millis(50))
     groupPids(pgid)
 
 // Whether every process of the group is stopped, or (`stopped` false) none is.
 everyStopped(pgid: long, stopped: bool) -> bool
     val s = states(groupPids(pgid))
-    s.nonEmpty() && s.forall(st -> st.startsWith("T") == stopped)
+    s.nonEmpty && s.forall(st -> st.startsWith("T") == stopped)
 
 // A started job's process group, once its start is in the log.
 startedGroup(home: string, id: long) -> long
@@ -45,7 +45,7 @@ pauseWithChild()
     val home = newHome("{\"units\": 1}")
     val id = submitted(home, "--", "sh", "-c", "sleep 30 & sleep 30; wait")
     val pgid = startedGroup(home, id)
-    assertEq(waitForGroup(pgid, 3).length(), 3)
+    assertEq(waitForGroup(pgid, 3).length, 3)
     val p = m(home, "pause", id.toString())
     assertEq(p.code, 0)
     assert(p.out.contains(s"job $id is paused"), p.out)
@@ -77,7 +77,7 @@ pauseHoldsAgainstContinue()
     val home = newHome()
     val id = submitted(home, "--", "sh", "-c", "sleep 30 & wait")
     val pgid = startedGroup(home, id)
-    assertEq(waitForGroup(pgid, 2).length(), 2)
+    assertEq(waitForGroup(pgid, 2).length, 2)
     assertEq(m(home, "pause", id.toString()).code, 0)
     assert(within(3000, () -> everyStopped(pgid, true)), states(groupPids(pgid)).mkString(","))
     // what the kernel does when a STOP reaches a process between fork and exec: it runs on
@@ -97,7 +97,7 @@ pauseHoldsAcrossRestart()
     val home = newHome()
     val id = submitted(home, "--", "sh", "-c", "sleep 30 & wait")
     val pgid = startedGroup(home, id)
-    assertEq(waitForGroup(pgid, 2).length(), 2)
+    assertEq(waitForGroup(pgid, 2).length, 2)
     assertEq(m(home, "pause", id.toString()).code, 0)
     restarted(home)
     assert(process.signal(-pgid, signal.Continue).isOk())
@@ -111,11 +111,11 @@ pauseHoldsAcrossRestart()
 pauseAtStartHolds()
     val home = newHome("{\"units\": 12}")
     // each job counts its rounds in a file, starting a command each round
-    val ids = (1 .. 12).toVector().map(i -> submitted(home, "--", "sh", "-c", s"n=0; while :; do n=$$((n+1)); echo $$n > $home/count-$i; sleep 0.05 & wait; done"))
+    val ids = (1 .. 12).toVector.map(i -> submitted(home, "--", "sh", "-c", s"n=0; while :; do n=$$((n+1)); echo $$n > $home/count-$i; sleep 0.05 & wait; done"))
     for id in ids
         assertEq(m(home, "pause", id.toString()).code, 0)
     threads.sleep(millis(1500))
-    val counts = (1 .. 12).toVector().map(i -> fs.readText(s"$home/count-$i").getOrElse(""))
+    val counts = (1 .. 12).toVector.map(i -> fs.readText(s"$home/count-$i").getOrElse(""))
     threads.sleep(millis(1500))
     for i in 1 .. 12
         assertEq(fs.readText(s"$home/count-$i").getOrElse(""), counts(i - 1))

@@ -8,7 +8,7 @@ import json.Json
 lsRowOf(home: string, id: long) -> string
     val r = m(home, "ls")
     assertEq(r.code, 0)
-    r.out.lines().toVector().find(l -> l.startsWith(id.toString() + " ")).getOrElse(s"no row for $id in ${r.out}")
+    r.out.lines().toVector.find(l -> l.startsWith(id.toString() + " ")).getOrElse(s"no row for $id in ${r.out}")
 
 // The queued job `id` as `status --json` gives it.
 lsQueuedJson(home: string, id: long) -> Json = statusJsonOf(home)("queued").asVector().get().find(q -> q("id").asLong() == Some(id)).get()
@@ -80,7 +80,7 @@ heldE2e()
 @test("a held queue says queue held in ls and queue-held in status --json, and an empty queue has no why anywhere")
 queueHeldE2e()
     val home = newHome("{\"units\": 4}")
-    assertEq(statusJsonOf(home)("queued").asVector().get().length(), 0)
+    assertEq(statusJsonOf(home)("queued").asVector().get().length, 0)
     assertEq(m(home, "pause").code, 0)
     val queued = submitted(home, "--", "sleep", "30")
     assert(lsRowOf(home, queued).contains("queued (queue held)"), lsRowOf(home, queued))

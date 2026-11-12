@@ -39,7 +39,7 @@ typeLine(args: Vector[string]) -> Result[TypeLine, string]
     var help = false
     val rest = Buffer[string]()
     var i = 0
-    while i < args.length()
+    while i < args.length
         val word = args(i)
         if word == "--"
             rest ++= args.drop(i)
@@ -57,7 +57,7 @@ typeLine(args: Vector[string]) -> Result[TypeLine, string]
         if !["--dir", "--deadline", "--quiet-timeout", "--units", "--mem", "--label"].contains(word)
             rest += word
             continue
-        if i >= args.length() then return Err(s"`$word` needs a value")
+        if i >= args.length then return Err(s"`$word` needs a value")
         val value = args(i)
         i += 1
         word match
@@ -73,7 +73,7 @@ typeLine(args: Vector[string]) -> Result[TypeLine, string]
             _ -> marshal.parseSize(value) match
                 Some(n) -> memory = Some(n)
                 None -> return Err(s"`--mem $value`: a size is a whole number with K, M, G or T, such as 29G")
-    Ok(TypeLine(dir, deadline, units, memory, submitOnly, help, rest.toVector(), label, quiet, quick))
+    Ok(TypeLine(dir, deadline, units, memory, submitOnly, help, rest.toVector, label, quiet, quick))
 
 // `marshal run-type <type> …`, or with `typeName` given, `marshal train …` and the like.
 runType(args: Vector[string], typeName: Option[string]) -> int
@@ -107,7 +107,7 @@ runType(args: Vector[string], typeName: Option[string]) -> int
     val own = process.executable() match
         Some(p) -> p
         None -> return complain("marshal: cannot find this program's own executable to run the steps with")
-    var env = process.environment().toVector().sortBy(e -> e.0)
+    var env = process.environment().toVector.sortBy(e -> e.0)
     // the job runs from a copy of the type and of marshal, which an upgrade of the installation cannot remove
     var program = marshal.stablePath(own)
     var typeFile = file

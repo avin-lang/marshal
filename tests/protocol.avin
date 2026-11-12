@@ -109,7 +109,7 @@ exitCodes()
 // A snapshot with `running` and `queued` jobs and `recent` ones, its counts their lengths.
 overview(running: Vector[JobInfo], queued: Vector[QueuedJob], recent: Vector[JobInfo], landing: Option[long] = None,
          takeSlot: Option[marshal.TakeSlotUse] = None) -> Overview =
-    Overview(Usage(5, 12, 1024, 4096, running.length(), queued.length(), landing, takeSlot), 3723000, running, queued, recent)
+    Overview(Usage(5, 12, 1024, 4096, running.length, queued.length, landing, takeSlot), 3723000, running, queued, recent)
 
 val everyWhy: Vector[Why] = [Why.NoUnits, Why.NoMemory, Why.LaneBusy, Why.Draining, Why.ForTakeSlot, Why.Behind(3), Why.Behind(long.MaxValue), Why.DrainingFor(3), Why.DrainingFor(long.MaxValue), Why.Starting, Why.Held, Why.QueueHeld]
 
@@ -175,7 +175,7 @@ snapshotRequest()
 @test("every snapshot reads back as itself: empty, every reason to wait, take-slot or none, a landing job")
 snapshotReplies()
     replyRoundTrip(Reply.Viewed(overview([], [], [])))
-    val queued = everyWhy.zipWithIndex().map(w -> QueuedJob(job("queued", None), w.1 + 1, w.0))
+    val queued = everyWhy.zipWithIndex.map(w -> QueuedJob(job("queued", None), w.1 + 1, w.0))
     replyRoundTrip(Reply.Viewed(overview([job("running", None)], queued, [job("done", Some(Outcome.Lost)), job("done", Some(Outcome.Exited(1)))], Some(7))))
     replyRoundTrip(Reply.Viewed(overview([], [], [], None, Some(marshal.TakeSlotUse("/s/.git", 4, 1, true)))))
     replyRoundTrip(Reply.Viewed(Overview(Usage(0, 12, 0, long.MaxValue, 0, 0, None, None), 0, [], [], [])))
@@ -197,7 +197,7 @@ snapshotWire()
     assert(!q(1).has("behind"))
     assertEq(q(2)("waits").asString(), Some("draining"))
     assert(!q(2).has("behind"))
-    assertEq(s("recent").asVector().map(v -> v.length()), Some(0))
+    assertEq(s("recent").asVector().map(v -> v.length), Some(0))
     // a client that knows only jobs reads a queued entry as a job
     assertEq(marshal.decodeJob(q(0)), Ok(job("queued", None)))
 

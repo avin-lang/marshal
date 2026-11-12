@@ -19,7 +19,7 @@ styleText(s: Style) -> string = s"${s.fg}/${s.bg}/${s.attrs}"
 // `g` as text: its rows between bars, then for each row the runs of cells in one style other than
 // the plain one, as `row x..end style`.
 screenText(g: Grid) -> string
-    val rows = (0 ..< g.height).map(y -> "|" + g.rowText(y) + "|").toVector()
+    val rows = (0 ..< g.height).map(y -> "|" + g.rowText(y) + "|").toVector
     val runs = Vector.newBuilder[string]()
     for y in 0 ..< g.height
         var x = 0
@@ -99,7 +99,7 @@ unitBarHalves()
 private counts(ours: int, outside: int, budget: int, width: int) -> Vector[int]
     val g = Grid(width + 2, 1)
     top.unitBar(g, 0, 0, width, ours, outside, budget)
-    val cells = (1 .. width).map(x -> g(x, 0).style.fg).toVector()
+    val cells = (1 .. width).map(x -> g(x, 0).style.fg).toVector
     [cells.count(c -> c == Green), cells.count(c -> c == Magenta)]
 
 @test("golden: the main list of a full daemon at every width, wide to narrow")
@@ -148,7 +148,7 @@ goldenSelection()
 goldenLog()
     val app = viewing(busy())
     app.handle(press(Enter))
-    app.logLines = (1 .. 60).map(i -> s"line $i of the build output").toVector()
+    app.logLines = (1 .. 60).map(i -> s"line $i of the build output").toVector
     golden("log-labelled", drawn(app, 120, 34))
     golden("log-narrow", drawn(app, 50, 34))
     app.handle(press(PageUp))

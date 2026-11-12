@@ -32,7 +32,7 @@ quickDeadlineMs(spec: JobSpec) -> long = spec.deadlineMs.getOrElse(QuickCapMs)
 quickHint(learning: Learning, spec: JobSpec, history: Vector[long]) -> string
     if spec.quick || spec.landing || spec.exclusive then return ""
     val runs = history.takeRight(learning.window)
-    if runs.length() < learning.minRuns then return ""
+    if runs.length < learning.minRuns then return ""
     val p90 = percentile(runs, 90)
     if p90 >= QuickCapMs then return ""
     s"marshal: hint: `${spec.kind}` jobs took ${formatMillis(p90)} or less at p90 (under the quick lane's ${formatMillis(QuickCapMs)} cap); --quick starts one at once"

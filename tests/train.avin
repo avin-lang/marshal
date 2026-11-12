@@ -28,7 +28,7 @@ gitCommand(dir: string, args: Vector[string]) -> Command
     c
 
 // git's output in `dir`, trimmed; the test fails where git does.
-g(dir: string, args: string*) -> string = gitCommand(dir, args.toVector()).output() match
+g(dir: string, args: string*) -> string = gitCommand(dir, args.toVector).output() match
     Ok(t) -> t.trim()
     Err(e) -> fail(s"git ${args.mkString(" ")} in $dir: ${e.message()}")
 
@@ -59,7 +59,7 @@ branch(r: Repo, name: string, files: Vector[(string, string)])
 
 // The branches of a repository.
 branchesOf(dir: string) -> Vector[string] =
-    g(dir, "for-each-ref", "--format=%(refname:short)", "refs/heads").lines().filter(l -> l.nonEmpty()).toVector()
+    g(dir, "for-each-ref", "--format=%(refname:short)", "refs/heads").lines().filter(l -> l.nonEmpty()).toVector
 
 tipOf(dir: string, ref: string) -> string = g(dir, "rev-parse", ref)
 
@@ -74,7 +74,7 @@ data TrainRun(code: int, out: string, report: Json)
 train(r: Repo, args: string*) -> TrainRun
     val job = s"t${runs.add(1)}"
     val out = s"${r.home}/$job.out"
-    var c = Command(bin(), (["run-steps", stock() + "/types/train.job"] ++ args.toVector())*).inDir(r.clone)
+    var c = Command(bin(), (["run-steps", stock() + "/types/train.job"] ++ args.toVector)*).inDir(r.clone)
     for (k, v) in gitEnv do c = c.withEnv(k, v)
     c = c.withEnv("MARSHAL_HOME", r.home).withEnv("MARSHAL_JOB", job)
     val code = c.toFile(out).errorsToOutput().run().ok().get() match
@@ -160,7 +160,7 @@ trainBisect()
     assertEq(branchesOf(r.clone), ["b", "main"])
     assert(fs.isFile(r.clone + "/a.txt") && fs.isFile(r.clone + "/c.txt") && !fs.exists(r.clone + "/bad"))
     // the first pass, a, b c, b, c, and the last over a c
-    assertEq(fs.listDir(s"${r.home}/runs/t${runs.load()}").ok().get().filter(n -> n.startsWith("pass-")).length(), 6)
+    assertEq(fs.listDir(s"${r.home}/runs/t${runs.load()}").ok().get().filter(n -> n.startsWith("pass-")).length, 6)
     cleanUp(r.home)
 
 @test("a branch that does not merge is blamed by name, without a bisection, and the rest land")
@@ -172,7 +172,7 @@ trainConflict()
     assertEq(strings(t.report("culprits")), ["b"])
     assertEq(strings(t.report("landed")), ["a"])
     assertEq(t.report("step").asString(), Some("merge"))
-    assertEq(fs.listDir(s"${r.home}/runs/t${runs.load()}").ok().get().filter(n -> n.startsWith("pass-")).length(), 2)
+    assertEq(fs.listDir(s"${r.home}/runs/t${runs.load()}").ok().get().filter(n -> n.startsWith("pass-")).length, 2)
     assertEq(branchesOf(r.origin), ["b", "main"])
     cleanUp(r.home)
 

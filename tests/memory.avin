@@ -48,17 +48,17 @@ groupTree()
     var members: Vector[long] = []
     for _ in 0 ..< 50
         members = marshal.groupMembers(pgid)
-        if members.length() >= 4 then break
+        if members.length >= 4 then break
         threads.sleep(millis(100))
     // the outer shell, the inner one, and the two sleeps
-    assertEq(members.length(), 4)
+    assertEq(members.length, 4)
     assert(members.contains(child.pid()))
     val whole = marshal.groupResident(pgid)
     assert(whole > marshal.residentOf([child.pid()], pid -> process.residentBytes(pid)), s"$whole")
     process.signal(-pgid, signal.Kill)
     child.waitFor()
     for _ in 0 ..< 50
-        if marshal.groupMembers(pgid).isEmpty() then break
+        if marshal.groupMembers(pgid).isEmpty then break
         threads.sleep(millis(100))
     assertEq(marshal.groupMembers(pgid), [])
     assertEq(marshal.groupResident(pgid), 0)

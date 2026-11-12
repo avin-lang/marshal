@@ -33,9 +33,9 @@ enoughHistory()
 
 @test("only the last ten peaks count: an old big peak is forgotten")
 resvWindow()
-    val old: Vector[long] = [50 * G] ++ (0 ..< 10).map(_ -> 10 * G).toVector()
+    val old: Vector[long] = [50 * G] ++ (0 ..< 10).map(_ -> 10 * G).toVector
     assertEq(marshal.learnedPeak(learning0,old), Some(11 * G))
-    val recent: Vector[long] = (0 ..< 9).map(_ -> 10 * G).toVector() ++ [50 * G]
+    val recent: Vector[long] = (0 ..< 9).map(_ -> 10 * G).toVector ++ [50 * G]
     assertEq(marshal.learnedPeak(learning0,recent), Some(55 * G))
     assertEq(marshal.learnedPeak(MemoryLearning(3, 1, 0), [9 * G, G, 2 * G, 3 * G]), Some(3 * G))
 
@@ -137,7 +137,7 @@ recoverDirPeaks()
     assertEq(r.peaks.get(marshal.memoryDirKey("test", false, "")), None)
     // a log written before directories were learned (no dir) still teaches the kind
     val old = marshal.recover([peakEvent(1, 26 * G, None), peakEvent(2, 20 * G, None)])
-    assertEq(old.peaks.keys().toVector(), ["test"])
+    assertEq(old.peaks.keys.toVector, ["test"])
     assertEq(marshal.reservationFor(learning0, 0, false, marshal.memoryHistory(learning0, [], old.peaks("test")).peaks, 60 * G), Reservation(marshal.learnedPeak(learning0, [26 * G, 20 * G]).get(), true))
 
 job(memory: long, reserved: long, learned: bool) -> JobInfo =

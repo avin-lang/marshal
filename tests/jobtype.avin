@@ -228,7 +228,7 @@ referencePieces()
 
 @test("a word of one reference is an argument per value; any other joins the values with spaces")
 expansion()
-    val vars = [("branch", ["a", "b"]), ("none", Vector[string]()), ("one", ["x y"])].toMap()
+    val vars = [("branch", ["a", "b"]), ("none", Vector[string]()), ("one", ["x y"])].toMap
     assertEq(marshal.expandWord("${branch}", vars), ["a", "b"])
     assertEq(marshal.expandWord("${none}", vars), [])
     assertEq(marshal.expandWord("${one}", vars), ["x y"])
@@ -242,18 +242,18 @@ expansion()
 @test("a step runs unless its `when` comes to nothing, false or 0")
 whenSkips()
     val step = (w: Option[string]) -> Step("s", ["x"], None, [], w, Codes([0]), false, None, "next", "stop")
-    val vars = [("empty", [""]), ("off", ["false"]), ("zero", ["0"]), ("on", ["make"]), ("none", Vector[string]())].toMap()
+    val vars = [("empty", [""]), ("off", ["false"]), ("zero", ["0"]), ("on", ["make"]), ("none", Vector[string]())].toMap
     assert(marshal.runs(step(None), vars))
     assert(marshal.runs(step(Some("${on}")), vars))
     assert(marshal.runs(step(Some("true")), vars))
     for w in ["${empty}", "${off}", "${zero}", "${none}", "", " ", "false"]
         assert(!marshal.runs(step(Some(w)), vars), w)
 
-bound(t: JobType, args: string*) -> Map[string, Vector[string]] = marshal.bindParams(t, args.toVector()) match
+bound(t: JobType, args: string*) -> Map[string, Vector[string]] = marshal.bindParams(t, args.toVector) match
     Ok(v) -> v
     Err(e) -> fail(s"$args: $e")
 
-unbound(t: JobType, why: string, args: string*) = marshal.bindParams(t, args.toVector()) match
+unbound(t: JobType, why: string, args: string*) = marshal.bindParams(t, args.toVector) match
     Err(e) -> assert(e.contains(why), s"$args: $e")
     Ok(v) -> fail(s"$args bound as $v")
 

@@ -29,24 +29,24 @@ data Snapshot(dir: string, executable: Option[string], typeFile: string, stock: 
 stablePath(executable: string) -> string
     val cellar = executable.indexOf("/Cellar/")
     if cellar < 0 then return executable
-    val inside = executable.slice(cellar + 8, executable.byteLength()).split("/").toVector()
-    if inside.length() < 3 then return executable
+    val inside = executable.slice(cellar + 8, executable.byteLength()).split("/").toVector
+    if inside.length < 3 then return executable
     val stable = executable.slice(0, cellar) + "/opt/" + inside(0) + "/" + inside.drop(2).mkString("/")
     if fs.isFile(stable) then stable else executable
 
 // The Avin steps (`avin:<path>`) the type names, as written, each once.
 private avinSteps(t: JobType) -> Vector[string]
-    val words = (t.steps ++ t.land ++ t.failMap.toVector() ++ t.cleanup).flatMap(s -> s.run.headOption().toVector())
+    val words = (t.steps ++ t.land ++ t.failMap.toVector() ++ t.cleanup).flatMap(s -> s.run.headOption.toVector())
     val out = Buffer[string]()
     for w in words
         if w.startsWith("avin:") && !out.contains(w) then out += w
-    out.toVector()
+    out.toVector
 
 // Whether the step word `w` can be copied to the same place relative to the copied type file: a
 // literal path inside the type file's directory. An absolute path stays where it is.
 private copyable(w: string) -> bool
     val rel = w.drop(5)
-    rel.nonEmpty() && !rel.startsWith("/") && !rel.contains("${") && !rel.split("/").toVector().contains("..")
+    rel.nonEmpty() && !rel.startsWith("/") && !rel.contains("${") && !rel.split("/").toVector.contains("..")
 
 private dirOf(file: string) -> string
     val slash = file.lastIndexOf("/")
@@ -122,4 +122,4 @@ sweepSnapshots(home: string, now: long, ageMs: Option[long], dry: bool) -> (Vect
             removed += s"typed/$name"
             bytes += fileBytes(snapshot)
             if !dry then fs.removeDirAll(snapshot)
-    (removed.toVector(), bytes)
+    (removed.toVector, bytes)

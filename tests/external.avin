@@ -14,7 +14,7 @@ val Gi: long = 1024 * 1024 * 1024
 val externalSpec: JobSpec = JobSpec("linux", 2, 8 * Gi, false, "/w", None, ["docker", "run", "img"], [], memoryGiven = true, external = true)
 
 // What the command line makes of `args` given to submit, from directory /w.
-submission(args: string*) -> Result[JobSpec, string] = cli.parseSubmission(args.toVector(), "/w", [])
+submission(args: string*) -> Result[JobSpec, string] = cli.parseSubmission(args.toVector, "/w", [])
 
 @test("--external without --mem is refused, saying why; with --mem, --mem 0 included, it is accepted")
 externalNeedsMem()
@@ -136,7 +136,7 @@ externalPeakNotLearned()
     val r = marshal.recover([ext, ext.replace("\"id\":3", "\"id\":5"), own])
     assertEq(r.peaks.get("linux"), Some([long(2048)]))
     // its run time still teaches the kind's deadline
-    assertEq(r.histories.get("linux").map(h -> h.length()), Some(3))
+    assertEq(r.histories.get("linux").map(h -> h.length), Some(3))
     assertEq(marshal.recover([ext]).peaks.get("linux"), None)
     val l = marshal.Ledger()
     l.add(ext)

@@ -16,7 +16,7 @@ writeLog(home: string, id: long, text: string)
 val sample: string = "alpha\nERR one\nbeta\ngamma\ndelta\nERR two\nepsilon\nzeta\neta\nERR three\n"
 
 // The lines of a command's output.
-linesOf(r: Ran) -> Vector[string] = r.out.lines().toVector()
+linesOf(r: Ran) -> Vector[string] = r.out.lines().toVector
 
 @test("grep prints the matching lines of a log, exits 0, and starts no daemon")
 grepMatches()

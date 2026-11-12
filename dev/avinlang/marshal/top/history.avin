@@ -27,8 +27,8 @@ pageOf(all: Vector[JobInfo], before: Option[long], limit: int) -> Page
     val start = before match
         Some(id) -> all.indexWhere(j -> j.id == id) + 1
         None -> 0
-    val jobs = all.slice(start, minInt(start + limit, all.length()))
-    Page(jobs, all.length() - start - jobs.length())
+    val jobs = all.slice(start, minInt(start + limit, all.length))
+    Page(jobs, all.length - start - jobs.length)
 
 // The jobs the event log at `log` saw end, the latest first: each job as its last ending event
 // describes it, ordered by when that event came and then by id, as `marshal history` lists them. A
@@ -48,14 +48,14 @@ endedJobs(log: string) -> Result[Vector[JobInfo], string]
                     position.get(e.1.id) match
                         Some(p) -> ends(p) = e
                         None ->
-                            position(e.1.id) = ends.length()
+                            position(e.1.id) = ends.length
                             ends += e
             Ok(None) -> break
             Err(e) ->
                 f.close()
                 return Err(s"$log: ${e.message()}")
     f.close()
-    val sorted = ends.toVector().sortWith((a, b) -> if a.0 != b.0 then (if a.0 > b.0 then -1 else 1) elif a.1.id != b.1.id then (if a.1.id > b.1.id then -1 else 1) else 0)
+    val sorted = ends.toVector.sortWith((a, b) -> if a.0 != b.0 then (if a.0 > b.0 then -1 else 1) elif a.1.id != b.1.id then (if a.1.id > b.1.id then -1 else 1) else 0)
     Ok(sorted.map(e -> e.1))
 
 // The time and job of a line of the log that ends a job; None for any other line.

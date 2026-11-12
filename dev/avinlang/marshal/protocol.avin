@@ -6,7 +6,7 @@ import json
 import json.Json
 
 // marshal's version, as `avin.hocon` gives it: what `marshal version` and `marshal restart` print.
-val Version: string = "0.2.12"
+val Version: string = "0.3.0"
 
 // What a job is to run and how much of the machine it takes. `urgent` queues it in its lane's urgent
 // band, behind the urgent jobs already queued and ahead of every other. `after` names the jobs it
@@ -401,7 +401,7 @@ private labelOf(j: Json) -> Result[string, string] = j.get("label") match
 
 decodeSpec(j: Json) -> Result[JobSpec, string]
     val cmd = field(j, "cmd", stringVector, "an array of strings")?
-    if cmd.isEmpty() then return Err("`cmd` is empty: a job runs a command")
+    if cmd.isEmpty then return Err("`cmd` is empty: a job runs a command")
     Ok(JobSpec(
         field(j, "kind", v -> v.asString(), "a string")?,
         field(j, "units", v -> v.asInt(), "an int")?,
@@ -690,7 +690,7 @@ decodeReply(text: string) -> Result[Reply, string]
         val items = field(j, "jobs", v -> v.asVector(), "an array")?
         val jobs = Buffer[JobInfo]()
         for item in items do jobs += decodeJob(item)?
-        return Ok(Jobs(jobs.toVector()))
+        return Ok(Jobs(jobs.toVector))
     if j.has("unit_budget")
         return Ok(Using(Usage(
             field(j, "units", v -> v.asInt(), "an int")?,
@@ -787,7 +787,7 @@ private each[T](j: Json, key: string, read: (Json) -> Result[T, string]) -> Resu
     val items = field(j, key, v -> v.asVector(), "an array")?
     val out = Buffer[T]()
     for item in items do out += read(item)?
-    Ok(out.toVector())
+    Ok(out.toVector)
 
 decodeOverview(j: Json) -> Result[Overview, string]
     val running = each(j, "running", decodeJob)?
@@ -798,8 +798,8 @@ decodeOverview(j: Json) -> Result[Overview, string]
             field(j, "unit_budget", v -> v.asInt(), "an int")?,
             field(j, "mem", v -> v.asLong(), "a whole number")?,
             field(j, "mem_budget", v -> v.asLong(), "a whole number")?,
-            running.length(),
-            queued.length(),
+            running.length,
+            queued.length,
             optional(j, "landing", someLong, "a whole number", None)?,
             decodeTakeSlot(j.get("take_slot").getOrElse(Json.Null))?,
             optional(j, "rss", wholeNumber, "a whole number", 0)?,

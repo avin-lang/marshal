@@ -143,7 +143,7 @@ pauseHoldsLanding()
     assertEq(eventsOf(home, landing), ["submitted"])
     assertEq(eventsOf(home, development), ["submitted"])
     val snapshot = statusJsonOf(home)
-    assertEq(snapshot("queued").asVector().map(q -> q.length()), Some(2))
+    assertEq(snapshot("queued").asVector().map(q -> q.length), Some(2))
     assertEq(snapshot("landing"), Json.Null)
     assertEq(m(home, "resume").code, 0)
     assertEq(m(home, "wait", landing.toString()).code, 0)
@@ -209,7 +209,7 @@ priorityOrder()
     assertEq(u.code, 0)
     assert(u.out.contains(s"job $c is placed"), u.out)
     // the queue lists in its new order
-    val listed = m(home, "ls").out.lines().drop(1).map(l -> l.trim().split(" ")(0).toLong()).filter(id -> id != blocker).toVector()
+    val listed = m(home, "ls").out.lines().drop(1).map(l -> l.trim().split(" ")(0).toLong()).filter(id -> id != blocker).toVector
     assertEq(listed.take(5), [c, d, e, b, f])
     // a job submitted now, at the default 0, goes behind b and ahead of f
     val g = submitted(home, "--", "true")

@@ -9,7 +9,7 @@ import dev.avinlang.marshal.{NoUnits, NoMemory, LaneBusy, Draining, ForTakeSlot,
 val budget: Budget = Budget(12, 64 * 1024)
 val hour: long = 3600000
 
-ids(xs: long*) -> Vector[long] = xs.toVector()
+ids(xs: long*) -> Vector[long] = xs.toVector
 
 dev(id: long, units: int, expected: long = hour, memory: long = 0) -> Waiting = Waiting(id, units, memory, false, expected, id * 10)
 land(id: long, expected: long = hour, memory: long = 0) -> Waiting = Waiting(id, 4, memory, true, expected, id * 10)

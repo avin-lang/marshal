@@ -86,7 +86,7 @@ parseCpuTime(text: string) -> Option[long]
         i if i >= 0 -> (t.slice(0, i), t.slice(i + 1, t.byteLength()))
         _ -> (t, "")
     val parts = whole.split(":")
-    if parts.isEmpty() || parts.length() > 3 then return None
+    if parts.isEmpty || parts.length > 3 then return None
     var total: long = 0
     for p in parts
         if p.isEmpty() || !p.chars().forall(c -> '0' <= c <= '9') then return None

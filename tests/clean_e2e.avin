@@ -14,7 +14,7 @@ quickJobs(home: string, n: int) -> Vector[long]
         val id = submitted(home, "--", "sh", "-c", s"echo job $i")
         assertEq(m(home, "wait", id.toString()).code, 0)
         ids += id
-    ids.toVector()
+    ids.toVector
 
 hasLog(home: string, id: long) -> bool = fs.isFile(s"$home/jobs/$id.log")
 
@@ -246,11 +246,11 @@ cleanBytesReported()
     fs.createDirAll(home + "/runs/1").ok().get()
     fs.writeText(home + "/runs/1/big", "z".repeat(3000)).ok().get()
     val dry = m(home, "clean", "--dry-run")
-    val freed = dry.out.lines().filter(l -> l.startsWith("marshal: would free ")).toVector()
-    assertEq(freed.length(), 1)
+    val freed = dry.out.lines().filter(l -> l.startsWith("marshal: would free ")).toVector
+    assertEq(freed.length, 1)
     assert(fs.isFile(home + "/runs/1/big"))
     val real = m(home, "clean")
-    assertEq(real.out.lines().filter(l -> l.startsWith("marshal: freed ")).map(l -> l.drop("marshal: freed ".byteLength())).toVector(), freed.map(l -> l.drop("marshal: would free ".byteLength())))
+    assertEq(real.out.lines().filter(l -> l.startsWith("marshal: freed ")).map(l -> l.drop("marshal: freed ".byteLength())).toVector, freed.map(l -> l.drop("marshal: would free ".byteLength())))
     assert(!fs.exists(home + "/runs/1/big"))
     cleanUp(home)
 

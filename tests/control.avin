@@ -85,13 +85,13 @@ priorityOrdering()
     assertEq(marshal.priorityOrder(int.MinValue, int.MaxValue), 1)
     val queue = [(long(1), 0), (long(2), 5), (long(3), 0), (long(4), -1), (long(5), 5), (long(6), int.MinValue), (long(7), int.MaxValue)].toBuffer()
     queue.sortInPlaceWith((a, b) -> marshal.priorityOrder(a.1, b.1))
-    assertEq(queue.map(e -> e.0).toVector(), [long(7), long(2), long(5), long(1), long(3), long(4), long(6)])
+    assertEq(queue.map(e -> e.0).toVector, [long(7), long(2), long(5), long(1), long(3), long(4), long(6)])
 
 // The ids of jobs (id, urgent mark, priority, arrival) in the order the queue keeps them.
 private placed(jobs: Vector[(long, long, int, long)]) -> Vector[long]
     val b = jobs.toBuffer()
     b.sortInPlaceWith((x, y) -> marshal.placeOrder(marshal.Place(x.1, x.2, x.3), marshal.Place(y.1, y.2, y.3)))
-    b.map(e -> e.0).toVector()
+    b.map(e -> e.0).toVector
 
 @test("the urgent band goes first, its jobs in the order they joined it, whatever their priorities")
 urgentBand()

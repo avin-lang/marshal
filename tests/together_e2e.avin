@@ -20,7 +20,7 @@ lsRow(home: string, id: long) -> string =
 nthStart(home: string, id: long, n: int) -> int
     var seen = 0
     val evs = events(home)
-    for i in evs.indices()
+    for i in evs.indices
         if evs(i)("id").asLong() == Some(id) && evs(i)("event").asString() == Some("started")
             seen += 1
             if seen == n then return i
@@ -176,7 +176,7 @@ togetherPausedAttemptRetried()
     process.signal(-pgid, 9)
     assertEq(m(home, "wait", id.toString()).code, 0)
     assertEq(eventsOf(home, id), ["submitted", "started", "paused", "finished", "retry", "started", "finished"])
-    val last = events(home).filter(e -> e("id").asLong() == Some(id)).last()
+    val last = events(home).filter(e -> e("id").asLong() == Some(id)).last
     assertEq(last("paused").asBool(), Some(false))
     assertEq(last("attempt").asLong(), Some(long(2)))
     cleanUp(home)
@@ -315,7 +315,7 @@ togetherIdleWaits()
     assertEq(m(home, "wait", "--until", "idle", "--timeout", "1s").code, 124)
     val r = m(home, "wait", "--until", "idle", "--timeout", "20s")
     assertEq(r.code, 0)
-    assertEq(eventsOf(home, id).last(), "finished")
+    assertEq(eventsOf(home, id).last, "finished")
     val a = submitted(home, "--", "sleep", "30")
     val b = submitted(home, "--after", a.toString(), "--", "true")
     assertEq(m(home, "kill", a.toString()).code, 0)

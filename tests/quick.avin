@@ -103,12 +103,12 @@ hint()
     // a p90 at or over the cap
     assertEq(marshal.quickHint(l, qSpec(), [long(20000), 25000, 2 * minute]), "")
     // one slow run in ten is under the 90th percentile; two are not
-    val mostlyShort = (0 ..< 9).map(i -> long(10000)).toVector() ++ [20 * minute]
+    val mostlyShort = (0 ..< 9).map(i -> long(10000)).toVector ++ [20 * minute]
     assert(marshal.quickHint(l, qSpec(), mostlyShort).nonEmpty())
     assertEq(marshal.quickHint(l, qSpec(), mostlyShort ++ [20 * minute]), "")
     // only the learning window counts: old slow runs fall out of it
-    assertEq(marshal.quickHint(l, qSpec(), (0 ..< 30).map(i -> 20 * minute).toVector() ++ short), "")
-    assert(marshal.quickHint(l, qSpec(), (0 ..< 30).map(i -> 20 * minute).toVector() ++ (0 ..< 20).map(i -> long(9000)).toVector()).nonEmpty())
+    assertEq(marshal.quickHint(l, qSpec(), (0 ..< 30).map(i -> 20 * minute).toVector ++ short), "")
+    assert(marshal.quickHint(l, qSpec(), (0 ..< 30).map(i -> 20 * minute).toVector ++ (0 ..< 20).map(i -> long(9000)).toVector).nonEmpty())
 
 @test("quick goes through the spec's and the job's JSON, and is absent for a job not quick")
 roundTrips()

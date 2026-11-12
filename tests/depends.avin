@@ -39,7 +39,7 @@ dependsProtocolDefaults()
     assertEq(read.attempt, 1)
     val snap = "{\"ok\":true,\"snapshot\":{\"units\":0,\"unit_budget\":12,\"mem\":0,\"mem_budget\":0,\"landing\":null,\"take_slot\":null,\"uptime_ms\":0,\"running\":[],\"queued\":[],\"recent\":[]}}"
     assertEq(marshal.decodeReply(snap).map(r -> r match
-        Reply.Viewed(ov) -> ov.waiting.length()
+        Reply.Viewed(ov) -> ov.waiting.length
         _ -> -1), Ok(0))
 
 @test("dependencies and retries of the wrong type are refused with a reason")
@@ -99,7 +99,7 @@ dependsEvents()
     val attemptEnd = marshal.eventLine(3, "finished", done, [("retrying", Json.Bool(true))])
     val retrying = [sub(5), marshal.eventLine(2, "started", waitingInfo(5, "running"), []), attemptEnd, marshal.eventLine(4, "retry", waitingInfo(5, "queued", attempt = 2), [])]
     val r = marshal.recover(retrying)
-    assertEq(r.open.length(), 1)
+    assertEq(r.open.length, 1)
     assertEq(r.ended, [])
     // the ending of an attempt that runs again does not end the job; the last attempt's does
     assertEq(marshal.endOf(retrying, 5), None)
@@ -122,7 +122,7 @@ dependsListing()
     assertEq(marshal.resultLine(waitingInfo(5, "done", outcome = Some(Outcome.DependencyFailed(3)))), "marshal: job 5 cancelled before it started: job 3, which it waited for, did not succeed; log /h/jobs/5.log")
     assertEq(marshal.resultLine(waitingInfo(5, "done", attempt = 3, outcome = Some(Outcome.Exited(0)))), "marshal: job 5 exited 0 after 0ms (attempt 3); log /h/jobs/5.log")
     assertEq(marshal.resultLine(waitingInfo(5, "done", outcome = Some(Outcome.Exited(0)))), "marshal: job 5 exited 0 after 0ms; log /h/jobs/5.log")
-    val rows = marshal.listing([waitingInfo(5, after = [3, 4])]).lines().toVector()
+    val rows = marshal.listing([waitingInfo(5, after = [3, 4])]).lines().toVector
     assertEq(rows(1).split("  ").filter(c -> c.nonEmpty())(1).trim(), "after 3,4")
 
 @test("top lists waiting jobs after the queued ones, under all and queued, with their state and deadline")
@@ -170,9 +170,9 @@ dependsOptions()
 dependsHistory()
     val l = marshal.Ledger()
     l.add(marshal.eventLine(1, "finished", waitingInfo(5, "done", outcome = Some(Outcome.Exited(1))), [("run_ms", Json.num(10)), ("exit", Json.num(1)), ("retrying", Json.Bool(true))]))
-    assertEq(l.ends.length(), 0)
+    assertEq(l.ends.length, 0)
     l.add(marshal.eventLine(2, "retry", waitingInfo(5, "queued", attempt = 2), []))
     l.add(marshal.eventLine(3, "finished", waitingInfo(5, "done", attempt = 2, outcome = Some(Outcome.Exited(0))), [("run_ms", Json.num(20)), ("exit", Json.num(0))]))
     l.add(marshal.eventLine(4, "cancelled", waitingInfo(6, "done", outcome = Some(Outcome.DependencyFailed(4))), [("run_ms", Json.num(0)), ("exit", Json.num(126))]))
-    assertEq(l.ends.toVector().map(e -> (e.id, e.how, e.exit, e.runMs)), [(long(5), "ok", 0, long(20)), (long(6), "cancelled", 126, long(0))])
+    assertEq(l.ends.toVector.map(e -> (e.id, e.how, e.exit, e.runMs)), [(long(5), "ok", 0, long(20)), (long(6), "cancelled", 126, long(0))])
     assertEq(l.unreadable, 0)

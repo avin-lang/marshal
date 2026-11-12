@@ -29,7 +29,7 @@ externalRefusedE2e()
     assert(r.out.contains("`--external` needs `--mem <size>`"), r.out)
     val run = m(home, "run", "--external", "--kind", "linux", "--", "true")
     assertEq(run.code, 2)
-    assertEq(events(home).length(), 0)
+    assertEq(events(home).length, 0)
     // a daemon to ask: a job that is not external
     assertEq(m(home, "run", "--", "true").code, 0)
     val raw = s"{\"op\":\"submit\",\"kind\":\"build\",\"units\":1,\"mem\":0,\"dir\":\"$home\",\"cmd\":[\"true\"],\"external\":true}"
@@ -46,7 +46,7 @@ externalNotLearnedE2e()
     for _ in 0 ..< 2
         assertEq(m(home, "run", "--external", "--mem", "300M", "--kind", "ext", "--", "sleep", "2.5").code, 0)
     val ends = events(home).filter(e -> e("event").asString() == Some("finished"))
-    assertEq(ends.length(), 2)
+    assertEq(ends.length, 2)
     // the tree was measured, and the event says the measurement is not the work's
     for e in ends
         assert(e("peak_rss").asLong().getOrElse(0) > 0, e.render())

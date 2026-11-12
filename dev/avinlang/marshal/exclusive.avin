@@ -50,7 +50,7 @@ exclusiveSpec(s: JobSpec, units: int) -> JobSpec =
 // The load averages `text` holds, as `sysctl -n vm.loadavg` prints them (`{ 1.52 1.40 1.31 }`) or as
 // bare numbers; empty when it holds none.
 parseLoads(text: string) -> Vector[real] =
-    text.split(" ").map(w -> w.trim()).filter(w -> w.nonEmpty() && w != "{" && w != "}").map(w -> w.toRealOption()).takeWhile(r -> r.isDefined()).map(r -> r.get()).toVector()
+    text.split(" ").map(w -> w.trim()).filter(w -> w.nonEmpty() && w != "{" && w != "}").map(w -> w.toRealOption()).takeWhile(r -> r.isDefined()).map(r -> r.get()).toVector
 
 // The machine's load averages (1, 5 and 15 minutes), or empty where they cannot be read. A test
 // names a file to read them from instead (`$MARSHAL_TEST_LOAD_FILE`), so no real load is needed.
@@ -94,20 +94,20 @@ data Proc(pid: long, ppid: long, pgid: long, cpu: real, name: string)
 parseProcs(text: string) -> Vector[Proc]
     val out = Buffer[Proc]()
     for line in text.lines()
-        val words = line.trim().split(" ").filter(w -> w.nonEmpty()).toVector()
-        if words.length() < 5 then continue
-        val name = words.drop(4).mkString(" ").split("/").toVector().last()
+        val words = line.trim().split(" ").filter(w -> w.nonEmpty()).toVector
+        if words.length < 5 then continue
+        val name = words.drop(4).mkString(" ").split("/").toVector.last
         (words(0).toLongOption(), words(1).toLongOption(), words(2).toLongOption(), words(3).toRealOption()) match
             (Some(pid), Some(ppid), Some(pgid), Some(cpu)) -> out += Proc(pid, ppid, pgid, cpu, name)
             _ -> ()
-    out.toVector()
+    out.toVector
 
 // The busiest `n` of `procs` that are not marshal's, busiest first (the lower pid first on a tie):
 // marshal's are the daemon (`daemon`) and every process descended from it, every job's tree among
 // them, and every process in one of the job's process `groups`, which holds what the job started
 // that has left its parent. Processes using no processor time are left out.
 outsiders(procs: Vector[Proc], daemon: long, groups: Vector[long], n: int) -> Vector[Proc]
-    val parent = procs.map(p -> (p.pid, p.ppid)).toMap()
+    val parent = procs.map(p -> (p.pid, p.ppid)).toMap
     procs.filter(p -> p.cpu > 0.0 && !marshals(p, parent, daemon, groups)).sortBy(p -> (-p.cpu, p.pid)).take(n)
 
 // Whether `p` is marshal's: in one of `groups`, or the daemon or one of its descendants by the
@@ -116,7 +116,7 @@ private marshals(p: Proc, parent: Map[long, long], daemon: long, groups: Vector[
     if groups.contains(p.pgid) then return true
     var at = p.pid
     var steps = 0
-    while at > 1 && steps <= parent.size()
+    while at > 1 && steps <= parent.size
         if at == daemon then return true
         at = parent.get(at).getOrElse(0)
         steps += 1
@@ -131,6 +131,6 @@ listProcs() -> Vector[Proc] = process.env("MARSHAL_TEST_PS_FILE") match
 // busiest processes outside marshal as `name pid percent%`:
 // `marshal exclusive: load 1.52 1.4 1.31; busiest outside marshal: WindowServer 412 12.3%, mds 88 5%`.
 sampleLine(loads: Vector[real], busiest: Vector[Proc]) -> string
-    val load = if loads.isEmpty() then "load unknown" else "load " + loads.map(loadText).mkString(" ")
-    val procs = if busiest.isEmpty() then "none" else busiest.map(p -> s"${p.name} ${p.pid} ${loadText(p.cpu)}%").mkString(", ")
+    val load = if loads.isEmpty then "load unknown" else "load " + loads.map(loadText).mkString(" ")
+    val procs = if busiest.isEmpty then "none" else busiest.map(p -> s"${p.name} ${p.pid} ${loadText(p.cpu)}%").mkString(", ")
     s"$ExclusiveMark $load; busiest outside marshal: $procs"

@@ -113,12 +113,12 @@ class TakeSlot(val dir: string, val me: long)
             parseTicket(name) match
                 Some((arrived, pid)) if alive(pid) ->
                     if pid != me
-                        val wants = fs.readText(file).ok().flatMap(t -> t.lines().headOption()).flatMap(l -> l.trim().toIntOption()).getOrElse(1)
+                        val wants = fs.readText(file).ok().flatMap(t -> t.lines().headOption).flatMap(l -> l.trim().toIntOption()).getOrElse(1)
                         tickets += Ticket(arrived, if wants > budget then budget else wants)
                 // take-slot removes a ticket of a dead pid; a name it cannot read it never made
                 Some(_) -> fs.remove(file)
                 None -> ()
-        Outside(units, tickets.toVector(), landingHeld(ours))
+        Outside(units, tickets.toVector, landingHeld(ours))
 
     // Whether a process other than one of `ours` holds the landing lock. A lock with no pid yet is
     // being taken; one whose holder has died is removed.

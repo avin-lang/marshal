@@ -27,7 +27,7 @@ private isHex(s: string) -> bool = s.chars().forall(c -> '0' <= c <= '9' || 'a' 
 readSaid(line: string) -> Option[Result[Said, string]]
     if !line.startsWith("=== ") then return None
     val words = line.drop(4).trim().split(" ").filter(w -> w.nonEmpty())
-    if words.isEmpty() then return None
+    if words.isEmpty then return None
     val rest = words.drop(1)
     val said = words(0) match
         "STEP" -> rest match
@@ -144,8 +144,8 @@ blamed(fails: Vector[Fail], values: Vector[string]) -> Vector[string] =
 // given and says whether it failed; a half that fails is searched in turn, and where neither half
 // fails alone, all of `values` are to blame together.
 culprits(values: Vector[string], red: (Vector[string]) -> bool) -> (Vector[string], bool)
-    if values.length() <= 1 then return (values, false)
-    val half = values.length() / 2
+    if values.length <= 1 then return (values, false)
+    val half = values.length / 2
     val a = values.take(half)
     val b = values.drop(half)
     val ra = red(a)
@@ -184,10 +184,10 @@ runType(bisectable: bool, landing: string, values: Vector[string], pass: (Vector
         Red(b, _) -> b && bisectable
         _ -> false
     if !bisecting then return RunReport("red", step, [], first.head, named, false, first.fails)
-    val allNamed = first.fails.nonEmpty() && first.fails.forall(f -> f.branch.exists(b -> values.contains(b)))
+    val allNamed = first.fails.nonEmpty && first.fails.forall(f -> f.branch.exists(b -> values.contains(b)))
     val (bad, together) = if allNamed then (named, false) else culprits(values, vs -> !isGreen(pass(vs, false).gate))
     val rest = values.filter(v -> !bad.contains(v))
-    if rest.isEmpty() then return RunReport("red", step, [], first.head, bad, together, first.fails)
+    if rest.isEmpty then return RunReport("red", step, [], first.head, bad, together, first.fails)
     val last = pass(rest, true)
     if !isGreen(last.gate) then return RunReport("red", stepOf(last.gate), [], last.head, bad, together, first.fails ++ last.fails)
     val r = afterGreen(last, rest, landing)
@@ -210,8 +210,8 @@ renderReport(typeName: string, r: RunReport) -> string
     val lines = Buffer[string]()
     val at = if r.step.isEmpty() then "" else s" at step ${r.step}"
     lines += s"marshal: $typeName ${r.result}$at"
-    if r.landed.nonEmpty() then lines += s"  landed ${r.landed.mkString(" ")}" + (if r.head.isEmpty() then "" else s" as ${r.head}")
-    if r.culprits.nonEmpty()
+    if r.landed.nonEmpty then lines += s"  landed ${r.landed.mkString(" ")}" + (if r.head.isEmpty() then "" else s" as ${r.head}")
+    if r.culprits.nonEmpty
         lines += (if r.together then s"  fail together: ${r.culprits.mkString(" ")}" else s"  to blame: ${r.culprits.mkString(" ")}")
     for f in r.fails
         lines += s"  failed: ${f.test}" + f.branch.map(b -> s" ($b)").getOrElse("")

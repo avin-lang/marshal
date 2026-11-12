@@ -67,7 +67,7 @@ class Ledger()
         position.get(job.id) match
             Some(p) -> ends(p) = e
             None ->
-                position(job.id) = ends.length()
+                position(job.id) = ends.length
                 ends += e
 
 // Which jobs a query asks for. A `label` matches the jobs whose label contains it, case as written.
@@ -78,7 +78,7 @@ matches(f: HistoryFilter, e: EndedJob) -> bool =
 
 // The jobs `history` lists: those that match, newest first, at most `limit` of them.
 selectEnded(ledger: Ledger, f: HistoryFilter, limit: int) -> Vector[EndedJob]
-    val hits = ledger.ends.toVector().filter(e -> matches(f, e))
+    val hits = ledger.ends.toVector.filter(e -> matches(f, e))
     hits.sortWith((a, b) -> if a.endedAt != b.endedAt then (if a.endedAt > b.endedAt then -1 else 1) elif a.id != b.id then (if a.id > b.id then -1 else 1) else 0).take(limit)
 
 // The value at percentile `p` of `xs`, which must not be empty: the nearest rank, the smallest value
@@ -86,7 +86,7 @@ selectEnded(ledger: Ledger, f: HistoryFilter, limit: int) -> Vector[EndedJob]
 // median is the lesser.
 percentile(xs: Vector[long], p: int) -> long
     val s = xs.sorted()
-    val n = s.length()
+    val n = s.length
     val rank = (p * n + 99) / 100
     s(if rank < 1 then 0 else rank - 1)
 
@@ -94,7 +94,7 @@ percentile(xs: Vector[long], p: int) -> long
 // Durations and peaks are None where no job has one.
 data KindStats(key: string, count: int, ok: int, timeouts: int, p50: Option[long], p90: Option[long], max: Option[long], deadlineMs: long, peakP50: Option[long], peakMax: Option[long])
 
-private someIfAny(xs: Vector[long], f: (Vector[long]) -> long) -> Option[long] = if xs.isEmpty() then None else Some(f(xs))
+private someIfAny(xs: Vector[long], f: (Vector[long]) -> long) -> Option[long] = if xs.isEmpty then None else Some(f(xs))
 
 // The statistics of each history key among the jobs that match, in the order keys first ended. The
 // learned deadline is the one the daemon would give the next job of the key: learned from every
@@ -102,7 +102,7 @@ private someIfAny(xs: Vector[long], f: (Vector[long]) -> long) -> Option[long] =
 kindStats(ledger: Ledger, f: HistoryFilter, learning: Learning = defaultLearning) -> Vector[KindStats]
     val order = Buffer[string]()
     val groups = MutableMap[string, Buffer[EndedJob]]()
-    for e in ledger.ends.toVector().filter(e -> matches(f, e))
+    for e in ledger.ends.toVector.filter(e -> matches(f, e))
         val key = historyKey(e.kind, e.landing)
         groups.get(key) match
             Some(b) -> b += e
@@ -111,16 +111,16 @@ kindStats(ledger: Ledger, f: HistoryFilter, learning: Learning = defaultLearning
                 val b = Buffer[EndedJob]()
                 b += e
                 groups(key) = b
-    order.toVector().map(key ->
-        val es = groups(key).toVector()
+    order.toVector.map(key ->
+        val es = groups(key).toVector
         val timed = es.filter(e -> e.how != "cancelled").map(e -> e.runMs)
         val peaks = es.filter(e -> e.peakRss > 0).map(e -> e.peakRss)
         val first = es(0)
-        val past = ledger.ends.toVector().filter(e -> e.how == "ok" && historyKey(e.kind, e.landing) == key).map(e -> e.runMs)
-        KindStats(key, es.length(), es.filter(e -> e.how == "ok").length(), es.filter(e -> e.how == "timeout").length(),
-            someIfAny(timed, xs -> percentile(xs, 50)), someIfAny(timed, xs -> percentile(xs, 90)), someIfAny(timed, xs -> xs.max()),
+        val past = ledger.ends.toVector.filter(e -> e.how == "ok" && historyKey(e.kind, e.landing) == key).map(e -> e.runMs)
+        KindStats(key, es.length, es.filter(e -> e.how == "ok").length, es.filter(e -> e.how == "timeout").length,
+            someIfAny(timed, xs -> percentile(xs, 50)), someIfAny(timed, xs -> percentile(xs, 90)), someIfAny(timed, xs -> xs.max),
             deadlineMs(learning, first.kind, first.landing, past),
-            someIfAny(peaks, xs -> percentile(xs, 50)), someIfAny(peaks, xs -> xs.max())))
+            someIfAny(peaks, xs -> percentile(xs, 50)), someIfAny(peaks, xs -> xs.max)))
 
 // Time.
 
@@ -142,14 +142,14 @@ private instantOfReading(wallMs: long, zone: time.Zone) -> long
     val before = offsetAt(wallMs - 86400000)
     val after = offsetAt(wallMs + 86400000)
     val fits = [before, after].filter(o -> offsetAt(wallMs - o) == o).map(o -> wallMs - o)
-    if fits.isEmpty() then wallMs - before else fits.min()
+    if fits.isEmpty then wallMs - before else fits.min
 
 // The offset an ISO 8601 suffix writes, in milliseconds: `Z`, `+hh:mm` or `-hh:mm`. None for any
 // other text.
 private parseOffset(text: string) -> Option[long]
     if text == "Z" then return Some(0)
-    val cs = text.chars().toVector()
-    if cs.length() != 6 || cs(3) != ':' then return None
+    val cs = text.chars().toVector
+    if cs.length != 6 || cs(3) != ':' then return None
     val sign: long = cs(0) match
         '+' -> 1
         '-' -> -1
@@ -180,16 +180,16 @@ parseEndedSince(text: string, nowMs: long, zone: time.Zone) -> Option[long]
             Some(n) if 0 < n <= nowMs / unit -> Some(nowMs - n * unit)
             _ -> None
     val parts = text.split("T")
-    if parts.length() > 2 then return None
+    if parts.length > 2 then return None
     val ymd = parts(0).split("-")
-    if ymd.length() != 3 || ymd(0).charCount() != 4 || ymd(1).charCount() != 2 || ymd(2).charCount() != 2 then return None
+    if ymd.length != 3 || ymd(0).charCount() != 4 || ymd(1).charCount() != 2 || ymd(2).charCount() != 2 then return None
     if !ymd.forall(isDigits) then return None
     val (y, mo, d) = (ymd(0).toLong(), ymd(1).toLong(), ymd(2).toLong())
     if !(1 <= mo <= 12) || !(1 <= d <= daysIn(y, mo)) then return None
     var h: long = 0
     var mi: long = 0
     var offset: Option[long] = None
-    if parts.length() == 2
+    if parts.length == 2
         var clock = parts(1)
         val cut = if clock.endsWith("Z") then clock.charCount() - 1 elif clock.charCount() > 5 then 5 else clock.charCount()
         val suffix = clock.drop(cut)
@@ -199,7 +199,7 @@ parseEndedSince(text: string, nowMs: long, zone: time.Zone) -> Option[long]
                 Some(o) -> offset = Some(o)
                 None -> return None
         val hm = clock.split(":")
-        if hm.length() != 2 || hm(0).charCount() != 2 || hm(1).charCount() != 2 || !hm.forall(isDigits) then return None
+        if hm.length != 2 || hm(0).charCount() != 2 || hm(1).charCount() != 2 || !hm.forall(isDigits) then return None
         (h, mi) = (hm(0).toLong(), hm(1).toLong())
         if h > 23 || mi > 59 then return None
     val wall = time.Zoned(time.dateTime(int(y), int(mo), int(d), int(h), int(mi)), time.minutes(0), time.utc).toInstant().epochMillis()
@@ -212,13 +212,13 @@ parseEndedSince(text: string, nowMs: long, zone: time.Zone) -> Option[long]
 private dash(v: Option[long], f: (long) -> string) -> string = v.map(f).getOrElse("-")
 
 private table(rows: Vector[Vector[string]]) -> string
-    val cols = rows(0).length()
-    val widths = (0..<cols).map(c -> rows.map(r -> r(c).charCount()).max())
+    val cols = rows(0).length
+    val widths = (0..<cols).map(c -> rows.map(r -> r(c).charCount()).max)
     rows.map(r -> (0..<cols).map(c -> r(c).padEnd(widths(c), ' ')).mkString("  ").trim()).mkString("\n")
 
 // The table `history` prints, its times on the clocks of `zone`, or a line saying nothing matched.
 historyListing(jobs: Vector[EndedJob], zone: time.Zone) -> string
-    if jobs.isEmpty() then return "marshal: no ended jobs match"
+    if jobs.isEmpty then return "marshal: no ended jobs match"
     // the LABEL column, last because it is free text, always there, empty for a job without a label
     table([["ID", "KIND", "OUTCOME", "EXIT", "DURATION", "ENDED", "LABEL"]] ++ jobs.map(e -> [
         e.id.toString(),
@@ -231,7 +231,7 @@ historyListing(jobs: Vector[EndedJob], zone: time.Zone) -> string
 
 // The table `stats` prints, or a line saying nothing matched.
 statsListing(rows: Vector[KindStats]) -> string
-    if rows.isEmpty() then return "marshal: no ended jobs match"
+    if rows.isEmpty then return "marshal: no ended jobs match"
     table([["KIND", "COUNT", "OK", "P50", "P90", "MAX", "TIMEOUTS", "DEADLINE", "PEAK P50", "PEAK MAX"]] ++ rows.map(r -> [
         r.key,
         r.count.toString(),

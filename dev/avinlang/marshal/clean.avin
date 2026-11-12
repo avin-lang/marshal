@@ -61,14 +61,14 @@ parseCleanArgs(args: Vector[string]) -> Result[CleanRule, string]
     var keep: Option[int] = None
     var dry = false
     var i = 0
-    while i < args.length()
+    while i < args.length
         val a = args(i)
         if a == "--dry-run"
             if dry then return Err("--dry-run is given twice")
             dry = true
             i += 1
         elif a == "--older-than" || a == "--keep"
-            if i + 1 >= args.length() then return Err(s"$a needs a value")
+            if i + 1 >= args.length then return Err(s"$a needs a value")
             val value = args(i + 1)
             if a == "--older-than"
                 if older.isDefined() then return Err("--older-than is given twice")
@@ -91,7 +91,7 @@ parseCleanArgs(args: Vector[string]) -> Result[CleanRule, string]
 data CleanReport(dryRun: bool, jobs: Vector[long], runs: Vector[string], steps: Vector[string], events: int, eventJobs: int, bytes: long)
 
 // Whether the report removed nothing.
-nothingRemoved(r: CleanReport) -> bool = r.jobs.isEmpty() && r.runs.isEmpty() && r.steps.isEmpty() && r.events == 0
+nothingRemoved(r: CleanReport) -> bool = r.jobs.isEmpty && r.runs.isEmpty && r.steps.isEmpty && r.events == 0
 
 // What `marshal clean` prints for a report, one line for each thing removed, then the bytes freed
 // (or that would be) in the units of the memory columns.
@@ -106,7 +106,7 @@ cleanLines(r: CleanReport) -> Vector[string]
     else
         out += (if r.dryRun then "marshal: would free " else "marshal: freed ") + (if r.bytes < 1024 then s"${r.bytes} bytes" else roundSize(r.bytes))
         if r.dryRun then out += "marshal: dry run, nothing was removed"
-    out.toVector()
+    out.toVector
 
 // An ended job as the event log shows it: when it ended (wall clock, milliseconds).
 data LogEnded(id: long, endedAt: long)
@@ -132,13 +132,13 @@ logView(lines: Iterable[string]) -> LogView
         if !last.contains(id) then order += id
         last(id) = (ev.get("ts").flatMap(v -> v.asLong()).getOrElse(0), endsJob(ev))
     val ended = order.filter(id -> last(id).1).map(id -> LogEnded(id, last(id).0))
-    LogView(ended.toVector(), maxId)
+    LogView(ended.toVector, maxId)
 
 // The ended jobs, not active, whose files `rule` removes, oldest first. A job goes when it ended
 // at least `olderMs` ago (if given) and is not among the `keep` newest (if given).
 selectJobs(ended: Vector[LogEnded], active: Set[long], now: long, olderMs: Option[long], keep: Option[int]) -> Vector[long]
     val candidates = ended.filter(e -> !active.contains(e.id)).sortBy(e -> (e.endedAt, e.id))
-    val skip = keep.map(n -> candidates.length() - n).getOrElse(0)
+    val skip = keep.map(n -> candidates.length - n).getOrElse(0)
     val beyond = if skip > 0 then candidates.take(skip) else []
     val pool = if keep.isDefined() then beyond else candidates
     pool.filter(e -> olderMs.forall(o -> e.endedAt <= now - o)).map(e -> e.id)
@@ -148,13 +148,13 @@ selectJobs(ended: Vector[LogEnded], active: Set[long], now: long, olderMs: Optio
 selectRetained(ended: Vector[LogEnded], active: Set[long], now: long, r: Retention) -> Vector[long]
     val byAge = r.logsMs.map(o -> selectJobs(ended, active, now, Some(o), None)).getOrElse([])
     val byCount = r.jobs.map(n -> selectJobs(ended, active, now, None, Some(n))).getOrElse([])
-    val both = (byAge ++ byCount).toSet()
+    val both = (byAge ++ byCount).toSet
     ended.filter(e -> both.contains(e.id)).sortBy(e -> (e.endedAt, e.id)).map(e -> e.id)
 
 // The jobs whose events leave the log: ended at least `eventsMs` ago, and never the job with the
 // highest id.
 selectEvents(view: LogView, now: long, eventsMs: Option[long]) -> Set[long] = eventsMs match
-    Some(age) -> view.ended.filter(e -> e.id != view.maxId && e.endedAt <= now - age).map(e -> e.id).toSet()
+    Some(age) -> view.ended.filter(e -> e.id != view.maxId && e.endedAt <= now - age).map(e -> e.id).toSet
     None -> {}
 
 // The log's text without the events of the jobs `drop`; lines that are not events stay. Also how
@@ -165,7 +165,7 @@ withoutEvents(text: string, drop: Set[long]) -> (string, int)
     for line in text.lines()
         val id = json.parse(line).ok().flatMap(ev -> ev.get("id")).flatMap(v -> v.asLong())
         if id.exists(i -> drop.contains(i)) then gone += 1 else kept += line
-    (kept.mkString("\n") + (if kept.isEmpty() then "" else "\n"), gone)
+    (kept.mkString("\n") + (if kept.isEmpty then "" else "\n"), gone)
 
 // Whether `name` is a compiled step's cache name: `<base>-<32 lowercase hexadecimal digits>`.
 isStepName(name: string) -> bool
@@ -229,7 +229,7 @@ sweepSteps(home: string, now: long, ageMs: Option[long], dry: bool) -> (Vector[s
                     if !dry
                         fs.remove(program)
                         fs.remove(program + ".build.log")
-    (removed.toVector(), bytes)
+    (removed.toVector, bytes)
 
 // Removes (unless `dry`) the run directories in `<home>/runs` that belong to a job in `gone`, or
 // to no ended job of the log and no active one; their names. Directories not named by a job id stay.
@@ -249,7 +249,7 @@ sweepRuns(home: string, active: Set[long], inLog: Set[long], gone: Set[long], dr
             removed += name
             bytes += fileBytes(s"$dir/$name")
             if !dry then fs.removeDirAll(s"$dir/$name")
-    (removed.toVector(), bytes)
+    (removed.toVector, bytes)
 
 // One clean of the home `home` at `now`. `jobs` picks the jobs whose files go from the event log's
 // view; `active` are the jobs that must not be touched. Answers what was removed (or, with `dry`,
@@ -261,14 +261,14 @@ sweepHome(home: string, active: Set[long], now: long, retention: Retention, step
     // a job whose files an earlier clean removed is not picked, reported or counted again
     val withFiles = LogView(view.ended.filter(e -> fs.exists(s"$home/jobs/${e.id}.log") || fs.exists(s"$home/jobs/${e.id}.sample.txt")), view.maxId)
     val chosen = jobs(withFiles).filter(id -> !active.contains(id))
-    val gone = chosen.toSet()
+    val gone = chosen.toSet
     var bytes: long = 0
     for id in chosen
         bytes += fileBytes(s"$home/jobs/$id.log") + fileBytes(s"$home/jobs/$id.sample.txt")
         if !dry
             fs.remove(s"$home/jobs/$id.log")
             fs.remove(s"$home/jobs/$id.sample.txt")
-    val (dirs, runBytes0) = sweepRuns(home, active, view.ended.map(e -> e.id).toSet(), gone, dry)
+    val (dirs, runBytes0) = sweepRuns(home, active, view.ended.map(e -> e.id).toSet, gone, dry)
     // a typed job's copy of its type goes by the age a compiled step does (it is reported with the run directories)
     val (copies, copyBytes) = sweepSnapshots(home, now, stepsMs, dry)
     val runs = dirs ++ copies
@@ -276,13 +276,13 @@ sweepHome(home: string, active: Set[long], now: long, retention: Retention, step
     val (steps, stepBytes) = sweepSteps(home, now, stepsMs, dry)
     val drop = selectEvents(view, now, retention.eventsMs)
     var events = 0
-    if drop.nonEmpty()
+    if drop.nonEmpty
         val (trimmed, n) = withoutEvents(text, drop)
         events = n
         if n > 0
             bytes += long(text.byteLength() - trimmed.byteLength())
             if !dry then writeAtomic(log, trimmed)
-    CleanReport(dry, chosen, runs, steps, events, if events > 0 then drop.size() else 0, bytes + runBytes + stepBytes)
+    CleanReport(dry, chosen, runs, steps, events, if events > 0 then drop.size else 0, bytes + runBytes + stepBytes)
 
 // The automatic sweep.
 sweepRetained(home: string, active: Set[long], now: long, r: Retention) -> CleanReport

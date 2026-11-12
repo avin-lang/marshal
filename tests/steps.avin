@@ -105,7 +105,7 @@ runWith(steps: Vector[Step], outcomes: Vector[(string, StepOutcome)]) -> (PassEn
         ran += s.name
         outcomes.find(o -> o.0 == s.name).map(o -> o.1).getOrElse(StepPassed)
     val outcome = marshal.runSteps(steps, exec, (w: string) -> w)
-    (outcome, ran.toVector())
+    (outcome, ran.toVector)
 
 @test("next goes on, after a pass and after a failure, and past the last step the steps are green")
 transitionNext()
@@ -142,7 +142,7 @@ transitionSkipped()
 @test("a transition is the word its text expands to")
 transitionExpanded()
     val steps = [step(name = "a", onFailure = "${on-red}")]
-    val words = [("${on-red}", "bisect")].toMap()
+    val words = [("${on-red}", "bisect")].toMap
     assertEq(marshal.runSteps(steps, s -> StepFailed, (w: string) -> words.getOrElse(w, w)), Red(true, "a"))
 
 @test("green: a green gate, and steps stopped where they passed")
@@ -164,13 +164,13 @@ failures()
 // are; counts the gates run in `runs`.
 redWhen(bad: Vector[string], together: Vector[string], runs: MutableSet[string]) -> (Vector[string]) -> bool = vs ->
     runs += vs.mkString(",")
-    vs.exists(v -> bad.contains(v)) || (together.nonEmpty() && together.forall(t -> vs.contains(t)))
+    vs.exists(v -> bad.contains(v)) || (together.nonEmpty && together.forall(t -> vs.contains(t)))
 
 @test("bisection finds the one bad branch of three, trying halves")
 bisectOneOfThree()
     val runs = MutableSet[string]()
     assertEq(marshal.culprits(["a", "b", "c"], redWhen(["b"], [], runs)), (["b"], false))
-    assertEq(runs.size(), 4)
+    assertEq(runs.size, 4)
     for (bad, expected) in [("a", ["a"]), ("c", ["c"])]
         assertEq(marshal.culprits(["a", "b", "c"], redWhen([bad], [], MutableSet[string]())), (expected, false))
 
@@ -200,14 +200,14 @@ fakePass(bad: Vector[string], passes: Buffer[(Vector[string], bool)], bisect: bo
 runGreen()
     val passes = Buffer[(Vector[string], bool)]()
     assertEq(marshal.runType(true, "land", ["a", "b"], fakePass([], passes)), RunReport("green", "", ["a", "b"], "2222", [], false, []))
-    assertEq(passes.toVector(), [(["a", "b"], true)])
+    assertEq(passes.toVector, [(["a", "b"], true)])
 
 @test("a red run that does not bisect names the branches its failures blame, and nothing lands")
 runRedReport()
     val passes = Buffer[(Vector[string], bool)]()
     val fails = [Fail("t1", Some("b")), Fail("t2", None), Fail("t3", Some("elsewhere"))]
     assertEq(marshal.runType(true, "land", ["a", "b"], fakePass(["b"], passes, bisect = false, fails = fails)), RunReport("red", "test", [], "1111", ["b"], false, fails))
-    assertEq(passes.length(), 1)
+    assertEq(passes.length, 1)
     // and where the type has no bisection, a request for one is a report
     assertEq(marshal.runType(false, "land", ["a", "b"], fakePass(["b"], Buffer[(Vector[string], bool)]())).culprits, [])
 
@@ -217,7 +217,7 @@ runBisect()
     val r = marshal.runType(true, "land", ["a", "b", "c"], fakePass(["b"], passes))
     assertEq(r, RunReport("red", "test", ["a", "c"], "2222", ["b"], false, []))
     // the first pass, the bisection's four, which never land, and the last over what is left
-    assertEq(passes.toVector(), [(["a", "b", "c"], true), (["a"], false), (["b", "c"], false), (["b"], false), (["c"], false), (["a", "c"], true)])
+    assertEq(passes.toVector, [(["a", "b", "c"], true), (["a"], false), (["b", "c"], false), (["b"], false), (["c"], false), (["a", "c"], true)])
 
 @test("failures that all name a branch blame it without a bisection")
 runNamedFailures()
@@ -226,11 +226,11 @@ runNamedFailures()
     val r = marshal.runType(true, "land", ["a", "b", "c"], fakePass(["c"], passes, fails = fails))
     assertEq(r.culprits, ["c"])
     assertEq(r.landed, ["a", "b"])
-    assertEq(passes.toVector(), [(["a", "b", "c"], true), (["a", "b"], true)])
+    assertEq(passes.toVector, [(["a", "b", "c"], true), (["a", "b"], true)])
     // one failure that names no branch, or one outside the batch, means a bisection after all
     val again = Buffer[(Vector[string], bool)]()
     marshal.runType(true, "land", ["a", "b", "c"], fakePass(["c"], again, fails = [Fail("t1", Some("c")), Fail("t2", None)]))
-    assert(again.length() > 2)
+    assert(again.length > 2)
 
 @test("when every branch is to blame nothing is gated again, and when the rest fail too nothing lands")
 runAllBad()
@@ -281,7 +281,7 @@ reports()
     assertEq(j("type").asString(), Some("train"))
     assertEq(j("result").asString(), Some("red"))
     assertEq(j("step").asString(), Some("test"))
-    assertEq(j("landed").asVector().get().length(), 2)
+    assertEq(j("landed").asVector().get().length, 2)
     assertEq(j("culprits")(0).asString(), Some("b"))
     assertEq(j("together").asBool(), Some(false))
     assertEq(j("fails")(1)("branch").isNull(), true)

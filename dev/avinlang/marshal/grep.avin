@@ -51,7 +51,7 @@ private class Grepper(private val spec: GrepSpec, private val hit: (string) -> R
         if found
             matches += 1
             if !spec.countOnly
-                while !held.isEmpty()
+                while !held.isEmpty
                     val (k, l) = held.removeHead()
                     show(k, l, false)
                 show(n, line, true)
@@ -61,7 +61,7 @@ private class Grepper(private val spec: GrepSpec, private val hit: (string) -> R
             afterLeft -= 1
         elif spec.before > 0 && !spec.countOnly
             held.append((n, line))
-            if held.length() > spec.before then held.removeHead()
+            if held.length > spec.before then held.removeHead()
         Ok(())
 
     // Prints a line, with `--` first where it does not follow the last one printed.
@@ -97,10 +97,10 @@ grepVector(lines: Vector[string], hit: (string) -> Result[bool, MatchError], spe
     val out = Buffer[string]()
     var i = 0
     val next = () ->
-        if i < lines.length()
+        if i < lines.length
             i += 1
             Ok(Some(lines(i - 1)))
         else
             Ok(None)
     val count = grepLines(next, 1, hit, spec, l -> out.addOne(l)).getOrElse(0)
-    (count, out.toVector())
+    (count, out.toVector)

@@ -114,7 +114,7 @@ endedLine(ts: long, id: long, label: string, how: Outcome = Outcome.Exited(0)) -
 @test("history reads each job's label from its ending event, and filters by a part of it, case as written")
 labelHistoryFilter()
     val l = ledgerOf([endedLine(1000, 1, "train 209"), endedLine(2000, 2, ""), endedLine(3000, 3, "train 210, take 2"), endedLine(4000, 4, "Release 0.2.4", Outcome.Exited(1))])
-    assertEq(l.ends.toVector().map(e -> e.label), ["train 209", "", "train 210, take 2", "Release 0.2.4"])
+    assertEq(l.ends.toVector.map(e -> e.label), ["train 209", "", "train 210, take 2", "Release 0.2.4"])
     val pick = (text: string) -> marshal.selectEnded(l, HistoryFilter(None, None, false, Some(text)), 20).map(e -> e.id)
     assertEq(pick("train"), [long(3), long(1)])
     assertEq(pick("209"), [long(1)])
@@ -131,12 +131,12 @@ labelHistoryPrinting()
     val zone = time.utc
     val plain = ledgerOf([endedLine(1000, 1, ""), endedLine(2000, 2, "")])
     val withOut = marshal.historyListing(marshal.selectEnded(plain, HistoryFilter(None, None, false), 20), zone)
-    val bare = withOut.lines().toVector()
+    val bare = withOut.lines().toVector
     assert(bare(0).endsWith("LABEL") && bare(0).contains("ENDED"), bare(0))
-    assertEq(bare.length(), 3)
+    assertEq(bare.length, 3)
     assert(!bare(1).contains("train"), bare(1))
     val l =ledgerOf([endedLine(1000, 1, "train 209"), endedLine(2000, 2, "")])
-    val shown = marshal.historyListing(marshal.selectEnded(l, HistoryFilter(None, None, false), 20), zone).lines().toVector()
+    val shown = marshal.historyListing(marshal.selectEnded(l, HistoryFilter(None, None, false), 20), zone).lines().toVector
     assert(shown(0).startsWith("ID  KIND") && shown(0).endsWith("LABEL") && shown(0).contains("ENDED"), shown(0))
     assertEq(shown(0).indexOf("LABEL"), shown(2).indexOf("train 209"))
     assert(shown(2).endsWith("train 209"), shown(2))
@@ -145,7 +145,7 @@ labelHistoryPrinting()
     assertEq(onlyPlain, "marshal: no ended jobs match")
     val json = marshal.historyJson(marshal.selectEnded(l, HistoryFilter(None, None, false), 20), 0).render()
     assert(json.contains("\"label\":\"train 209\""), json)
-    assertEq(json.split("\"label\"").length(), 2)
+    assertEq(json.split("\"label\"").length, 2)
 
 @test("history and stats take --label, and refuse it with no text")
 labelHistoryOptions()
@@ -208,10 +208,10 @@ labelOptions()
 
 @test("ls always has a LABEL column before COMMAND, empty for a job without a label")
 labelListing()
-    val none = marshal.listing([labelled(1, ""), labelled(2, "")]).lines().toVector()
+    val none = marshal.listing([labelled(1, ""), labelled(2, "")]).lines().toVector
     assertEq(none(0), "ID  STATE    KIND   UNITS  RESV  STARTED  ELAPSED  LABEL  COMMAND")
     assertEq(none(1).indexOf("sleep 30"), none(0).indexOf("COMMAND"))
-    val rows = marshal.listing([labelled(1, "train 209"), labelled(2, ""), labelled(30, "a longer label")]).lines().toVector()
+    val rows = marshal.listing([labelled(1, "train 209"), labelled(2, ""), labelled(30, "a longer label")]).lines().toVector
     assert(rows(0).contains("ELAPSED  LABEL"), rows(0))
     assert(rows(0).endsWith("LABEL           COMMAND"), rows(0))
     assertEq(rows(1).indexOf("train 209"), rows(0).indexOf("LABEL"))
@@ -224,7 +224,7 @@ labelColumnWidth()
     val base = top.columnsFor(120, 7)
     val withLabel = top.withLabelColumn(base)
     assertEq(withLabel.map(c -> c.title).takeRight(2), ["LABEL", "COMMAND"])
-    assertEq(withLabel.length(), base.length() + 1)
+    assertEq(withLabel.length, base.length + 1)
     val cells = [Span("1"), Span("cmd")]
     // the label is whole in its cell: the table sizes the column to the longest and cuts it with an ellipsis
     assertEq(top.withLabelCell(cells, "a long label"), [Span("1"), Span("a long label"), Span("cmd")])
@@ -255,11 +255,11 @@ labelWideCharacters()
 labelCells(label: string, width: int) -> int
     val base = top.columnsFor(width, 7)
     val withLabel = top.withLabelColumn(base)
-    Table(withLabel).widths(width, [top.withLabelCell(base.map(c -> Span("x")), label)])(withLabel.length() - 2)
+    Table(withLabel).widths(width, [top.withLabelCell(base.map(c -> Span("x")), label)])(withLabel.length - 2)
 
 // An overview of the jobs given, all running.
 overviewOf(jobs: Vector[JobInfo]) -> Overview =
-    Overview(Usage(1, 12, 0, 4294967296, jobs.length(), 0, None, None), 1000, jobs, [], [])
+    Overview(Usage(1, 12, 0, 4294967296, jobs.length, 0, None, None), 1000, jobs, [], [])
 
 @test("top draws LABEL before COMMAND on a wide screen, elided to its column, and with empty cells when no job has a label")
 labelTopTable()

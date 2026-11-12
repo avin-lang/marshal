@@ -34,7 +34,7 @@ groupsOf(home: string, id: long, pgid: long) -> Vector[long]
 
 // The resident bytes of all of job `id`'s processes: those of its own group and of its step's.
 jobResident(home: string, id: long, pgid: long) -> long =
-    groupsOf(home, id, pgid).map(g -> groupResident(g)).sum()
+    groupsOf(home, id, pgid).map(g -> groupResident(g)).sum
 
 // Signals every group of job `id`; the errors of a group nobody is in are not an error.
 signalGroups(home: string, id: long, pgid: long, sig: int)

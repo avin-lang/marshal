@@ -113,7 +113,7 @@ waits(budget: Budget, running: Vector[Started], queue: Vector[Waiting], now: lon
     for (w, position) in queue.zip(positions)
         val why = decided.find(d -> d.id == w.id).flatMap(d -> d.why).getOrElse(Starting)
         out += (w.id, position, why)
-    out.toVector()
+    out.toVector
 
 // Each job's place in its own lane's queue (from 1), in the order of `queue`: the landing lane, the
 // quick lane and the development jobs each count their own.
@@ -132,7 +132,7 @@ lanePositions(queue: Vector[Waiting]) -> Vector[int]
         else
             others += 1
             out += others
-    out.toVector()
+    out.toVector
 
 // The ticket the daemon keeps among take-slot's waiters, as (arrival, units), or None when nothing
 // of marshal's waits. While a landing job drains the machine, its ticket goes ahead of every
@@ -145,7 +145,7 @@ ticketFor(budget: Budget, running: Vector[Started], queue: Vector[Waiting], now:
     val weighed = upToExclusive(queue)
     drainer match
         Some(w) ->
-            val first = outside.waiting.map(t -> t.arrived).minOption()
+            val first = outside.waiting.map(t -> t.arrived).minOption
             Some((first.filter(a -> a <= w.arrived).map(a -> a - 1).getOrElse(w.arrived), w.units))
         None -> waitedPast(weighed, fair).orElse(weighed.find(w -> !w.landing && !w.quick)).map(w -> (w.arrived, w.units))
 
@@ -171,7 +171,7 @@ private decide(budget: Budget, running: Vector[Started], queue: Vector[Waiting],
     // An exclusive job running holds every lane: whatever waits, waits for it.
     for x in running.find(r -> r.exclusive)
         for w in queue do out += Decision(w.id, Some(ForExclusive(x.id)))
-        return out.toVector()
+        return out.toVector
     // The first exclusive job in queue order, if one waits; the jobs decided as usual are those ahead
     // of it and the landing jobs (`weighed`), and take-slot's waiters that arrived before it.
     val exclusive = queue.find(w -> w.exclusive && !w.landing)
@@ -209,7 +209,7 @@ private decide(budget: Budget, running: Vector[Started], queue: Vector[Waiting],
             out += Decision(w.id, Some(if outside.landing then ForTakeSlot else LaneBusy))
         elif draining.isDefined()
             out += Decision(w.id, draining.map(id -> Behind(id)))
-        elif memory + w.memory <= budget.memory || running.isEmpty()
+        elif memory + w.memory <= budget.memory || running.isEmpty
             out += Decision(w.id, None)
             laneBusy = true
             memory += w.memory
@@ -223,7 +223,7 @@ private decide(budget: Budget, running: Vector[Started], queue: Vector[Waiting],
     for id in draining
         for w in queue.filter(w -> !w.landing)
             out += Decision(w.id, Some(Behind(id)))
-        return out.toVector()
+        return out.toVector
     memory = quickLane(budget, weighed, now, quicks, memory, ends, sure, out)
     // When the blocked head of the queue can start, and which job it is (None for a take-slot
     // waiter); None while the head has not been met.
@@ -292,12 +292,12 @@ private decide(budget: Budget, running: Vector[Started], queue: Vector[Waiting],
         // it waits behind a job ahead of it that waits, then for the machine to empty, then for the load
         val ahead = out.find(d -> d.why.isDefined() && weighed.exists(w -> w.id == d.id && !w.landing))
         // take-slot's waiters that arrived before it go before it, as take-slot admits them
-        val busy = running.nonEmpty() || out.exists(d -> d.why.isEmpty()) || outside.units > 0 || outside.landing || tickets.nonEmpty()
+        val busy = running.nonEmpty || out.exists(d -> d.why.isEmpty()) || outside.units > 0 || outside.landing || tickets.nonEmpty
         val why = if ahead.isDefined() then ahead.map(d -> Behind(d.id)) elif busy then Some(Emptying) else x.unsettled
         out += Decision(x.id, why)
         for w in queue
             if !w.landing && w.id != x.id && !weighed.exists(v -> v.id == w.id) then out += Decision(w.id, Some(ForExclusive(x.id)))
-    out.toVector()
+    out.toVector
 
 // Decides the quick lane's jobs into `out`, `quicks` of them running, beside `memory` in use, and
 // answers the memory in use after them: what the quick jobs it starts take, and what the first one
@@ -366,14 +366,14 @@ private arrivalOrder(queue: Vector[Waiting], tickets: Vector[Ticket]) -> Vector[
     var t = 0
     for w in queue
         if w.landing || w.quick then continue
-        while t < sorted.length() && sorted(t).arrived <= w.arrived
+        while t < sorted.length && sorted(t).arrived <= w.arrived
             out += Entry(None, sorted(t).units, 0, 0)
             t += 1
         out += Entry(Some(w), w.units, w.memory, w.expectedMs)
-    while t < sorted.length()
+    while t < sorted.length
         out += Entry(None, sorted(t).units, 0, 0)
         t += 1
-    out.toVector()
+    out.toVector
 
 // The earliest time `units` and `memory` more fit, if the jobs in `ends` end when they are expected to.
 private whenFits(budget: Budget, used: int, memory: long, units: int, needs: long, ends: Buffer[(long, int, long)]) -> long

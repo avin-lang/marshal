@@ -202,7 +202,7 @@ private savedJobs(j: Json, key: string) -> Result[Vector[SavedJob], string]
         None -> return Err(s"`$key` is not an array")
     val out = Buffer[SavedJob]()
     for item in items do out += decodeSavedJob(item)?
-    Ok(out.toVector())
+    Ok(out.toVector)
 
 // The state in `saved`, or why it cannot be read.
 decodeState(saved: string) -> Result[SavedState, string]

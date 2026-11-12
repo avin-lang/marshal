@@ -106,8 +106,8 @@ listing(jobs: Vector[JobInfo], whys: Vector[(long, Why)] = []) -> string
         elapsedColumn(j, j.elapsedMs),
         j.label,
         j.cmd.mkString(" ")])
-    val last = rows(0).length() - 1
-    val widths = (0..<last).map(c -> rows.map(r -> r(c).charCount()).max())
+    val last = rows(0).length - 1
+    val widths = (0..<last).map(c -> rows.map(r -> r(c).charCount()).max)
     rows.map(r -> (0..<last).map(c -> r(c).padEnd(widths(c), ' ')).mkString("  ") + "  " + r(last)).mkString("\n")
 
 // A job's kind as a listing shows it, marked with its lane: `*` after a landing job's, `^` after a

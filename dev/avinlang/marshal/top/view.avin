@@ -168,7 +168,7 @@ showsPeak(width: int) -> bool = width >= PeakWidth
 // STARTED is 7 wide (its heading and `hh:mm`), or 11 where a shown job started on another day.
 columnsFor(width: int, startedWidth: int) -> Vector[Column]
     if showsPeak(width) then return columns
-    val narrow = columns.slice(0, PeakColumn) ++ columns.slice(PeakColumn + 1, columns.length())
+    val narrow = columns.slice(0, PeakColumn) ++ columns.slice(PeakColumn + 1, columns.length)
     narrow.map(c -> if c.title == "STARTED" then Column("STARTED", startedWidth) else c)
 
 // A measured size for the RSS and PEAK columns: `-` where nothing was measured.
@@ -194,7 +194,7 @@ cells(l: Line, since: long, zone: time.Zone, today: string, width: int) -> Vecto
         styled(deadlineOf(l, since)),
         Span(j.cmd.mkString(" "))
     ]
-    if showsPeak(width) then all else all.slice(0, PeakColumn) ++ all.slice(PeakColumn + 1, all.length())
+    if showsPeak(width) then all else all.slice(0, PeakColumn) ++ all.slice(PeakColumn + 1, all.length)
 
 // The LABEL column: as wide as the longest label drawn, measured in display cells, between its heading
 // and `LabelCap`, cut with an ellipsis; always drawn, empty for a job without a label, except where the
@@ -202,11 +202,11 @@ cells(l: Line, since: long, zone: time.Zone, today: string, width: int) -> Vecto
 val LabelColumn: Column = Column("LABEL", 0, min = LabelMin, max = LabelCap, fit = true)
 
 // The columns `base` (the last of them COMMAND) with LABEL put before COMMAND.
-withLabelColumn(base: Vector[Column]) -> Vector[Column] = base.slice(0, base.length() - 1) ++ [LabelColumn, base(base.length() - 1)]
+withLabelColumn(base: Vector[Column]) -> Vector[Column] = base.slice(0, base.length - 1) ++ [LabelColumn, base(base.length - 1)]
 
 // A row of `cells` with the label put before the command, the last cell; empty for a job without a
 // label, which the table still draws at its heading's width.
-withLabelCell(cells: Vector[Span], label: string) -> Vector[Span] = cells.slice(0, cells.length() - 1) ++ [Span(label), cells(cells.length() - 1)]
+withLabelCell(cells: Vector[Span], label: string) -> Vector[Span] = cells.slice(0, cells.length - 1) ++ [Span(label), cells(cells.length - 1)]
 
 // How long, in milliseconds, the selected row stays highlighted after the last key.
 val IdleHideMs: long = 5000
@@ -271,7 +271,7 @@ class App(val sock: string)
         // the list scrolled back through has no hole
         for before in overview
             if olderLeft.isDefined()
-                val now = (o.recent ++ o.running ++ o.waiting ++ o.queued.map(q -> q.job)).map(j -> j.id).toSet()
+                val now = (o.recent ++ o.running ++ o.waiting ++ o.queued.map(q -> q.job)).map(j -> j.id).toSet
                 older = before.recent.filter(j -> !now.contains(j.id)) ++ older
         overview = Some(o)
         problem = None
@@ -289,11 +289,11 @@ class App(val sock: string)
     // the first line selected, so it goes on showing the newest jobs as more arrive above.
     private refresh()
         val live = overview.map(o -> lines(o, filter)).getOrElse([])
-        shown = if admitsHistory(filter) && older.nonEmpty() then live ++ earlier(live) else live
+        shown = if admitsHistory(filter) && older.nonEmpty then live ++ earlier(live) else live
         val at = selectedId match
             Some(id) -> if followsTop then 0 else shown.indexWhere(l -> l.job.id == id)
             None -> if followsTop then 0 else -1
-        table.select(if at >= 0 then at else table.selected, shown.length())
+        table.select(if at >= 0 then at else table.selected, shown.length)
         remember()
         for j in logOf
             for o in overview
@@ -302,7 +302,7 @@ class App(val sock: string)
 
     // The loaded earlier jobs as lines, leaving out any that `live` already lists.
     private earlier(live: Vector[Line]) -> Vector[Line]
-        val ids = live.map(l -> l.job.id).toSet()
+        val ids = live.map(l -> l.job.id).toSet
         older.filter(j -> !ids.contains(j.id)).map(j -> Line(j, None))
 
     // Whether scrolling past the last line may load earlier jobs: there is a history, the filter lists
@@ -316,30 +316,30 @@ class App(val sock: string)
         val source = history match
             Some(s) -> s
             None -> return 0
-        val before = shown.length()
+        val before = shown.length
         val ended = shown.filter(l -> l.job.outcome.isDefined())
-        var cursor = if older.nonEmpty() then older.lastOption().map(j -> j.id) else ended.lastOption().map(l -> l.job.id)
+        var cursor = if older.nonEmpty then older.lastOption.map(j -> j.id) else ended.lastOption.map(l -> l.job.id)
         loop
             if olderLeft == Some(0) then break
             source(cursor, HistoryPageSize) match
                 Ok(p) ->
-                    val listed = (shown.map(l -> l.job.id) ++ older.map(j -> j.id)).toSet()
+                    val listed = (shown.map(l -> l.job.id) ++ older.map(j -> j.id)).toSet
                     older = older ++ p.jobs.filter(j -> !listed.contains(j.id))
                     olderLeft = Some(p.left)
                     refresh()
-                    if shown.length() > before || p.jobs.isEmpty() then break
-                    cursor = p.jobs.lastOption().map(j -> j.id)
+                    if shown.length > before || p.jobs.isEmpty then break
+                    cursor = p.jobs.lastOption.map(j -> j.id)
                 Err(why) ->
                     message = s"cannot read earlier jobs: $why"
                     break
-        shown.length() - before
+        shown.length - before
 
     private remember()
         selectedId = selected().map(j -> j.id)
 
     // The job selected, if any.
     selected() -> Option[JobInfo] =
-        if 0 <= table.selected < shown.length() then Some(shown(table.selected).job) else None
+        if 0 <= table.selected < shown.length then Some(shown(table.selected).job) else None
 
     // The log the pane wants and how many of its last lines: enough to fill the pane at its scroll.
     logWanted() -> Option[(string, int)] = logOf.map(j -> (j.log, logRows + logBack()))
@@ -419,20 +419,20 @@ class App(val sock: string)
         Stay
 
     // Whether the selection is on the last line, or there are none.
-    private atBottom() -> bool = table.selected >= shown.length() - 1
+    private atBottom() -> bool = table.selected >= shown.length - 1
 
     // Down or PgDn on the last line: the next page of earlier jobs, the selection on the first of them.
     private scrollBack() -> Action
-        val first = shown.length()
+        val first = shown.length
         if pageable() && loadPage() > 0 then return moveTo(first)
         if history.isDefined() && admitsHistory(filter) && message.isEmpty() then message = "no earlier jobs"
-        moveTo(shown.length() - 1)
+        moveTo(shown.length - 1)
 
     // End: the oldest job, every page of earlier jobs loaded first.
     private oldest() -> Action
         while pageable() && loadPage() > 0
             ()
-        moveTo(shown.length() - 1)
+        moveTo(shown.length - 1)
 
     private askKill() -> Action
         selected() match
@@ -462,7 +462,7 @@ class App(val sock: string)
     private move(n: int) -> Action = moveTo(table.selected + n)
 
     private moveTo(i: int) -> Action
-        table.select(i, shown.length())
+        table.select(i, shown.length)
         followsTop = table.selected == 0
         remember()
         // the pane follows the selection
@@ -510,7 +510,7 @@ class App(val sock: string)
     // What the bottom line says of the table's scroll with `visible` rows for lines: which lines show,
     // of how many, while they do not all fit or earlier jobs may be loaded; "" otherwise.
     positionOf(visible: int) -> string
-        val count = shown.length()
+        val count = shown.length
         if count == 0 || (count <= visible && !pageable()) then return ""
         val first = table.offset + 1
         val last = minInt(table.offset + maxInt(visible, 1), count)
@@ -533,7 +533,7 @@ class App(val sock: string)
         // the lines read are the last `logRows + logBack()` of the log, or all of a shorter one: the
         // pane shows those that end `logBack()` lines before the last
         logView.draw(g, inside, logLines)
-        if logLines.isEmpty() then g.text(inside.x, inside.y, "(nothing in the log yet)", Style.fg(BrightBlack), inside)
+        if logLines.isEmpty then g.text(inside.x, inside.y, "(nothing in the log yet)", Style.fg(BrightBlack), inside)
 
     // The fixed header of the log pane: the job's kind, with its label if it has one beside it, and its whole command line, wrapped to the
     // pane, labels in bold and values dim, then a rule; the log scrolls below it, so none of this
@@ -550,24 +550,24 @@ class App(val sock: string)
         val labelX = kindEnd + LabelGap + LabelWord.charCount()
         val labelLines = if j.label.isEmpty() then [] else wrapChars(j.label,maxInt(box.x + box.w - labelX, 1))
         val labelShown = labelLines.take(maxInt(box.h - 3, 1))
-        val extra = maxInt(labelShown.length() - 1, 0)
+        val extra = maxInt(labelShown.length - 1, 0)
         // kind, the label's further rows, the rule and at least one log row leave this many for the command
         val room = maxInt(box.h - 3 - extra, 0)
-        val shownLines = if lines.length() <= room then lines else lines.take(room)
-        val clipped = lines.length() > shownLines.length()
+        val shownLines = if lines.length <= room then lines else lines.take(room)
+        val clipped = lines.length > shownLines.length
         g.text(box.x, box.y, "kind", Style.plain().with(Bold), box)
         g.text(box.x + LogLabel.charCount(), box.y, j.kind, Style.fg(BrightBlack), box)
-        if labelShown.nonEmpty()
+        if labelShown.nonEmpty
             g.text(kindEnd + LabelGap, box.y, LabelWord.trim(), Style.plain().with(Bold), box)
-        for (text, k) in labelShown.zipWithIndex()
+        for (text, k) in labelShown.zipWithIndex
             g.text(labelX, box.y + k, text, Style.fg(BrightBlack), box)
         val top = box.y + 1 + extra
-        for (text, k) in shownLines.zipWithIndex()
-            val last = clipped && k == shownLines.length() - 1
+        for (text, k) in shownLines.zipWithIndex
+            val last = clipped && k == shownLines.length - 1
             val t = if last && text.charCount() > 1 then text.take(text.charCount() - 1) + "…" elif last then "…" else text
             if k == 0 then g.text(box.x, top, "command", Style.plain().with(Bold), box)
             g.text(box.x + LogLabel.charCount(), top + k, t, Style.fg(BrightBlack), box)
-        val ruleY = top + maxInt(shownLines.length(), 1)
+        val ruleY = top + maxInt(shownLines.length, 1)
         g.hline(box.x, ruleY, box.w, Style.fg(Cyan), clip = box)
         ruleY - box.y + 1
 
@@ -605,10 +605,10 @@ class Help(): Modal
         var widest = 0
         for l in helpLines
             if textWidth(l) > widest then widest = textWidth(l)
-        (minInt(widest + 2, maxWidth), minInt(helpLines.length(), maxHeight))
+        (minInt(widest + 2, maxWidth), minInt(helpLines.length, maxHeight))
 
     override draw(g: Grid, r: Rect)
-        for (l, i) in helpLines.zipWithIndex()
+        for (l, i) in helpLines.zipWithIndex
             g.text(r.x + 1, r.y + i, l, Style.plain(), r)
 
     override handle(e: Event) -> bool = false

@@ -124,7 +124,7 @@ hintE2e()
     val r = split(home, "submit", "--kind", "tiny", "--", "true")
     assertEq(r.code, 0)
     assert(r.err.contains("marshal: hint: `tiny` jobs took") && r.err.contains("--quick starts one at once"), r.err)
-    assertEq(r.err.lines().filter(l -> l.nonEmpty()).length(), 1)
+    assertEq(r.err.lines().filter(l -> l.nonEmpty()).length, 1)
     // the id alone stays on standard output
     assert(r.out.trim().toLongOption().isDefined(), r.out)
     // the job is not moved into the lane

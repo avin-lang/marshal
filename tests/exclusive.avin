@@ -77,7 +77,7 @@ exclNoStarvation()
     val running = [xRun(1, 1)]
     // small jobs keep arriving behind it while job 1 runs; none starts
     for n in 3 ..< 10
-        val q = [xExcl(2)] ++ (3 .. n).map(i -> if i % 2 == 0 then xQuick(long(i)) else xDev(long(i))).toVector()
+        val q = [xExcl(2)] ++ (3 .. n).map(i -> if i % 2 == 0 then xQuick(long(i)) else xDev(long(i))).toVector
         assertEq(marshal.schedule(xb, running, q, 0), [])
     // job 1 ends: the exclusive job starts, and the stream still waits
     val q = [xExcl(2), xDev(3), xQuick(4)]

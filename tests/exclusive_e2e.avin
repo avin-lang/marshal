@@ -25,7 +25,7 @@ allStartedAfter(home: string, ids: Vector[long], x: long, ending: string = "fini
 
 // The lines marshal wrote into job `id`'s log as an exclusive job.
 sampleLinesOf(home: string, id: long) -> Vector[string] =
-    fs.readText(s"$home/jobs/$id.log").getOrElse("").lines().filter(l -> l.startsWith(marshal.ExclusiveMark)).toVector()
+    fs.readText(s"$home/jobs/$id.log").getOrElse("").lines().filter(l -> l.startsWith(marshal.ExclusiveMark)).toVector
 
 @test("an exclusive job waits for the running jobs of every lane, emptying, stops none of them, and starts once they have all ended")
 exclE2eWaitsForEveryLane()
@@ -69,7 +69,7 @@ exclE2eHoldsEveryLane()
     assertEq(m(home, "wait", q.toString()).code, 0)
     assert(allStartedAfter(home, [d, q, l], x), events(home).map(e -> e.render()).mkString("\n"))
     // not niced, as a landing job is not
-    val niceOf = (id: long) -> fs.readText(s"$home/jobs/$id.log").ok().get().lines().filter(t -> !t.startsWith(marshal.ExclusiveMark)).toVector()(0).trim().toInt()
+    val niceOf = (id: long) -> fs.readText(s"$home/jobs/$id.log").ok().get().lines().filter(t -> !t.startsWith(marshal.ExclusiveMark)).toVector(0).trim().toInt()
     assertEq(niceOf(x), niceOf(l))
     cleanUp(home)
 
@@ -106,7 +106,7 @@ exclE2eNoStarvation()
     for id in stream do assertEq(whyOf(home, id).getOrElse(Why.Starting), Why.ForExclusive(x))
     for id in stream do assertEq(m(home, "wait", id.toString()).code, 0)
     assert(at(home, a, "finished") < at(home, x, "started"))
-    assert(allStartedAfter(home, stream.toVector(), x), events(home).map(e -> e.render()).mkString("\n"))
+    assert(allStartedAfter(home, stream.toVector, x), events(home).map(e -> e.render()).mkString("\n"))
     cleanUp(home)
 
 @test("--quiet-load waits while the load is at or above it, waits the window again when it rises before the window ends, and starts once it stays below")
@@ -162,10 +162,10 @@ exclE2eSamplesFromTable()
     assertEq(m(home, "wait", x.toString()).code, 0)
     // at its start, then at the daemon's once-a-second look once the interval has passed
     val lines = sampleLinesOf(home, x)
-    assert(lines.length() >= 2, lines.mkString("\n"))
+    assert(lines.length >= 2, lines.mkString("\n"))
     for line in lines do assertEq(line, "marshal exclusive: load 1.5 1.25 1; busiest outside marshal: outsider 4242 55.5%, launchd 1 0.5%")
     // the first is written before the job's own output
-    val log = fs.readText(s"$home/jobs/$x.log").ok().get().lines().toVector()
+    val log = fs.readText(s"$home/jobs/$x.log").ok().get().lines().toVector
     assert(log(0).startsWith(marshal.ExclusiveMark) && log.contains("out"), log.mkString("\n"))
     // a job that is not exclusive gets none
     val plain = submitted(home, "--", "sleep", "0.8")
@@ -183,7 +183,7 @@ exclE2eSamplesReal()
     val x = idIn(r.out)
     assertEq(m(home, "wait", x.toString()).code, 124)
     val lines = sampleLinesOf(home, x)
-    assert(lines.length() >= 2, lines.mkString("\n"))
+    assert(lines.length >= 2, lines.mkString("\n"))
     val pid = events(home).find(e -> e("id").asLong() == Some(x) && e("event").asString() == Some("started")).get()("pid").asLong().get()
     val daemon = fs.readText(home + "/daemon.pid").ok().get().trim().toLong()
     for line in lines

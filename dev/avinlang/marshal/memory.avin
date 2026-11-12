@@ -49,8 +49,8 @@ data Reservation(bytes: long, learned: bool)
 // The peak a key's history (oldest first) teaches, or None while it has too few peaks.
 learnedPeak(learning: MemoryLearning, peaks: Vector[long]) -> Option[long]
     val runs = peaks.filter(p -> p > 0).takeRight(learning.window)
-    if runs.length() < learning.minRuns || runs.isEmpty() then return None
-    val most = runs.max()
+    if runs.length < learning.minRuns || runs.isEmpty then return None
+    val most = runs.max
     val margin = most / 100 * learning.marginPercent + most % 100 * learning.marginPercent / 100
     val withMargin = if most > long.MaxValue - margin then long.MaxValue else most + margin
     if withMargin > long.MaxValue - Mebi then return Some(withMargin)
@@ -76,7 +76,7 @@ memoryDirKey(kind: string, landing: bool, dir: string) -> string = historyKey(ki
 data MemoryHistory(peaks: Vector[long], from: string)
 
 memoryHistory(learning: MemoryLearning, dirPeaks: Vector[long], kindPeaks: Vector[long]) -> MemoryHistory =
-    if dirPeaks.filter(p -> p > 0).length() >=learning.minRuns then MemoryHistory(dirPeaks, "kind+dir") else MemoryHistory(kindPeaks, "kind")
+    if dirPeaks.filter(p -> p > 0).length >=learning.minRuns then MemoryHistory(dirPeaks, "kind+dir") else MemoryHistory(kindPeaks, "kind")
 
 // Where a job's reservation came from, as `status --json` shows it in `resv_from`: `given` for a
 // memory it gave (`--mem`, `0` among them), the key its learned peak came from (`kind+dir` or

@@ -11,7 +11,7 @@ import avin.time.millis
 import json.Json
 
 // The last event of job `id`.
-lastEventOf(home: string, id: long) -> Json = events(home).filter(e -> e("id").asLong() == Some(id)).last()
+lastEventOf(home: string, id: long) -> Json = events(home).filter(e -> e("id").asLong() == Some(id)).last
 
 // Waits up to `ms` for the daemon's log to contain `text`.
 daemonSaid(home: string, text: string, ms: long) -> bool
@@ -30,7 +30,7 @@ endedQuiet(home: string, id: long, words: string)
     assertEq(last("outcome")("how").asString(), Some("quiet"))
     assertEq(last("exit").asLong(), Some(124))
     val log = fs.readText(s"$home/jobs/$id.log").getOrElse("")
-    assert(log.trim().lines().last().startsWith(s"marshal: killed after $words without output (quiet timeout)"), log)
+    assert(log.trim().lines().last.startsWith(s"marshal: killed after $words without output (quiet timeout)"), log)
 
 @test("a silent job is sampled and stopped at its quiet timeout, with the quiet outcome, while a chatty one as long is not")
 quietSilentAndChatty()
@@ -168,7 +168,7 @@ quietRefusedE2e()
         assert(t.out.contains(why), t.out)
     refusedWith(m(home, "submit", "--quiet-timeout"), "`--quiet-timeout` needs a value")
     // nothing was submitted
-    assert(events(home).isEmpty(), events(home).map(e -> e.render()).mkString("\n"))
+    assert(events(home).isEmpty, events(home).map(e -> e.render()).mkString("\n"))
     for name in ["submit", "run"]
         val help = m(home, name, "--help")
         assert(help.out.contains("--quiet-timeout <t>"), name)

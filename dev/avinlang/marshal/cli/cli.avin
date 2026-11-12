@@ -153,7 +153,7 @@ asksHelp("run-type" | "train", args) = false
 asksHelp(_, args) = args.takeWhile(a -> a != "--").exists(isHelp)
 
 private optionsAskHelp(args: Vector[string], i: int) -> bool
-optionsAskHelp(args, i) | i >= args.length() = false
+optionsAskHelp(args, i) | i >= args.length = false
 optionsAskHelp(args, i)
     | args(i) == "--" = false
     | isHelp(args(i)) = true
@@ -167,7 +167,7 @@ val Trouble: int = 2
 home() -> string = process.env("MARSHAL_HOME").getOrElse(process.homeDir().getOrElse("/") + "/.marshal")
 
 main(args: Vector[string]) -> int
-    if args.isEmpty() then return complain(usage)
+    if args.isEmpty then return complain(usage)
     val rest = args.drop(1)
     commandHelp(args(0)) match
         Some(text) if asksHelp(args(0), rest) ->
@@ -189,10 +189,10 @@ main(args: Vector[string]) -> int
         "release" -> withId(rest, id -> simple(Request.Release(id), s"marshal: job $id is released"))
         "priority" -> priority(rest)
         "pause" ->
-            if rest.isEmpty() then simple(Request.PauseQueue, "marshal: the queue is held: running jobs go on, nothing new starts")
+            if rest.isEmpty then simple(Request.PauseQueue, "marshal: the queue is held: running jobs go on, nothing new starts")
             else withId(rest, id -> simple(Request.PauseJob(id), s"marshal: job $id is paused"))
         "resume" ->
-            if rest.isEmpty() then simple(Request.ResumeQueue, "marshal: the queue is released")
+            if rest.isEmpty then simple(Request.ResumeQueue, "marshal: the queue is released")
             else withId(rest, id -> simple(Request.ResumeJob(id), s"marshal: job $id is resumed"))
         "ls" -> list()
         "status" -> rest match
@@ -205,8 +205,8 @@ main(args: Vector[string]) -> int
         "grep" -> grep(rest)
         "top" -> top(rest)
         "stop" -> stop(rest)
-        "restart" -> if rest.isEmpty() then restart() else complain("marshal: restart takes no arguments")
-        "version" -> if rest.isEmpty() then version() else complain("marshal: version takes no arguments")
+        "restart" -> if rest.isEmpty then restart() else complain("marshal: restart takes no arguments")
+        "version" -> if rest.isEmpty then version() else complain("marshal: version takes no arguments")
         "daemon" -> rest match
             [] -> daemon.run(home())
             ["--resume", file] -> daemon.run(home(), Some(file))
@@ -276,7 +276,7 @@ parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]
     var exclusive = false
     var quietLoad = 0.0
     var i = 0
-    while i < args.length()
+    while i < args.length
         val word = args(i)
         if word == "--"
             i += 1
@@ -302,7 +302,7 @@ parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]
             exclusive = true
             i += 1
             continue
-        if i + 1 >= args.length() then return Err(s"`$word` needs a value")
+        if i + 1 >= args.length then return Err(s"`$word` needs a value")
         val value = args(i + 1)
         word match
             "--kind" ->
@@ -339,13 +339,13 @@ parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]
             _ -> return Err(s"no option `$word`")
         i += 2
     val cmd = args.drop(i)
-    if cmd.isEmpty() then return Err("no command to run: give it after `--`")
+    if cmd.isEmpty then return Err("no command to run: give it after `--`")
     marshal.externalRefusal(external, memoryGiven) match
         Some(why) -> return Err(why)
         None -> ()
     val k = kind.getOrElse(if cmd.exists(w -> w == "test") then "test" else "build")
     val spec = JobSpec(k, units.getOrElse(marshal.defaultUnits(k)), memory, landing, workDir, deadline, cmd, env, urgent,
-        after.toVector().distinct(), afterMode == Some("--after-any"), retries, retryDelay, memoryGiven, label, quiet, external, quick, exclusive, quietLoad)
+        after.toVector.distinct, afterMode == Some("--after-any"), retries, retryDelay, memoryGiven, label, quiet, external, quick, exclusive, quietLoad)
     for why in marshal.exclusiveRefusal(spec) do return Err(why)
     Ok(spec)
 
@@ -361,11 +361,11 @@ parseIds(text: string) -> Result[Vector[long], string]
         word.trim().toLongOption() match
             Some(id) if id >= 1 -> ids += id
             _ -> return Err(s"`$word` is not a job id")
-    Ok(ids.toVector())
+    Ok(ids.toVector)
 
 submit(args: Vector[string], andWait: bool) -> int
     val dir = process.currentDir().getOrElse(".")
-    val env = process.environment().toVector().sortBy(e -> e.0)
+    val env = process.environment().toVector.sortBy(e -> e.0)
     val spec = parseSubmission(args, dir, env) match
         Ok(s) -> s
         Err(e) -> return complain(s"marshal: $e")
@@ -397,10 +397,10 @@ waitJob(args: Vector[string]) -> int
     var id: Option[long] = None
     var timeout: Option[long] = None
     var i = 0
-    while i < args.length()
+    while i < args.length
         args(i) match
             "--timeout" ->
-                if i + 1 >= args.length() then return complain("marshal: --timeout needs a value")
+                if i + 1 >= args.length then return complain("marshal: --timeout needs a value")
                 if timeout.isDefined() then return complain("marshal: --timeout is given twice")
                 val value = args(i + 1)
                 timeout = marshal.parseDeadline(value) match
@@ -465,10 +465,10 @@ waitUntil(args: Vector[string]) -> int
     var timeout: Option[long] = None
     var since: Option[marshal.Since] = None
     var i = 0
-    while i < args.length()
+    while i < args.length
         args(i) match
             "--until" | "--timeout" | "--since" ->
-                if i + 1 >= args.length() then return complain(s"marshal: ${args(i)} needs a value")
+                if i + 1 >= args.length then return complain(s"marshal: ${args(i)} needs a value")
                 val value = args(i + 1)
                 args(i) match
                     "--until" ->
@@ -519,13 +519,13 @@ events(args: Vector[string]) -> int
     var since = marshal.Since(None, None)
     var filter: Option[string] = None
     var i = 0
-    while i < args.length()
+    while i < args.length
         args(i) match
             "--follow" | "-f" ->
                 follow = true
                 i += 1
             "--since" ->
-                if i + 1 >= args.length() then return complain("marshal: --since needs a time")
+                if i + 1 >= args.length then return complain("marshal: --since needs a time")
                 since = marshal.parseSince(args(i + 1), time.now().epochMillis()) match
                     Ok(s) -> s
                     Err(e) -> return complain(s"marshal: $e")
@@ -756,12 +756,12 @@ tail(args: Vector[string]) -> int
     var count = 20
     var id: Option[long] = None
     var i = 0
-    while i < args.length()
+    while i < args.length
         args(i) match
             "-f" -> follow = true
             "-n" ->
                 i += 1
-                if i >= args.length() then return complain("marshal: -n needs a number of lines")
+                if i >= args.length then return complain("marshal: -n needs a number of lines")
                 args(i).toIntOption() match
                     Some(n) if n >= 0 -> count = n
                     _ -> return complain(s"marshal: `${args(i)}` is not a number of lines")
@@ -828,7 +828,7 @@ grep(args: Vector[string]) -> int
     val words = Buffer[string]()
     var i = 0
     var optionsOver = false
-    while i < args.length()
+    while i < args.length
         val word = args(i)
         if optionsOver || !word.startsWith("-") || word == "-"
             words.addOne(word)
@@ -842,19 +842,19 @@ grep(args: Vector[string]) -> int
                 "-F" -> fixed = true
                 "-m" | "--last" ->
                     i += 1
-                    if i >= args.length() then return complain(s"marshal: grep: $word needs a number")
+                    if i >= args.length then return complain(s"marshal: grep: $word needs a number")
                     args(i).toLongOption() match
                         Some(n) if n >= 0 -> if word == "-m" then maxMatches = Some(n) else last = Some(n)
                         _ -> return complain(s"marshal: grep: `${args(i)}` is not a number for $word")
                 "-A" | "-B" | "-C" ->
                     i += 1
-                    if i >= args.length() then return complain(s"marshal: grep: $word needs a number of lines")
+                    if i >= args.length then return complain(s"marshal: grep: $word needs a number of lines")
                     args(i).toIntOption() match
                         Some(n) if n >= 0 -> if word == "-A" then after = Some(n) elif word == "-B" then before = Some(n) else context = Some(n)
                         _ -> return complain(s"marshal: grep: `${args(i)}` is not a number of lines for $word")
                 _ -> return complain(s"marshal: grep: no option `$word`; use -- before a pattern that begins with -")
         i += 1
-    if words.length() != 2 then return complain("marshal: grep takes a job id and a pattern")
+    if words.length != 2 then return complain("marshal: grep takes a job id and a pattern")
     val job = words(0).toLongOption() match
         Some(n) -> n
         None -> return complain(s"marshal: `${words(0)}` is not a job id")

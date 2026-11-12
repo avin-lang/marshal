@@ -75,7 +75,7 @@ private labelStart(text: string) -> Option[int]
 // Whether the filter lets the event through.
 admits(f: Filter, ev: Json) -> bool
     val name = ev.get("event").flatMap(v -> v.asString()).getOrElse("")
-    if f.names.nonEmpty() && !f.names.contains(name) then return false
+    if f.names.nonEmpty && !f.names.contains(name) then return false
     if f.kind.exists(k -> ev.get("kind").flatMap(v -> v.asString()) != Some(k)) then return false
     if f.label.exists(l -> !ev.get("label").flatMap(v -> v.asString()).getOrElse("").contains(l)) then return false
     if f.landing && ev.get("landing").flatMap(v -> v.asBool()) != Some(true) then return false
@@ -117,7 +117,7 @@ parseCondition(text: string) -> Result[Condition, string]
     val head = cut match
         Some(c) -> if c == 0 then "" else body.slice(0, c - 1)
         None -> body
-    val parts: Vector[string] = if rest.isEmpty() || cut == Some(0) then [] else head.split(",").toVector()
+    val parts: Vector[string] = if rest.isEmpty() || cut == Some(0) then [] else head.split(",").toVector
     for text in labelText
         if text.isEmpty() then return Err("`label` needs some text: label=<text>")
         filter = Filter(filter.names, filter.kind, filter.outcome, filter.landing, filter.notOk, Some(text))
@@ -147,7 +147,7 @@ private jobsCondition(t: string) -> Result[Condition, string]
         word.toLongOption() match
             Some(n) if n >= 1 -> if !ids.contains(n) then ids += n
             _ -> return Err(s"`$word` is not a job id")
-    Ok(JobsEnded(ids.toVector()))
+    Ok(JobsEnded(ids.toVector))
 
 // A condition for `events`, which shows events and so takes a filter, not `idle` or `job=`.
 parseFilter(text: string) -> Result[Filter, string] = parseCondition(text)? match

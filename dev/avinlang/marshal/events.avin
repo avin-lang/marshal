@@ -59,7 +59,7 @@ recover(lines: Iterable[string], keep: int = 10) -> Recovered
         position.get(id) match
             Some(p) -> last(p) = (id, ev)
             None ->
-                position(id) = last.length()
+                position(id) = last.length
                 last += (id, ev)
         val peak = ev.get("peak_rss").flatMap(v -> v.asLong()).getOrElse(0)
         // an external job's peak is its tree's, not its work's: never learned from
@@ -88,10 +88,10 @@ recover(lines: Iterable[string], keep: int = 10) -> Recovered
                             histories(key) = b
                 None -> ()
     val open = last.filter(e -> !endings.contains(e.1.get("event").flatMap(v -> v.asString()).getOrElse(""))).map(e -> e.1)
-    val learned = histories.keys().map(k -> (k, histories(k).toVector())).toMap()
+    val learned = histories.keys.map(k -> (k, histories(k).toVector)).toMap
     val ended = last.filter(e -> endings.contains(e.1.get("event").flatMap(v -> v.asString()).getOrElse(""))).map(e -> decodeJob(e.1)).filter(r -> r.isOk()).map(r -> r.ok().get())
-    val peaked = peaks.keys().map(k -> (k, peaks(k).toVector())).toMap()
-    Recovered(maxId + 1, open.toVector(), learned, unreadable, ended.takeRight(keep).toVector(), peaked)
+    val peaked = peaks.keys.map(k -> (k, peaks(k).toVector)).toMap
+    Recovered(maxId + 1, open.toVector, learned, unreadable, ended.takeRight(keep).toVector, peaked)
 
 // The `lost` event for a job whose last event is `ev`: done, its outcome `Lost`, and `group_alive`
 // saying whether its process group still had processes when the new daemon looked. None when `ev`
