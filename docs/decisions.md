@@ -1607,7 +1607,7 @@ minute; while it runs its log gets the load and the busiest processes outside ma
 a landing job queued before the exclusive one starts goes first, and one arriving while it runs
 waits; `--deadline` still applies.
 
-**Settled on the user's delegation 2026-11-12** (choices the design left open). Review with the user:
+**Settled on the user's delegation 2026-11-12** (choices the design left open). Reviewed with the user 2026-11-12 and kept:
 an urgent job submitted later still starts ahead of a queued exclusive job.
 
 - **What an exclusive job holds back while it waits: every job queued behind it, in queue order —
