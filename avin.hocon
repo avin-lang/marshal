@@ -1,4 +1,4 @@
-package { name = "marshal", version = "0.3.0", description = "A job manager for building, testing and releasing: a unit and memory budget, a landing lane, learned deadlines" }
+package { name = "marshal", version = "0.3.1", description = "A job manager for building, testing and releasing: a unit and memory budget, a landing lane, learned deadlines" }
 
 dependencies {
   tui { git = "github.com/avin-lang/tui", version = "0.2.5" }
