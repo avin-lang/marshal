@@ -138,9 +138,9 @@ exclE2eQuietLoad()
   val queued = statusOf(home)("queued").asVector.get(0)
   assertEq(queued("why").asString, Some("load"))
   assertEq(queued("quiet_load").asReal, Some(4.0))
-  // jobs behind it wait for it while it waits for the load
+  // a job behind it runs while it waits for the load: the load reserves nothing
   val d = submitted(home, "--", "true")
-  assertEq(whyOf(home, d), Some(Why.ForExclusive(x)))
+  assertEq(m(home, "wait", d.toString()).code, 0)
   threads.sleep(millis(2000))
   assert(!started(home, x))
   // below for less than the window, then above again: the window starts again
@@ -158,8 +158,72 @@ exclE2eQuietLoad()
   val wrote = time.now().epochMillis
   assertEq(m(home, "wait", x.toString()).code, 0)
   assert(tsOf(home, x, "started") - wrote >= 2900, s"started ${tsOf(home, x, "started") - wrote}ms after the load fell")
+  assert(at(home, d, "finished") < at(home, x, "started"))
+  // a job that settles never says it waited the load out
+  assert(!fs.readText(home + s"/jobs/$x.log").getOrElse("").contains("started after waiting"))
+  cleanUp(home)
+
+@test(
+  "the stall: an exclusive job waiting for a load the machine's background never drops below lets the jobs behind it run, then starts anyway after load_wait and logs the load it saw"
+)
+exclE2eLoadWaitedOut()
+  val home = newHome("{\"units\": 4, \"load_wait\": \"3s\"}")
+  val loadFile = home + "/load"
+  fs.writeText(loadFile, "{ 2.13 2.40 2.50 }").ok.get
+  val env = [("MARSHAL_TEST_LOAD_FILE", loadFile), ("MARSHAL_TEST_QUIET_LOAD_MS", "1000")]
+  val x = idIn(mWith(home, env, "submit", "--exclusive", "--quiet-load", "2", "--", "true").out)
+  assertEq(whyOf(home, x), Some(Why.Load(2.13, 2.0, 0)))
+  // small jobs behind it, 1 to 4 units, are admitted and finish while it waits
+  val small = [submitted(home, "--units", "1", "--", "true"), submitted(home, "--units", "4", "--", "true")]
+  for id in small do assertEq(m(home, "wait", id.toString()).code, 0)
+  assert(!started(home, x))
+  // the load never falls, and it starts once load_wait has passed
+  assertEq(m(home, "wait", x.toString()).code, 0)
+  for id in small do assert(at(home, id, "finished") < at(home, x, "started"))
+  val log = fs.readText(home + s"/jobs/$x.log").getOrElse("")
+  assert(log.contains("marshal exclusive: started after waiting "), log)
+  assert(log.contains(" for the load to fall below 2; the load was 2.13"), log)
+  cleanUp(home)
+
+@test("load_wait \"never\" keeps an exclusive job waiting for the load, while the jobs behind it still run")
+exclE2eLoadWaitNever()
+  val home = newHome("{\"units\": 4, \"load_wait\": \"never\"}")
+  val loadFile = home + "/load"
+  fs.writeText(loadFile, "9").ok.get
+  val env = [("MARSHAL_TEST_LOAD_FILE", loadFile), ("MARSHAL_TEST_QUIET_LOAD_MS", "500")]
+  val x = idIn(mWith(home, env, "submit", "--exclusive", "--quiet-load", "2", "--", "true").out)
+  val d = submitted(home, "--", "true")
   assertEq(m(home, "wait", d.toString()).code, 0)
-  assert(at(home, x, "finished") < at(home, d, "started"))
+  threads.sleep(millis(2500))
+  assertEq(whyOf(home, x), Some(Why.Load(9.0, 2.0, 0)))
+  fs.writeText(loadFile, "1").ok.get
+  assertEq(m(home, "wait", x.toString()).code, 0)
+  cleanUp(home)
+
+@test("--quiet-load auto is a quarter of the processors, at least 1, and is refused where they cannot be counted")
+exclE2eQuietLoadAuto()
+  for (ncpu, limit) in [("18", 4.5), ("2", 1.0)]
+    val one = newHome()
+    fs.writeText(one + "/load", "99").ok.get
+    val env = [("MARSHAL_TEST_LOAD_FILE", one + "/load"), ("MARSHAL_TEST_NCPU", ncpu)]
+    val r = mWith(one, env, "submit", "--exclusive", "--quiet-load", "auto", "--", "true")
+    assertEq(r.code, 0)
+    assertEq(whyOf(one, idIn(r.out)), Some(Why.Load(99.0, limit, 0)))
+    cleanUp(one)
+  val home = newHome()
+  val env = [("MARSHAL_TEST_LOAD_FILE", home + "/load")]
+  val bad = mWith(
+    home,
+    env ++ [("MARSHAL_TEST_NCPU", "none")],
+    "submit",
+    "--exclusive",
+    "--quiet-load",
+    "auto",
+    "--",
+    "true"
+  )
+  assertEq(bad.code, 2)
+  assert(bad.out.contains("`--quiet-load auto`: the processor count cannot be read"), bad.out)
   cleanUp(home)
 
 @test(

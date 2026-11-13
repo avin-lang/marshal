@@ -45,10 +45,14 @@ module dev.avinlang.marshal
 // - An exclusive job owns the machine. While one runs, nothing else starts in any lane: every
 //   waiting job waits for it (`ForExclusive`). One that waits never stops a running job; it starts
 //   once nothing else runs or starts, nothing ahead of it waits, take-slot holds nothing, and the
-//   load has settled when it asked for that (`unsettled`). The first exclusive job in queue order
-//   holds back every job queued behind it, a later quick job and a later exclusive job among them,
-//   so no stream of small jobs can keep the machine from emptying; the jobs ahead of it are decided
-//   as if it and the jobs behind it were not there. Landing jobs are not held back by a waiting
+//   load has settled when it asked for that (`unsettled`). While its load has not settled it
+//   reserves nothing: every job but the later exclusive ones is decided as if it were not there, so
+//   a machine whose background keeps the load up never stalls the queue behind a benchmark. Once the
+//   load has settled (or the daemon's bound on that wait, config.json's `load_wait`, has passed), the
+//   first exclusive job in queue order reserves the machine: it holds back every job queued behind
+//   it, a later quick job and a later exclusive job among them, so no stream of small jobs can keep
+//   the machine from emptying; the jobs ahead of it are decided as if it and the jobs behind it were
+//   not there. Landing jobs are not held back by a waiting
 //   exclusive job: one queued, ahead of it or behind, starts first, so a benchmark never delays a
 //   release train; only a running exclusive job holds the landing lane.
 
@@ -208,11 +212,14 @@ ticketFor(
       Some((first.filter(a -> a <= w.arrived).map(a -> a - 1).getOrElse(w.arrived), w.units))
     None -> waitedPast(weighed, fair).orElse(weighed.find(w -> !w.landing && !w.quick)).map(w -> (w.arrived, w.units))
 
-// `queue` up to and including its first exclusive job (not a landing one), and every landing job:
-// what the scheduler weighs beside that exclusive job. All of `queue` when it has none.
+// What the scheduler weighs beside `queue`'s first exclusive job (not a landing one). When that job
+// reserves the machine (its load has settled, or it asked for none): the queue up to and including
+// it, and every landing job. When it still waits for the load: every job but the exclusive ones, so
+// the jobs behind it are decided as if it were not there. All of `queue` when it has none.
 upToExclusive(queue: Vector[Waiting]) -> Vector[Waiting]
   val at = queue.indexWhere(w -> w.exclusive && !w.landing)
   if at < 0 then return queue
+  if queue(at).unsettled.isDefined then return queue.filter(w -> !w.exclusive || w.landing)
   queue.take(at + 1) ++ queue.drop(at + 1).filter(w -> w.landing)
 
 // The first development job in queue order that has waited past the bound, if one has.
@@ -238,11 +245,14 @@ private decide(
   for x in running.find(r -> r.exclusive)
     for w in queue do out += Decision(w.id, Some(ForExclusive(x.id)))
     return out.toVector
-  // The first exclusive job in queue order, if one waits; the jobs decided as usual are those ahead
-  // of it and the landing jobs (`weighed`), and take-slot's waiters that arrived before it.
+  // The first exclusive job in queue order, if one waits; the jobs decided as usual (`weighed`) are
+  // those `upToExclusive` names, and take-slot's waiters that arrived before it while it reserves the
+  // machine (all of them while it still waits for the load).
   val exclusive = queue.find(w -> w.exclusive && !w.landing)
   val weighed = upToExclusive(queue).filter(w -> exclusive.forall(x -> w.id != x.id))
-  val tickets = exclusive.map(x -> outside.waiting.filter(t -> t.arrived < x.arrived)).getOrElse(outside.waiting)
+  val tickets = exclusive.filter(x -> x.unsettled.isEmpty).map(
+    x -> outside.waiting.filter(t -> t.arrived < x.arrived)
+  ).getOrElse(outside.waiting)
   // When each running or starting job is expected to end, with the units and memory it frees.
   val ends = Buffer[(long, int, long)]()
   // the same, each job counted as a drain counts it (`drainMs`)
@@ -355,13 +365,16 @@ private decide(
       else
         out += Decision(w.id, Some(waitsFor(budget, units, memory, theirs, e, fits, head)))
   for x in exclusive
-    // it waits behind a job ahead of it that waits, then for the machine to empty, then for the load
+    // it waits for the load without reserving anything; once that has settled, it waits behind a job
+    // ahead of it that waits, then for the machine to empty
     val ahead = out.find(d -> d.why.isDefined && weighed.exists(w -> w.id == d.id && !w.landing))
     // take-slot's waiters that arrived before it go before it, as take-slot admits them
     val busy = running.nonEmpty || out.exists(
       d -> d.why.isEmpty
     ) || outside.units > 0 || outside.landing || tickets.nonEmpty
-    val why = if ahead.isDefined then ahead.map(d -> Behind(d.id)) elif busy then Some(Emptying) else x.unsettled
+    val why = if x.unsettled.isDefined then x.unsettled elif ahead.isDefined then ahead.map(
+      d -> Behind(d.id)
+    ) elif busy then Some(Emptying) else None
     out += Decision(x.id, why)
     for w in queue
       if !w.landing && w.id != x.id && !weighed.exists(v -> v.id == w.id) then out += Decision(

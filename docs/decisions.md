@@ -1610,7 +1610,8 @@ waits; `--deadline` still applies.
 **Settled on the user's delegation 2026-11-12** (choices the design left open). Reviewed with the user 2026-11-12 and kept:
 an urgent job submitted later still starts ahead of a queued exclusive job.
 
-- **What an exclusive job holds back while it waits: every job queued behind it, in queue order —
+- **What an exclusive job holds back while it waits (once its load has settled; see "An exclusive
+  job waiting for the load reserves nothing" below): every job queued behind it, in queue order —
   development jobs, quick jobs and later exclusive jobs — but never a landing job.** The jobs ahead
   of it (and take-slot's waiters that arrived before it) are decided as if it and the jobs behind it
   were not there; it starts once nothing runs or starts, nothing ahead of it waits, and take-slot
@@ -1680,3 +1681,47 @@ an urgent job submitted later still starts ahead of a queued exclusive job.
   after it for an urgent one (`bench#!`), and `top`'s help lists `#` beside `^`, `*` and `!`.
   Why: a job's kind reads the same wherever it is listed. Alternative: leaving ended jobs unmarked,
   which hides after the fact that a result was measured on an owned machine.
+
+## An exclusive job waiting for the load reserves nothing (branch `exclusive-wait`)
+
+**The stall it fixes** (seen 2026-11-13): job 2991, `--exclusive --quiet-load 2`, sat `queued (load
+2.13 ≥ 2)` with no marshal job running, the load held at 2–2.5 by desktop apps (a container
+runtime's renderer, an IDE, the terminal), and ten jobs behind it, 1–4 unit tests among them, sat
+`queued (exclusive 2991)`. Two causes: a waiting exclusive job held the queue while it waited for a
+load that marshal's own work was not making, and nothing bounded that wait.
+
+- **An exclusive job reserves the machine only once its load has settled.** While `--quiet-load`
+  still holds it (`unsettled`), it holds nothing back: every job but the later exclusive ones is
+  decided as if it were not there, take-slot's waiters included, and take-slot's ticket is never at
+  it; `ls` says `load …` for it, not `emptying`. Once the load has stayed below the limit for the
+  window, it reserves exactly as before (what is behind it waits, the running jobs drain, it starts
+  with nothing beside it). Should the load rise again before it starts, it stops reserving until the
+  load settles again. Why: exclusivity exists so that no marshal job runs during the timing run;
+  holding the queue before the load is right serves nothing, since the jobs it holds are not what
+  keeps the load up. Reserving once the load settles keeps the old guarantee — no stream of small
+  jobs can keep the machine from emptying once it is ready to go. Alternatives: reserving only once
+  the exclusive job is next and the machine idle (the same in effect, but a job let through at that
+  moment can run long, so the reservation has to start earlier anyway, which is what the settled
+  load gives); draining for a bounded time (a fixed drain window either wastes the machine or cuts
+  a benchmark's turn short, and needs its own clock beside the load's).
+- **The wait for the load is bounded: config.json's `load_wait`, 15 minutes by default, `"never"`
+  for none.** It is clocked from the first time the load holds the queued job back, on the
+  daemon's clock; once it has passed the job counts its load as settled, reserves the machine, and
+  starts once the machine empties. Its log then begins `marshal exclusive: started after waiting
+  15m00s for the load to fall below 2; the load was 2.13`, before the usual sample line, so a result
+  can be read for what it is. The clock is not carried across `marshal restart` (as the quiet-load
+  window is not) and starts afresh for a retry. Why: without a bound the reserve-on-settle rule can
+  starve the exclusive job, since the jobs it lets through raise the load it waits on; with one, its
+  wait is at most `load_wait` and then one drain. 15 minutes is long enough for a passing burst (a
+  build outside marshal, an update) to end and short enough for a benchmark to run in the same
+  sitting. Alternatives: a per-job `--load-wait` option (a protocol field for a setting nobody has
+  needed per job); refusing to start and failing the job (the user asked for the run, and the log
+  line says how quiet the machine was).
+- **`--quiet-load auto` is a quarter of the processors (`sysctl -n hw.ncpu`), at least 1**, resolved
+  by the client at submit, so the job records the number (4.5 on an 18-core Mac). Where the count
+  cannot be read, `auto` is refused and a number asked for. A number given is kept as given. Why:
+  a fixed 2 is below an idle many-core desktop's ordinary load; a quarter of the cores is above it
+  and still well below a machine doing real work. Alternatives: scaling every given number by the
+  core count (a number would no longer mean what `uptime` shows); making `auto` the default for
+  every exclusive job (a benchmark that never asked for a quiet load would start to wait for one).
+  `$MARSHAL_TEST_NCPU` stands in for the count in the tests.

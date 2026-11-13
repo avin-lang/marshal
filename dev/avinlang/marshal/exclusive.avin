@@ -7,7 +7,9 @@ module dev.avinlang.marshal
 //
 // `--quiet-load <n>` also waits out work marshal does not run: the job starts only once the
 // one-minute load average has stayed below `n` for `QuietLoadWindowMs`. The daemon reads the load
-// every second while such a job waits (`calmSince`, `loadWhy`).
+// every second while such a job waits (`calmSince`, `loadWhy`). While the load holds it, it holds
+// nothing else back; after config.json's `load_wait` it starts anyway (`settleWhy`), and its log
+// says with what load (`waitedOutLine`). `--quiet-load auto` is a quarter of the processors.
 //
 // While it runs, the daemon writes into its log, at its start and every `ExclusiveSampleMs`, a line
 // beginning `ExclusiveMark` with the load averages and the busiest processes that are not marshal's
@@ -105,6 +107,59 @@ loadWhy(load: Option[real], limit: real, since: Option[long], windowMs: long, no
     Some(s) if now - s >= windowMs -> None
     Some(s) -> Some(Why.Load(l, limit, now - s))
     None -> Some(Why.Load(l, limit, 0))
+
+// Why an exclusive job with `--quiet-load limit` still waits for the load, as `loadWhy` says, unless
+// it has waited out the bound: it has waited for the load since `waitingSince` (the daemon's clock)
+// and `waitMs` (config.json's `load_wait`, None for no bound) has passed, after which it waits for
+// the load no longer. A machine whose ordinary background load never falls below the limit then
+// still runs the job; the log says so (`waitedOutLine`).
+settleWhy(
+    load: Option[real],
+    limit: real,
+    since: Option[long],
+    windowMs: long,
+    waitingSince: Option[long],
+    waitMs: Option[long],
+    now: long
+) -> Option[Why]
+  for from in waitingSince
+    for bound in waitMs
+      if now - from >= bound then return None
+  loadWhy(load, limit, since, windowMs, now)
+
+// The line an exclusive job's log gets when it starts without the load having settled: it waited
+// `waitedMs` for the load to fall below `limit`, and it was last read as `load` (None where it could
+// not be read).
+waitedOutLine(waitedMs: long, limit: real, load: Option[real]) -> string
+  val seen = load.map(l -> s"the load was ${loadText(l)}").getOrElse("the load could not be read")
+  s"$ExclusiveMark started after waiting ${formatMillis(waitedMs)} for the load to fall below ${loadText(limit)}; $seen"
+
+// The quiet load `--quiet-load auto` stands for on a machine with `cores` processors: a quarter of
+// them, and at least 1. Why a quarter: a many-core machine's ordinary background (a desktop, an IDE,
+// a container runtime) keeps the one-minute load at 2 or more with nothing of marshal's running, and
+// a quarter of the cores still tells a busy machine from one that only idles.
+autoQuietLoad(cores: int) -> real
+  val q = real(cores) / 4.0
+  if q < 1.0 then 1.0 else q
+
+// The machine's processor count, or None where it cannot be read. A test names it instead
+// (`$MARSHAL_TEST_NCPU`).
+coreCount() -> Option[int]
+  val text = process.env("MARSHAL_TEST_NCPU") match
+    Some(t) -> t
+    None -> Command("sysctl", "-n", "hw.ncpu").output().getOrElse("")
+  text.trim.toIntOption().filter(n -> n >= 1)
+
+// The quiet load `--quiet-load value` asks for: a number above 0, or `auto` for `autoQuietLoad` of
+// `cores` (the processor count, None where it could not be read).
+parseQuietLoad(value: string, cores: Option[int]) -> Result[real, string]
+  if value == "auto"
+    return cores match
+      Some(n) -> Ok(autoQuietLoad(n))
+      None -> Err("`--quiet-load auto`: the processor count cannot be read; give a load such as 4")
+  value.toRealOption() match
+    Some(n) if n > 0.0 -> Ok(n)
+    _ -> Err(s"`--quiet-load $value`: a load average is a number above 0, such as 4 or 2.5, or auto")
 
 // A load or a limit as `ls` and the sample lines write it: at most two decimals, and no trailing
 // zeros (`4`, `2.5`, `7.93`).

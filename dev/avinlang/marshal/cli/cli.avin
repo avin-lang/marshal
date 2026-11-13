@@ -107,7 +107,9 @@ Options of submit and run:
                     line with the load and the busiest processes outside marshal at its start and
                     every 30s; # in KIND. Not with --landing or --quick
   --quiet-load <n>  with --exclusive: also wait until the 1-minute load average has stayed below
-                    n for a whole minute (ls says why it waits: load 7.9 ≥ 4)
+                    n for a whole minute (ls says why it waits: load 7.9 ≥ 4); auto is a quarter
+                    of the processors. Other jobs run while it waits for the load; after
+                    config.json's load_wait (15m) it starts anyway, and its log says so
   --dir <d>         the directory to run it in, relative to this one (default: this one)
   --deadline <t>    stop it after t: minutes, or 90s, 30m, 2h (default: learned for the kind)
   --quiet-timeout <t>
@@ -385,9 +387,10 @@ parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]
         Some(ms) -> retryDelay = ms
         None -> return Err(s"`--retry-delay $value`: a delay is minutes, or a number with s, m or h, such as 90s")
       "--label" -> label = marshal.checkLabel(value).mapErr(e -> s"`--label`: $e")?
-      "--quiet-load" -> value.toRealOption() match
-        Some(n) if n > 0.0 -> quietLoad = n
-        _ -> return Err(s"`--quiet-load $value`: a load average is a number above 0, such as 4 or 2.5")
+      "--quiet-load" -> quietLoad = marshal.parseQuietLoad(
+        value,
+        if value == "auto" then marshal.coreCount() else None
+      )?
       _ -> return Err(s"no option `$word`")
     i += 2
   val cmd = args.drop(i)

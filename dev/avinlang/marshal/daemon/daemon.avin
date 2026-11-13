@@ -190,6 +190,9 @@ class Job(
   // and since when it has stayed below the job's quiet load (the daemon's clock)
   var load: Option[real] = None
   var calm: Option[long] = None
+  // since when it has waited, queued, for the load to settle (the daemon's clock): what config.json's
+  // `load_wait` bounds
+  var loadSince: Option[long] = None
   // when a running exclusive job's log was last given a sample line (the daemon's clock)
   var sampledMs: long = 0
   val waiters = Buffer[Channel[Reply]]()
@@ -358,15 +361,21 @@ class Daemon(
     )
 
   // The queued job `j` as the scheduler weighs it at `t`; an exclusive one with a quiet load says
-  // why the load holds it back, until it no longer does.
+  // why the load holds it back, until it no longer does or it has waited config.json's `load_wait`.
+  // Its wait for the load is clocked from the first time the load holds it back.
   waitingOf(j: Job, t: long) -> Waiting
-    val unsettled = if j.spec.exclusive && j.spec.quietLoad > 0.0 then marshal.loadWhy(
-      j.load,
-      j.spec.quietLoad,
-      j.calm,
-      marshal.quietLoadWindowMs(),
-      t
-    ) else None
+    val unsettled = if j.spec.exclusive && j.spec.quietLoad > 0.0 then
+      if j.loadSince.isEmpty && unsettledAt(j, t).isDefined then j.loadSince = Some(t)
+      marshal.settleWhy(
+        j.load,
+        j.spec.quietLoad,
+        j.calm,
+        marshal.quietLoadWindowMs(),
+        j.loadSince,
+        config.loadWaitMs,
+        t
+      )
+    else None
     Waiting(
       j.id,
       j.spec.units,
@@ -379,6 +388,10 @@ class Daemon(
       j.spec.exclusive,
       unsettled
     )
+
+  // Why the load alone holds the exclusive job `j` back at `t`, whatever the bound on its wait.
+  unsettledAt(j: Job, t: long) -> Option[marshal.Why] =
+    marshal.loadWhy(j.load, j.spec.quietLoad, j.calm, marshal.quietLoadWindowMs(), t)
 
   // What a `started` event adds for a job backfilled ahead of a draining job: its id.
   backfilledField(ahead: Option[long]) -> Vector[(string, Json)] = ahead match
@@ -890,9 +903,16 @@ class Daemon(
     // An exclusive job's log begins with what else the machine is doing as it starts; the job's
     // own processes are not started yet, so none of them is in it.
     if spec.exclusive
-      val line = sampleNow(job) + "\n"
+      // one that waited out `load_wait` says so first, with the load it started under
+      val t = now()
+      val waitedOut = if spec.quietLoad > 0.0 && unsettledAt(job, t).isDefined then job.loadSince.map(
+        s -> marshal.waitedOutLine(t - s, spec.quietLoad, job.load) + "\n"
+      ).getOrElse("") else ""
+      val line = waitedOut + sampleNow(job) + "\n"
       val _ = if first then fs.writeText(job.log, line) else fs.appendText(job.log, line)
       job.sampledMs = now()
+      // a retry waits for the load afresh
+      job.loadSince = None
     val placed = program.inDir(spec.dir)
     var command = (
       if job.attempt > 1 || ahead.isDefined || spec.exclusive then placed.appendTo(job.log) else placed.toFile(job.log)

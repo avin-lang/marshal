@@ -19,21 +19,30 @@ module dev.avinlang.marshal
 //                   (see `takeSlotDir`)
 //   drain_after     how long a development job may wait before the machine drains for it ("10m");
 //                   "never" never drains (see `Fairness`)
+//   load_wait       how long an exclusive job waits for its `--quiet-load` before it starts anyway
+//                   ("15m"); "never" waits for the load for ever (see `settleWhy`)
 import dev.avinlang.json
 import dev.avinlang.json.Json
 
 // `takeSlot` is what config.json says, None where it says nothing. `drainAfterMs` is the bound on a
-// development job's wait, None for none.
+// development job's wait, None for none. `loadWaitMs` is the bound on an exclusive job's wait for
+// the load, None for none.
 data Config(
     budget: Budget,
     learning: Learning,
     takeSlot: Option[string],
     retention: Retention = defaultRetention,
-    drainAfterMs: Option[long] = Some(DefaultDrainAfter)
+    drainAfterMs: Option[long] = Some(DefaultDrainAfter),
+    loadWaitMs: Option[long] = Some(DefaultLoadWait)
 )
 
 // How long a development job waits before the machine drains for it, unless config.json says.
 val DefaultDrainAfter: long = 10 * 60000
+
+// How long an exclusive job waits for its quiet load before it starts anyway, unless config.json
+// says: long enough for a passing burst (a build outside marshal, an update) to end, short enough
+// that a machine whose background never quietens still runs the benchmark the same session.
+val DefaultLoadWait: long = 15 * 60000
 
 // The bound `config` sets on waiting, at `wallNow` (wall-clock microseconds).
 fairness(config: Config, wallNow: long) -> Fairness = config.drainAfterMs match
@@ -62,7 +71,8 @@ readConfig(text: string, machineMemory: long) -> Result[Config, string]
       "keep_jobs",
       "keep_events",
       "keep_steps",
-      "drain_after"
+      "drain_after",
+      "load_wait"
     ].contains(key)
       return Err(s"config.json: no setting `$key`")
   val units = whole(j, "units", 12)?
@@ -90,23 +100,30 @@ readConfig(text: string, machineMemory: long) -> Result[Config, string]
     ageSetting(j, "keep_events", defaultRetention.eventsMs)?,
     ageSetting(j, "keep_steps", defaultRetention.stepsMs)?
   )
-  val drainAfter = j.get("drain_after") match
-    None -> Some(DefaultDrainAfter)
-    Some(v) -> v.asString match
-      Some("never") -> None
-      Some(t) -> parseDeadline(t) match
-        Some(ms) -> Some(ms)
-        None -> return Err("config.json: `drain_after` is a wait such as \"10m\" or \"90s\", or \"never\"")
-      None -> return Err("config.json: `drain_after` is a wait such as \"10m\" or \"90s\", or \"never\"")
+  val drainAfter = waitSetting(j, "drain_after", DefaultDrainAfter)?
+  val loadWait = waitSetting(j, "load_wait", DefaultLoadWait)?
   Ok(
     Config(
       Budget(units, memory),
       Learning(window, minRuns, defaultLearning.factor, floor),
       takeSlot,
       retention,
-      drainAfter
+      drainAfter,
+      loadWait
     )
   )
+
+// A wait such as "10m" or "90s" at `key`, `absent` where it says none, and None for "never".
+private waitSetting(j: Json, key: string, absent: long) -> Result[Option[long], string]
+  val refusal = s"config.json: `$key` is a wait such as \"10m\" or \"90s\", or \"never\""
+  j.get(key) match
+    None -> Ok(Some(absent))
+    Some(v) -> v.asString match
+      Some("never") -> Ok(None)
+      Some(t) -> parseDeadline(t) match
+        Some(ms) -> Ok(Some(ms))
+        None -> Err(refusal)
+      None -> Err(refusal)
 
 private ageSetting(j: Json, key: string, absent: Option[long]) -> Result[Option[long], string] = j.get(key) match
   None -> Ok(absent)
