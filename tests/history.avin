@@ -111,8 +111,8 @@ historyKindMarks()
 @test("the listing marks an exclusive job's kind with #, and ! follows it; the other lanes and a plain job are unchanged")
 historyExclusiveMark()
     val lines = [markedEnd(1, kind = "bench", exclusive = true), markedEnd(2, kind = "bench", exclusive = true, urgent = true), markedEnd(3), markedEnd(4, quick = true)]
-    val rows = marshal.historyListing(marshal.selectEnded(ledgerOf(lines), Everything, 20), zoneNamed("UTC")).lines().toVector
-    val kinds = rows.drop(1).map(r -> r.split(" ").filter(w -> w.nonEmpty())(1))
+    val rows = marshal.historyListing(marshal.selectEnded(ledgerOf(lines), Everything, 20), zoneNamed("UTC")).lines.toVector
+    val kinds = rows.drop(1).map(r -> r.split(" ").filter(w -> w.nonEmpty)(1))
     assertEq(kinds.toSet, ["bench#", "bench#!", "test", "test^"].toSet)
     assertEq(kinds.length, 4)
 
