@@ -185,7 +185,7 @@ grepStreams()
 @test("a search with -m ends without reading the rest of a source that never ends")
 grepStopsEarly()
     val out = Buffer[string]()
-    val hit = marshal.grepMatcher("7$", false, false).ok.get()
+    val hit = marshal.grepMatcher("7$", false, false).ok.get
     val count = marshal.grepLines(generated(long.MaxValue), 1, hit, GrepSpec(false, false, false, Some(3), 0, 1), l -> out.addOne(l)).ok.get
     assertEq(count, 3)
     assertEq(out.toVector, ["line 7", "line 8", "--", "line 17", "line 18", "--", "line 27", "line 28"])
@@ -197,35 +197,35 @@ grepSourceError()
         n += 1
         if n < 3 then Ok(Some("x")) else Err("the read failed")
     val out = Buffer[string]()
-    val hit = marshal.grepMatcher("x", false, false).ok.get()
+    val hit = marshal.grepMatcher("x", false, false).ok.get
     assertEq(marshal.grepLines(next, 1, hit, GrepPlain, l -> out.addOne(l)), Err("the read failed"))
     assertEq(out.length, 2)
 
 @test("line numbers begin at the number the source's first line is given")
 grepFirstNumber()
     val out = Buffer[string]()
-    val hit = marshal.grepMatcher("2", false, false).ok.get()
-    marshal.grepLines(generated(5), 100, hit, GrepSpec(false, true, false, None, 0, 0), l -> out.addOne(l)).ok.get()
+    val hit = marshal.grepMatcher("2", false, false).ok.get
+    marshal.grepLines(generated(5), 100, hit, GrepSpec(false, true, false, None, 0, 0), l -> out.addOne(l)).ok.get
     assertEq(out.toVector, ["101:line 2"])
 
 @test("a pattern that is not a regular expression is an error that says why")
 grepBadPattern()
     for p in ["(", "a)", "[a", "*a", "a{2", "\\"] do
-        assert(marshal.grepMatcher(p, false, false).isErr(), p)
-    assert(marshal.grepMatcher("(", false, false).err().get().nonEmpty())
+        assert(marshal.grepMatcher(p, false, false).isErr, p)
+    assert(marshal.grepMatcher("(", false, false).err.get.nonEmpty)
 
 @test("a line that spends the regex step budget ends grepLines with an error naming the pattern and the line")
 grepBudget()
     val out = Buffer[string]()
-    val hit = marshal.grepMatcher("(a+)+?$", false, false).ok().get()
+    val hit = marshal.grepMatcher("(a+)+?$", false, false).ok.get
     val lines = ["aaa", "b", "a".repeat(60) + "b", "aaa"]
     var i = 0
     val next = () ->
         i += 1
         Ok(if i <= lines.length then Some(lines(i - 1)) else None)
     val r = marshal.grepLines(next, 1, hit, GrepPlain, l -> out.addOne(l))
-    assert(r.isErr())
-    val message = r.err().get()
+    assert(r.isErr)
+    val message = r.err.get
     assert(message.contains("line 3:"), message)
     assert(message.contains("`(a+)+?$`"), message)
     assertEq(out.toVector, ["aaa"])
@@ -234,14 +234,14 @@ grepBudget()
 @test("the matcher answers Err for an over-budget line and Ok otherwise, with -F never over budget")
 grepBudgetMatcher()
     val long = "a".repeat(60) + "b"
-    assert(marshal.grepMatcher("(a+)+?$", false, false).ok().get()(long).isErr())
-    assertEq(marshal.grepMatcher("(a+)+?$", false, false).ok().get()("aaa"), Ok(true))
-    assertEq(marshal.grepMatcher("(a+)+?$", true, false).ok().get()(long), Ok(false))
-    assertEq(marshal.grepMatcher("a+b$", false, false).ok().get()(long), Ok(true))
+    assert(marshal.grepMatcher("(a+)+?$", false, false).ok.get(long).isErr)
+    assertEq(marshal.grepMatcher("(a+)+?$", false, false).ok.get("aaa"), Ok(true))
+    assertEq(marshal.grepMatcher("(a+)+?$", true, false).ok.get(long), Ok(false))
+    assertEq(marshal.grepMatcher("a+b$", false, false).ok.get(long), Ok(true))
 
 @test("grep is a command: its usage names every option and the exit codes, and the README has its line")
 grepHelp()
-    val help = cli.commandHelp("grep").get()
+    val help = cli.commandHelp("grep").get
     assert(help.startsWith("usage: marshal grep <id> <pattern>"), help)
     for option in ["-i", "-v", "-n", "-c", "-F", "-m <n>", "-A <n>", "-B <n>", "-C <n>", "--last <n>"] do assert(help.contains(option), option)
     for words in ["Exits 0 when a line matched", "1 when none did", "2 on an error"] do assert(help.contains(words), words)
