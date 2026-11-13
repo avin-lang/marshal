@@ -11,8 +11,8 @@ import avin.process.{Command, ExitStatus}
 import avin.threads
 import avin.threads.Atomic
 import avin.time.millis
-import avin.json
-import avin.json.Json
+import dev.avinlang.json
+import dev.avinlang.json.Json
 import dev.avinlang.marshal
 
 // Who commits, and no configuration of the machine's own: the user's hooks, signing and templates

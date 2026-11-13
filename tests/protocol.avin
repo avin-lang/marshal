@@ -4,7 +4,7 @@ module tests
 // with a reason.
 import dev.avinlang.marshal
 import dev.avinlang.marshal.{JobInfo, JobSpec, Outcome, Overview, QueuedJob, Reply, Request, Usage, Why}
-import avin.json
+import dev.avinlang.json
 
 val spec: JobSpec = JobSpec("test", 4, 29 * 1024 * 1024 * 1024, false, "/work/dir", Some(90000), ["sysl", "test", "compiler", "--timeout", "1800"], [("PATH", "/bin"), ("LANG", "")])
 

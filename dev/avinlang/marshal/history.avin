@@ -5,8 +5,8 @@ module dev.avinlang.marshal
 // held whole; it keeps one small `EndedJob` per job the log saw end.
 import avin.collections.mutable.{Map as MutableMap}
 import avin.time
-import avin.json
-import avin.json.Json
+import dev.avinlang.json
+import dev.avinlang.json.Json
 
 // One job the log saw end, as its last ending event describes it.
 // - `how`: `ok` (exit 0), `failed` (any other exit), `signal`, `killed` (stopped by `kill`),

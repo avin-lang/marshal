@@ -4,8 +4,8 @@ module dev.avinlang.marshal
 // deciding whether a step passed, following the transitions through the gate, bisecting a red batch,
 // and what the run comes to. The runner (`runner/runner.avin`) runs the programs and hands this
 // module what they did, so every decision here is tested without starting one.
-import avin.json
-import avin.json.Json
+import dev.avinlang.json
+import dev.avinlang.json.Json
 
 // A line a step says to marshal on its standard output (docs/protocol.md, "The step protocol").
 data Said

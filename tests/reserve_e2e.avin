@@ -6,8 +6,8 @@ module tests
 // still runs, alone; and the learned reservation shows in `ls` and `status --json` and survives
 // `marshal restart`. The helpers are e2e.avin's and together_e2e.avin's.
 import avin.fs
-import avin.json
-import avin.json.Json
+import dev.avinlang.json
+import dev.avinlang.json.Json
 
 val Mi: long = 1024 * 1024
 

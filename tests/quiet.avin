@@ -3,8 +3,8 @@ module tests
 // Quiet timeouts: the quiet clock (output starts it again, a pause and a restart start it again),
 // how `--quiet-timeout` is read, and how the quiet timeout and its outcome travel (the wire, the
 // saved state, the event log) and show (`wait`, `ls`, history, events filters).
-import avin.json
-import avin.json.Json
+import dev.avinlang.json
+import dev.avinlang.json.Json
 import dev.avinlang.marshal
 import dev.avinlang.marshal.cli
 import dev.avinlang.marshal.{JobInfo, JobSpec, Outcome, SavedJob, SavedState}

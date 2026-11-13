@@ -13,8 +13,8 @@ module dev.avinlang.marshal
 // is retried ends each attempt with an ending event that adds `"retrying": true`, and then records
 // `retry`, so its last event is an ending only once its last attempt has ended.
 import avin.collections.mutable.{Map as MutableMap}
-import avin.json
-import avin.json.Json
+import dev.avinlang.json
+import dev.avinlang.json.Json
 
 val endings: Set[string] = {"finished", "timeout", "quiet", "killed", "cancelled", "lost"}
 

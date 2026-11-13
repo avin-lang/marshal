@@ -4,7 +4,7 @@ module tests
 // while they run, hold back what is queued behind them but never a landing job, and wait for the
 // load when asked), their refusals, the quiet-load clock, the sample line and how marshal tells its
 // own processes from others', the spec's round trips, and how listings show them.
-import avin.json
+import dev.avinlang.json
 import dev.avinlang.marshal
 import dev.avinlang.marshal.{Budget, JobInfo, JobSpec, Outside, Proc, Reply, Started, Ticket, Usage, Waiting, Why}
 import dev.avinlang.marshal.{NoUnits, Draining, Behind, Starting, QuickFull, Emptying, Load, ForExclusive, DrainingFor}

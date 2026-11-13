@@ -3,8 +3,8 @@ module tests
 // Jobs waiting for others and jobs retried, without a daemon: their fields cross the protocol, the
 // restart state and the event log; the command line reads their options; listings and `top` show
 // them; and an outcome says whether it succeeded and whether another attempt may mend it.
-import avin.json
-import avin.json.Json
+import dev.avinlang.json
+import dev.avinlang.json.Json
 import dev.avinlang.marshal
 import dev.avinlang.marshal.cli
 import dev.avinlang.marshal.top

@@ -8,8 +8,8 @@ module tests
 // and ls_why_e2e.avin's.
 import avin.net.UnixStream
 import avin.process.Command
-import avin.json
-import avin.json.Json
+import dev.avinlang.json
+import dev.avinlang.json.Json
 
 val ExtMi: long = 1024 * 1024
 

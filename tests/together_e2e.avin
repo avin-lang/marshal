@@ -9,8 +9,8 @@ import avin.process
 import avin.threads
 import avin.time
 import avin.time.millis
-import avin.json
-import avin.json.Json
+import dev.avinlang.json
+import dev.avinlang.json.Json
 
 // The `ls` row of job `id`.
 lsRow(home: string, id: long) -> string =

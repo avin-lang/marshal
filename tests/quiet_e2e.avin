@@ -8,7 +8,7 @@ import avin.fs
 import avin.threads
 import avin.time
 import avin.time.millis
-import avin.json.Json
+import dev.avinlang.json.Json
 
 // The last event of job `id`.
 lastEventOf(home: string, id: long) -> Json = events(home).filter(e -> e("id").asLong == Some(id)).last

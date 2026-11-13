@@ -19,8 +19,8 @@ module dev.avinlang.marshal
 //                   (see `takeSlotDir`)
 //   drain_after     how long a development job may wait before the machine drains for it ("10m");
 //                   "never" never drains (see `Fairness`)
-import avin.json
-import avin.json.Json
+import dev.avinlang.json
+import dev.avinlang.json.Json
 
 // `takeSlot` is what config.json says, None where it says nothing. `drainAfterMs` is the bound on a
 // development job's wait, None for none.

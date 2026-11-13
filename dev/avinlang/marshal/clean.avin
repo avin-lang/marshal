@@ -20,8 +20,8 @@ module dev.avinlang.marshal
 import avin.collections.mutable.{Map as MutableMap}
 import avin.fs
 import avin.time
-import avin.json
-import avin.json.Json
+import dev.avinlang.json
+import dev.avinlang.json.Json
 
 // How long each kind of file is kept, by the daemon's sweep and by `marshal clean`. None keeps it
 // for ever: `logsMs` is the age of an ended job's files, `jobs` how many ended jobs' files are

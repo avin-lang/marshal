@@ -3,7 +3,7 @@ module tests
 // Holding and ordering the queue, below the daemon: the requests on the wire, how priorities order
 // jobs, what `--urgent` gives, why a held or queue-held job waits, and how the command line and
 // `ls`, `status` and `top` say it.
-import avin.json
+import dev.avinlang.json
 import dev.avinlang.marshal
 import dev.avinlang.marshal.{JobInfo, Overview, QueuedJob, Reply, Request, Started, Usage, Waiting, Why}
 import dev.avinlang.marshal.{Held, QueueHeld, NoUnits, Behind, Starting, LaneBusy}

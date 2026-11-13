@@ -4,8 +4,8 @@ module tests
 // options and what `history` and `stats` print.
 import avin.fs
 import avin.time
-import avin.json
-import avin.json.Json
+import dev.avinlang.json
+import dev.avinlang.json.Json
 import dev.avinlang.marshal
 import dev.avinlang.marshal.cli
 import dev.avinlang.marshal.{EndedJob, HistoryFilter, JobInfo, KindStats, Ledger, Outcome}

@@ -2,7 +2,7 @@ module tests
 
 // The quick lane: the scheduler's rules for quick jobs, the cap and its refusals, the hint, the
 // spec's round trips and how listings show the lane.
-import avin.json
+import dev.avinlang.json
 import dev.avinlang.marshal
 import dev.avinlang.marshal.top
 import dev.avinlang.marshal.{Budget, JobInfo, JobSpec, Reply, Started, Usage, Waiting, Why}

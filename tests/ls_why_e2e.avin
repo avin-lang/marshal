@@ -2,7 +2,7 @@ module tests
 
 // End to end, why a queued job waits as `ls` and `status --json` say it. The helpers are e2e.avin's
 // and control_e2e.avin's.
-import avin.json.Json
+import dev.avinlang.json.Json
 
 // The `ls` row of job `id`.
 lsRowOf(home: string, id: long) -> string

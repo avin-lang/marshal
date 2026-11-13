@@ -10,7 +10,7 @@ import avin.threads
 import avin.threads.spawn
 import avin.time
 import avin.time.millis
-import avin.json.Json
+import dev.avinlang.json.Json
 
 // The restart request a client sends, naming `program`.
 restartRequest(program: string) -> string = Json.obj(("op", Json.str("restart")), ("program", Json.str(program))).render + "\n"

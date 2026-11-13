@@ -6,7 +6,7 @@ module tests
 // delayed by it; the hint; `rerun`; `ls`, `status --json`; and `marshal restart`. The helpers are
 // e2e.avin's and landing_e2e.avin's.
 import avin.fs
-import avin.json
+import dev.avinlang.json
 import dev.avinlang.marshal
 import dev.avinlang.marshal.Why
 

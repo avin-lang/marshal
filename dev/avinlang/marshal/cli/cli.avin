@@ -18,7 +18,7 @@ import dev.avinlang.marshal.{Submitted, Ended, Jobs, Using, Hi, Done, Failed}
 import dev.avinlang.marshal.{Condition, Once, Past, Follow, Streamed, Replayed}
 import dev.avinlang.marshal.{GrepSpec, grepMatcher, grepLines}
 import dev.avinlang.marshal.daemon
-import avin.json.Json
+import dev.avinlang.json.Json
 
 // Each command: how it is written after `marshal`, and what it does. The README's command list
 // is these lines, word for word.

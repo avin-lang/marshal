@@ -4,8 +4,8 @@ module tests
 // and replies on the wire.
 import dev.avinlang.marshal
 import dev.avinlang.marshal.{Condition, Filter, Mode, Request, Reply, Since}
-import avin.json
-import avin.json.Json
+import dev.avinlang.json
+import dev.avinlang.json.Json
 
 val Ending: Vector[string] = ["finished", "timeout", "quiet", "killed", "cancelled", "lost"]
 

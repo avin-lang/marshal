@@ -31,8 +31,8 @@ import avin.threads
 import avin.threads.{Channel, spawn}
 import avin.time
 import avin.time.{millis, seconds}
-import avin.json
-import avin.json.Json
+import dev.avinlang.json
+import dev.avinlang.json.Json
 import dev.avinlang.marshal
 import dev.avinlang.marshal.{Config,JobInfo, JobSpec, Outcome, Outside, Reply, Request, Started, TakeSlot, TakeSlotUse, Usage, Waiting}
 import dev.avinlang.marshal.{Submit, Wait, Kill, Status, Stop, Rerun, Clean, Cleaned}

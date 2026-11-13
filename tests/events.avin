@@ -2,8 +2,8 @@ module tests
 
 // The event log as a restarting daemon reads it, the settings file, and what the command line prints.
 import avin.time
-import avin.json
-import avin.json.Json
+import dev.avinlang.json
+import dev.avinlang.json.Json
 import dev.avinlang.marshal
 import dev.avinlang.marshal.cli
 import dev.avinlang.marshal.{Budget, JobInfo, Learning, Outcome, TakeSlotUse, Usage}

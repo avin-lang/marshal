@@ -3,8 +3,8 @@ module tests
 // Job labels against a real daemon: submitted with --label they show in ls, status --json, history
 // and the events, rerun keeps them, a restart keeps them, and a bad label is refused.
 import avin.fs
-import avin.json
-import avin.json.Json
+import dev.avinlang.json
+import dev.avinlang.json.Json
 import dev.avinlang.marshal
 
 @test("a label shows in ls, status --json, history (text and --json) and the submitted and ending events")

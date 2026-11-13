@@ -10,7 +10,7 @@ import avin.signal
 import avin.threads
 import avin.time
 import avin.time.millis
-import avin.json.Json
+import dev.avinlang.json.Json
 
 // The processes of the group, by pid.
 groupPids(pgid: long) -> Vector[string] = process.groupMembers(pgid).getOrElse([]).map(p -> p.toString())

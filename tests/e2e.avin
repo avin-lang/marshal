@@ -13,8 +13,8 @@ import avin.threads
 import avin.threads.{Atomic, spawn}
 import avin.time
 import avin.time.millis
-import avin.json
-import avin.json.Json
+import dev.avinlang.json
+import dev.avinlang.json.Json
 import dev.avinlang.marshal
 
 val outputs: Atomic[int] = Atomic(0)

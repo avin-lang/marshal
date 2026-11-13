@@ -2,8 +2,8 @@ module dev.avinlang.marshal
 
 // What the command line and the daemon say to each other: one JSON object per line each way, a
 // request and then its reply. docs/protocol.md describes the text.
-import avin.json
-import avin.json.Json
+import dev.avinlang.json
+import dev.avinlang.json.Json
 
 // marshal's version, as `avin.hocon` gives it: what `marshal version` and `marshal restart` print.
 val Version: string = "0.3.1"

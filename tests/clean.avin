@@ -5,8 +5,8 @@ module tests
 import avin.fs
 import avin.process
 import avin.time
-import avin.json
-import avin.json.Json
+import dev.avinlang.json
+import dev.avinlang.json.Json
 import dev.avinlang.marshal
 import dev.avinlang.marshal.{CleanReport, CleanRule, JobInfo, JobSpec, LogEnded, Outcome, Retention}
 

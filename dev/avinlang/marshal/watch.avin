@@ -2,8 +2,8 @@ module dev.avinlang.marshal
 
 // Following the event log as it grows: the conditions `wait --until` blocks on, the filters
 // `events` shows, and how an event is tested against one. docs/protocol.md describes the grammar.
-import avin.json
-import avin.json.Json
+import dev.avinlang.json
+import dev.avinlang.json.Json
 
 // Which events a condition lets through. Every field narrows: `names` are the event names allowed
 // (all when empty), `kind` the job's kind, `outcome` how the job ended (`ok`, `failed`, `timeout`,

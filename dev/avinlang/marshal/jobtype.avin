@@ -7,8 +7,8 @@ module dev.avinlang.marshal
 //
 // A `.job` file is a JSON object. A line whose first characters, past spaces, are `//` is a comment
 // and reads as an empty line, so a parse error's line number is still the file's.
-import avin.json
-import avin.json.Json
+import dev.avinlang.json
+import dev.avinlang.json.Json
 
 // One parameter of a type. Every value is held as text: an `int` as its digits, a `bool` as `true`
 // or `false`. A repeatable parameter takes any number of values (`--branch a --branch b`); the

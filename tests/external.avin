@@ -6,8 +6,8 @@ module tests
 import dev.avinlang.marshal
 import dev.avinlang.marshal.{JobInfo, JobSpec, Outcome, SavedJob, SavedState}
 import dev.avinlang.marshal.cli
-import avin.json
-import avin.json.Json
+import dev.avinlang.json
+import dev.avinlang.json.Json
 
 val Gi: long = 1024 * 1024 * 1024
 

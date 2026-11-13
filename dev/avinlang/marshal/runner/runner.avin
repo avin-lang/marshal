@@ -17,7 +17,7 @@ import avin.threads
 import avin.threads.{Atomic, Channel, spawn}
 import avin.time
 import avin.time.millis
-import avin.json.Json
+import dev.avinlang.json.Json
 import dev.avinlang.marshal
 import dev.avinlang.marshal.{Fail, JobType, PassEnd, PassResult, RunReport, Said, Step, StepEnd, StepOutcome}
 import dev.avinlang.marshal.{StepSkipped, StepPassed, StepFailed, HeadSaid, StepSaid}

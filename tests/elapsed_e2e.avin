@@ -5,8 +5,8 @@ module tests
 // submission, and an ended job keeps its run time.
 import avin.threads
 import avin.time.millis
-import avin.json
-import avin.json.Json
+import dev.avinlang.json
+import dev.avinlang.json.Json
 
 // The ELAPSED cell of job `id` in `ls`.
 elapsedCell(home: string, id: long) -> string

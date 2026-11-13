@@ -4,8 +4,8 @@ module dev.avinlang.marshal
 // before the daemon replaces itself and read by the new image, which takes its jobs over. Times are
 // on the wall clock, in milliseconds since 1970, so they mean the same to both images; a time that
 // has not come yet (a queued job's start, a running job's end) is 0.
-import avin.json
-import avin.json.Json
+import dev.avinlang.json
+import dev.avinlang.json.Json
 
 // One job as the daemon holds it. `arrived` is its arrival on the wall clock in microseconds, which
 // orders it against take-slot's waiters; `pid` and `pgid` are 0 until it starts. `held`,

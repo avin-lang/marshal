@@ -3,7 +3,7 @@ module tests
 // `marshal top` scrolled back past the snapshot's ended jobs: the pages of earlier ones, read from
 // the event log or from a history made to order, the position the bottom line gives, and goldens.
 import avin.fs
-import avin.json.Json
+import dev.avinlang.json.Json
 import dev.avinlang.marshal
 import dev.avinlang.marshal.{JobInfo, Outcome, Overview, Usage}
 import dev.avinlang.marshal.top

@@ -3,8 +3,8 @@ module tests
 // Job labels: what a label may be, how it travels (the wire, the saved state, the event log), and
 // where it shows (ls, history, events filters, top).
 import avin.time
-import avin.json
-import avin.json.Json
+import dev.avinlang.json
+import dev.avinlang.json.Json
 import dev.avinlang.marshal
 import dev.avinlang.marshal.cli
 import dev.avinlang.marshal.top
