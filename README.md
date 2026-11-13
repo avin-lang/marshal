@@ -104,6 +104,80 @@ is kept. Whatever it keeps, it says, and the run is then red.
 A test command that knows which branch broke a test says `=== FAIL <test> <branch>` on its output;
 the train then blames that branch without bisecting. See [the step protocol](docs/protocol.md#the-step-protocol).
 
+## Using marshal well
+
+Rules for anyone, human or AI agent, who runs builds and tests through marshal. Each has its reason;
+the flags are in [Commands](#commands).
+
+**Run every heavy build or test through `marshal run`, under `caffeinate -dimsu`.** marshal holds one
+unit and memory budget for the machine. A bare run sits outside it and competes for cores with the
+jobs marshal has admitted, while marshal's queue waits for units the bare run is using. The one
+exception is a fix to marshal itself: it runs bare, as `caffeinate -dimsu nice <command>`, so a
+broken marshal cannot block its own fix.
+
+**Always give `--label`, `--deadline` and an honest `--units`.**
+
+```
+caffeinate -dimsu marshal run --dir . --label "ed: parser tests" --deadline 20m --units 4 -- make test
+```
+
+- `--label` says whose job it is and what it is; `ls` and `top` show nothing else about who owns it.
+- `--deadline` is a little above the known run time, so a hung run dies instead of holding its units
+  for hours. Time spent queued does not count against it.
+- `--units` is the parallelism the job really uses. Asking for more starves everyone else; asking
+  for less oversubscribes the machine.
+
+**Wait once.** Start the run in the background and wait for it with one waiter that exits, on the job
+(`marshal wait <id>`) or on its PID. Never poll `marshal ls` or the log in a loop, and never stack
+`sleep` loops. For an AI agent every poll re-sends its whole context, so polling spends tokens and
+learns nothing; end the turn after starting the job and let the notification resume you.
+
+**Read results by pattern, not whole.** A log can be megabytes.
+
+```
+marshal grep 42 "FAIL|error|passed|failed" -n -m 40
+marshal tail 42 -n 30
+```
+
+`marshal grep <id> <pattern>` finds the summary and failure lines; `marshal tail <id>` shows the end.
+Do not read a whole log into an agent's context.
+
+**Priority classes are for what they name.**
+
+- `--landing` is for a merge train's gate only: the one run everyone is waiting on. It starts before
+  every development job and stops the others from starting until its memory fits.
+- `--urgent` is for a release's critical path only. Used for ordinary work it jumps ahead of every
+  job not urgent and so delays everyone else.
+- Everything else runs at normal priority.
+
+**`--exclusive` and `--quiet-load` are for timing runs only.** An exclusive job owns the machine so
+a benchmark is not disturbed; nothing else starts while it runs. A waiting exclusive job lets jobs
+queued after it keep running while the load is above the `--quiet-load` threshold, and reserves the
+machine only once the load has stayed below it for a whole minute and the running jobs have ended.
+After `load_wait` (`config.json`, 15 minutes by default) it stops waiting for the load and starts
+once the machine empties; its log says so. Prefer `--quiet-load auto`, a quarter of the processors,
+to a fixed small number: on a many-core Mac the desktop's background apps keep the load above a small
+fixed number indefinitely, and the exclusive job then waits out its whole `load_wait` for nothing.
+
+```
+caffeinate -dimsu marshal run --exclusive --quiet-load auto --label "ed: bench" --deadline 30m -- make bench
+```
+
+**Never `marshal kill` another session's job.** Read the owner from the label in `marshal ls`, and
+ask that owner. Kill only a job you started.
+
+**Reading the queue.** A queued job's state says why it waits (`marshal ls`, `marshal top`):
+
+| State | Meaning | What to do |
+| --- | --- | --- |
+| `no units` / `no memory` | the budget is full | wait; ask for fewer `--units` or a smaller `--mem` only if the job truly needs less |
+| `behind N` | job N, queued ahead, still waits | wait |
+| `draining for N` | the machine is emptying so job N can start | wait; it is bounded by `drain_after` |
+| `load 7.9 ≥ 4`, `load 3.5 < 4 for 20.0s` | an exclusive job waits for the load to settle | wait, or quiet the machine; `load_wait` bounds it |
+| `emptying` | an exclusive job waits for the running jobs to end | wait |
+| `exclusive N` | exclusive job N runs, or waits ahead of this one | wait; the job is not stuck |
+| `queue held` | someone ran `marshal pause` with no id | `marshal resume`, if the hold is yours |
+
 ## Job types
 
 A type is a `.job` file. `marshal run-type <name>` looks for it in the project's
