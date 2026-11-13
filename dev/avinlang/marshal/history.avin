@@ -17,7 +17,7 @@ import avin.json.Json
 // - `endedAt`: when it ended, wall clock milliseconds since 1970.
 // - `peakRss`: the most memory its process tree held, in bytes; 0 where the event does not say.
 // - `label`: the text its submitter gave it; "" for none.
-data EndedJob(id: long, kind: string, landing: bool, how: string, exit: int, runMs: long, endedAt: long, deadlineMs: long, peakRss: long, label: string = "", quick: bool = false, urgent: bool = false)
+data EndedJob(id: long, kind: string, landing: bool, how: string, exit: int, runMs: long, endedAt: long, deadlineMs: long, peakRss: long, label: string = "", quick: bool = false, urgent: bool = false, exclusive: bool = false)
 
 // The word an outcome is listed under.
 howWord(o: Outcome, killed: bool) -> string
@@ -63,7 +63,7 @@ class Ledger()
         val run = if outcome == Cancelled then long(0) else ev.get("run_ms").flatMap(v -> v.asLong).getOrElse(job.elapsedMs)
         // an external job's peak is its tree's, not its work's, so stats leave it out
         val peak = if job.external then 0 else ev.get("peak_rss").flatMap(v -> v.asLong).getOrElse(0)
-        val e = EndedJob(job.id, job.kind, job.landing, howWord(outcome, job.killed), exitCode(outcome), run, ts, job.deadlineMs, peak, job.label, job.quick, job.urgent)
+        val e = EndedJob(job.id, job.kind, job.landing, howWord(outcome, job.killed), exitCode(outcome), run, ts, job.deadlineMs, peak, job.label, job.quick, job.urgent, job.exclusive)
         position.get(job.id) match
             Some(p) -> ends(p) = e
             None ->
@@ -222,7 +222,7 @@ historyListing(jobs: Vector[EndedJob], zone: time.Zone) -> string
     // the LABEL column, last because it is free text, always there, empty for a job without a label
     table([["ID", "KIND", "OUTCOME", "EXIT", "DURATION", "ENDED", "LABEL"]] ++ jobs.map(e -> [
         e.id.toString(),
-        kindMarked(e.kind, e.landing, e.quick, e.urgent),
+        kindMarked(e.kind, e.landing, e.quick, e.urgent, e.exclusive),
         e.how,
         e.exit.toString(),
         formatMillis(e.runMs),

@@ -229,7 +229,7 @@ standard error.
 | `--failed` | `history` only: jobs that did not exit 0, whatever the cause. |
 | `--limit <n>` | `history` only: at most `n` jobs. Default 20. |
 
-`history` has the columns ID, KIND (marked as in `ls`: `*` a landing job, `^` a quick one, `!` an urgent one), OUTCOME (`ok`, `failed`, `signal`,
+`history` has the columns ID, KIND (marked as in `ls`: `*` a landing job, `^` a quick one, `#` an exclusive one, `!` an urgent one), OUTCOME (`ok`, `failed`, `signal`,
 `killed`, `timeout`, `quiet`, `cancelled`, `lost`), EXIT (the status `wait` exits with), DURATION and ENDED
 (the end, to the second, in the caller's local time zone like STARTED; `--json` carries `ended_at` as milliseconds). `stats` has one row per kind (a kind's landing runs are their own row, `kind+landing`, as for
 learning deadlines): COUNT, OK (the share that exited 0), P50, P90 and MAX of the run times,

@@ -48,10 +48,10 @@ golden(name: string, g: Grid)
 gjob(id: long, kind: string = "build", state: string = "running", outcome: Option[Outcome] = None, units: int = 1,
      landing: bool = false, cmd: Vector[string] = ["make", "-j4"], elapsed: long = 2 * minuteMs, deadline: long = 30 * minuteMs,
      memory: long = 0, rss: long = 0, peak: long = 0, paused: bool = false, killed: bool = false, label: string = "",
-     after: Vector[long] = [], attempt: int = 1, reserved: long = 0, learned: bool = false, quick: bool = false, urgent: bool = false) -> JobInfo =
+     after: Vector[long] = [], attempt: int = 1, reserved: long = 0, learned: bool = false, quick: bool = false, urgent: bool = false, exclusive: bool = false) -> JobInfo =
     JobInfo(id, kind, units, memory, landing, "/w", cmd, state, outcome, killed, 0, elapsed, deadline, s"/h/jobs/$id.log", None,
             rss = rss, peakRss = peak, paused = paused, after = after, attempt = attempt, reserved = reserved,
-            reservedLearned = learned, label = label, quick = quick, urgent = urgent)
+            reservedLearned = learned, label = label, quick = quick, urgent = urgent, exclusive = exclusive)
 
 // A busy daemon: a landing job, a paused one, take-slot holding units with runs waiting, the queue
 // held, every reason to wait, jobs waiting for others or to retry, and every way a job ends.
@@ -225,6 +225,16 @@ goldenUrgentMarks()
     golden("urgent-marks-80", drawn(viewing(o), 80, 20))
     assert(drawn(viewing(o), 120, 20).rowText(5).contains("test!"))
     assert(drawn(viewing(o), 120, 20).rowText(8).contains("funl-t…!"))
+
+@test("golden: an exclusive job's kind is marked #, running, queued and ended, with ! after it")
+goldenExclusiveMarks()
+    val running = [gjob(61, kind = "bench", units = 12, exclusive = true, cmd = ["./bench"]), gjob(62, kind = "bench", exclusive = true, urgent = true, cmd = ["./bench", "-x"])]
+    val queued = [QueuedJob(gjob(63, kind = "bench", state = "queued", exclusive = true), 1, Why.NoUnits)]
+    val ended = [gjob(60, kind = "bench", state = "done", outcome = Some(Outcome.Exited(0)), exclusive = true)]
+    val o = Overview(Usage(8, 12, 0, 16 * G, 5, 3, None, None), 60000, running, queued, ended)
+    golden("exclusive-marks", drawn(viewing(o), 100, 16))
+    assert(drawn(viewing(o), 100, 16).rowText(5).contains("bench#"))
+    assert(drawn(viewing(o), 100, 16).rowText(6).contains("bench#!"))
 
 // A daemon running only a landing job of `units`, with take-slot's use if any.
 landingOnly(units: int, takeSlot: Option[TakeSlotUse]) -> Overview =

@@ -660,7 +660,8 @@ val helpLines: Vector[string] = [
     "the head of the queue, which it would delay; held (marshal hold),",
     "or queue held (marshal pause); quick full (both quick slots",
     "taken). A quick job runs as quick, its kind marked ^; a landing",
-    "job's is marked *; an urgent job's ! (^! and *! together).",
+    "job's is marked *; an exclusive job's #; an urgent job's ! (^!,",
+    "*! and #! together).",
     "after 3,4 waits for jobs 3 and 4",
     "to end; retry 2 waits to make its second attempt.",
     "DEADLINE is the time left; yellow, then red, as it nears."

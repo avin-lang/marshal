@@ -291,6 +291,14 @@ positionHint()
     // too narrow for it beside the keys: left out, the keys kept
     assertEq(footer(drawn(partly, 50, 30)), "hHelp EnterLog kKill fFilter qQuit")
 
+@test("an exclusive job read from the history is marked # in its kind, as in the live list")
+topHistoryExclusiveMark()
+    val ex = JobInfo(900, "bench", 12, 0, false, "/w", ["./bench"], "done", Some(Outcome.Exited(0)), false, 0, 1000, 60000, "/h/jobs/900.log", None, exclusive = true)
+    val app = scrolledToBottom(liveTen(), FakeHistory(endedRange(1010, 1001) ++ [ex]))
+    app.handle(press(Down), 0)
+    val text = (0 ..< 30).map(r -> drawn(app, 120, 30).rowText(r)).mkString("\n")
+    assert(text.contains("bench#"), text)
+
 @test("golden: scrolled back into the loaded pages, and at the very oldest, with the scroll bar and the position")
 goldenHistory()
     val app = scrolledToBottom(liveTen(), thousand())
