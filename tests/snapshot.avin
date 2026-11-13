@@ -43,7 +43,7 @@ stable()
   assertEq(marshal.stablePath("/usr/local/Cellar/marshal"), "/usr/local/Cellar/marshal")
   assertEq(marshal.stablePath("/Cellar/marshal/bin"), "/Cellar/marshal/bin")
   assertEq(marshal.stablePath(""), "")
-  fs.removeDirAll(dir)
+  val _ = fs.removeDirAll(dir)
 
 @test(
   "a snapshot holds the type, each Avin step it names once, marshal's stock steps and a link of the executable; none of it depends on the originals"
@@ -71,7 +71,7 @@ copiesEverything()
   assertEq(fs.readText(snap.dir + "/type/tail.avin").ok, Some("tail"))
   assertEq(fs.readText(snap.dir + "/share/marshal/steps/git/main.avin").ok, Some("git"))
   assertEq(fs.readText(snap.dir + "/bin/marshal").ok, Some("#!/bin/sh\n"))
-  fs.removeDirAll(dir)
+  val _ = fs.removeDirAll(dir)
 
 @test(
   "a snapshot without marshal's stock steps has no stock directory, and a type with no Avin steps copies only itself"
@@ -84,7 +84,7 @@ withoutStock()
   assertEq(snap.stock, None)
   assert(!fs.exists(snap.dir + "/share"))
   assertEq(fs.listDir(snap.dir + "/type").ok.get, ["t.job"])
-  fs.removeDirAll(dir)
+  val _ = fs.removeDirAll(dir)
 
 @test(
   "a type whose Avin step the copy cannot keep, or whose source is missing, is refused with the reason and leaves no directory"
@@ -105,7 +105,7 @@ snapshotRefused()
     assert(r.isErr, word)
     assert(r.err.get.contains(why), r.err.get)
     assertEq(fs.listDir(dir + "/home/typed").ok.get, [])
-    fs.removeDirAll(dir)
+    val _ = fs.removeDirAll(dir)
 
 @test("a type file that cannot be read is refused")
 snapshotUnreadable()
@@ -119,7 +119,7 @@ snapshotUnreadable()
   )
   assert(r.isErr, "")
   assertEq(fs.listDir(dir + "/home/typed").ok.get, [])
-  fs.removeDirAll(dir)
+  val _ = fs.removeDirAll(dir)
 
 @test("an executable that cannot be linked leaves the snapshot without one, so the job runs the installed program")
 noLink()
@@ -128,7 +128,7 @@ noLink()
   val file = dir + "/src/t.job"
   val snap = marshal.snapshotType(dir + "/home", file, typeOf(file, text), None, dir + "/not-there").ok.get
   assertEq(snap.executable, None)
-  fs.removeDirAll(dir)
+  val _ = fs.removeDirAll(dir)
 
 @test(
   "the sweep removes snapshots older than the age, reports them under typed/, spares younger ones, and keeps everything for no age or a dry run"
@@ -155,4 +155,4 @@ sweep()
   assertEq(marshal.sweepSnapshots(dir + "/home", now + 120000, Some(60000), false).0, [s"typed/$name"])
   assert(!fs.exists(snap.dir))
   assertEq(marshal.sweepSnapshots(dir + "/nowhere", now, Some(1), false).0, [])
-  fs.removeDirAll(dir)
+  val _ = fs.removeDirAll(dir)

@@ -142,7 +142,7 @@ topWithoutDaemon()
   assert(shown.contains("no daemon at"), shown)
   assert(shown.contains("s starts one"), shown)
   assert(!fs.exists(home + "/sock"))
-  fs.removeDirAll(home)
+  val _ = fs.removeDirAll(home)
 
 @test("top takes no arguments, and where there is no terminal it says so and exits 2")
 topRefusals()
@@ -154,14 +154,14 @@ topRefusals()
   assertEq(s.code, 2)
   assert(s.out.contains("not a terminal"), s.out)
   assert(!fs.exists(home + "/sock"))
-  fs.removeDirAll(home)
+  val _ = fs.removeDirAll(home)
 
 // The daemon's snapshot of `home`, asked over its socket.
 snapshotOf(home: string) -> Overview
   val conn = UnixStream.connect(home + "/sock").ok.get
   conn.writeText("{\"op\":\"snapshot\"}\n").ok.get
   val reply = conn.readLine().ok.get.get
-  conn.close()
+  val _ = conn.close()
   marshal.decodeReply(reply) match
     Ok(Reply.Viewed(o)) -> o
     other -> fail(s"not a snapshot: $other")

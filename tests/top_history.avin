@@ -145,7 +145,7 @@ endedJobsOfALog()
   assertEq(next.jobs.map(j -> j.id), [long(3)])
   assertEq(next.left, 0)
   assertEq(top.logHistory(dir + "/none.jsonl")(None, 5).ok.get, Page([], 0))
-  fs.removeDirAll(dir)
+  val _ = fs.removeDirAll(dir)
 
 @test(
   "Down on the last job loads the next page of earlier jobs and selects the first of them; Down within them only moves"

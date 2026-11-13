@@ -25,18 +25,18 @@ restartTakesOverSocket()
   val before = daemonPid(home)
   val conn = UnixStream.connect(home + "/sock").ok.get
   // the path answers for a listener that is not the new image's, as the old one's copy does
-  fs.remove(home + "/sock")
+  val _ = fs.remove(home + "/sock")
   val stray = UnixListener.bind(home + "/sock").ok.get
   conn.writeText(restartRequest(bin())).ok.get
   // the old image goes without a reply
   assertEq(conn.readLine().ok.flatten, None)
-  conn.close()
+  val _ = conn.close()
   assert(daemonSaid(home, s"daemon $before restarted", 10000), daemonLog(home))
   assert(!daemonLog(home).contains("another daemon is listening"), daemonLog(home))
   assert(m(home, "version").out.contains(s"daemon $before: marshal"), daemonLog(home))
   assertEq(daemonPid(home), before)
   assert(m(home, "ls").out.contains("running"))
-  stray.close()
+  val _ = stray.close()
   assertEq(m(home, "kill", id.toString()).code, 0)
   cleanUp(home)
 
@@ -54,12 +54,12 @@ restartAsksAgain()
   assert(daemonSaid(home, "restarting as", 10000), daemonLog(home))
   // the old image is gone and the new one waits: the client's next connection reaches a
   // listener that closes it unanswered
-  fs.remove(home + "/sock")
+  val _ = fs.remove(home + "/sock")
   val stray = UnixListener.bind(home + "/sock").ok.get
   val answered = stray.accept().ok.get
-  answered.close()
-  stray.close()
-  fs.remove(home + "/sock")
+  val _ = answered.close()
+  val _ = stray.close()
+  val _ = fs.remove(home + "/sock")
   fs.writeText(go, "").ok.get
   val r = client.join()
   assertEq(r.code, 0)

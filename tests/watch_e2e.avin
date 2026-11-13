@@ -31,7 +31,7 @@ startM(home: string, env: Vector[(string, string)], args: string*) -> Background
   val child = command.start().ok.get
   val code = Atomic(-1)
   spawn(() ->
-    child.waitFor()
+    val _ = child.waitFor()
     ())
   Background(child.pid(), file)
 
@@ -39,7 +39,8 @@ outputOf(b: Background) -> string = fs.readText(b.file).getOrElse("")
 
 linesOf(b: Background) -> Vector[string] = outputOf(b).lines.filter(l -> l.startsWith("{")).toVector
 
-stopBackground(b: Background) = process.signal(b.pid, 9)
+stopBackground(b: Background)
+  val _ = process.signal(b.pid, 9)
 
 // Whether the process is still there; a child that has exited and not been waited for is not alive
 // for this purpose, since `waitFor` above reaps it.
@@ -337,7 +338,7 @@ waitDaemonStops()
   assert(r.out.contains("the daemon stopped") || r.out.contains("no daemon"), r.out)
   assert(within(5000, () -> !alive(following.pid)), "events --follow did not end when the daemon stopped")
   assert(!fs.exists(home + "/sock"), "a waiter started a daemon")
-  fs.removeDirAll(home)
+  val _ = fs.removeDirAll(home)
 
 @test("a bad condition exits 2 with the grammar and starts no daemon")
 waitBadGrammar()
@@ -400,7 +401,7 @@ watchWithNoDaemon()
     assertEq((args, r.code), (args, 1))
     assert(r.out.contains("no daemon at"), s"$args: ${r.out}")
   assert(!fs.exists(home + "/sock"), "a command started a daemon")
-  fs.removeDirAll(home)
+  val _ = fs.removeDirAll(home)
 
 @test("events prints the logged events, in order, and exits")
 eventsPast()

@@ -76,29 +76,31 @@ class TakeSlot(val dir: string, val me: long)
         Err(_) ->
           pidIn(mutex() + "/pid") match
             Some(owner) if !alive(owner) ->
-              fs.remove(mutex() + "/pid")
-              fs.removeDir(mutex())
+              val _ = fs.remove(mutex() + "/pid")
+              val _ = fs.removeDir(mutex()) // another waiter may have taken it first; the createDir above decides
               continue
             _ -> ()
           threads.sleep(millis(200))
-    writeAtomic(mutex() + "/pid", me.toString())
+    // the mutex is held whether or not its holder's pid could be written; without it, a waiter cannot tell a dead holder
+    val _ = writeAtomic(mutex() + "/pid", me.toString())
 
   unlock()
     depth -= 1
     if depth > 0 then return
-    fs.remove(mutex() + "/pid")
-    fs.removeDir(mutex())
+    val _ = fs.remove(mutex() + "/pid")
+    val _ = fs.removeDir(mutex())
 
   // What take-slot holds and waits for, apart from marshal's own registrations (`ours`, job pids)
   // and the daemon's own ticket. Stale files are removed as they are met. Call with the mutex held.
   scan(ours: Vector[long], budget: int) -> Outside
-    fs.createDirAll(held())
-    fs.createDirAll(waiting())
+    // a directory that cannot be made lists as empty below, as no one else's registrations are seen
+    val _ = fs.createDirAll(held())
+    val _ = fs.createDirAll(waiting())
     var units = 0
     for name in fs.listDir(held()).getOrElse([])
       val pid = name.toLongOption().getOrElse(0)
       if !alive(pid)
-        fs.remove(held() + "/" + name)
+        val _ = fs.remove(held() + "/" + name)
       elif !ours.contains(pid)
         units += fs.readText(held() + "/" + name).ok.flatMap(t -> t.trim.toIntOption()).getOrElse(0)
     for name in ["build.lock", "build2.lock", "build3.lock", "build4.lock", "build5.lock"]
@@ -107,8 +109,8 @@ class TakeSlot(val dir: string, val me: long)
       if pidIn(lock + "/pid").exists(p -> alive(p))
         units += 4
       else
-        fs.remove(lock + "/pid")
-        fs.removeDir(lock)
+        val _ = fs.remove(lock + "/pid")
+        val _ = fs.removeDir(lock)
     val tickets = Buffer[Ticket]()
     for name in fs.listDir(waiting()).getOrElse([])
       val file = waiting() + "/" + name
@@ -120,7 +122,7 @@ class TakeSlot(val dir: string, val me: long)
             ).getOrElse(1)
             tickets += Ticket(arrived, if wants > budget then budget else wants)
         // take-slot removes a ticket of a dead pid; a name it cannot read it never made
-        Some(_) -> fs.remove(file)
+        Some(_) -> val _ = fs.remove(file)
         None -> ()
     Outside(units, tickets.toVector, landingHeld(ours))
 
@@ -132,16 +134,17 @@ class TakeSlot(val dir: string, val me: long)
     if holder.isEmpty then return true
     val pid = holder.toLongOption().getOrElse(0)
     if alive(pid) then return !ours.contains(pid)
-    fs.remove(landLock() + "/pid")
-    fs.removeDir(landLock())
+    val _ = fs.remove(landLock() + "/pid")
+    val _ = fs.removeDir(landLock())
     false
 
   // Counts the job `pid` against take-slot's budget. Call with the mutex held.
   register(pid: long, units: int)
-    writeAtomicVia(held() + "/" + pid.toString(), units.toString() + "\n", s"$dir/.units-$pid.tmp")
+    // a registration that cannot be written is not seen by take-slot, which then runs more than the budget allows
+    val _ = writeAtomicVia(held() + "/" + pid.toString(), units.toString() + "\n", s"$dir/.units-$pid.tmp")
 
   unregister(pid: long)
-    fs.remove(held() + "/" + pid.toString())
+    val _ = fs.remove(held() + "/" + pid.toString())
 
   // Makes the landing lock, removing a stale one first; false while a live run holds it.
   takeLanding() -> bool
@@ -151,26 +154,27 @@ class TakeSlot(val dir: string, val me: long)
 
   // Names the landing job `pid` as the lock's holder.
   landed(pid: long)
-    writeAtomic(landLock() + "/pid", pid.toString() + "\n")
+    val _ = writeAtomic(landLock() + "/pid", pid.toString() + "\n") // a lock with no pid is read as being taken
 
   // Removes the landing lock when `pid` holds it, or when it has no holder (`pid` 0: a job that
   // could not be started).
   releaseLanding(pid: long)
     val holder = pidIn(landLock() + "/pid")
     if holder == Some(pid) || (pid == 0 && holder.isEmpty)
-      fs.remove(landLock() + "/pid")
-      fs.removeDir(landLock())
+      val _ = fs.remove(landLock() + "/pid")
+      val _ = fs.removeDir(landLock())
 
   // Writes the daemon's ticket for a job that arrived at `arrived` and waits for `units`; answers
   // its name.
   putTicket(arrived: long, units: int) -> string
     val name = ticketName(arrived, me)
-    fs.createDirAll(waiting())
-    writeAtomicVia(waiting() + "/" + name, units.toString() + "\n" + TicketMark + "\n", s"$dir/.ticket-$me.tmp")
+    val _ = fs.createDirAll(waiting())
+    // a ticket that cannot be written leaves the job waiting unseen by take-slot, as with no ticket
+    val _ = writeAtomicVia(waiting() + "/" + name, units.toString() + "\n" + TicketMark + "\n", s"$dir/.ticket-$me.tmp")
     name
 
   removeTicket(name: string)
-    fs.remove(waiting() + "/" + name)
+    val _ = fs.remove(waiting() + "/" + name)
 
   // Removes what an earlier daemon `daemon` left: its tickets (marked as marshal's, so a take-slot
   // run that has since been given the same pid keeps its own), and the registrations and landing
@@ -181,7 +185,7 @@ class TakeSlot(val dir: string, val me: long)
       parseTicket(name) match
         Some((_, pid)) if pid == daemon && pid != me && fs.readText(file).getOrElse("").contains(
           TicketMark
-        ) -> fs.remove(file)
+        ) -> val _ = fs.remove(file)
         _ -> ()
     for pid in pids
       unregister(pid)

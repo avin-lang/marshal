@@ -667,16 +667,16 @@ hugeLog()
   val n = 250000
   for i in 1 .. n
     val id = long(i)
-    f.writeText(endLine(1000 + id, id, kind = if i % 2 == 0 then "build" else "test", run = id) + "\n")
-    if i == 1000 then f.writeText("{\"ts\":oops\n")
-  f.close()
+    f.writeText(endLine(1000 + id, id, kind = if i % 2 == 0 then "build" else "test", run = id) + "\n").ok.get
+    if i == 1000 then f.writeText("{\"ts\":oops\n").ok.get
+  f.close().ok.get
   val l = cli.readLedger(log).ok.get
   assertEq(l.unreadable, 1)
   assertEq(l.ends.length, n)
   assertEq(ids(marshal.selectEnded(l, Everything, 3)), [long(250000), long(249999), long(249998)])
   val rows = marshal.kindStats(l, Everything)
   assertEq(rows.map(r -> r.count), [125000, 125000])
-  fs.removeDirAll(dir)
+  val _ = fs.removeDirAll(dir)
 
 @test("a log that is not there is an empty ledger, and a directory is an error")
 missingLog()
@@ -684,7 +684,7 @@ missingLog()
   val l = cli.readLedger(dir + "/events.jsonl").ok.get
   assertEq(l.ends.length, 0)
   assert(cli.readLedger(dir).isErr)
-  fs.removeDirAll(dir)
+  val _ = fs.removeDirAll(dir)
 
 @test("history and stats have their own help, with the options")
 help()

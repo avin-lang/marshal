@@ -18,7 +18,7 @@ rawAnswer(home: string, request: string) -> string
   val conn = UnixStream.connect(home + "/sock").ok.get
   conn.writeText(request + "\n").ok.get
   val reply = conn.readLine().ok.get.get
-  conn.close()
+  val _ = conn.close()
   reply
 
 @test(

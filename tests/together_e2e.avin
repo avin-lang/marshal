@@ -173,7 +173,7 @@ togetherPausedAttemptRetried()
   while !fs.exists(home + "/once") && time.monotonic() < until do threads.sleep(millis(20))
   assertEq(m(home, "pause", id.toString()).code, 0)
   // the paused attempt is ended from outside, as a crash would end it: a signal not sent by kill
-  process.signal(-pgid, 9)
+  val _ = process.signal(-pgid, 9)
   assertEq(m(home, "wait", id.toString()).code, 0)
   assertEq(eventsOf(home, id), ["submitted", "started", "paused", "finished", "retry", "started", "finished"])
   val last = events(home).filter(e -> e("id").asLong == Some(id)).last

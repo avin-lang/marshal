@@ -288,7 +288,7 @@ stepSweep()
   // no age keeps everything; a home with no steps is fine
   assertEq(marshal.cleanSteps(home, 1000000000, None, false), [])
   assertEq(marshal.cleanSteps(home + "/nothing", 1, Some(long(1)), false), [])
-  fs.removeDirAll(home)
+  val _ = fs.removeDirAll(home)
 
 @test("a step used again is not removed: touching moves its modification time, and writes nothing else")
 stepTouch()
@@ -304,7 +304,7 @@ stepTouch()
   // a step that is not there is not recorded, and nothing is made in its place
   marshal.touchStep(s"$home/steps/gone-$StepHex2", 1)
   assert(!fs.exists(s"$home/steps/gone-$StepHex2"))
-  fs.removeDirAll(home)
+  val _ = fs.removeDirAll(home)
 
 @test("the `.used` records older versions wrote are removed by a clean and never reported; a dry run leaves them")
 stepUsedLeftovers()
@@ -321,7 +321,7 @@ stepUsedLeftovers()
   assertEq(marshal.cleanSteps(home, 2000, None, false), [])
   assert(!fs.exists(s"$dir/s-$StepHex1.used") && !fs.exists(s"$dir/orphan-$StepHex2.used"))
   assert(fs.isFile(s"$dir/s-$StepHex1") && fs.isFile(s"$dir/notes.used"))
-  fs.removeDirAll(home)
+  val _ = fs.removeDirAll(home)
 
 @test(
   "a step that cannot be read while the clean runs (here a link to nothing) is skipped without error and counts no bytes"
@@ -337,7 +337,7 @@ stepVanishes()
   assertEq(bytes, long(5))
   assertEq(marshal.fileBytes(dir + "/nowhere"), long(0))
   assertEq(marshal.fileBytes(s"$dir/b-$StepHex2"), long(0))
-  fs.removeDirAll(home)
+  val _ = fs.removeDirAll(home)
 
 @test(
   "bytes are the sizes of what is removed: files, directory trees, build logs; a dry run counts what a real run frees"
@@ -359,7 +359,7 @@ cleanBytes()
   assertEq(marshal.sweepRuns(home, {}, {}, {}, false), (["7"], long(1024)))
   // nothing left to free
   assertEq(marshal.sweepRuns(home, {}, {}, {}, false), ([], long(0)))
-  fs.removeDirAll(home)
+  val _ = fs.removeDirAll(home)
 
 @test("a sweep sums the bytes of job files, run directories and the event log's shrinkage; a dry run says the same")
 sweepBytes()
@@ -376,7 +376,7 @@ sweepBytes()
   assert(
     marshal.sweepRule(home, {}, 1000, Retention(None, None, None, None), CleanRule(None, Some(0), false)).bytes > 0
   )
-  fs.removeDirAll(home)
+  val _ = fs.removeDirAll(home)
 
 @test("run directories go with their job or when no job has them; active jobs', other jobs' and oddly named ones stay")
 runSweep()
@@ -393,7 +393,7 @@ runSweep()
   for name in ["2", "3", "5", "keep-me"] do assert(fs.isDir(s"$home/runs/$name"), name)
   assert(fs.isFile(home + "/runs/9"))
   assertEq(marshal.cleanRuns(home + "/none", {}, {}, {}, false), [])
-  fs.removeDirAll(home)
+  val _ = fs.removeDirAll(home)
 
 // A home with jobs 1 to 4 ended at 100..400 and job 5 running, each with a log and a run directory.
 private homeWithJobs() -> string
@@ -443,7 +443,7 @@ sweepRemoves()
     ).jobs,
     []
   )
-  fs.removeDirAll(home)
+  val _ = fs.removeDirAll(home)
 
 @test("a dry run reports exactly what a real run removes, and removes nothing")
 sweepDryRun()
@@ -458,7 +458,7 @@ sweepDryRun()
   val real = marshal.sweepRule(home, {long(5)}, 1000, r, CleanRule(None, Some(1), false))
   assertEq(real, CleanReport(false, dry.jobs, dry.runs, dry.steps, dry.events, dry.eventJobs, dry.bytes))
   assert(dry.events > 0)
-  fs.removeDirAll(home)
+  val _ = fs.removeDirAll(home)
 
 @test("a sweep trims the events of old ended jobs through the file, keeping the rest readable")
 sweepTrimsEvents()
@@ -474,7 +474,7 @@ sweepTrimsEvents()
   assert(fs.isFile(home + "/jobs/1.log"))
   // nothing is left beside the log
   assertEq(fs.listDir(home).ok.get.filter(n -> n.startsWith("events")), ["events.jsonl"])
-  fs.removeDirAll(home)
+  val _ = fs.removeDirAll(home)
 
 @test("automatic retention by count and by age, and a home with no log or no jobs directory is swept without error")
 sweepRetainedAndEmpty()
@@ -486,13 +486,13 @@ sweepRetainedAndEmpty()
       marshal.sweepRetained(home, {long(5)}, 1000, Retention(Some(long(750)), Some(3), None, None))
     )
   )
-  fs.removeDirAll(home)
+  val _ = fs.removeDirAll(home)
   val empty = cleanTempHome()
   assert(marshal.nothingRemoved(marshal.sweepRetained(empty, {}, 1000, marshal.defaultRetention)))
   assert(
     marshal.nothingRemoved(marshal.sweepRule(empty, {}, 1000, marshal.defaultRetention, CleanRule(None, None, false)))
   )
-  fs.removeDirAll(empty)
+  val _ = fs.removeDirAll(empty)
 
 @test("a report prints a line for each thing removed, says so when there is nothing, and survives the wire")
 cleanReports()

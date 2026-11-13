@@ -78,8 +78,8 @@ entryOf(home: string) -> string = registry() + "/" + home.split("/").last
 // Stops the home's daemon, killing what it runs, and removes the home.
 cleanUp(home: string)
   m(home, "stop", "--force")
-  fs.removeDirAll(home)
-  fs.remove(entryOf(home))
+  val _ = fs.removeDirAll(home)
+  val _ = fs.remove(entryOf(home))
 
 // Ends the daemon of every registered home whose owner process is gone, and removes the home. A
 // test that failed or was stopped never reached its `cleanUp`; this is what does it for the test.
@@ -94,12 +94,12 @@ reapOrphans() -> int
     if lines.nonEmpty && !(owner >= 1 && process.signal(owner, 0).isOk)
       val home = lines(0)
       for pid in fs.readText(home + "/daemon.pid").ok.flatMap(t -> t.trim.toLongOption())
-        process.signal(pid, 15)
+        val _ = process.signal(pid, 15)
         val until = time.monotonic() + millis(5000)
         while process.signal(pid, 0).isOk && time.monotonic() < until do threads.sleep(millis(20))
-        process.signal(pid, 9)
-      fs.removeDirAll(home)
-      fs.remove(entry)
+        val _ = process.signal(pid, 9)
+      val _ = fs.removeDirAll(home)
+      val _ = fs.remove(entry)
       reaped += 1
   reaped
 
@@ -382,7 +382,7 @@ stopWaits()
   val again = m(home, "stop")
   assertEq(again.code, 0)
   assert(again.out.contains("no daemon"), again.out)
-  fs.removeDirAll(home)
+  val _ = fs.removeDirAll(home)
 
 @test("stop --force kills what runs and cancels what waits")
 stopForce()
@@ -396,7 +396,7 @@ stopForce()
   assertEq(eventsOf(home, a), ["submitted", "started", "killed"])
   assertEq(eventsOf(home, b), ["submitted", "killed"])
   assert(!fs.exists(home + "/sock"))
-  fs.removeDirAll(home)
+  val _ = fs.removeDirAll(home)
 
 @test("a TERM to the daemon stops it cleanly, killing what runs")
 terminate()
@@ -412,7 +412,7 @@ terminate()
   assert(!groupAlive(pgid))
   assertEq(eventsOf(home, id), ["submitted", "started", "killed"])
   assert(!fs.exists(home + "/sock"))
-  fs.removeDirAll(home)
+  val _ = fs.removeDirAll(home)
 
 @test("jobs running when the daemon died are recorded as lost by the next one, and ids go on")
 lostOnRestart()
@@ -429,7 +429,7 @@ lostOnRestart()
   assertEq(eventsOf(home, id), ["submitted", "started", "lost"])
   val lost = events(home).find(e -> e("event").asString == Some("lost")).get
   assertEq(lost("group_alive").asBool, Some(true))
-  process.signal(-pgid, 9)
+  val _ = process.signal(-pgid, 9)
   assertEq(submitted(home, "--", "true"), id + 1)
   cleanUp(home)
 
@@ -657,7 +657,7 @@ rawRequest(home: string, request: string) -> Option[string]
   val conn = UnixStream.connect(home + "/sock").ok.get
   conn.writeText(request + "\n").ok.get
   val reply = conn.readLine().ok.flatten
-  conn.close()
+  val _ = conn.close()
   reply
 
 @test("a restart naming a program that is missing, not a file or not executable fails cleanly and the daemon goes on")
@@ -756,7 +756,7 @@ badConfig()
   assertEq(r.code, 2)
   assert(r.out.contains("did not start"), r.out)
   assert(r.out.contains("`units` is a whole number"), r.out)
-  fs.removeDirAll(home)
+  val _ = fs.removeDirAll(home)
 
 @test(
   "ls shows each job's start as local date and minute in the caller's zone, - for a queued job, and --json is unchanged"
@@ -815,7 +815,7 @@ usage()
   assertEq(m(home, "wait", "x").code, 2)
   assertEq(m(home, "stop", "--now").code, 2)
   assertEq(m(home, "help").code, 0)
-  fs.removeDirAll(home)
+  val _ = fs.removeDirAll(home)
 
 // ---- help ----
 
@@ -846,7 +846,7 @@ helpOfEveryCommand()
       assert(r.err == "", s"$name $flag")
   assert(!fs.exists(home + "/sock"), "help started a daemon")
   assert(!fs.exists(home + "/events.jsonl"), "help wrote an event")
-  fs.removeDirAll(home)
+  val _ = fs.removeDirAll(home)
 
 @test("help after other arguments of the command, and after options, is still help")
 helpAmongArguments()
@@ -865,7 +865,7 @@ helpAmongArguments()
     val r = split(home, args*)
     assert(r.code == 0, args.mkString(" "))
     assert(r.out.startsWith(s"usage: marshal ${args(0)}"), args.mkString(" "))
-  fs.removeDirAll(home)
+  val _ = fs.removeDirAll(home)
 
 @test("`--help`, `-h` and `help` print the whole usage on standard output and exit 0")
 helpOfAll()
@@ -877,7 +877,7 @@ helpOfAll()
     assert(r.out.startsWith("usage: marshal <command> [options]"), r.out)
     for name in commandNames do assert(r.out.contains(s"marshal $name"), s"$name missing: ${r.out}")
     assert(r.out.contains("--landing"), r.out)
-  fs.removeDirAll(home)
+  val _ = fs.removeDirAll(home)
 
 @test("a bare `marshal` prints the usage on standard error and exits 2, with nothing on standard output")
 bareMarshal()
@@ -886,7 +886,7 @@ bareMarshal()
   assertEq(r.code, 2)
   assertEq(r.out, "")
   assert(r.err.startsWith("usage: marshal <command> [options]"), r.err)
-  fs.removeDirAll(home)
+  val _ = fs.removeDirAll(home)
 
 @test("`help <command>` describes one command; an unknown one is refused")
 helpWord()
@@ -899,7 +899,7 @@ helpWord()
   assertEq(bad.out, "")
   assert(bad.err.contains("no command `dance`"), bad.err)
   assertEq(split(home, "help", "run", "wait").code, 2)
-  fs.removeDirAll(home)
+  val _ = fs.removeDirAll(home)
 
 @test("an unknown command is refused even with --help, and help for it is not invented")
 helpOfUnknown()
@@ -908,7 +908,7 @@ helpOfUnknown()
   assertEq(r.code, 2)
   assertEq(r.out, "")
   assert(r.err.contains("no command `dance`"), r.err)
-  fs.removeDirAll(home)
+  val _ = fs.removeDirAll(home)
 
 @test("the usage of submit and run lists the options, and the others do not")
 helpOptionsOnlyWhereTheyApply()
@@ -918,7 +918,7 @@ helpOptionsOnlyWhereTheyApply()
     for flag in ["--kind", "--units", "--mem", "--landing", "--dir", "--deadline"] do
       assert(r.out.contains(flag), s"$name: $flag missing")
   assert(!split(home, "ls", "--help").out.contains("--kind"))
-  fs.removeDirAll(home)
+  val _ = fs.removeDirAll(home)
 
 @test("after `--` nothing is an option: `run -- prog --help` runs prog")
 helpAfterDashDash()
@@ -951,7 +951,7 @@ helpAsAValue()
   assertEq(r.code, 2)
   assertEq(r.out, "")
   assert(r.err.contains("no command to run"), r.err)
-  fs.removeDirAll(home)
+  val _ = fs.removeDirAll(home)
 
 @test("a `--` ends help for the other commands too")
 helpAfterDashDashOthers()
@@ -959,7 +959,7 @@ helpAfterDashDashOthers()
   val r = split(home, "wait", "--", "--help")
   assertEq(r.code, 2)
   assert(!r.out.contains("usage:"), r.out)
-  fs.removeDirAll(home)
+  val _ = fs.removeDirAll(home)
 
 // ---- sharing take-slot.zsh's directory ----
 
@@ -977,7 +977,8 @@ sleeper() -> Sleeper
   spawn(() -> child.waitFor())
   Sleeper(pid)
 
-stopSleeper(s: Sleeper) = process.signal(s.pid, 9)
+stopSleeper(s: Sleeper)
+  val _ = process.signal(s.pid, 9)
 
 // A pid no process has: above the system's largest.
 val NoProcess: long = 99999999
@@ -1122,7 +1123,7 @@ marshalWaitsForTakeSlot()
   val id = submitted(home, "--units", "1", "--", "true")
   threads.sleep(millis(4000))
   assert(!started(home, id), "marshal ran over take-slot's units")
-  process.signal(run.pid, 15)
+  val _ = process.signal(run.pid, 15)
   assert(within(10000, () -> ended(home, id)), "marshal's job never started")
   cleanUp(home)
 
@@ -1175,7 +1176,7 @@ takeSlotLandingFirst()
   val id = submitted(home, "--landing", "--", "true")
   threads.sleep(millis(4000))
   assert(!started(home, id), "two landings at once")
-  process.signal(run.pid, 15)
+  val _ = process.signal(run.pid, 15)
   assert(within(10000, () -> ended(home, id)))
   assert(!fs.exists(slots(home) + "/land.lock"))
   cleanUp(home)
@@ -1206,7 +1207,7 @@ restartCleansRegistrations()
   val daemon = daemonPid(home)
   assert(within(2000, () -> tickets(home).exists(t -> t.endsWith(s"-$daemon"))))
   process.signal(daemon, 9).ok.get
-  process.signal(-pgidOf(home, id), 9)
+  val _ = process.signal(-pgidOf(home, id), 9)
   while process.signal(daemon, 0).isOk || process.signal(pid, 0).isOk do threads.sleep(millis(20))
   assert(held(home).contains(pid.toString()))
   assertEq(m(home, "status").code, 0)
@@ -1353,7 +1354,7 @@ missingTakeSlotDir()
   val r = m(home, "status")
   assertEq(r.code, 2)
   assert(r.out.contains("is not a directory"), r.out)
-  fs.removeDirAll(home)
+  val _ = fs.removeDirAll(home)
 
 // `m` with the caller's time zone set to `zone`.
 inZone(home: string, zone: string, args: string*) -> Ran = mWith(home, [("TZ", zone)], args*)
@@ -1488,7 +1489,7 @@ historyNoDaemon()
   assertEq(kinds(1)("peak_max"), Json.Null)
   assert(m(home, "stats", "--kind", "test").out.contains("50%"))
   assert(!fs.exists(home + "/sock"), "history started a daemon")
-  fs.removeDirAll(home)
+  val _ = fs.removeDirAll(home)
 
 @test("history and stats on a home with no log say nothing matched; bad options exit 2")
 historyEmptyAndRefusals()
@@ -1512,7 +1513,7 @@ historyEmptyAndRefusals()
   assert(m(home, "history", "--help").out.contains("--since"))
   assert(m(home, "stats", "--help").out.contains("--kind"))
   assert(!fs.exists(home + "/sock"), "history started a daemon")
-  fs.removeDirAll(home)
+  val _ = fs.removeDirAll(home)
 
 @test("history and stats list jobs the daemon ran, and still list them after a restart")
 historyAfterJobsAndRestart()
@@ -1542,8 +1543,8 @@ startOwner() -> process.Child = Command("sleep", "120").start().ok.get
 
 // Ends `owner` by SIGKILL, as a killed test run would be, and reaps it.
 killOwner(owner: process.Child)
-  process.signal(owner.pid(), 9)
-  owner.waitFor()
+  val _ = process.signal(owner.pid(), 9)
+  val _ = owner.waitFor()
   ()
 
 @test("the teardown ends the daemon of a home whose owner is gone, and removes the home")
@@ -1570,7 +1571,7 @@ reapLeavesLiveOwner()
   fs.writeText(registry() + "/garbage-entry", "").ok.get
   reapOrphans()
   assert(process.signal(daemon, 0).isOk, "an empty entry ended a daemon")
-  fs.remove(registry() + "/garbage-entry")
+  val _ = fs.remove(registry() + "/garbage-entry")
   cleanUp(home)
 
 @test("a daemon whose owner is killed stops by itself, with its job and its followers")
@@ -1587,5 +1588,5 @@ daemonStopsWithOwner()
   assert(within(5000, () -> process.signal(daemon, 0).isErr), "the daemon is still running")
   assert(within(5000, () -> process.signal(following.pid, 0).isErr), "events --follow is still running")
   assertEq(eventsOf(home, id), ["submitted", "started", "killed"])
-  fs.removeDirAll(home)
-  fs.remove(entryOf(home))
+  val _ = fs.removeDirAll(home)
+  val _ = fs.remove(entryOf(home))

@@ -667,31 +667,31 @@ watchLoop(first: Request, again: () -> Request, pastEnds: bool, onEvent: (Json) 
         marshal.decodeReply(line) match
           Ok(Streamed(ev)) ->
             if onEvent(ev)
-              conn.close()
+              val _ = conn.close()
               return Some(0)
           Ok(Replayed(evs)) ->
             for ev in evs
               if onEvent(ev)
-                conn.close()
+                val _ = conn.close()
                 return Some(0)
             if pastEnds
-              conn.close()
+              val _ = conn.close()
               return Some(0)
           Ok(Failed(e)) ->
-            conn.close()
+            val _ = conn.close()
             eprintln(s"marshal: $e")
             return Some(
               if e.startsWith("the daemon") || e.startsWith("events were dropped") then Unreachable else Trouble
             )
           Ok(other) ->
-            conn.close()
+            val _ = conn.close()
             eprintln(s"marshal: unexpected reply $other")
             return None
           Err(e) ->
-            conn.close()
+            val _ = conn.close()
             eprintln(s"marshal: the daemon's reply is not one: $e")
             return None
-    conn.close()
+    val _ = conn.close()
     conn = reconnectExisting(time.monotonic() + Reconnecting) match
       Ok(c) -> c
       Err(e) ->
@@ -807,7 +807,7 @@ restart() -> int
     Ok(Some(other)) -> return complain(s"marshal: unexpected reply $other")
     Ok(None) -> ()
     Err(e) -> return complain(e)
-  conn.close()
+  val _ = conn.close()
   restartedHello() match
     Ok((now, p)) if p == pid ->
       println(s"marshal: daemon $pid restarted: version $old, now $now")
@@ -824,7 +824,7 @@ restartedHello() -> Result[(string, long), string]
   loop
     val again = reconnect(limit)?
     val answer = exchange(again, Request.Hello)
-    again.close()
+    val _ = again.close()
     answer? match
       Some(Hi(v, p)) -> return Ok((v, p))
       Some(Failed(e)) -> return Err(
@@ -893,7 +893,9 @@ tail(args: Vector[string]) -> int
   val f = fs.open(log) match
     Ok(f) -> f
     Err(e) -> return complain(s"marshal: $log: ${e.message}")
-  f.seekToEnd()
+  f.seekToEnd() match
+    Ok(_) -> ()
+    Err(e) -> return complain(s"marshal: $log: ${e.message}")
   loop
     val done = code.load() >= 0
     f.readCompleteLine() match
@@ -904,7 +906,7 @@ tail(args: Vector[string]) -> int
           break
         threads.sleep(millis(100))
       Err(e) -> return complain(s"marshal: $log: ${e.message}")
-  f.close()
+  val _ = f.close()
   reportEnd(waiter.join())
 
 // `grep [options] <id> <pattern>`: the lines of a job's log that match, read straight from the log
@@ -985,11 +987,13 @@ grep(args: Vector[string]) -> int
           Ok(None) -> break
           Err(e) -> return complain(s"marshal: $log: ${e.message}")
       skip = if total > keep then total - keep else 0
-      f.seek(0)
+      f.seek(0) match
+        Ok(_) -> ()
+        Err(e) -> return complain(s"marshal: $log: ${e.message}")
     None -> ()
   var n: long = 0
   while n < skip
-    f.readLine()
+    val _ = f.readLine() // a line that cannot be read is skipped as the others are
     n += 1
   val result = grepLines(
     () -> f.readLine().mapErr(e -> s"marshal: $log: ${e.message}"),
@@ -998,7 +1002,7 @@ grep(args: Vector[string]) -> int
     spec,
     l -> println(l)
   )
-  f.close()
+  val _ = f.close()
   result match
     Ok(count) ->
       if countOnly then println(count)
@@ -1042,9 +1046,9 @@ askDaemon(request: Request) -> Result[Reply, string]
   loop
     exchange(conn, request)? match
       Some(reply) ->
-        conn.close()
+        val _ = conn.close()
         return Ok(reply)
-      None -> conn.close()
+      None -> val _ = conn.close()
     conn = reconnect(time.monotonic() + Reconnecting)?
 
 // A new connection to the daemon, looking with a growing pause until `limit`; a daemon is started
@@ -1075,7 +1079,7 @@ connect(start: bool) -> Result[UnixStream, string]
       Ok(c) -> return Ok(c)
       Err(_) -> threads.sleep(millis(50))
   // A lock left with no pid, by a command that died between making it and writing one, goes.
-  if fs.isDir(dir + "/starting") && !fs.exists(dir + "/starting/pid") then fs.removeDirAll(dir + "/starting")
+  if fs.isDir(dir + "/starting") && !fs.exists(dir + "/starting/pid") then val _ = fs.removeDirAll(dir + "/starting")
   val tail = fs.readTailLines(dir + "/daemon.log", 5).getOrElse([]).mkString("\n")
   Err(s"marshal: the daemon did not start; the end of $dir/daemon.log:\n$tail")
 
@@ -1086,15 +1090,19 @@ launch(dir: string) -> Result[unit, string]
   fs.createDirAll(dir).mapErr(e -> s"marshal: cannot make $dir: ${e.message}")?
   val lock = dir + "/starting"
   fs.createDir(lock) match
-    Ok(_) -> marshal.writeAtomic(lock + "/pid", process.pid().toString())
+    Ok(_) -> marshal.writeAtomic(lock + "/pid", process.pid().toString()).mapErr(
+      e -> s"marshal: cannot start a daemon: ${e.message}"
+    )?
     Err(IoError(ErrorKind.AlreadyExists, _, _)) ->
       // No pid yet: the command that made it is about to write one.
       val owner = fs.readText(lock + "/pid").ok.flatMap(t -> t.trim.toLongOption())
       val alive = owner.forall(p -> process.signal(p, 0).isOk)
       if alive then return Ok(())
-      fs.removeDirAll(lock)
+      val _ = fs.removeDirAll(lock) // the createDir below reports a lock that stays
       fs.createDir(lock) match
-        Ok(_) -> marshal.writeAtomic(lock + "/pid", process.pid().toString())
+        Ok(_) -> marshal.writeAtomic(lock + "/pid", process.pid().toString()).mapErr(
+          e -> s"marshal: cannot start a daemon: ${e.message}"
+        )?
         Err(IoError(ErrorKind.AlreadyExists, _, _)) -> return Ok(())
         Err(e) -> return Err(s"marshal: cannot start a daemon: ${e.message}")
     Err(e) -> return Err(s"marshal: cannot start a daemon: ${e.message}")

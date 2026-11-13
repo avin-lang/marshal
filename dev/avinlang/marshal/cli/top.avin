@@ -5,6 +5,7 @@ module dev.avinlang.marshal.cli
 // It never starts a daemon by itself: with none listening it says so, looks again every second, and
 // starts one when `s` is pressed.
 import avin.fs
+import avin.io.IoError
 import avin.net.UnixStream
 import avin.process
 import avin.time
@@ -26,11 +27,12 @@ val TopOptions: tui.Options = tui.Options(mouse = false)
 top(args: Vector[string]) -> int
   if args.nonEmpty then return complain("marshal: top takes no arguments")
   Terminal.use(TopOptions, watch) match
-    Ok(()) -> 0
+    Ok(Ok(())) -> 0
+    Ok(Err(e)) -> complain(s"marshal: top: ${e.message}")
     Err(e) -> complain(s"marshal: top: ${e.message}")
 
 // Asks, draws, and waits for a key or the next second, until q.
-watch(term: Terminal)
+watch(term: Terminal) -> Result[unit, IoError]
   val sock = home() + "/sock"
   val app = App(sock)
   app.history = Some(logHistory(home() + "/events.jsonl"))
@@ -48,11 +50,11 @@ watch(term: Terminal)
     readLog(app)
     val g = term.frame()
     app.draw(g, (time.monotonic() - fetched).toMillis, (time.monotonic() - epoch).toMillis)
-    term.present(g)
+    term.present(g)?
     val wait = due - time.monotonic()
     term.poll(if wait > millis(0) then wait else millis(0)) match
       Some(e) -> app.handle(e, (time.monotonic() - epoch).toMillis) match
-        Quit -> return
+        Quit -> return Ok(())
         KillJob(id) ->
           app.message = conn.map(c -> ask(c, Request.Kill(id))) match
             Some(Ok(Done)) -> s"job $id is being stopped"

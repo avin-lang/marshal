@@ -411,7 +411,7 @@ runTypeRefusals()
   assert(broken.out.contains("broken.job: step `a`: `run` is the program"), broken.out)
   // nothing was submitted, so no daemon was started
   assert(!fs.exists(home + "/sock"))
-  fs.removeDirAll(home)
+  val _ = fs.removeDirAll(home)
 
 @test("a type's --help lists its parameters; run-type --help describes the command")
 runTypeHelp()
@@ -428,7 +428,7 @@ runTypeHelp()
   assertEq(command.code, 0)
   assert(command.out.contains("usage: marshal run-type <type> [parameters]"), command.out)
   assert(!fs.exists(home + "/sock"))
-  fs.removeDirAll(home)
+  val _ = fs.removeDirAll(home)
 
 @test("killing a type's job stops the step it is running, which runs in a group of its own")
 runTypeKill()

@@ -40,6 +40,7 @@ endedJobs(log: string) -> Result[Vector[JobInfo], string]
     Ok(f) -> f
     Err(IoError(ErrorKind.NotFound, _, _)) -> return Ok([])
     Err(e) -> return Err(s"$log: ${e.message}")
+  defer f.close()
   val ends = Buffer[(long, JobInfo)]()
   val position = MutableMap[long, int]()
   loop
@@ -52,10 +53,7 @@ endedJobs(log: string) -> Result[Vector[JobInfo], string]
               position(e.1.id) = ends.length
               ends += e
       Ok(None) -> break
-      Err(e) ->
-        f.close()
-        return Err(s"$log: ${e.message}")
-  f.close()
+      Err(e) -> return Err(s"$log: ${e.message}")
   val sorted = ends.toVector.sortWith(
     (a, b) -> if a.0 != b.0 then (if a.0 > b.0 then -1 else 1) elif a.1.id != b.1.id then (
       if a.1.id > b.1.id then -1 else 1

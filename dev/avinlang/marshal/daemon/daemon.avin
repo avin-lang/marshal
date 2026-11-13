@@ -298,7 +298,8 @@ class Daemon(
 
   record(event: string, job: Job, extra: Vector[(string, Json)] = [])
     val line = marshal.eventLine(time.now().epochMillis, event, job.info(now()), extra)
-    fs.appendText(home + "/events.jsonl", line + "\n")
+    // the daemon has no one to tell of a history it cannot append to, and goes on serving
+    val _ = fs.appendText(home + "/events.jsonl", line + "\n")
     if watchers.nonEmpty then json.parse(line).ok.foreach(ev -> publish(ev))
 
   history(spec: JobSpec) -> Vector[long] =
@@ -747,7 +748,7 @@ class Daemon(
       if job.paused && !job.killed && !job.timedOut then stopGroups(job)
 
   stopGroups(job: Job)
-    process.signal(-job.pgid, signal.Stop)
+    val _ = process.signal(-job.pgid, signal.Stop) // the group may have ended already
     marshal.signalGroups(home, job.id, job.pgid, signal.Stop)
 
   // Holds the queue (`on`) or releases it. A release starts what fits at once.
@@ -880,16 +881,17 @@ class Daemon(
       (["-n", "15"] ++ spec.cmd)*
     )
     // A retry's output follows the earlier attempts' in the job's log.
-    if job.attempt > 1 then fs.appendText(job.log, s"marshal: attempt ${job.attempt} of ${spec.retries + 1}\n")
+    // (a note a log cannot take is lost; the job itself is not affected)
+    if job.attempt > 1 then val _ = fs.appendText(job.log, s"marshal: attempt ${job.attempt} of ${spec.retries + 1}\n")
     val first = job.attempt == 1
     for id in ahead
       val line = s"marshal: backfilled ahead of $id\n"
-      if first then fs.writeText(job.log, line) else fs.appendText(job.log, line)
+      val _ = if first then fs.writeText(job.log, line) else fs.appendText(job.log, line)
     // An exclusive job's log begins with what else the machine is doing as it starts; the job's
     // own processes are not started yet, so none of them is in it.
     if spec.exclusive
       val line = sampleNow(job) + "\n"
-      if first then fs.writeText(job.log, line) else fs.appendText(job.log, line)
+      val _ = if first then fs.writeText(job.log, line) else fs.appendText(job.log, line)
       job.sampledMs = now()
     val placed = program.inDir(spec.dir)
     var command = (
@@ -919,7 +921,7 @@ class Daemon(
       Err(e) ->
         if spec.landing then slots.foreach(ts -> ts.releaseLanding(0))
         val why = s"marshal: could not start `${spec.cmd(0)}` in ${spec.dir}: ${e.message}\n"
-        if job.attempt > 1 then fs.appendText(job.log, why) else fs.writeText(job.log, why)
+        val _ = if job.attempt > 1 then fs.appendText(job.log, why) else fs.writeText(job.log, why)
         record("started", job, [("pgid", Json.num(0))])
         attemptEnded(job, Outcome.Exited(127), "finished")
 
@@ -955,7 +957,7 @@ class Daemon(
     if job.timedOut && job.quietStopped
       // the job's log ends saying why it was stopped, after all it wrote
       val sample = job.sample.map(s -> s"; stack sample in $s").getOrElse("")
-      fs.appendText(job.log, s"\nmarshal: ${marshal.quietWords(job.spec.quietMs)} (quiet timeout)$sample\n")
+      val _ = fs.appendText(job.log, s"\nmarshal: ${marshal.quietWords(job.spec.quietMs)} (quiet timeout)$sample\n")
       attemptEnded(job, marshal.Quiet(job.spec.quietMs), "quiet")
       return
     if job.timedOut
@@ -1018,7 +1020,7 @@ class Daemon(
     val every = marshal.exclusiveSampleMs()
     for job in running.toVector
       if job.spec.exclusive && !job.paused && t - job.sampledMs >= every
-        fs.appendText(job.log, sampleNow(job) + "\n")
+        val _ = fs.appendText(job.log, sampleNow(job) + "\n")
         job.sampledMs = t
 
   // Stops a running job that ran out of time, at its deadline or its quiet timeout (`why`): its
@@ -1373,8 +1375,8 @@ class Daemon(
   // The daemon's last steps: the socket goes first, so a new daemon can start at once, then each
   // `stop` is answered and the daemon waits for those answers to be written.
   finish()
-    fs.remove(home + "/sock")
-    fs.remove(home + "/daemon.pid")
+    val _ = fs.remove(home + "/sock") // the daemon is ending; a file left is found stale by the next one
+    val _ = fs.remove(home + "/daemon.pid")
     for ts in slots
       ticket.foreach(name -> ts.removeTicket(name))
     for r in stopReplies do give(r, Done)
@@ -1432,15 +1434,16 @@ class Daemon(
       Err(e) -> s"cannot write $file: ${e.message}"
       Ok(_) ->
         // No command line starts another daemon while the socket is down: this one is starting.
-        fs.createDirAll(home + "/starting")
-        fs.writeText(home + "/starting/pid", process.pid().toString())
+        // (the lock only keeps other commands from starting a daemon; without it they find this one's socket gone and wait)
+        val _ = fs.createDirAll(home + "/starting")
+        val _ = fs.writeText(home + "/starting/pid", process.pid().toString())
         eprintln(
           s"marshal: daemon ${process.pid()} restarting as $program with ${running.length} running and ${queue.length} queued"
         )
         val e = process.exec(program, ["daemon", "--resume", file]).err.get
-        fs.removeDirAll(home + "/starting")
+        val _ = fs.removeDirAll(home + "/starting")
         s"cannot run $program: ${e.message}"
-    fs.remove(file)
+    val _ = fs.remove(file)
     restarting = false
     eprintln(s"marshal: restart failed: $failure; this daemon goes on")
     give(reply, Failed(s"the daemon did not restart: $failure"))
@@ -1621,12 +1624,12 @@ terminate(home: string, id: long, pgid: long, sample: Option[string])
   spawn(() ->
     sample.foreach(
       file -> busiest(marshal.groupsOf(home, id, pgid)).foreach(
-        pid -> Command("sample", pid.toString(), "5", "1", "-file", file).output()
+        pid -> val _ = Command("sample", pid.toString(), "5", "1", "-file", file).output() // a sample is a courtesy
       )
     )
     // TERM goes to the runner alone, which stops its step itself and so knows the run was
     // stopped; a step ended under it first would read as a failed step
-    process.signal(-pgid, signal.Terminate)
+    val _ = process.signal(-pgid, signal.Terminate) // the runner may have ended already
     threads.sleep(millis(Grace))
     // the step group is read again: a step may have started since the TERM
     marshal.signalGroups(home, id, pgid, signal.Kill)
@@ -1666,10 +1669,10 @@ connection(conn: UnixStream, events: Channel[Message])
     val stopped = request match
       Ok(Stop(_, _)) -> reply == Reply.Done
       _ -> false
-    if stopped then conn.close()
+    if stopped then val _ = conn.close()
     if request.isOk then events.send(Written)
     if stopped || wrote.isErr then break
-  conn.close()
+  val _ = conn.close()
 
 // Serves a watch on its client's connection, which it ends: the daemon writes replies into a
 // bounded stream and this thread writes them out, so a client that reads slowly holds up only its
@@ -1682,7 +1685,7 @@ stream(conn: UnixStream, events: Channel[Message], request: Request)
   while !gone
     // closed before the replies are taken, so every reply sent before it is among them
     val ended = back.isClosed()
-    conn.setTimeout(millis(0))
+    val _ = conn.setTimeout(millis(0)) // a connection that cannot be configured fails at its next write
     loop
       val reply = back.tryReceive() match
         Some(r) -> r
@@ -1691,12 +1694,12 @@ stream(conn: UnixStream, events: Channel[Message], request: Request)
         gone = true
         break
     if ended || gone then break
-    conn.setTimeout(millis(50))
+    val _ = conn.setTimeout(millis(50))
     conn.read(1) match
       Ok(bytes) -> if bytes.length == 0 then gone = true
       Err(IoError(ErrorKind.TimedOut, _, _)) -> ()
       Err(_) -> gone = true
-  conn.close()
+  val _ = conn.close()
   events.send(Unwatch(back))
 
 // The machine's memory in bytes, or 0 where it cannot be asked.
@@ -1710,7 +1713,7 @@ reportedVersion() -> string = process.env("MARSHAL_TEST_VERSION").getOrElse(mars
 // removed once read; None, with the reason on standard error, when it cannot be read.
 resumed(file: string) -> Option[SavedState]
   val text = fs.readText(file)
-  fs.remove(file)
+  val _ = fs.remove(file) // read above; one that stays is found stale by the next restart
   val saved = text.mapErr(e -> e.message).flatMap(t -> marshal.decodeState(t))
   saved match
     Ok(s) if s.pid == process.pid() -> Some(s)
@@ -1731,11 +1734,14 @@ run(home: string, resume: Option[string] = None) -> int
     Ok(_) -> ()
   val saved = resume.flatMap(resumed)
   // A restarted daemon already leads its session.
-  if resume.isEmpty then process.newSession()
+  if resume.isEmpty
+    process.newSession() match
+      Ok(_) -> ()
+      Err(e) -> eprintln(s"marshal: cannot lead a session of its own: ${e.message}")
   // A restarted image owns the socket's path. What may still answer there is the image before
   // it: a child that image was starting, forked but not yet running its program, holds a copy of
   // its listener until it does. So the path is taken over rather than asked whether it is in use.
-  if resume.nonEmpty then fs.remove(home + "/sock")
+  if resume.nonEmpty then val _ = fs.remove(home + "/sock") // bindReplacing below takes it over either way
   val listener = UnixListener.bindReplacing(home + "/sock") match
     Ok(l) -> l
     Err(IoError(ErrorKind.AlreadyExists, _, _)) ->
@@ -1743,29 +1749,31 @@ run(home: string, resume: Option[string] = None) -> int
       return 0
     Err(e) ->
       eprintln(s"marshal: cannot listen at $home/sock: ${e.message}")
-      fs.removeDirAll(home + "/starting")
+      val _ = fs.removeDirAll(home + "/starting")
       return 1
-  fs.removeDirAll(home + "/starting")
+  val _ = fs.removeDirAll(home + "/starting") // a lock that stays names this pid or a dead one, and is taken over
   val configText = if fs.exists(home + "/config.json") then fs.readText(home + "/config.json").getOrElse("") else ""
   val machine = machineMemory()
   val config = marshal.readConfig(configText, machine) match
     Ok(c) -> c
     Err(e) ->
       eprintln(s"marshal: $e")
-      listener.close()
-      fs.remove(home + "/sock")
+      val _ = listener.close()
+      val _ = fs.remove(home + "/sock")
       return 1
   val takeSlot = marshal.takeSlotDir(process.env("MARSHAL_TAKE_SLOT_DIR"), config.takeSlot)
   for dir in takeSlot
     if !fs.isDir(dir)
       eprintln(s"marshal: the take-slot directory $dir is not a directory")
-      listener.close()
-      fs.remove(home + "/sock")
+      val _ = listener.close()
+      val _ = fs.remove(home + "/sock")
       return 1
   val slots = takeSlot.map(dir -> TakeSlot(dir, process.pid()))
   // what an earlier daemon that died left in take-slot's directory is its own to remove
   val previous = fs.readText(home + "/daemon.pid").ok.flatMap(t -> t.trim.toLongOption()).getOrElse(0)
-  fs.writeText(home + "/daemon.pid", process.pid().toString())
+  fs.writeText(home + "/daemon.pid", process.pid().toString()) match
+    Ok(_) -> ()
+    Err(e) -> eprintln(s"marshal: cannot write $home/daemon.pid: ${e.message}")
   val log = home + "/events.jsonl"
   val recovered = marshal.recover(if fs.exists(log) then fs.readText(log).getOrElse("").lines else [])
   // the jobs the log left open that a restart did not hand over were lost with the daemon that held them
@@ -1776,7 +1784,7 @@ run(home: string, resume: Option[string] = None) -> int
     val alive = pgid > 0 && process.signal(-pgid, 0).isOk
     marshal.lostLine(time.now().epochMillis, ev, alive) match
       Some(line) ->
-        fs.appendText(log, line + "\n")
+        val _ = fs.appendText(log, line + "\n") // a line that cannot be added leaves the job open for the next recovery
         eprintln(
           s"marshal: job ${ev("id")} was lost with the last daemon" + (
             if alive then s"; its process group $pgid is still running" else ""

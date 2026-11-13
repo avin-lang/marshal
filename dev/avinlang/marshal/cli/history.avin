@@ -62,14 +62,12 @@ readLedger(log: string) -> Result[Ledger, string]
     Ok(f) -> f
     Err(IoError(ErrorKind.NotFound, _, _)) -> return Ok(ledger)
     Err(e) -> return Err(s"marshal: $log: ${e.message}")
+  defer f.close()
   loop
     f.readLine() match
       Ok(Some(line)) -> ledger.add(line)
       Ok(None) -> break
-      Err(e) ->
-        f.close()
-        return Err(s"marshal: $log: ${e.message}")
-  f.close()
+      Err(e) -> return Err(s"marshal: $log: ${e.message}")
   Ok(ledger)
 
 history(args: Vector[string]) -> int = account("history", args, (ledger, q) ->

@@ -72,7 +72,7 @@ snapshotType(
   fs.createDirAll(home + "/typed").mapErr(e -> s"cannot make ${home}/typed: ${e.message}")?
   val dir = freshDir(home + "/typed")?
   val made = copyInto(dir, file, t, stock, executable)
-  if made.isErr then fs.removeDirAll(dir)
+  if made.isErr then val _ = fs.removeDirAll(dir) // the copy's own error is the one reported
   made
 
 // A new directory in `parent`, named for this process and the time, and for a counter where that is taken.
@@ -133,5 +133,5 @@ sweepSnapshots(home: string, now: long, ageMs: Option[long], dry: bool) -> (Vect
     if now - at >= age
       removed += s"typed/$name"
       bytes += fileBytes(snapshot)
-      if !dry then fs.removeDirAll(snapshot)
+      if !dry then val _ = fs.removeDirAll(snapshot)
   (removed.toVector, bytes)

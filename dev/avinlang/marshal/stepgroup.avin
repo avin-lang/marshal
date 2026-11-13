@@ -19,13 +19,11 @@ stepGroupOf(home: string, id: long) -> long
 // Records `pgid` as job `id`'s current step group, whole or not at all.
 recordStepGroup(home: string, id: string, pgid: long)
   val file = s"$home/runs/$id/step.pgid"
-  writeAtomic(file, pgid.toString())
-  ()
+  val _ = writeAtomic(file, pgid.toString()) // without the record, a stop reaches the runner's group and not its step's
 
 // Forgets job `id`'s step group: the step has ended.
 forgetStepGroup(home: string, id: string)
-  fs.remove(s"$home/runs/$id/step.pgid")
-  ()
+  val _ = fs.remove(s"$home/runs/$id/step.pgid")
 
 // Every process group of job `id`: the group `pgid` it was started in, and its step's group.
 groupsOf(home: string, id: long, pgid: long) -> Vector[long]
@@ -38,4 +36,4 @@ jobResident(home: string, id: long, pgid: long) -> long =
 
 // Signals every group of job `id`; the errors of a group nobody is in are not an error.
 signalGroups(home: string, id: long, pgid: long, sig: int)
-  for g in groupsOf(home, id, pgid) do process.signal(-g, sig)
+  for g in groupsOf(home, id, pgid) do val _ = process.signal(-g, sig)

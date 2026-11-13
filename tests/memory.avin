@@ -55,8 +55,8 @@ groupTree()
   assert(members.contains(child.pid()))
   val whole = marshal.groupResident(pgid)
   assert(whole > marshal.residentOf([child.pid()], pid -> process.residentBytes(pid)), s"$whole")
-  process.signal(-pgid, signal.Kill)
-  child.waitFor()
+  val _ = process.signal(-pgid, signal.Kill)
+  val _ = child.waitFor()
   for _ in 0 ..< 50
     if marshal.groupMembers(pgid).isEmpty then break
     threads.sleep(millis(100))

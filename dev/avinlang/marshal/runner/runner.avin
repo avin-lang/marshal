@@ -108,23 +108,27 @@ stepBinary(source: string, home: string) -> Result[Compiled, string]
         // a holder that died while compiling leaves its lock, and maybe a half-built file
         // under the temporary name, never under the cache name
         if holder > 0 && process.signal(holder, 0).isErr
-          fs.remove(program + ".building")
-          fs.remove(program + ".build.log")
-          fs.removeDirAll(lock)
+          val _ = fs.remove(program + ".building")
+          val _ = fs.remove(program + ".build.log")
+          val _ = fs.removeDirAll(lock)
         else
           threads.sleep(millis(100))
-  marshal.writeAtomic(lock + "/pid", process.pid().toString())
+  marshal.writeAtomic(lock + "/pid", process.pid().toString()) match
+    Ok(_) -> ()
+    Err(e) ->
+      val _ = fs.removeDirAll(lock)
+      return Err(s"cannot write $lock/pid: ${e.message}")
   val log = program + ".build.log"
   // built beside the target and renamed into place: a reader never sees half an executable
   val building = program + ".building"
   val built = Command(compiler, "build", source, "-o", building).toFile(log).errorsToOutput().run()
   val said = fs.readText(log).getOrElse("")
-  fs.remove(log)
+  val _ = fs.remove(log)
   val ok = (built match
     Ok(status) -> status.isSuccess && fs.isFile(building)
     Err(_) -> false) && fs.rename(building, program).isOk
-  fs.remove(building)
-  fs.removeDirAll(lock)
+  val _ = fs.remove(building) // gone already when it was renamed into place
+  val _ = fs.removeDirAll(lock)
   if ok then marshal.touchStep(program, time.now().epochMillis)
   if ok then Ok(Compiled(program, true)) else Err(s"cannot build $source:\n$said")
 
@@ -160,10 +164,10 @@ private codeOf(status: Result[ExitStatus, IoError]) -> int = status match
 
 // Stops the process group `pgid`: TERM, and KILL after the grace period, on a thread of its own.
 stopGroup(pgid: long)
-  process.signal(-pgid, signal.Terminate)
+  val _ = process.signal(-pgid, signal.Terminate) // the group may have ended already
   spawn(() ->
     threads.sleep(millis(Grace))
-    process.signal(-pgid, signal.Kill)
+    val _ = process.signal(-pgid, signal.Kill)
     ())
 
 // Copies the complete lines `reader` has now to standard output; at the `end`, the last line too.
@@ -225,10 +229,10 @@ execStep(
   current.store(0)
   if home.nonEmpty then marshal.forgetStepGroup(home, job)
   // what the step left running in its group goes with it
-  process.signal(-pgid, signal.Terminate)
+  val _ = process.signal(-pgid, signal.Terminate)
   reader.foreach(r ->
     copyLines(r, true)
-    r.close())
+    val _ = r.close())
   val said = Buffer[Said]()
   for line in fs.readText(log).getOrElse("").lines
     marshal.readSaid(line.stripSuffix("\r")) match
@@ -325,7 +329,9 @@ class Run(
     head = ""
     values = vs
     fails = Buffer[Fail]()
-    fs.createDirAll(work)
+    fs.createDirAll(work) match
+      Ok(_) -> ()
+      Err(e) -> println(s"marshal: cannot make $work: ${e.message}") // the steps that need it fail in turn
     val over = t.bisect.map(b -> s" with $b ${vs.mkString(" ")}").getOrElse("")
     println(s"marshal: pass $passes$over")
     val word = (w: string) -> marshal.expandText(w, vars())
@@ -368,9 +374,9 @@ main(file: string, args: Vector[string]) -> int
       stopping.store(true)
       val g = current.load()
       if g > 0
-        process.signal(-g, signal.Terminate)
+        val _ = process.signal(-g, signal.Terminate) // the step's group may have ended already
         threads.sleep(millis(Grace - 1000))
-        process.signal(-g, signal.Kill)
+        val _ = process.signal(-g, signal.Kill)
       process.exit(143))
     Err(e) -> eprintln(s"marshal: cannot watch TERM: ${e.message}")
   println(s"marshal: ${t.name} from ${t.file}, run directory $runDir")
@@ -383,7 +389,11 @@ main(file: string, args: Vector[string]) -> int
     (vs, land) -> run.pass(vs, land)
   )
   val rendered = marshal.renderReport(t.name, report) + "\n"
-  fs.writeText(runDir + "/report.json", marshal.encodeReport(t.name, report).render + "\n")
-  fs.writeText(runDir + "/report.txt", rendered)
+  fs.writeText(runDir + "/report.json", marshal.encodeReport(t.name, report).render + "\n") match
+    Ok(_) -> ()
+    Err(e) -> eprintln(s"marshal: cannot write $runDir/report.json: ${e.message}")
+  fs.writeText(runDir + "/report.txt", rendered) match
+    Ok(_) -> ()
+    Err(e) -> eprintln(s"marshal: cannot write $runDir/report.txt: ${e.message}")
   print(rendered)
   if report.result == "green" then 0 else 1
