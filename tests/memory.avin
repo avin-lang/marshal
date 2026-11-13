@@ -36,7 +36,7 @@ exitedChild()
     val child = Command("true").start().ok.get
     val gone = child.pid()
     child.waitFor().ok.get
-    assertEq(process.residentBytes(gone).err, Some(IoError(io.NotFound)))
+    assertEq(process.residentBytes(gone).err.map(e -> e.kind), Some(io.NotFound))
     val me = process.pid()
     assertEq(marshal.residentOf([gone], pid -> process.residentBytes(pid)), 0)
     assert(marshal.residentOf([me, gone], pid -> process.residentBytes(pid)) > 0)

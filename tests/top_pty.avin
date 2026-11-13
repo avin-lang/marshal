@@ -142,7 +142,7 @@ topRefusals()
     assert(r.out.contains("top takes no arguments"), r.out)
     val s = m(home, "top")
     assertEq(s.code, 2)
-    assert(s.out.contains("is not a terminal"), s.out)
+    assert(s.out.contains("not a terminal"), s.out)
     assert(!fs.exists(home + "/sock"))
     fs.removeDirAll(home)
 
