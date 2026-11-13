@@ -30,89 +30,106 @@ main(args: Vector[string]) -> int
 // An install of the executable under test in `<home>/prefix`, holding the type `slow` and the Avin
 // step it names; the prefix of it.
 installIn(home: string) -> string
-    val prefix = home + "/prefix"
-    fs.createDirAll(prefix + "/bin").ok.get
-    fs.createDirAll(prefix + "/share/marshal/types").ok.get
-    fs.createDirAll(prefix + "/share/marshal/steps").ok.get
-    assertEq(Command("cp", bin(), prefix + "/bin/marshal").run().ok, Some(ExitStatus.Exited(0)))
-    fs.writeText(prefix + "/share/marshal/types/slow.job", slowType).ok.get
-    fs.writeText(prefix + "/share/marshal/types/hello.avin", helloProgram).ok.get
-    fs.writeText(prefix + "/share/marshal/steps/hello.avin", helloProgram.replace("hello from the step", "hello from stock")).ok.get
-    prefix
+  val prefix = home + "/prefix"
+  fs.createDirAll(prefix + "/bin").ok.get
+  fs.createDirAll(prefix + "/share/marshal/types").ok.get
+  fs.createDirAll(prefix + "/share/marshal/steps").ok.get
+  assertEq(Command("cp", bin(), prefix + "/bin/marshal").run().ok, Some(ExitStatus.Exited(0)))
+  fs.writeText(prefix + "/share/marshal/types/slow.job", slowType).ok.get
+  fs.writeText(prefix + "/share/marshal/types/hello.avin", helloProgram).ok.get
+  fs.writeText(
+    prefix + "/share/marshal/steps/hello.avin",
+    helloProgram.replace("hello from the step", "hello from stock")
+  ).ok.get
+  prefix
 
 // `run-type --submit slow` from the install in `prefix`.
 submitSlow(home: string, prefix: string) -> long
-    val r = mFrom(prefix + "/bin/marshal", home, [("MARSHAL_STOCK", prefix + "/share/marshal")], "run-type", "--submit", "slow")
-    assert(r.code == 0, r.out)
-    idIn(r.out)
+  val r = mFrom(
+    prefix + "/bin/marshal",
+    home,
+    [("MARSHAL_STOCK", prefix + "/share/marshal")],
+    "run-type",
+    "--submit",
+    "slow"
+  )
+  assert(r.code == 0, r.out)
+  idIn(r.out)
 
 cmdOf(home: string, id: long) -> Vector[string]
-    specOf(home, id)("cmd").asVector.get.map(w -> w.asString.get)
+  specOf(home, id)("cmd").asVector.get.map(w -> w.asString.get)
 
-@test("a typed job whose install is removed while its first step runs completes every step, the compiled Avin step included")
+@test(
+  "a typed job whose install is removed while its first step runs completes every step, the compiled Avin step included"
+)
 installRemovedWhileRunning()
-    val home = newHome()
-    val prefix = installIn(home)
-    val id = submitSlow(home, prefix)
-    assert(within(5000, () -> started(home, id)))
-    fs.removeDirAll(prefix).ok.get
-    val w = m(home, "wait", id.toString())
-    assertEq(w.code, 0)
-    assertEq(fs.readText(s"$home/runs/$id/mark").ok, Some("done\n"))
-    val log = fs.readText(s"$home/jobs/$id.log").getOrElse("")
-    assert(log.contains("step hello: passed") && log.contains("step stock: passed"), log)
-    cleanUp(home)
+  val home = newHome()
+  val prefix = installIn(home)
+  val id = submitSlow(home, prefix)
+  assert(within(5000, () -> started(home, id)))
+  fs.removeDirAll(prefix).ok.get
+  val w = m(home, "wait", id.toString())
+  assertEq(w.code, 0)
+  assertEq(fs.readText(s"$home/runs/$id/mark").ok, Some("done\n"))
+  val log = fs.readText(s"$home/jobs/$id.log").getOrElse("")
+  assert(log.contains("step hello: passed") && log.contains("step stock: passed"), log)
+  cleanUp(home)
 
 @test("a queued typed job whose install is removed before it starts runs once the units free")
 installRemovedWhileQueued()
-    val home = newHome("{\"units\": 1}")
-    val busy = submitted(home, "--units", "1", "--", "sleep", "30")
-    assert(within(2000, () -> started(home, busy)))
-    val prefix = installIn(home)
-    val id = submitSlow(home, prefix)
-    assertEq(whyOf(home, id), Some(Why.NoUnits))
-    fs.removeDirAll(prefix).ok.get
-    assertEq(m(home, "kill", busy.toString()).code, 0)
-    assertEq(m(home, "wait", id.toString()).code, 0)
-    assertEq(fs.readText(s"$home/runs/$id/mark").ok, Some("done\n"))
-    cleanUp(home)
+  val home = newHome("{\"units\": 1}")
+  val busy = submitted(home, "--units", "1", "--", "sleep", "30")
+  assert(within(2000, () -> started(home, busy)))
+  val prefix = installIn(home)
+  val id = submitSlow(home, prefix)
+  assertEq(whyOf(home, id), Some(Why.NoUnits))
+  fs.removeDirAll(prefix).ok.get
+  assertEq(m(home, "kill", busy.toString()).code, 0)
+  assertEq(m(home, "wait", id.toString()).code, 0)
+  assertEq(fs.readText(s"$home/runs/$id/mark").ok, Some("done\n"))
+  cleanUp(home)
 
-@test("the job runs a hard link of marshal and a copy of the type under the home, not the installed paths; rerun runs it again")
+@test(
+  "the job runs a hard link of marshal and a copy of the type under the home, not the installed paths; rerun runs it again"
+)
 commandNamesTheCopy()
-    val home = newHome()
-    val prefix = installIn(home)
-    val id = submitSlow(home, prefix)
-    val cmd = cmdOf(home, id)
-    assert(cmd(0).startsWith(s"$home/typed/") && cmd(0).endsWith("/bin/marshal"), cmd.mkString(" "))
-    assertEq(cmd(1), "run-steps")
-    assert(cmd(2).startsWith(s"$home/typed/") && cmd(2).endsWith("/type/slow.job"), cmd.mkString(" "))
-    assertEq(m(home, "wait", id.toString()).code, 0)
-    fs.removeDirAll(prefix).ok.get
-    val again = m(home, "rerun", id.toString())
-    assertEq(again.code, 0)
-    assertEq(m(home, "wait", idIn(again.out).toString()).code, 0)
-    cleanUp(home)
+  val home = newHome()
+  val prefix = installIn(home)
+  val id = submitSlow(home, prefix)
+  val cmd = cmdOf(home, id)
+  assert(cmd(0).startsWith(s"$home/typed/") && cmd(0).endsWith("/bin/marshal"), cmd.mkString(" "))
+  assertEq(cmd(1), "run-steps")
+  assert(cmd(2).startsWith(s"$home/typed/") && cmd(2).endsWith("/type/slow.job"), cmd.mkString(" "))
+  assertEq(m(home, "wait", id.toString()).code, 0)
+  fs.removeDirAll(prefix).ok.get
+  val again = m(home, "rerun", id.toString())
+  assertEq(again.code, 0)
+  assertEq(m(home, "wait", idIn(again.out).toString()).code, 0)
+  cleanUp(home)
 
 @test("a project's type runs with the executable under test, where no installation path exists to be stable")
 developmentBuild()
-    val (home, project) = projectWithType("say", "{\"steps\": [{\"name\": \"say\", \"run\": [\"sh\", \"-c\", \"echo ok\"]}]}")
-    val r = m(home, "run-type", "--dir", project, "say")
-    assertEq(r.code, 0)
-    assert(fs.readText(s"$home/jobs/1.log").getOrElse("").contains("step say: passed"), r.out)
-    cleanUp(home)
+  val (home, project) = projectWithType(
+    "say",
+    "{\"steps\": [{\"name\": \"say\", \"run\": [\"sh\", \"-c\", \"echo ok\"]}]}"
+  )
+  val r = m(home, "run-type", "--dir", project, "say")
+  assertEq(r.code, 0)
+  assert(fs.readText(s"$home/jobs/1.log").getOrElse("").contains("step say: passed"), r.out)
+  cleanUp(home)
 
 @test("marshal clean removes a typed job's copy once it is older than the age, and not before")
 cleanRemovesCopies()
-    val home = newHome()
-    val project = home + "/project"
-    fs.createDirAll(project + "/.marshal/types").ok.get
-    fs.writeText(project + "/.marshal/types/say.job", "{\"steps\": [{\"name\": \"say\", \"run\": [\"true\"]}]}").ok.get
-    assertEq(m(home, "run-type", "--dir", project, "say").code, 0)
-    assertEq(fs.listDir(home + "/typed").ok.get.length, 1)
-    assertEq(m(home, "clean", "--older-than", "1d").code, 0)
-    assertEq(fs.listDir(home + "/typed").ok.get.length, 1)
-    threads.sleep(millis(1200))
-    val gone = m(home, "clean", "--older-than", "1s")
-    assertEq(gone.code, 0)
-    assertEq(fs.listDir(home + "/typed").ok.get.length, 0)
-    cleanUp(home)
+  val home = newHome()
+  val project = home + "/project"
+  fs.createDirAll(project + "/.marshal/types").ok.get
+  fs.writeText(project + "/.marshal/types/say.job", "{\"steps\": [{\"name\": \"say\", \"run\": [\"true\"]}]}").ok.get
+  assertEq(m(home, "run-type", "--dir", project, "say").code, 0)
+  assertEq(fs.listDir(home + "/typed").ok.get.length, 1)
+  assertEq(m(home, "clean", "--older-than", "1d").code, 0)
+  assertEq(fs.listDir(home + "/typed").ok.get.length, 1)
+  threads.sleep(millis(1200))
+  val gone = m(home, "clean", "--older-than", "1s")
+  assertEq(gone.code, 0)
+  assertEq(fs.listDir(home + "/typed").ok.get.length, 0)
+  cleanUp(home)

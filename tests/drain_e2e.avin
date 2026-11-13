@@ -10,155 +10,161 @@ import avin.threads
 import avin.time.millis
 import dev.avinlang.marshal.Why
 
-@test("past drain_after a big job drains the machine: an urgent job that jumped it before now waits, and starts after it with its whole deadline")
+@test(
+  "past drain_after a big job drains the machine: an urgent job that jumped it before now waits, and starts after it with its whole deadline"
+)
 drainAfterE2e()
-    val home = newHome("{\"units\": 2, \"drain_after\": \"2s\", \"learn_min_runs\": 1}")
-    // the running job's kind is learned to take a moment, so it is soon past its estimate and counts
-    // by its deadline of 5 seconds: the big job is expected to start then, and a job that would end
-    // later does not backfill ahead of it
-    val warm = submitted(home, "--kind", "w", "--", "true")
-    assertEq(m(home, "wait", warm.toString()).code, 0)
-    val a = submitted(home, "--kind", "w", "--units", "1", "--deadline", "5s", "--", "sleep", "4")
-    assert(within(2000, () -> started(home, a)))
-    val big = submitted(home, "--units", "2", "--", "sleep", "4")
-    // before the bound an urgent job takes the free unit at once
-    val early = submitted(home, "--urgent", "--units", "1", "--", "sleep", "0.2")
-    assert(within(1500, () -> started(home, early)), eventsOf(home, early).mkString(" "))
-    assertEq(whyOf(home, big), Some(Why.NoUnits))
-    assert(within(5000, () -> whyOf(home, big) == Some(Why.Draining)), s"${whyOf(home, big)}")
-    // past it an urgent job that fits the free unit, but would end after the big job is expected to
-    // start, waits for it, and says so
-    // a kind of its own, so the early job's run teaches it nothing
-    val late = submitted(home, "--kind", "late", "--urgent", "--units", "1", "--deadline", "4s", "--", "sleep", "0.3")
-    assertEq(whyOf(home, late), Some(Why.DrainingFor(big)))
-    val ls = m(home, "ls").out
-    assert(ls.contains(s"queued (draining for $big)"), ls)
-    assert(ls.contains("queued (draining)"), ls)
-    threads.sleep(millis(500))
-    assert(!started(home, late))
-    // it waits longer than its own deadline, and still finishes: the deadline counts from its start
-    assertEq(m(home, "wait", late.toString()).code, 0)
-    assert(eventsOf(home, late).contains("finished"), eventsOf(home, late).mkString(" "))
-    assert(at(home, a, "finished") < at(home, big, "started"), s"${eventsOf(home, a)} ${eventsOf(home, big)}")
-    assert(at(home, big, "finished") < at(home, late, "started"), s"${eventsOf(home, big)} ${eventsOf(home, late)}")
-    cleanUp(home)
+  val home = newHome("{\"units\": 2, \"drain_after\": \"2s\", \"learn_min_runs\": 1}")
+  // the running job's kind is learned to take a moment, so it is soon past its estimate and counts
+  // by its deadline of 5 seconds: the big job is expected to start then, and a job that would end
+  // later does not backfill ahead of it
+  val warm = submitted(home, "--kind", "w", "--", "true")
+  assertEq(m(home, "wait", warm.toString()).code, 0)
+  val a = submitted(home, "--kind", "w", "--units", "1", "--deadline", "5s", "--", "sleep", "4")
+  assert(within(2000, () -> started(home, a)))
+  val big = submitted(home, "--units", "2", "--", "sleep", "4")
+  // before the bound an urgent job takes the free unit at once
+  val early = submitted(home, "--urgent", "--units", "1", "--", "sleep", "0.2")
+  assert(within(1500, () -> started(home, early)), eventsOf(home, early).mkString(" "))
+  assertEq(whyOf(home, big), Some(Why.NoUnits))
+  assert(within(5000, () -> whyOf(home, big) == Some(Why.Draining)), s"${whyOf(home, big)}")
+  // past it an urgent job that fits the free unit, but would end after the big job is expected to
+  // start, waits for it, and says so
+  // a kind of its own, so the early job's run teaches it nothing
+  val late = submitted(home, "--kind", "late", "--urgent", "--units", "1", "--deadline", "4s", "--", "sleep", "0.3")
+  assertEq(whyOf(home, late), Some(Why.DrainingFor(big)))
+  val ls = m(home, "ls").out
+  assert(ls.contains(s"queued (draining for $big)"), ls)
+  assert(ls.contains("queued (draining)"), ls)
+  threads.sleep(millis(500))
+  assert(!started(home, late))
+  // it waits longer than its own deadline, and still finishes: the deadline counts from its start
+  assertEq(m(home, "wait", late.toString()).code, 0)
+  assert(eventsOf(home, late).contains("finished"), eventsOf(home, late).mkString(" "))
+  assert(at(home, a, "finished") < at(home, big, "started"), s"${eventsOf(home, a)} ${eventsOf(home, big)}")
+  assert(at(home, big, "finished") < at(home, late, "started"), s"${eventsOf(home, big)} ${eventsOf(home, late)}")
+  cleanUp(home)
 
-@test("past drain_after a job expected to end before the drained job can start backfills and says so; a longer one waits draining for it")
+@test(
+  "past drain_after a job expected to end before the drained job can start backfills and says so; a longer one waits draining for it"
+)
 drainBackfillE2e()
-    val home = newHome("{\"units\": 3, \"drain_after\": \"1s\"}")
-    // nothing is learned of the kind, so the running job counts by its deadline: a minute
-    val a = submitted(home, "--units", "1", "--deadline", "60s", "--", "sleep", "60")
-    assert(within(2000, () -> started(home, a)))
-    val big = submitted(home, "--units", "3", "--", "sleep", "0.2")
-    assert(within(4000, () -> whyOf(home, big) == Some(Why.Draining)), s"${whyOf(home, big)}")
-    val lengthy = submitted(home, "--units", "1", "--deadline", "120s", "--", "sleep", "0.2")
-    val brief = submitted(home, "--units", "1", "--deadline", "10s", "--", "sleep", "0.2")
-    assert(within(2000, () -> started(home, brief)), eventsOf(home, brief).mkString(" "))
-    assertEq(whyOf(home, lengthy), Some(Why.DrainingFor(big)))
-    assertEq(whyOf(home, big), Some(Why.Draining))
-    val ls = m(home, "ls").out
-    assert(ls.contains(s"queued (draining for $big)"), ls)
-    val ev = events(home).find(e -> e("id").asLong == Some(brief) && e("event").asString == Some("started")).get
-    assertEq(ev("backfilled_ahead_of").asLong, Some(big))
-    assertEq(m(home, "wait", brief.toString()).code, 0)
-    val log = fs.readText(s"$home/jobs/$brief.log").getOrElse("")
-    assert(log.startsWith(s"marshal: backfilled ahead of $big\n"), log)
-    // the running job ends: the drained job starts, then the one it held
-    m(home, "kill", a.toString())
-    assertEq(m(home, "wait", lengthy.toString()).code, 0)
-    assert(at(home, big, "started") < at(home, lengthy, "started"), s"${eventsOf(home, big)} ${eventsOf(home, lengthy)}")
-    // only the backfilled job names a drain when it starts
-    for e in events(home).filter(e -> e("event").asString == Some("started") && e("id").asLong != Some(brief))
-        assertEq(e.get("backfilled_ahead_of"), None)
-    cleanUp(home)
+  val home = newHome("{\"units\": 3, \"drain_after\": \"1s\"}")
+  // nothing is learned of the kind, so the running job counts by its deadline: a minute
+  val a = submitted(home, "--units", "1", "--deadline", "60s", "--", "sleep", "60")
+  assert(within(2000, () -> started(home, a)))
+  val big = submitted(home, "--units", "3", "--", "sleep", "0.2")
+  assert(within(4000, () -> whyOf(home, big) == Some(Why.Draining)), s"${whyOf(home, big)}")
+  val lengthy = submitted(home, "--units", "1", "--deadline", "120s", "--", "sleep", "0.2")
+  val brief = submitted(home, "--units", "1", "--deadline", "10s", "--", "sleep", "0.2")
+  assert(within(2000, () -> started(home, brief)), eventsOf(home, brief).mkString(" "))
+  assertEq(whyOf(home, lengthy), Some(Why.DrainingFor(big)))
+  assertEq(whyOf(home, big), Some(Why.Draining))
+  val ls = m(home, "ls").out
+  assert(ls.contains(s"queued (draining for $big)"), ls)
+  val ev = events(home).find(e -> e("id").asLong == Some(brief) && e("event").asString == Some("started")).get
+  assertEq(ev("backfilled_ahead_of").asLong, Some(big))
+  assertEq(m(home, "wait", brief.toString()).code, 0)
+  val log = fs.readText(s"$home/jobs/$brief.log").getOrElse("")
+  assert(log.startsWith(s"marshal: backfilled ahead of $big\n"), log)
+  // the running job ends: the drained job starts, then the one it held
+  m(home, "kill", a.toString())
+  assertEq(m(home, "wait", lengthy.toString()).code, 0)
+  assert(at(home, big, "started") < at(home, lengthy, "started"), s"${eventsOf(home, big)} ${eventsOf(home, lengthy)}")
+  // only the backfilled job names a drain when it starts
+  for e in events(home).filter(e -> e("event").asString == Some("started") && e("id").asLong != Some(brief))
+    assertEq(e.get("backfilled_ahead_of"), None)
+  cleanUp(home)
 
-@test("a job running since before the drain and past its learned estimate counts by its deadline: a short job backfills, and status --json says when the drained job is expected to start")
+@test(
+  "a job running since before the drain and past its learned estimate counts by its deadline: a short job backfills, and status --json says when the drained job is expected to start"
+)
 drainBackfillPastEstimateE2e()
-    // every home has a take-slot directory of its own, idle here
-    val home = newHome("{\"units\": 3, \"drain_after\": \"1s\", \"learn_min_runs\": 1}")
-    val warm = submitted(home, "--kind", "w", "--", "sleep", "0.05")
-    assertEq(m(home, "wait", warm.toString()).code, 0)
-    // learned to take a moment, so at once past its estimate, and given a minute
-    val a = submitted(home, "--kind", "w", "--units", "2", "--deadline", "60s", "--", "sleep", "60")
-    assert(within(2000, () -> started(home, a)))
-    // each job a kind of its own, so none is learned from another's run
-    val big = submitted(home, "--kind", "big", "--units", "3", "--", "sleep", "0.2")
-    assert(within(4000, () -> whyOf(home, big) == Some(Why.Draining)), s"${whyOf(home, big)}")
-    val st = statusOf(home)
-    val running = st("running").asVector.get.find(x -> x("id").asLong == Some(a)).get
-    assert(running("expected_ms").asLong.exists(ms -> 0 <= ms < 5000), running.render)
-    assertEq(running("duration_learned").asBool, Some(true))
-    assertEq(running.get("expected_start_at"), None)
-    val queued = st("queued").asVector.get.find(x -> x("id").asLong == Some(big)).get
-    assertEq(queued("duration_learned").asBool, Some(false))
-    // expected to start when the running job's deadline ends it
-    val startsAt = queued("expected_start_at").asLong.get
-    val aStarted = running("started_at").asLong.get
-    assert(aStarted + 59000 <= startsAt <= aStarted + 61000, s"$startsAt vs $aStarted")
-    // the snapshot carries it too
-    assertEq(snapshotOf(home).queued.find(q -> q.job.id == big).map(q -> q.job.expectedStart > 0), Some(true))
-    // a short job fits the free unit and ends long before: it backfills
-    val brief = submitted(home, "--kind", "brief", "--units", "1", "--deadline", "10s", "--", "sleep", "0.2")
-    assert(within(2000, () -> started(home, brief)), eventsOf(home, brief).mkString(" "))
-    val ev = events(home).find(e -> e("id").asLong == Some(brief) && e("event").asString == Some("started")).get
-    assertEq(ev("backfilled_ahead_of").asLong, Some(big))
-    // one that would run past the running job's deadline waits for the drained job
-    val lengthy = submitted(home, "--kind", "lengthy", "--units", "1", "--deadline", "120s", "--", "sleep", "0.2")
-    assertEq(whyOf(home, lengthy), Some(Why.DrainingFor(big)))
-    m(home, "kill", a.toString())
-    assertEq(m(home, "wait", lengthy.toString()).code, 0)
-    assert(at(home, big, "started") < at(home, lengthy, "started"), s"${eventsOf(home, big)} ${eventsOf(home, lengthy)}")
-    cleanUp(home)
+  // every home has a take-slot directory of its own, idle here
+  val home = newHome("{\"units\": 3, \"drain_after\": \"1s\", \"learn_min_runs\": 1}")
+  val warm = submitted(home, "--kind", "w", "--", "sleep", "0.05")
+  assertEq(m(home, "wait", warm.toString()).code, 0)
+  // learned to take a moment, so at once past its estimate, and given a minute
+  val a = submitted(home, "--kind", "w", "--units", "2", "--deadline", "60s", "--", "sleep", "60")
+  assert(within(2000, () -> started(home, a)))
+  // each job a kind of its own, so none is learned from another's run
+  val big = submitted(home, "--kind", "big", "--units", "3", "--", "sleep", "0.2")
+  assert(within(4000, () -> whyOf(home, big) == Some(Why.Draining)), s"${whyOf(home, big)}")
+  val st = statusOf(home)
+  val running = st("running").asVector.get.find(x -> x("id").asLong == Some(a)).get
+  assert(running("expected_ms").asLong.exists(ms -> 0 <= ms < 5000), running.render)
+  assertEq(running("duration_learned").asBool, Some(true))
+  assertEq(running.get("expected_start_at"), None)
+  val queued = st("queued").asVector.get.find(x -> x("id").asLong == Some(big)).get
+  assertEq(queued("duration_learned").asBool, Some(false))
+  // expected to start when the running job's deadline ends it
+  val startsAt = queued("expected_start_at").asLong.get
+  val aStarted = running("started_at").asLong.get
+  assert(aStarted + 59000 <= startsAt <= aStarted + 61000, s"$startsAt vs $aStarted")
+  // the snapshot carries it too
+  assertEq(snapshotOf(home).queued.find(q -> q.job.id == big).map(q -> q.job.expectedStart > 0), Some(true))
+  // a short job fits the free unit and ends long before: it backfills
+  val brief = submitted(home, "--kind", "brief", "--units", "1", "--deadline", "10s", "--", "sleep", "0.2")
+  assert(within(2000, () -> started(home, brief)), eventsOf(home, brief).mkString(" "))
+  val ev = events(home).find(e -> e("id").asLong == Some(brief) && e("event").asString == Some("started")).get
+  assertEq(ev("backfilled_ahead_of").asLong, Some(big))
+  // one that would run past the running job's deadline waits for the drained job
+  val lengthy = submitted(home, "--kind", "lengthy", "--units", "1", "--deadline", "120s", "--", "sleep", "0.2")
+  assertEq(whyOf(home, lengthy), Some(Why.DrainingFor(big)))
+  m(home, "kill", a.toString())
+  assertEq(m(home, "wait", lengthy.toString()).code, 0)
+  assert(at(home, big, "started") < at(home, lengthy, "started"), s"${eventsOf(home, big)} ${eventsOf(home, lengthy)}")
+  cleanUp(home)
 
 @test("killing the job the machine drains for releases the jobs it held")
 drainKillReleases()
-    val home = newHome("{\"units\": 2, \"drain_after\": \"1s\"}")
-    val a = submitted(home, "--units", "1", "--", "sleep", "60")
-    assert(within(2000, () -> started(home, a)))
-    val big = submitted(home, "--units", "2", "--", "sleep", "0.5")
-    assert(within(4000, () -> whyOf(home, big) == Some(Why.Draining)), s"${whyOf(home, big)}")
-    val late = submitted(home, "--urgent", "--units", "1", "--", "sleep", "0.1")
-    assertEq(whyOf(home, late), Some(Why.DrainingFor(big)))
-    assertEq(m(home, "kill", big.toString()).code, 0)
-    assertEq(m(home, "wait", late.toString()).code, 0)
-    assert(!ended(home, a))
-    m(home, "kill", a.toString())
-    cleanUp(home)
+  val home = newHome("{\"units\": 2, \"drain_after\": \"1s\"}")
+  val a = submitted(home, "--units", "1", "--", "sleep", "60")
+  assert(within(2000, () -> started(home, a)))
+  val big = submitted(home, "--units", "2", "--", "sleep", "0.5")
+  assert(within(4000, () -> whyOf(home, big) == Some(Why.Draining)), s"${whyOf(home, big)}")
+  val late = submitted(home, "--urgent", "--units", "1", "--", "sleep", "0.1")
+  assertEq(whyOf(home, late), Some(Why.DrainingFor(big)))
+  assertEq(m(home, "kill", big.toString()).code, 0)
+  assertEq(m(home, "wait", late.toString()).code, 0)
+  assert(!ended(home, a))
+  m(home, "kill", a.toString())
+  cleanUp(home)
 
 @test("the hold outlives marshal restart, since a job's arrival is kept")
 drainAcrossRestart()
-    val home = newHome("{\"units\": 2, \"drain_after\": \"1s\"}")
-    val a = submitted(home, "--units", "1", "--", "sleep", "60")
-    assert(within(2000, () -> started(home, a)))
-    val big = submitted(home, "--units", "2", "--", "sleep", "0.2")
-    assert(within(4000, () -> whyOf(home, big) == Some(Why.Draining)), s"${whyOf(home, big)}")
-    val late = submitted(home, "--urgent", "--units", "1", "--", "sleep", "0.1")
-    restarted(home)
-    assertEq(whyOf(home, big), Some(Why.Draining))
-    assertEq(whyOf(home, late), Some(Why.DrainingFor(big)))
-    m(home, "kill", a.toString())
-    assertEq(m(home, "wait", late.toString()).code, 0)
-    assert(at(home, big, "started") < at(home, late, "started"))
-    cleanUp(home)
+  val home = newHome("{\"units\": 2, \"drain_after\": \"1s\"}")
+  val a = submitted(home, "--units", "1", "--", "sleep", "60")
+  assert(within(2000, () -> started(home, a)))
+  val big = submitted(home, "--units", "2", "--", "sleep", "0.2")
+  assert(within(4000, () -> whyOf(home, big) == Some(Why.Draining)), s"${whyOf(home, big)}")
+  val late = submitted(home, "--urgent", "--units", "1", "--", "sleep", "0.1")
+  restarted(home)
+  assertEq(whyOf(home, big), Some(Why.Draining))
+  assertEq(whyOf(home, late), Some(Why.DrainingFor(big)))
+  m(home, "kill", a.toString())
+  assertEq(m(home, "wait", late.toString()).code, 0)
+  assert(at(home, big, "started") < at(home, late, "started"))
+  cleanUp(home)
 
 @test("drain_after \"never\" lets urgent jobs jump a big job however long it waits")
 drainNever()
-    val home = newHome("{\"units\": 2, \"drain_after\": \"never\"}")
-    val a = submitted(home, "--units", "1", "--", "sleep", "60")
-    assert(within(2000, () -> started(home, a)))
-    val big = submitted(home, "--units", "2", "--", "sleep", "0.1")
-    threads.sleep(millis(1500))
-    val late = submitted(home, "--urgent", "--units", "1", "--", "sleep", "0.1")
-    assertEq(m(home, "wait", late.toString()).code, 0)
-    assertEq(whyOf(home, big), Some(Why.NoUnits))
-    m(home, "kill", a.toString())
-    cleanUp(home)
+  val home = newHome("{\"units\": 2, \"drain_after\": \"never\"}")
+  val a = submitted(home, "--units", "1", "--", "sleep", "60")
+  assert(within(2000, () -> started(home, a)))
+  val big = submitted(home, "--units", "2", "--", "sleep", "0.1")
+  threads.sleep(millis(1500))
+  val late = submitted(home, "--urgent", "--units", "1", "--", "sleep", "0.1")
+  assertEq(m(home, "wait", late.toString()).code, 0)
+  assertEq(whyOf(home, big), Some(Why.NoUnits))
+  m(home, "kill", a.toString())
+  cleanUp(home)
 
 @test("a bad drain_after stops the daemon from starting, naming the setting")
 drainAfterBad()
-    val home = newHome("{\"drain_after\": \"soon\"}")
-    val r = m(home, "status")
-    assertEq(r.code, 2)
-    assert(r.out.contains("did not start"), r.out)
-    assert(r.out.contains("`drain_after` is a wait"), r.out)
-    fs.removeDirAll(home)
+  val home = newHome("{\"drain_after\": \"soon\"}")
+  val r = m(home, "status")
+  assertEq(r.code, 2)
+  assert(r.out.contains("did not start"), r.out)
+  assert(r.out.contains("`drain_after` is a wait"), r.out)
+  fs.removeDirAll(home)

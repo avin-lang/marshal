@@ -34,47 +34,77 @@ import avin.time.{millis, seconds}
 import dev.avinlang.json
 import dev.avinlang.json.Json
 import dev.avinlang.marshal
-import dev.avinlang.marshal.{Config,JobInfo, JobSpec, Outcome, Outside, Reply, Request, Started, TakeSlot, TakeSlotUse, Usage, Waiting}
+
+import dev.avinlang.marshal.{
+  Config,
+  JobInfo,
+  JobSpec,
+  Outcome,
+  Outside,
+  Reply,
+  Request,
+  Started,
+  TakeSlot,
+  TakeSlotUse,
+  Usage,
+  Waiting
+}
+
 import dev.avinlang.marshal.{Submit, Wait, Kill, Status, Stop, Rerun, Clean, Cleaned}
 import dev.avinlang.marshal.{Submitted, Ended, Jobs, Using, Viewed, Hi, Done, Failed}
 import dev.avinlang.marshal.{Overview, QueuedJob, SavedJob, SavedState}
 import dev.avinlang.marshal.{Cancelled, DependencyFailed, TimedOut}
 import dev.avinlang.marshal.Resident
-import dev.avinlang.marshal.{Condition, Mode, IsIdle, JobsEnded, Matching, Once, Past, Follow, Watch, Streamed, Replayed}
+
+import dev.avinlang.marshal.{
+  Condition,
+  Mode,
+  IsIdle,
+  JobsEnded,
+  Matching,
+  Once,
+  Past,
+  Follow,
+  Watch,
+  Streamed,
+  Replayed
+}
 
 // `Written` follows each reply the daemon gave, once its connection has written it. `Due` and
 // `Retry` name the attempt they were set for, so a timer left from an earlier attempt does nothing.
 data Message
-    FromClient(request: Request, reply: Channel[Reply])
-    Exit(id: long, status: Result[ExitStatus, IoError])
-    // job `id`'s deadline, from the sleeper `gen` armed
-    Due(id: long, gen: int)
-    // job `id`'s retry delay, set for its attempt `attempt`
-    Retry(id: long, attempt: int)
-    // job `id`'s group stopped again, for the pause that made sleeper `gen`
-    Restop(id: long, gen: int)
-    Written
-    Terminate
-    Tick
-    // time for the automatic retention sweep
-    Sweep
-    Sample
-    // The resident bytes of each job's process tree, by job id.
-    Measured(sizes: Vector[(long, long)])
-    // The client of a watch has gone: the stream it was read from.
-    Unwatch(out: Channel[Reply])
+  FromClient(request: Request, reply: Channel[Reply])
+  Exit(id: long, status: Result[ExitStatus, IoError])
+  // job `id`'s deadline, from the sleeper `gen` armed
+  Due(id: long, gen: int)
+  // job `id`'s retry delay, set for its attempt `attempt`
+  Retry(id: long, attempt: int)
+  // job `id`'s group stopped again, for the pause that made sleeper `gen`
+  Restop(id: long, gen: int)
+  Written
+  Terminate
+  Tick
+  // time for the automatic retention sweep
+  Sweep
+  Sample
+  // The resident bytes of each job's process tree, by job id.
+  Measured(sizes: Vector[(long, long)])
+  // The client of a watch has gone: the stream it was read from.
+  Unwatch(out: Channel[Reply])
 
 // How many replies a watch's stream holds for a reader that has not taken them yet, unless
 // `$MARSHAL_TEST_WATCH_BUFFER` names another, which is how the tests make a reader fall behind
 // without writing hundreds of events.
-watchBuffer() -> int = process.env("MARSHAL_TEST_WATCH_BUFFER").flatMap(t -> t.toIntOption()).filter(n -> n >= 1).getOrElse(256)
+watchBuffer() -> int = process.env(
+  "MARSHAL_TEST_WATCH_BUFFER"
+).flatMap(t -> t.toIntOption()).filter(n -> n >= 1).getOrElse(256)
 
 // A client following events. `out` is its bounded stream, written only by the daemon's thread and
 // read by the client's connection. For a `JobsEnded` condition `pending` holds the jobs not yet
 // ended and `last` the latest ending seen.
 class Watcher(val cond: Condition, val mode: Mode, val out: Channel[Reply])
-    var pending: Vector[long] = []
-    var last: Option[Json] = None
+  var pending: Vector[long] = []
+  var last: Option[Json] = None
 
 // How long a job's processes have between TERM and KILL.
 val Grace: long = 5000
@@ -87,11 +117,15 @@ val TickMs: long = 3000
 
 // How often the retention sweep runs, in milliseconds (an hour), unless
 // `$MARSHAL_TEST_SWEEP_MS` names another, so that the tests need not wait for one.
-sweepInterval() -> long = process.env("MARSHAL_TEST_SWEEP_MS").flatMap(t -> t.toLongOption()).filter(n -> n >= 1).getOrElse(3600000)
+sweepInterval() -> long = process.env(
+  "MARSHAL_TEST_SWEEP_MS"
+).flatMap(t -> t.toLongOption()).filter(n -> n >= 1).getOrElse(3600000)
 
 // The process `$MARSHAL_TEST_WATCH_PID` names, if it does. A daemon the tests start stops itself,
 // as a TERM would, once that process is gone, so a test run that is killed leaves none behind.
-watchedOwner() -> Option[long] = process.env("MARSHAL_TEST_WATCH_PID").flatMap(t -> t.toLongOption()).filter(n -> n >= 1)
+watchedOwner() -> Option[long] = process.env(
+  "MARSHAL_TEST_WATCH_PID"
+).flatMap(t -> t.toLongOption()).filter(n -> n >= 1)
 
 // How often the running jobs' memory is measured, in milliseconds.
 val SampleMs: long = 1000
@@ -104,1339 +138,1566 @@ val RestopMs: Vector[long] = [10, 40, 150]
 // `startedAt` when it started on the wall clock, in milliseconds; `resident` its memory as measured.
 // `after` the jobs a waiting job still waits for; `attempt` counts its runs from 1, and `retryAt` is
 // when a job waiting to retry queues again.
-class Job(val id: long, val spec: JobSpec, val submittedMs: long, var arrived: long, val deadlineMs: long, val expectedMs: long, val log: string)
-    var state = "queued"
-    var pid: long = 0
-    var startedMs: long = 0
-    var startedAt: long = 0
-    var resident = Resident(0, 0)
-    var endedMs: long = 0
-    var pgid: long = 0
-    var outcome: Option[Outcome] = None
-    var killed = false
-    var timedOut = false
-    // a job being stopped (`timedOut`) for its quiet timeout rather than its deadline, and how long
-    // its log has gone without output
-    var quietStopped = false
-    var quiet = marshal.QuietClock(0, 0)
-    var sample: Option[string] = None
-    // a queued job kept from starting, and its place in the queue
-    var held = false
-    var priority = 0
-    // when it joined the urgent band (wall-clock microseconds), or 0 outside it
-    var urgentAt: long = 0
-    // a running job stopped by `pause`: since `pausedAt` (the daemon's clock), after `pausedMs` of
-    // earlier pauses; paused time is not run time, and its deadline does not count it
-    var paused = false
-    var pausedAt: long = 0
-    var pausedMs: long = 0
-    // the deadline sleeper that is current; one armed before a pause is stale after it
-    var dueGen = 0
-    // the jobs a waiting job still waits for; its runs, counted from 1; when a job waiting to retry
-    // queues again (the daemon's clock)
-    var after: Vector[long] = []
-    var attempt = 1
-    var retryAt: long = 0
-    // the memory the scheduler counts for it, and whether its kind's peaks taught it
-    var reserved: long = 0
-    var learnedMem = false
-    // where the reservation came from (`reservationSource`)
-    var reservedFrom = ""
-    // whether `expectedMs` was learned from its kind's runs; a drain counts a guessed one by its deadline
-    var durationLearned = false
-    // an exclusive job's `--quiet-load`: the load last read (None until read, or where it cannot be),
-    // and since when it has stayed below the job's quiet load (the daemon's clock)
-    var load: Option[real] = None
-    var calm: Option[long] = None
-    // when a running exclusive job's log was last given a sample line (the daemon's clock)
-    var sampledMs: long = 0
-    val waiters = Buffer[Channel[Reply]]()
+class Job(
+    val id: long,
+    val spec: JobSpec,
+    val submittedMs: long,
+    var arrived: long,
+    val deadlineMs: long,
+    val expectedMs: long,
+    val log: string
+)
+  var state = "queued"
+  var pid: long = 0
+  var startedMs: long = 0
+  var startedAt: long = 0
+  var resident = Resident(0, 0)
+  var endedMs: long = 0
+  var pgid: long = 0
+  var outcome: Option[Outcome] = None
+  var killed = false
+  var timedOut = false
+  // a job being stopped (`timedOut`) for its quiet timeout rather than its deadline, and how long
+  // its log has gone without output
+  var quietStopped = false
+  var quiet = marshal.QuietClock(0, 0)
+  var sample: Option[string] = None
+  // a queued job kept from starting, and its place in the queue
+  var held = false
+  var priority = 0
+  // when it joined the urgent band (wall-clock microseconds), or 0 outside it
+  var urgentAt: long = 0
+  // a running job stopped by `pause`: since `pausedAt` (the daemon's clock), after `pausedMs` of
+  // earlier pauses; paused time is not run time, and its deadline does not count it
+  var paused = false
+  var pausedAt: long = 0
+  var pausedMs: long = 0
+  // the deadline sleeper that is current; one armed before a pause is stale after it
+  var dueGen = 0
+  // the jobs a waiting job still waits for; its runs, counted from 1; when a job waiting to retry
+  // queues again (the daemon's clock)
+  var after: Vector[long] = []
+  var attempt = 1
+  var retryAt: long = 0
+  // the memory the scheduler counts for it, and whether its kind's peaks taught it
+  var reserved: long = 0
+  var learnedMem = false
+  // where the reservation came from (`reservationSource`)
+  var reservedFrom = ""
+  // whether `expectedMs` was learned from its kind's runs; a drain counts a guessed one by its deadline
+  var durationLearned = false
+  // an exclusive job's `--quiet-load`: the load last read (None until read, or where it cannot be),
+  // and since when it has stayed below the job's quiet load (the daemon's clock)
+  var load: Option[real] = None
+  var calm: Option[long] = None
+  // when a running exclusive job's log was last given a sample line (the daemon's clock)
+  var sampledMs: long = 0
+  val waiters = Buffer[Channel[Reply]]()
 
-    // How long it has run by `now`, its pauses left out.
-    ran(now: long) -> long
-        val until = if state == "done" then endedMs else now
-        val pausing = if paused then until - pausedAt else 0
-        until - startedMs - pausedMs - pausing
+  // How long it has run by `now`, its pauses left out.
+  ran(now: long) -> long
+    val until = if state == "done" then endedMs else now
+    val pausing = if paused then until - pausedAt else 0
+    until - startedMs - pausedMs - pausing
 
-    // `expectedStart` is when it is expected to start (wall-clock milliseconds), on the job the
-    // machine drains for; 0 otherwise.
-    info(now: long, expectedStart: long = 0) -> JobInfo =
-        val waits = state == "queued" || state == "waiting" || state == "retrying"
-        val elapsed = if waits then long(0) else ran(now)
-        val queued = if waits then now - submittedMs else startedMs - submittedMs
-        val rss = if state == "running" then resident.now else 0
-        // a waiting job that asked to be urgent joins the urgent band once it queues
-        val urgent = urgentAt > 0 || (state == "waiting" && spec.urgent)
-        JobInfo(id, spec.kind, spec.units, spec.memory, spec.landing, spec.dir, spec.cmd, state, outcome, killed, queued, elapsed, deadlineMs, log, sample, rss, resident.peak, startedAt, held, priority, urgent, paused, after, attempt, reserved, learnedMem, spec.label, spec.quietMs, reservedFrom, spec.external, spec.quick, expectedMs, durationLearned, expectedStart, spec.exclusive, spec.quietLoad)
+  // `expectedStart` is when it is expected to start (wall-clock milliseconds), on the job the
+  // machine drains for; 0 otherwise.
+  info(now: long, expectedStart: long = 0) -> JobInfo =
+    val waits = state == "queued" || state == "waiting" || state == "retrying"
+    val elapsed = if waits then long(0) else ran(now)
+    val queued = if waits then now - submittedMs else startedMs - submittedMs
+    val rss = if state == "running" then resident.now else 0
+    // a waiting job that asked to be urgent joins the urgent band once it queues
+    val urgent = urgentAt > 0 || (state == "waiting" && spec.urgent)
+    JobInfo(
+      id,
+      spec.kind,
+      spec.units,
+      spec.memory,
+      spec.landing,
+      spec.dir,
+      spec.cmd,
+      state,
+      outcome,
+      killed,
+      queued,
+      elapsed,
+      deadlineMs,
+      log,
+      sample,
+      rss,
+      resident.peak,
+      startedAt,
+      held,
+      priority,
+      urgent,
+      paused,
+      after,
+      attempt,
+      reserved,
+      learnedMem,
+      spec.label,
+      spec.quietMs,
+      reservedFrom,
+      spec.external,
+      spec.quick,
+      expectedMs,
+      durationLearned,
+      expectedStart,
+      spec.exclusive,
+      spec.quietLoad
+    )
 
 // The daemon's state, owned by its own thread.
 // `slots` is the take-slot directory it shares, if any; `ticket` the name of its waiting ticket there.
 // `earlier` holds the last jobs earlier daemons ended, as the event log describes them, by id.
 // `machineMemory` is the memory the machine has, 0 where it is not known.
-class Daemon(val home: string, val config: Config, val events: Channel[Message], var nextId: long, val histories: MutableMap[string, Buffer[long]], val slots: Option[TakeSlot], var earlier: Vector[JobInfo], val machineMemory: long)
-    val jobs = MutableMap[long, Job]()
-    val queue = Buffer[Job]()
-    val running = Buffer[Job]()
-    val ended = Buffer[Job]()
-    // Jobs waiting for others to end, and jobs waiting out a retry delay, oldest first.
-    val waitingJobs = Buffer[Job]()
-    var stopping = false
-    var draining = false
-    val stopReplies = Buffer[Channel[Reply]]()
-    var ticket: Option[string] = None
-    // Whether a measurement of the running jobs' memory is under way.
-    var measuring = false
-    // The peak memory of each job that ran and was measured, by history key, oldest first.
-    val peaks = MutableMap[string, Buffer[long]]()
-    var began: long = time.monotonic().toMillis
-    // Replies given and not yet written by their connections.
-    var unwritten = 0
-    // While a restart hands over, nothing starts and requests wait for its outcome.
-    var restarting = false
-    var termed = false
-    // While the queue is held, nothing new starts in either lane.
-    var queueHeld = false
-    // The clients following events.
-    val watchers = Buffer[Watcher]()
-    // Whether any client has asked to follow events, so a stop gives their streams time to be written.
-    var watched = false
+class Daemon(
+    val home: string,
+    val config: Config,
+    val events: Channel[Message],
+    var nextId: long,
+    val histories: MutableMap[string, Buffer[long]],
+    val slots: Option[TakeSlot],
+    var earlier: Vector[JobInfo],
+    val machineMemory: long
+)
+  val jobs = MutableMap[long, Job]()
+  val queue = Buffer[Job]()
+  val running = Buffer[Job]()
+  val ended = Buffer[Job]()
+  // Jobs waiting for others to end, and jobs waiting out a retry delay, oldest first.
+  val waitingJobs = Buffer[Job]()
+  var stopping = false
+  var draining = false
+  val stopReplies = Buffer[Channel[Reply]]()
+  var ticket: Option[string] = None
+  // Whether a measurement of the running jobs' memory is under way.
+  var measuring = false
+  // The peak memory of each job that ran and was measured, by history key, oldest first.
+  val peaks = MutableMap[string, Buffer[long]]()
+  var began: long = time.monotonic().toMillis
+  // Replies given and not yet written by their connections.
+  var unwritten = 0
+  // While a restart hands over, nothing starts and requests wait for its outcome.
+  var restarting = false
+  var termed = false
+  // While the queue is held, nothing new starts in either lane.
+  var queueHeld = false
+  // The clients following events.
+  val watchers = Buffer[Watcher]()
+  // Whether any client has asked to follow events, so a stop gives their streams time to be written.
+  var watched = false
 
-    now() -> long = time.monotonic().toMillis
+  now() -> long = time.monotonic().toMillis
 
-    // Answers a request; its connection says when the answer is written.
-    give(reply: Channel[Reply], answer: Reply)
-        unwritten += 1
-        reply.send(answer)
+  // Answers a request; its connection says when the answer is written.
+  give(reply: Channel[Reply], answer: Reply)
+    unwritten += 1
+    reply.send(answer)
 
-    record(event: string, job: Job, extra: Vector[(string, Json)] = [])
-        val line = marshal.eventLine(time.now().epochMillis, event, job.info(now()), extra)
-        fs.appendText(home + "/events.jsonl", line + "\n")
-        if watchers.nonEmpty then json.parse(line).ok.foreach(ev -> publish(ev))
+  record(event: string, job: Job, extra: Vector[(string, Json)] = [])
+    val line = marshal.eventLine(time.now().epochMillis, event, job.info(now()), extra)
+    fs.appendText(home + "/events.jsonl", line + "\n")
+    if watchers.nonEmpty then json.parse(line).ok.foreach(ev -> publish(ev))
 
-    history(spec: JobSpec) -> Vector[long] =
-        histories.get(marshal.historyKey(spec.kind, spec.landing)).map(b -> b.toVector).getOrElse([])
+  history(spec: JobSpec) -> Vector[long] =
+    histories.get(marshal.historyKey(spec.kind, spec.landing)).map(b -> b.toVector).getOrElse([])
 
-    // The peaks of the jobs of `key`, oldest first.
-    peaksOf(key: string) -> Vector[long] = peaks.get(key).map(b -> b.toVector).getOrElse([])
+  // The peaks of the jobs of `key`, oldest first.
+  peaksOf(key: string) -> Vector[long] = peaks.get(key).map(b -> b.toVector).getOrElse([])
 
-    // Gives `job` its reservation: the memory it gave, or the peak learned in its directory, or of
-    // its kind while its directory has too few.
-    reserve(job: Job)
-        val s = job.spec
-        val learning = marshal.defaultMemoryLearning
-        val h = marshal.memoryHistory(learning, peaksOf(marshal.memoryDirKey(s.kind, s.landing, s.dir)), peaksOf(marshal.historyKey(s.kind, s.landing)))
-        val r = marshal.reservationFor(learning, s.memory, s.memoryGiven, h.peaks, config.budget.memory)
-        job.reserved = r.bytes
-        job.learnedMem = r.learned
-        job.reservedFrom = marshal.reservationSource(s.memory, s.memoryGiven, r, h.from)
+  // Gives `job` its reservation: the memory it gave, or the peak learned in its directory, or of
+  // its kind while its directory has too few.
+  reserve(job: Job)
+    val s = job.spec
+    val learning = marshal.defaultMemoryLearning
+    val h = marshal.memoryHistory(
+      learning,
+      peaksOf(marshal.memoryDirKey(s.kind, s.landing, s.dir)),
+      peaksOf(marshal.historyKey(s.kind, s.landing))
+    )
+    val r = marshal.reservationFor(learning, s.memory, s.memoryGiven, h.peaks, config.budget.memory)
+    job.reserved = r.bytes
+    job.learnedMem = r.learned
+    job.reservedFrom = marshal.reservationSource(s.memory, s.memoryGiven, r, h.from)
 
-    // Remembers the peak a job of `key` reached, for the reservations of the jobs after it.
-    rememberPeak(key: string, peak: long)
-        if peak <= 0 then return
-        peaks.get(key) match
-            Some(b) -> b += peak
-            None ->
-                val b = Buffer[long]()
-                b += peak
-                peaks(key) = b
+  // Remembers the peak a job of `key` reached, for the reservations of the jobs after it.
+  rememberPeak(key: string, peak: long)
+    if peak <= 0 then return
+    peaks.get(key) match
+      Some(b) -> b += peak
+      None ->
+        val b = Buffer[long]()
+        b += peak
+        peaks(key) = b
 
-    // What admission counts a running job as holding; an external job's tree is not what it uses, so
-    // it holds its reservation whatever its tree measures.
-    holds(j: Job) -> long = if j.spec.external then j.reserved else marshal.holding(j.reserved, j.resident.now)
+  // What admission counts a running job as holding; an external job's tree is not what it uses, so
+  // it holds its reservation whatever its tree measures.
+  holds(j: Job) -> long = if j.spec.external then j.reserved else marshal.holding(j.reserved, j.resident.now)
 
-    // How long a drain counts a job as running: its learned duration, or its deadline when nothing is
-    // learned of its kind.
-    drainMs(j: Job) -> long = if j.durationLearned then j.expectedMs else j.deadlineMs
+  // How long a drain counts a job as running: its learned duration, or its deadline when nothing is
+  // learned of its kind.
+  drainMs(j: Job) -> long = if j.durationLearned then j.expectedMs else j.deadlineMs
 
-    // The running job `j` as the scheduler weighs it at `t`: its deadline is counted from its start,
-    // the time it has spent paused added, since a pause stops its deadline's clock.
-    startedOf(j: Job, t: long) -> Started =
-        Started(j.id, j.spec.units, holds(j), j.spec.landing, j.startedMs, j.expectedMs, j.spec.quick, drainMs(j), j.deadlineMs + (t - j.startedMs - j.ran(t)), j.spec.exclusive)
+  // The running job `j` as the scheduler weighs it at `t`: its deadline is counted from its start,
+  // the time it has spent paused added, since a pause stops its deadline's clock.
+  startedOf(j: Job, t: long) -> Started =
+    Started(
+      j.id,
+      j.spec.units,
+      holds(j),
+      j.spec.landing,
+      j.startedMs,
+      j.expectedMs,
+      j.spec.quick,
+      drainMs(j),
+      j.deadlineMs + (t - j.startedMs - j.ran(t)),
+      j.spec.exclusive
+    )
 
-    // The queued job `j` as the scheduler weighs it at `t`; an exclusive one with a quiet load says
-    // why the load holds it back, until it no longer does.
-    waitingOf(j: Job, t: long) -> Waiting
-        val unsettled = if j.spec.exclusive && j.spec.quietLoad > 0.0 then marshal.loadWhy(j.load, j.spec.quietLoad, j.calm, marshal.quietLoadWindowMs(), t) else None
-        Waiting(j.id, j.spec.units, j.reserved, j.spec.landing, j.expectedMs, j.arrived, j.spec.quick, drainMs(j), j.spec.exclusive, unsettled)
+  // The queued job `j` as the scheduler weighs it at `t`; an exclusive one with a quiet load says
+  // why the load holds it back, until it no longer does.
+  waitingOf(j: Job, t: long) -> Waiting
+    val unsettled = if j.spec.exclusive && j.spec.quietLoad > 0.0 then marshal.loadWhy(
+      j.load,
+      j.spec.quietLoad,
+      j.calm,
+      marshal.quietLoadWindowMs(),
+      t
+    ) else None
+    Waiting(
+      j.id,
+      j.spec.units,
+      j.reserved,
+      j.spec.landing,
+      j.expectedMs,
+      j.arrived,
+      j.spec.quick,
+      drainMs(j),
+      j.spec.exclusive,
+      unsettled
+    )
 
-    // What a `started` event adds for a job backfilled ahead of a draining job: its id.
-    backfilledField(ahead: Option[long]) -> Vector[(string, Json)] = ahead match
-        Some(id) -> [("backfilled_ahead_of", Json.num(id))]
-        None -> []
+  // What a `started` event adds for a job backfilled ahead of a draining job: its id.
+  backfilledField(ahead: Option[long]) -> Vector[(string, Json)] = ahead match
+    Some(id) -> [("backfilled_ahead_of", Json.num(id))]
+    None -> []
 
-    // Serves messages until the daemon has stopped.
-    serve()
-        loop
-            val message = events.receive() match
-                Some(m) -> m
-                None -> break
-            message match
-                FromClient(request, reply) -> answer(request, reply)
-                Exit(id, status) -> exited(id, status)
-                Due(id, gen) -> due(id, gen)
-                Retry(id, attempt) -> retryDue(id, attempt)
-                Restop(id, gen) -> restop(id, gen)
-                Written -> unwritten -= 1
-                Tick -> if queue.nonEmpty then schedule()
-                Sweep -> sweep()
-                Sample ->
-                    holdPaused()
-                    quietCheck()
-                    exclusiveCheck()
-                    measure()
-                Measured(sizes) -> measured(sizes)
-                Unwatch(out) -> unwatch(out)
-                Terminate ->
-                    eprintln("marshal: TERM received: stopping, killing what runs")
-                    stop(true, false, None)
-            if draining && idle() then stopping = true
-            if stopping && idle() then break
-        finish()
+  // Serves messages until the daemon has stopped.
+  serve()
+    loop
+      val message = events.receive() match
+        Some(m) -> m
+        None -> break
+      message match
+        FromClient(request, reply) -> answer(request, reply)
+        Exit(id, status) -> exited(id, status)
+        Due(id, gen) -> due(id, gen)
+        Retry(id, attempt) -> retryDue(id, attempt)
+        Restop(id, gen) -> restop(id, gen)
+        Written -> unwritten -= 1
+        Tick -> if queue.nonEmpty then schedule()
+        Sweep -> sweep()
+        Sample ->
+          holdPaused()
+          quietCheck()
+          exclusiveCheck()
+          measure()
+        Measured(sizes) -> measured(sizes)
+        Unwatch(out) -> unwatch(out)
+        Terminate ->
+          eprintln("marshal: TERM received: stopping, killing what runs")
+          stop(true, false, None)
+      if draining && idle() then stopping = true
+      if stopping && idle() then break
+    finish()
 
-    // Whether no job runs, waits in the queue, waits for others or waits to retry.
-    idle() -> bool = running.isEmpty && queue.isEmpty && waitingJobs.isEmpty
+  // Whether no job runs, waits in the queue, waits for others or waits to retry.
+  idle() -> bool = running.isEmpty && queue.isEmpty && waitingJobs.isEmpty
 
-    // Answers a request at once, or keeps its reply channel for when the answer is known.
-    answer(request: Request, reply: Channel[Reply])
-        request match
-            Submit(spec) -> give(reply, submit(spec))
-            Wait(id) -> jobs.get(id) match
-                Some(job) if job.state == "done" -> give(reply, Ended(job.info(now())))
-                Some(job) -> job.waiters += reply
-                None -> give(reply, endedEarlier(id))
-            Kill(id) -> give(reply, kill(id))
-            Request.List -> give(reply, Jobs(listing()))
-            Status -> give(reply, Using(usage()))
-            Request.Snapshot -> give(reply, Viewed(overview()))
-            Stop(force, drain) -> stop(force, drain, Some(reply))
-            Request.Hello -> give(reply, Hi(reportedVersion(), process.pid()))
-            Request.Restart(program) -> restart(reply, program)
-            Rerun(id) -> give(reply, rerun(id))
-            Clean(rule) -> give(reply, Cleaned(cleanNow(rule)))
-            Request.PauseQueue -> give(reply, holdQueue(true))
-            Request.ResumeQueue -> give(reply, holdQueue(false))
-            Request.PauseJob(id) -> give(reply, pauseJob(id, true))
-            Request.ResumeJob(id) -> give(reply, pauseJob(id, false))
-            Request.Hold(id) -> give(reply, hold(id, true))
-            Request.Release(id) -> give(reply, hold(id, false))
-            Request.Prioritize(id, p) -> give(reply, prioritize(id, p))
-            Watch(_, _, _, _, _) -> watch(request, reply)
+  // Answers a request at once, or keeps its reply channel for when the answer is known.
+  answer(request: Request, reply: Channel[Reply])
+    request match
+      Submit(spec) -> give(reply, submit(spec))
+      Wait(id) -> jobs.get(id) match
+        Some(job) if job.state == "done" -> give(reply, Ended(job.info(now())))
+        Some(job) -> job.waiters += reply
+        None -> give(reply, endedEarlier(id))
+      Kill(id) -> give(reply, kill(id))
+      Request.List -> give(reply, Jobs(listing()))
+      Status -> give(reply, Using(usage()))
+      Request.Snapshot -> give(reply, Viewed(overview()))
+      Stop(force, drain) -> stop(force, drain, Some(reply))
+      Request.Hello -> give(reply, Hi(reportedVersion(), process.pid()))
+      Request.Restart(program) -> restart(reply, program)
+      Rerun(id) -> give(reply, rerun(id))
+      Clean(rule) -> give(reply, Cleaned(cleanNow(rule)))
+      Request.PauseQueue -> give(reply, holdQueue(true))
+      Request.ResumeQueue -> give(reply, holdQueue(false))
+      Request.PauseJob(id) -> give(reply, pauseJob(id, true))
+      Request.ResumeJob(id) -> give(reply, pauseJob(id, false))
+      Request.Hold(id) -> give(reply, hold(id, true))
+      Request.Release(id) -> give(reply, hold(id, false))
+      Request.Prioritize(id, p) -> give(reply, prioritize(id, p))
+      Watch(_, _, _, _, _) -> watch(request, reply)
 
-    // Queues a job, or keeps it waiting while the jobs it runs after have not all ended. `extra` goes into
-    // its `submitted` event.
-    submit(given: JobSpec, extra: Vector[(string, Json)] = []) -> Reply
-        if stopping || draining then return Failed("the daemon is stopping and takes no new jobs")
-        for why in marshal.exclusiveRefusal(given) do return Failed(why)
-        // an exclusive job is the only one running, so it weighs the whole budget
-        val spec = if given.exclusive then marshal.exclusiveSpec(given, config.budget.units) else given
-        // a landing job, and an exclusive one, of any memory can start: when nothing else runs
-        marshal.neverFits(config.budget, spec.units, spec.memory, spec.landing || spec.exclusive) match
-            Some(why) -> return Failed(why)
-            None -> ()
-        marshal.externalRefusal(spec.external, spec.memoryGiven || spec.memory > 0) match
-            Some(why) -> return Failed(why)
-            None -> ()
-        for why in marshal.quickRefusal(spec) do return Failed(why)
-        if !fs.isDir(spec.dir) then return Failed(s"no directory ${spec.dir}")
-        if spec.retries < 0 then return Failed(s"retries are 0 or more, not ${spec.retries}")
-        if spec.retryDelayMs < 0 then return Failed("a retry delay is not negative")
-        // Only a job that exists can be waited for, so the jobs a job waits for are all older than
-        // it, and waits can never form a cycle.
-        for dep in spec.after
-            if dep == nextId then return Failed(s"job $dep cannot wait for itself")
-            endingOf(dep) match
-                Err(e) -> return Failed(e)
-                Ok(_) -> ()
-        val past = history(spec)
-        val deadline = if spec.quick then marshal.quickDeadlineMs(spec) else spec.deadlineMs.getOrElse(marshal.deadlineMs(config.learning, spec.kind, spec.landing, past))
-        val learned = marshal.expectedMs(config.learning, spec.kind, spec.landing, past)
-        val expected = if learned < deadline then learned else deadline
-        val id = nextId
-        nextId += 1
-        val job = Job(id, spec, now(), time.now().epochMicros, deadline, expected, s"$home/jobs/$id.log")
-        job.durationLearned = marshal.durationLearned(config.learning, past)
-        reserve(job)
-        // its quiet load's clock starts with the load as it is now
-        if spec.quietLoad > 0.0 then settleSeen(job, marshal.loadAverages().headOption, now())
-        jobs(id) = job
-        if spec.after.isEmpty
-            enqueue(job)
-            record("submitted", job, [("spec", marshal.encodeSpec(spec))] ++ extra)
-        else
-            job.state = "waiting"
-            job.after = spec.after.distinct
-            waitingJobs += job
-            record("submitted", job, [("spec", marshal.encodeSpec(spec))] ++ extra)
-            reconsider(job)
-        schedule()
-        Submitted(id, job.log, marshal.quickHint(config.learning, spec, past))
+  // Queues a job, or keeps it waiting while the jobs it runs after have not all ended. `extra` goes into
+  // its `submitted` event.
+  submit(given: JobSpec, extra: Vector[(string, Json)] = []) -> Reply
+    if stopping || draining then return Failed("the daemon is stopping and takes no new jobs")
+    for why in marshal.exclusiveRefusal(given) do return Failed(why)
+    // an exclusive job is the only one running, so it weighs the whole budget
+    val spec = if given.exclusive then marshal.exclusiveSpec(given, config.budget.units) else given
+    // a landing job, and an exclusive one, of any memory can start: when nothing else runs
+    marshal.neverFits(config.budget, spec.units, spec.memory, spec.landing || spec.exclusive) match
+      Some(why) -> return Failed(why)
+      None -> ()
+    marshal.externalRefusal(spec.external, spec.memoryGiven || spec.memory > 0) match
+      Some(why) -> return Failed(why)
+      None -> ()
+    for why in marshal.quickRefusal(spec) do return Failed(why)
+    if !fs.isDir(spec.dir) then return Failed(s"no directory ${spec.dir}")
+    if spec.retries < 0 then return Failed(s"retries are 0 or more, not ${spec.retries}")
+    if spec.retryDelayMs < 0 then return Failed("a retry delay is not negative")
+    // Only a job that exists can be waited for, so the jobs a job waits for are all older than
+    // it, and waits can never form a cycle.
+    for dep in spec.after
+      if dep == nextId then return Failed(s"job $dep cannot wait for itself")
+      endingOf(dep) match
+        Err(e) -> return Failed(e)
+        Ok(_) -> ()
+    val past = history(spec)
+    val deadline = if spec.quick then marshal.quickDeadlineMs(spec) else spec.deadlineMs.getOrElse(
+      marshal.deadlineMs(config.learning, spec.kind, spec.landing, past)
+    )
+    val learned = marshal.expectedMs(config.learning, spec.kind, spec.landing, past)
+    val expected = if learned < deadline then learned else deadline
+    val id = nextId
+    nextId += 1
+    val job = Job(id, spec, now(), time.now().epochMicros, deadline, expected, s"$home/jobs/$id.log")
+    job.durationLearned = marshal.durationLearned(config.learning, past)
+    reserve(job)
+    // its quiet load's clock starts with the load as it is now
+    if spec.quietLoad > 0.0 then settleSeen(job, marshal.loadAverages().headOption, now())
+    jobs(id) = job
+    if spec.after.isEmpty
+      enqueue(job)
+      record("submitted", job, [("spec", marshal.encodeSpec(spec))] ++ extra)
+    else
+      job.state = "waiting"
+      job.after = spec.after.distinct
+      waitingJobs += job
+      record("submitted", job, [("spec", marshal.encodeSpec(spec))] ++ extra)
+      reconsider(job)
+    schedule()
+    Submitted(id, job.log, marshal.quickHint(config.learning, spec, past))
 
-    // `rerun`: job `id`, ended, submitted again with the same command, directory, environment, kind,
-    // resources, deadline, quiet timeout, urgency, retries and label, but waiting for nothing.
-    rerun(id: long) -> Reply
-        val spec = jobs.get(id) match
-            Some(j) if j.state != "done" -> return Failed(s"job $id is ${j.state}: only a job that has ended runs again")
-            Some(j) -> j.spec
-            None ->
-                if id < 1 || id >= nextId then return Failed(s"no job $id")
-                val text = fs.readText(home + "/events.jsonl").getOrElse("")
-                marshal.specOf(text.lines, id) match
-                    Some(s) -> s
-                    None -> return Failed(s"job $id's command is not in the event log")
-        submit(JobSpec(spec.kind, spec.units, spec.memory, spec.landing, spec.dir, spec.deadlineMs, spec.cmd, spec.env, spec.urgent, [], false, spec.retries, spec.retryDelayMs, spec.memoryGiven, spec.label, spec.quietMs, spec.external, spec.quick, spec.exclusive, spec.quietLoad), [("rerun_of", Json.num(id))])
-
-    // How job `id` ended: None while it has not, and an error when there is no such job or its end
-    // cannot be read.
-    endingOf(id: long) -> Result[Option[Outcome], string]
-        jobs.get(id) match
-            Some(j) -> return Ok(if j.state == "done" then j.outcome else None)
-            None -> ()
-        endedEarlier(id) match
-            Ended(info) -> Ok(info.outcome)
-            Failed(e) -> Err(e)
-            other -> Err(s"job $id: unexpected $other")
-
-    // Looks again at the jobs a waiting job waits for. One that did not succeed cancels it, unless
-    // it runs after them whatever their outcome; once none is left to wait for, it joins the queue,
-    // and stays held there if it was held by hand while it waited.
-    reconsider(job: Job)
-        if job.state != "waiting" then return
-        val pending = Buffer[long]()
-        for dep in job.after
-            endingOf(dep) match
-                Ok(None) -> pending += dep
-                Ok(Some(o)) -> if !job.spec.afterAny && !marshal.succeeded(o)
-                    waitingJobs.remove(waitingJobs.indexOf(job))
-                    conclude(job, DependencyFailed(dep), "cancelled")
-                    return
-                // a job whose end cannot be read is taken to have failed
-                Err(_) -> if !job.spec.afterAny
-                    waitingJobs.remove(waitingJobs.indexOf(job))
-                    conclude(job, DependencyFailed(dep), "cancelled")
-                    return
-        job.after = pending.toVector
-        if pending.nonEmpty then return
-        waitingJobs.remove(waitingJobs.indexOf(job))
-        enqueue(job)
-        record("ready", job)
-
-    // Puts a job in the queue, arriving now: behind the jobs of its priority, or, for an urgent
-    // job, at the back of the urgent band. A first attempt is urgent when it was submitted with
-    // `--urgent`; a retry keeps the band its last attempt had, as `priority` may have changed it.
-    enqueue(job: Job)
-        job.state = "queued"
-        job.arrived = time.now().epochMicros
-        val urgent = if job.attempt > 1 then job.urgentAt > 0 else job.spec.urgent
-        job.urgentAt = if urgent then urgentMark() else 0
-        queue += job
-        order()
-
-    // The jobs waiting for job `id`, which has just ended, look again.
-    waitersOf(id: long)
-        for job in waitingJobs.toVector
-            if job.after.contains(id) then reconsider(job)
-
-    // A job's attempt ended so: it is retried when it failed in a way another attempt may mend and
-    // has attempts left, and otherwise it ends.
-    attemptEnded(job: Job, outcome: Outcome, event: string)
-        if stopping || job.attempt > job.spec.retries || !marshal.retryable(outcome, job.killed)
-            conclude(job, outcome, event)
-            return
-        val t = now()
-        offMachine(job)
-        // a pause ends with the attempt
-        if job.paused
-            job.pausedMs += t - job.pausedAt
-            job.paused = false
-            job.pausedAt = 0
-        job.state = "done"
-        job.endedMs = t
-        job.outcome = Some(outcome)
-        record(event, job, [("run_ms", Json.num(job.ran(t))), ("exit", Json.num(marshal.exitCode(outcome))), ("retrying", Json.Bool(true))])
-        job.outcome = None
-        job.timedOut = false
-        job.quietStopped = false
-        job.sample = None
-        job.pid = 0
-        job.pgid = 0
-        job.pausedMs = 0
-        job.attempt += 1
-        val delay = job.spec.retryDelayMs
-        eprintln(s"marshal: job ${job.id} failed (exit ${marshal.exitCode(outcome)}): attempt ${job.attempt} of ${job.spec.retries + 1}" + (if delay > 0 then s" in ${marshal.formatMillis(delay)}" else ""))
-        if delay > 0
-            job.state = "retrying"
-            job.retryAt = t + delay
-            waitingJobs += job
-            record("retry", job, [("delay_ms", Json.num(delay))])
-            armRetry(job)
-        else
-            enqueue(job)
-            record("retry", job, [("delay_ms", Json.num(0))])
-        schedule()
-
-    // A thread that sleeps until a job waiting to retry may queue again.
-    armRetry(job: Job)
-        val events = self.events
-        val id = job.id
-        val attempt = job.attempt
-        val left = job.retryAt - now()
-        spawn(() ->
-            if left > 0 then threads.sleep(millis(left))
-            events.send(Retry(id, attempt)))
-
-    retryDue(id: long, attempt: int)
-        val job = jobs(id)
-        if job.state != "retrying" || job.attempt != attempt then return
-        waitingJobs.remove(waitingJobs.indexOf(job))
-        enqueue(job)
-        schedule()
-
-    // A job this daemon never held: one an earlier daemon ran, answered from the log.
-    endedEarlier(id: long) -> Reply
+  // `rerun`: job `id`, ended, submitted again with the same command, directory, environment, kind,
+  // resources, deadline, quiet timeout, urgency, retries and label, but waiting for nothing.
+  rerun(id: long) -> Reply
+    val spec = jobs.get(id) match
+      Some(j) if j.state != "done" -> return Failed(s"job $id is ${j.state}: only a job that has ended runs again")
+      Some(j) -> j.spec
+      None ->
         if id < 1 || id >= nextId then return Failed(s"no job $id")
         val text = fs.readText(home + "/events.jsonl").getOrElse("")
-        marshal.endOf(text.lines, id) match
-            Some(ev) -> marshal.decodeJob(ev) match
-                Ok(info) -> Ended(info)
-                Err(e) -> Failed(s"job $id's last event is unreadable: $e")
-            None -> Failed(s"job $id has no ending in the log")
+        marshal.specOf(text.lines, id) match
+          Some(s) -> s
+          None -> return Failed(s"job $id's command is not in the event log")
+    submit(
+      JobSpec(
+        spec.kind,
+        spec.units,
+        spec.memory,
+        spec.landing,
+        spec.dir,
+        spec.deadlineMs,
+        spec.cmd,
+        spec.env,
+        spec.urgent,
+        [],
+        false,
+        spec.retries,
+        spec.retryDelayMs,
+        spec.memoryGiven,
+        spec.label,
+        spec.quietMs,
+        spec.external,
+        spec.quick,
+        spec.exclusive,
+        spec.quietLoad
+      ),
+      [("rerun_of", Json.num(id))]
+    )
 
-    kill(id: long) -> Reply
-        val job = jobs.get(id) match
-            Some(j) -> j
-            None -> return Failed(if 1 <= id < nextId then s"job $id has already ended" else s"no job $id")
-        job.state match
-            "queued" ->
-                job.killed = true
-                queue.remove(queue.indexOf(job))
-                conclude(job, Cancelled, "killed")
-                Done
-            "waiting" | "retrying" ->
-                job.killed = true
-                waitingJobs.remove(waitingJobs.indexOf(job))
-                conclude(job, Cancelled, "killed")
-                Done
-            "running" ->
-                if !job.killed && !job.timedOut then halt(job)
-                Done
-            _ -> Failed(s"job $id has already ended")
+  // How job `id` ended: None while it has not, and an error when there is no such job or its end
+  // cannot be read.
+  endingOf(id: long) -> Result[Option[Outcome], string]
+    jobs.get(id) match
+      Some(j) -> return Ok(if j.state == "done" then j.outcome else None)
+      None -> ()
+    endedEarlier(id) match
+      Ended(info) -> Ok(info.outcome)
+      Failed(e) -> Err(e)
+      other -> Err(s"job $id: unexpected $other")
 
-    // Kills a running job's group. A paused one is continued first, so it can act on the TERM: its
-    // pause ends here.
-    halt(job: Job)
-        job.killed = true
-        if job.paused
-            unpause(job)
-            marshal.signalGroups(home, job.id, job.pgid, signal.Continue)
-        terminate(home, job.id, job.pgid, None)
+  // Looks again at the jobs a waiting job waits for. One that did not succeed cancels it, unless
+  // it runs after them whatever their outcome; once none is left to wait for, it joins the queue,
+  // and stays held there if it was held by hand while it waited.
+  reconsider(job: Job)
+    if job.state != "waiting" then return
+    val pending = Buffer[long]()
+    for dep in job.after
+      endingOf(dep) match
+        Ok(None) -> pending += dep
+        Ok(Some(o)) -> if !job.spec.afterAny && !marshal.succeeded(o)
+          waitingJobs.remove(waitingJobs.indexOf(job))
+          conclude(job, DependencyFailed(dep), "cancelled")
+          return
+        // a job whose end cannot be read is taken to have failed
+        Err(_) -> if !job.spec.afterAny
+          waitingJobs.remove(waitingJobs.indexOf(job))
+          conclude(job, DependencyFailed(dep), "cancelled")
+          return
+    job.after = pending.toVector
+    if pending.nonEmpty then return
+    waitingJobs.remove(waitingJobs.indexOf(job))
+    enqueue(job)
+    record("ready", job)
 
-    // Ends the job's pause on the daemon's books: the time paused is added up, and its clock runs.
-    // Its quiet clock starts again: a pause is not quiet.
-    unpause(job: Job)
-        job.pausedMs += now() - job.pausedAt
-        job.paused = false
-        job.pausedAt = 0
-        job.quiet = marshal.quietStart(marshal.fileBytes(job.log), now())
+  // Puts a job in the queue, arriving now: behind the jobs of its priority, or, for an urgent
+  // job, at the back of the urgent band. A first attempt is urgent when it was submitted with
+  // `--urgent`; a retry keeps the band its last attempt had, as `priority` may have changed it.
+  enqueue(job: Job)
+    job.state = "queued"
+    job.arrived = time.now().epochMicros
+    val urgent = if job.attempt > 1 then job.urgentAt > 0 else job.spec.urgent
+    job.urgentAt = if urgent then urgentMark() else 0
+    queue += job
+    order()
 
-    // The running job `id`, or why there is none, saying `what` only a running job may have done.
-    runningJob(id: long, what: string) -> Result[Job, string] = jobs.get(id) match
-        Some(j) if j.state == "running" && (j.killed || j.timedOut) -> Err(s"job $id is being stopped")
-        Some(j) if j.state == "running" -> Ok(j)
-        Some(j) if j.state == "queued" -> Err(s"job $id is queued: only a running job $what")
-        Some(_) -> Err(s"job $id has already ended")
-        None -> Err(if 1 <= id < nextId then s"job $id has already ended" else s"no job $id")
+  // The jobs waiting for job `id`, which has just ended, look again.
+  waitersOf(id: long)
+    for job in waitingJobs.toVector
+      if job.after.contains(id) then reconsider(job)
 
-    // Stops the running job `id`'s whole process group (`on`), keeping its units and stopping its
-    // deadline's clock, or continues it.
-    pauseJob(id: long, on: bool) -> Reply
-        val job = runningJob(id, if on then "is paused" else "is resumed") match
-            Ok(j) -> j
-            Err(e) -> return Failed(e)
-        if job.paused == on then return Failed(if on then s"job $id is already paused" else s"job $id is not paused")
-        val sig = if on then signal.Stop else signal.Continue
-        process.signal(-job.pgid, sig) match
-            Err(e) -> return Failed(s"job $id's processes could not be signalled: ${e.message}")
-            Ok(_) -> ()
-        // the step a job type's run is executing is in a group of its own
-        marshal.signalGroups(home, id, job.pgid, sig)
-        if on
-            job.paused = true
-            job.pausedAt = now()
-        else
-            unpause(job)
-        armDeadline(job)
-        if on then restopSoon(job)
-        record(if on then "paused" else "resumed", job)
-        Done
-
-    // A STOP sent to a group can miss a process: one that is between fork and exec as it goes,
-    // as a job is when it has only just started or its shell is starting a command, carries on
-    // running. So a paused job's groups are stopped again shortly after the pause, and then at
-    // every sample for as long as it stays paused (`holdPaused`). A process already stopped is
-    // not changed by another STOP; one continued by hand is stopped again.
-    restopSoon(job: Job)
-        val events = self.events
-        val id = job.id
-        val gen = job.dueGen
-        spawn(() ->
-            for pause in RestopMs
-                threads.sleep(millis(pause))
-                events.send(Restop(id, gen)))
-
-    // Stops job `id`'s groups again, while the pause that armed `gen` still holds.
-    restop(id: long, gen: int)
-        val job = jobs(id)
-        if job.state != "running" || !job.paused || job.killed || job.timedOut || gen != job.dueGen then return
-        stopGroups(job)
-
-    // Every paused job's groups are stopped again.
-    holdPaused()
-        for job in running.toVector
-            if job.paused && !job.killed && !job.timedOut then stopGroups(job)
-
-    stopGroups(job: Job)
-        process.signal(-job.pgid, signal.Stop)
-        marshal.signalGroups(home, job.id, job.pgid, signal.Stop)
-
-    // Holds the queue (`on`) or releases it. A release starts what fits at once.
-    holdQueue(on: bool) -> Reply
-        if on
-            if stopping || draining then return Failed("the daemon is stopping")
-            if queueHeld then return Failed("the queue is already held")
-        elif !queueHeld then return Failed("the queue is not held")
-        queueHeld = on
-        eprintln(if on then "marshal: the queue is held" else "marshal: the queue is released")
-        schedule()
-        Done
-
-    // The queued job `id`, or why there is none: a job that runs or has ended is refused, saying
-    // `what` only a queued job may have done to it.
-    queued(id: long, what: string) -> Result[Job, string] = jobs.get(id) match
-        Some(j) if j.state == "queued" -> Ok(j)
-        Some(j) if j.state == "running" -> Err(s"job $id is running: only a queued job $what")
-        Some(_) -> Err(s"job $id has already ended")
-        None -> Err(if 1 <= id < nextId then s"job $id has already ended" else s"no job $id")
-
-    // Holds the queued job `id` (`on`) or releases it. A release starts it when it fits. A job
-    // waiting for others or waiting to retry may be held too: it stays held when it queues.
-    hold(id: long, on: bool) -> Reply
-        val job = jobs.get(id) match
-            Some(j) if j.state == "waiting" || j.state == "retrying" -> j
-            _ -> queued(id, if on then "is held" else "is released") match
-                Ok(j) -> j
-                Err(e) -> return Failed(e)
-        if on && draining then return Failed("the daemon is stopping")
-        if job.held == on then return Failed(if on then s"job $id is already held" else s"job $id is not held")
-        job.held = on
-        record(if on then "held" else "released", job)
-        schedule()
-        Done
-
-    // Places the queued job `id`, which may start it at once: a number takes it out of the urgent
-    // band and places it by priority; `Urgent` moves it to the back of the band, even from within it.
-    prioritize(id: long, p: marshal.Priority) -> Reply
-        val job = queued(id, "is given a priority") match
-            Ok(j) -> j
-            Err(e) -> return Failed(e)
-        p match
-            marshal.Level(n) ->
-                job.priority = n
-                job.urgentAt = 0
-            marshal.Urgent ->
-                job.urgentAt = 0
-                job.urgentAt = urgentMark()
-        order()
-        record("prioritized", job)
-        schedule()
-        Done
-
-    // The mark of a job joining the urgent band now: behind every urgent job queued.
-    urgentMark() -> long = marshal.urgentMark(time.now().epochMicros, queue.map(j -> j.urgentAt).toVector)
-
-    // Orders the queue: the urgent band first, in the order its jobs joined it, then the rest by
-    // priority, the highest first, keeping arrival order among equals.
-    order() = queue.sortInPlaceWith((a, b) -> marshal.placeOrder(marshal.Place(a.urgentAt, a.priority, a.arrived), marshal.Place(b.urgentAt, b.priority, b.arrived)))
-
-    // Starts what the scheduler says fits. With a take-slot directory, the decision and the
-    // registration of what starts are made under take-slot's mutex, as take-slot makes its own, and
-    // the daemon's ticket there is brought up to date. A held queue starts nothing and keeps no
-    // ticket.
+  // A job's attempt ended so: it is retried when it failed in a way another attempt may mend and
+  // has attempts left, and otherwise it ends.
+  attemptEnded(job: Job, outcome: Outcome, event: string)
+    if stopping || job.attempt > job.spec.retries || !marshal.retryable(outcome, job.killed)
+      conclude(job, outcome, event)
+      return
+    val t = now()
+    offMachine(job)
+    // a pause ends with the attempt
+    if job.paused
+      job.pausedMs += t - job.pausedAt
+      job.paused = false
+      job.pausedAt = 0
+    job.state = "done"
+    job.endedMs = t
+    job.outcome = Some(outcome)
+    record(
+      event,
+      job,
+      [("run_ms", Json.num(job.ran(t))), ("exit", Json.num(marshal.exitCode(outcome))), ("retrying", Json.Bool(true))]
+    )
+    job.outcome = None
+    job.timedOut = false
+    job.quietStopped = false
+    job.sample = None
+    job.pid = 0
+    job.pgid = 0
+    job.pausedMs = 0
+    job.attempt += 1
+    val delay = job.spec.retryDelayMs
+    eprintln(
+      s"marshal: job ${job.id} failed (exit ${marshal.exitCode(outcome)}): attempt ${job.attempt} of ${job.spec.retries + 1}" + (if delay > 0 then s" in ${marshal.formatMillis(delay)}" else "")
+    )
+    if delay > 0
+      job.state = "retrying"
+      job.retryAt = t + delay
+      waitingJobs += job
+      record("retry", job, [("delay_ms", Json.num(delay))])
+      armRetry(job)
+    else
+      enqueue(job)
+      record("retry", job, [("delay_ms", Json.num(0))])
     schedule()
-        if stopping || restarting then return
-        slots match
-            None -> if !queueHeld then plan(marshal.NoOutside)
-            Some(ts) ->
-                ts.lock()
-                val outside = if queueHeld then marshal.NoOutside else ts.scan(ours(), config.budget.units)
-                if !queueHeld then plan(outside)
-                keepTicket(ts, outside)
-                ts.unlock()
 
-    // The queued jobs the scheduler weighs: those not held.
-    eligible() -> Vector[Job] = queue.filter(j -> !j.held).toVector
+  // A thread that sleeps until a job waiting to retry may queue again.
+  armRetry(job: Job)
+    val events = self.events
+    val id = job.id
+    val attempt = job.attempt
+    val left = job.retryAt - now()
+    spawn(() ->
+      if left > 0 then threads.sleep(millis(left))
+      events.send(Retry(id, attempt)))
 
-    // The pids of the running jobs.
-    ours() -> Vector[long] = running.map(j -> j.pid).toVector
+  retryDue(id: long, attempt: int)
+    val job = jobs(id)
+    if job.state != "retrying" || job.attempt != attempt then return
+    waitingJobs.remove(waitingJobs.indexOf(job))
+    enqueue(job)
+    schedule()
 
-    plan(outside: Outside)
-        val t = now()
-        val started = running.map(j -> startedOf(j, t)).toVector
-        val waiting = eligible().map(j -> waitingOf(j, t))
-        for (id, ahead) in marshal.starts(config.budget, started, waiting, t, outside, marshal.fairness(config, time.now().epochMicros))
-            val job = jobs(id)
-            // a job that could not be started schedules again, which may have started this one
-            if job.state != "queued" then continue
-            if job.spec.landing && !slots.forall(ts -> ts.takeLanding()) then continue
-            queue.remove(queue.indexOf(job))
-            start(job, ahead)
+  // A job this daemon never held: one an earlier daemon ran, answered from the log.
+  endedEarlier(id: long) -> Reply
+    if id < 1 || id >= nextId then return Failed(s"no job $id")
+    val text = fs.readText(home + "/events.jsonl").getOrElse("")
+    marshal.endOf(text.lines, id) match
+      Some(ev) -> marshal.decodeJob(ev) match
+        Ok(info) -> Ended(info)
+        Err(e) -> Failed(s"job $id's last event is unreadable: $e")
+      None -> Failed(s"job $id has no ending in the log")
 
-    // While a development job waits, take-slot sees a ticket of the first one's arrival, so its
-    // later runs wait behind it as they wait behind each other. While a landing job drains the
-    // machine, the ticket is the landing job's, ahead of every take-slot waiter (`outside`).
-    keepTicket(ts: TakeSlot, outside: Outside)
-        val head = if queueHeld
-            None
-        else
-            val t = now()
-            val started = running.map(j -> startedOf(j, t)).toVector
-            val waiting = eligible().map(j -> waitingOf(j, t))
-            marshal.ticketFor(config.budget, started, waiting, t, outside, marshal.fairness(config, time.now().epochMicros))
-        val want = head.map(t -> marshal.ticketName(t.0, ts.me))
-        if want == ticket then return
-        ticket.foreach(name -> ts.removeTicket(name))
-        ticket = head.map(t -> ts.putTicket(t.0, t.1))
+  kill(id: long) -> Reply
+    val job = jobs.get(id) match
+      Some(j) -> j
+      None -> return Failed(if 1 <= id < nextId then s"job $id has already ended" else s"no job $id")
+    job.state match
+      "queued" ->
+        job.killed = true
+        queue.remove(queue.indexOf(job))
+        conclude(job, Cancelled, "killed")
+        Done
+      "waiting" | "retrying" ->
+        job.killed = true
+        waitingJobs.remove(waitingJobs.indexOf(job))
+        conclude(job, Cancelled, "killed")
+        Done
+      "running" ->
+        if !job.killed && !job.timedOut then halt(job)
+        Done
+      _ -> Failed(s"job $id has already ended")
 
-    // Starts `job`; `ahead` is the draining job it is backfilled ahead of, which its log and its
-    // `started` event say.
-    start(job: Job, ahead: Option[long] = None)
-        val spec = job.spec
-        // a landing job, and an exclusive one (a benchmark, alone on the machine), is not niced
-        val program = if spec.landing || spec.exclusive then Command(spec.cmd(0), spec.cmd.drop(1)*) else Command("nice", (["-n", "15"] ++ spec.cmd)*)
-        // A retry's output follows the earlier attempts' in the job's log.
-        if job.attempt > 1 then fs.appendText(job.log, s"marshal: attempt ${job.attempt} of ${spec.retries + 1}\n")
-        val first = job.attempt == 1
-        for id in ahead
-            val line = s"marshal: backfilled ahead of $id\n"
-            if first then fs.writeText(job.log, line) else fs.appendText(job.log, line)
-        // An exclusive job's log begins with what else the machine is doing as it starts; the job's
-        // own processes are not started yet, so none of them is in it.
-        if spec.exclusive
-            val line = sampleNow(job) + "\n"
-            if first then fs.writeText(job.log, line) else fs.appendText(job.log, line)
-            job.sampledMs = now()
-        val placed = program.inDir(spec.dir)
-        var command = (if job.attempt > 1 || ahead.isDefined || spec.exclusive then placed.appendTo(job.log) else placed.toFile(job.log)).errorsToOutput().inNewGroup
-        for (name, value) in spec.env do command = command.withEnv(name, value)
-        // every job knows its id and marshal's home: a type's run keeps its files under both
-        command = command.withEnv("MARSHAL_JOB", job.id.toString()).withEnv("MARSHAL_HOME", home)
-        job.state = "running"
-        job.startedMs = now()
-        job.startedAt = time.now().epochMillis
-        job.quiet = marshal.quietStart(marshal.fileBytes(job.log), job.startedMs)
-        running += job
-        command.start() match
-            Ok(child) ->
-                job.pid = child.pid()
-                job.pgid = child.group().getOrElse(job.pid)
-                // Waited for by pid from here on, so the daemon can hand it to its next image.
-                child.detach()
-                val pid = job.pid
-                // a quick job, like a landing one, holds none of the units take-slot shares
-                slots.foreach(ts -> if spec.landing then ts.landed(pid) else ts.register(pid, if spec.quick then 0 else spec.units))
-                record("started", job, [("pgid", Json.num(job.pgid)), ("pid", Json.num(job.pid))] ++ backfilledField(ahead))
-                watch(job)
-            Err(e) ->
-                if spec.landing then slots.foreach(ts -> ts.releaseLanding(0))
-                val why = s"marshal: could not start `${spec.cmd(0)}` in ${spec.dir}: ${e.message}\n"
-                if job.attempt > 1 then fs.appendText(job.log, why) else fs.writeText(job.log, why)
-                record("started", job, [("pgid", Json.num(0))])
-                attemptEnded(job, Outcome.Exited(127), "finished")
+  // Kills a running job's group. A paused one is continued first, so it can act on the TERM: its
+  // pause ends here.
+  halt(job: Job)
+    job.killed = true
+    if job.paused
+      unpause(job)
+      marshal.signalGroups(home, job.id, job.pgid, signal.Continue)
+    terminate(home, job.id, job.pgid, None)
 
-    // A thread that waits for the running job's process by pid, and one that sleeps until what is
-    // left of its deadline; a job already being stopped needs no deadline.
-    watch(job: Job)
-        val events = self.events
-        val id = job.id
+  // Ends the job's pause on the daemon's books: the time paused is added up, and its clock runs.
+  // Its quiet clock starts again: a pause is not quiet.
+  unpause(job: Job)
+    job.pausedMs += now() - job.pausedAt
+    job.paused = false
+    job.pausedAt = 0
+    job.quiet = marshal.quietStart(marshal.fileBytes(job.log), now())
+
+  // The running job `id`, or why there is none, saying `what` only a running job may have done.
+  runningJob(id: long, what: string) -> Result[Job, string] = jobs.get(id) match
+    Some(j) if j.state == "running" && (j.killed || j.timedOut) -> Err(s"job $id is being stopped")
+    Some(j) if j.state == "running" -> Ok(j)
+    Some(j) if j.state == "queued" -> Err(s"job $id is queued: only a running job $what")
+    Some(_) -> Err(s"job $id has already ended")
+    None -> Err(if 1 <= id < nextId then s"job $id has already ended" else s"no job $id")
+
+  // Stops the running job `id`'s whole process group (`on`), keeping its units and stopping its
+  // deadline's clock, or continues it.
+  pauseJob(id: long, on: bool) -> Reply
+    val job = runningJob(id, if on then "is paused" else "is resumed") match
+      Ok(j) -> j
+      Err(e) -> return Failed(e)
+    if job.paused == on then return Failed(if on then s"job $id is already paused" else s"job $id is not paused")
+    val sig = if on then signal.Stop else signal.Continue
+    process.signal(-job.pgid, sig) match
+      Err(e) -> return Failed(s"job $id's processes could not be signalled: ${e.message}")
+      Ok(_) -> ()
+    // the step a job type's run is executing is in a group of its own
+    marshal.signalGroups(home, id, job.pgid, sig)
+    if on
+      job.paused = true
+      job.pausedAt = now()
+    else
+      unpause(job)
+    armDeadline(job)
+    if on then restopSoon(job)
+    record(if on then "paused" else "resumed", job)
+    Done
+
+  // A STOP sent to a group can miss a process: one that is between fork and exec as it goes,
+  // as a job is when it has only just started or its shell is starting a command, carries on
+  // running. So a paused job's groups are stopped again shortly after the pause, and then at
+  // every sample for as long as it stays paused (`holdPaused`). A process already stopped is
+  // not changed by another STOP; one continued by hand is stopped again.
+  restopSoon(job: Job)
+    val events = self.events
+    val id = job.id
+    val gen = job.dueGen
+    spawn(() ->
+      for pause in RestopMs
+        threads.sleep(millis(pause))
+        events.send(Restop(id, gen)))
+
+  // Stops job `id`'s groups again, while the pause that armed `gen` still holds.
+  restop(id: long, gen: int)
+    val job = jobs(id)
+    if job.state != "running" || !job.paused || job.killed || job.timedOut || gen != job.dueGen then return
+    stopGroups(job)
+
+  // Every paused job's groups are stopped again.
+  holdPaused()
+    for job in running.toVector
+      if job.paused && !job.killed && !job.timedOut then stopGroups(job)
+
+  stopGroups(job: Job)
+    process.signal(-job.pgid, signal.Stop)
+    marshal.signalGroups(home, job.id, job.pgid, signal.Stop)
+
+  // Holds the queue (`on`) or releases it. A release starts what fits at once.
+  holdQueue(on: bool) -> Reply
+    if on
+      if stopping || draining then return Failed("the daemon is stopping")
+      if queueHeld then return Failed("the queue is already held")
+    elif !queueHeld then return Failed("the queue is not held")
+    queueHeld = on
+    eprintln(if on then "marshal: the queue is held" else "marshal: the queue is released")
+    schedule()
+    Done
+
+  // The queued job `id`, or why there is none: a job that runs or has ended is refused, saying
+  // `what` only a queued job may have done to it.
+  queued(id: long, what: string) -> Result[Job, string] = jobs.get(id) match
+    Some(j) if j.state == "queued" -> Ok(j)
+    Some(j) if j.state == "running" -> Err(s"job $id is running: only a queued job $what")
+    Some(_) -> Err(s"job $id has already ended")
+    None -> Err(if 1 <= id < nextId then s"job $id has already ended" else s"no job $id")
+
+  // Holds the queued job `id` (`on`) or releases it. A release starts it when it fits. A job
+  // waiting for others or waiting to retry may be held too: it stays held when it queues.
+  hold(id: long, on: bool) -> Reply
+    val job = jobs.get(id) match
+      Some(j) if j.state == "waiting" || j.state == "retrying" -> j
+      _ -> queued(id, if on then "is held" else "is released") match
+        Ok(j) -> j
+        Err(e) -> return Failed(e)
+    if on && draining then return Failed("the daemon is stopping")
+    if job.held == on then return Failed(if on then s"job $id is already held" else s"job $id is not held")
+    job.held = on
+    record(if on then "held" else "released", job)
+    schedule()
+    Done
+
+  // Places the queued job `id`, which may start it at once: a number takes it out of the urgent
+  // band and places it by priority; `Urgent` moves it to the back of the band, even from within it.
+  prioritize(id: long, p: marshal.Priority) -> Reply
+    val job = queued(id, "is given a priority") match
+      Ok(j) -> j
+      Err(e) -> return Failed(e)
+    p match
+      marshal.Level(n) ->
+        job.priority = n
+        job.urgentAt = 0
+      marshal.Urgent ->
+        job.urgentAt = 0
+        job.urgentAt = urgentMark()
+    order()
+    record("prioritized", job)
+    schedule()
+    Done
+
+  // The mark of a job joining the urgent band now: behind every urgent job queued.
+  urgentMark() -> long = marshal.urgentMark(time.now().epochMicros, queue.map(j -> j.urgentAt).toVector)
+
+  // Orders the queue: the urgent band first, in the order its jobs joined it, then the rest by
+  // priority, the highest first, keeping arrival order among equals.
+  order() = queue.sortInPlaceWith(
+    (a, b) -> marshal.placeOrder(
+      marshal.Place(a.urgentAt, a.priority, a.arrived),
+      marshal.Place(b.urgentAt, b.priority, b.arrived)
+    )
+  )
+
+  // Starts what the scheduler says fits. With a take-slot directory, the decision and the
+  // registration of what starts are made under take-slot's mutex, as take-slot makes its own, and
+  // the daemon's ticket there is brought up to date. A held queue starts nothing and keeps no
+  // ticket.
+  schedule()
+    if stopping || restarting then return
+    slots match
+      None -> if !queueHeld then plan(marshal.NoOutside)
+      Some(ts) ->
+        ts.lock()
+        val outside = if queueHeld then marshal.NoOutside else ts.scan(ours(), config.budget.units)
+        if !queueHeld then plan(outside)
+        keepTicket(ts, outside)
+        ts.unlock()
+
+  // The queued jobs the scheduler weighs: those not held.
+  eligible() -> Vector[Job] = queue.filter(j -> !j.held).toVector
+
+  // The pids of the running jobs.
+  ours() -> Vector[long] = running.map(j -> j.pid).toVector
+
+  plan(outside: Outside)
+    val t = now()
+    val started = running.map(j -> startedOf(j, t)).toVector
+    val waiting = eligible().map(j -> waitingOf(j, t))
+    for (id, ahead) in marshal.starts(
+      config.budget,
+      started,
+      waiting,
+      t,
+      outside,
+      marshal.fairness(config, time.now().epochMicros)
+    )
+      val job = jobs(id)
+      // a job that could not be started schedules again, which may have started this one
+      if job.state != "queued" then continue
+      if job.spec.landing && !slots.forall(ts -> ts.takeLanding()) then continue
+      queue.remove(queue.indexOf(job))
+      start(job, ahead)
+
+  // While a development job waits, take-slot sees a ticket of the first one's arrival, so its
+  // later runs wait behind it as they wait behind each other. While a landing job drains the
+  // machine, the ticket is the landing job's, ahead of every take-slot waiter (`outside`).
+  keepTicket(ts: TakeSlot, outside: Outside)
+    val head = if queueHeld
+      None
+    else
+      val t = now()
+      val started = running.map(j -> startedOf(j, t)).toVector
+      val waiting = eligible().map(j -> waitingOf(j, t))
+      marshal.ticketFor(config.budget, started, waiting, t, outside, marshal.fairness(config, time.now().epochMicros))
+    val want = head.map(t -> marshal.ticketName(t.0, ts.me))
+    if want == ticket then return
+    ticket.foreach(name -> ts.removeTicket(name))
+    ticket = head.map(t -> ts.putTicket(t.0, t.1))
+
+  // Starts `job`; `ahead` is the draining job it is backfilled ahead of, which its log and its
+  // `started` event say.
+  start(job: Job, ahead: Option[long] = None)
+    val spec = job.spec
+    // a landing job, and an exclusive one (a benchmark, alone on the machine), is not niced
+    val program = if spec.landing || spec.exclusive then Command(spec.cmd(0), spec.cmd.drop(1)*) else Command(
+      "nice",
+      (["-n", "15"] ++ spec.cmd)*
+    )
+    // A retry's output follows the earlier attempts' in the job's log.
+    if job.attempt > 1 then fs.appendText(job.log, s"marshal: attempt ${job.attempt} of ${spec.retries + 1}\n")
+    val first = job.attempt == 1
+    for id in ahead
+      val line = s"marshal: backfilled ahead of $id\n"
+      if first then fs.writeText(job.log, line) else fs.appendText(job.log, line)
+    // An exclusive job's log begins with what else the machine is doing as it starts; the job's
+    // own processes are not started yet, so none of them is in it.
+    if spec.exclusive
+      val line = sampleNow(job) + "\n"
+      if first then fs.writeText(job.log, line) else fs.appendText(job.log, line)
+      job.sampledMs = now()
+    val placed = program.inDir(spec.dir)
+    var command = (
+      if job.attempt > 1 || ahead.isDefined || spec.exclusive then placed.appendTo(job.log) else placed.toFile(job.log)
+    ).errorsToOutput().inNewGroup
+    for (name, value) in spec.env do command = command.withEnv(name, value)
+    // every job knows its id and marshal's home: a type's run keeps its files under both
+    command = command.withEnv("MARSHAL_JOB", job.id.toString()).withEnv("MARSHAL_HOME", home)
+    job.state = "running"
+    job.startedMs = now()
+    job.startedAt = time.now().epochMillis
+    job.quiet = marshal.quietStart(marshal.fileBytes(job.log), job.startedMs)
+    running += job
+    command.start() match
+      Ok(child) ->
+        job.pid = child.pid()
+        job.pgid = child.group().getOrElse(job.pid)
+        // Waited for by pid from here on, so the daemon can hand it to its next image.
+        child.detach()
         val pid = job.pid
-        spawn(() -> events.send(Exit(id, process.waitPid(pid))))
-        armDeadline(job)
+        // a quick job, like a landing one, holds none of the units take-slot shares
+        slots.foreach(
+          ts -> if spec.landing then ts.landed(pid) else ts.register(pid, if spec.quick then 0 else spec.units)
+        )
+        record("started", job, [("pgid", Json.num(job.pgid)), ("pid", Json.num(job.pid))] ++ backfilledField(ahead))
+        watch(job)
+      Err(e) ->
+        if spec.landing then slots.foreach(ts -> ts.releaseLanding(0))
+        val why = s"marshal: could not start `${spec.cmd(0)}` in ${spec.dir}: ${e.message}\n"
+        if job.attempt > 1 then fs.appendText(job.log, why) else fs.writeText(job.log, why)
+        record("started", job, [("pgid", Json.num(0))])
+        attemptEnded(job, Outcome.Exited(127), "finished")
 
-    // A thread that sleeps until what is left of the job's deadline, its run time without its
-    // pauses; none for a paused job or one being stopped. A sleeper armed earlier is made stale.
-    armDeadline(job: Job)
-        job.dueGen += 1
-        if job.killed || job.timedOut || job.paused then return
-        val events = self.events
-        val id = job.id
-        val gen = job.dueGen
-        val left = job.deadlineMs - job.ran(now())
-        spawn(() ->
-            if left > 0 then threads.sleep(millis(left))
-            events.send(Due(id, gen)))
+  // A thread that waits for the running job's process by pid, and one that sleeps until what is
+  // left of its deadline; a job already being stopped needs no deadline.
+  watch(job: Job)
+    val events = self.events
+    val id = job.id
+    val pid = job.pid
+    spawn(() -> events.send(Exit(id, process.waitPid(pid))))
+    armDeadline(job)
 
-    exited(id: long, status: Result[ExitStatus, IoError])
-        val job = jobs(id)
-        if job.state != "running" then return
-        // Whatever the job left running in its group goes with it, and a paused group is continued
-        // so the TERM reaches it.
-        marshal.signalGroups(home, id, job.pgid, signal.Terminate)
-        if job.paused then marshal.signalGroups(home, id, job.pgid, signal.Continue)
-        if job.timedOut && job.quietStopped
-            // the job's log ends saying why it was stopped, after all it wrote
-            val sample = job.sample.map(s -> s"; stack sample in $s").getOrElse("")
-            fs.appendText(job.log, s"\nmarshal: ${marshal.quietWords(job.spec.quietMs)} (quiet timeout)$sample\n")
-            attemptEnded(job, marshal.Quiet(job.spec.quietMs), "quiet")
+  // A thread that sleeps until what is left of the job's deadline, its run time without its
+  // pauses; none for a paused job or one being stopped. A sleeper armed earlier is made stale.
+  armDeadline(job: Job)
+    job.dueGen += 1
+    if job.killed || job.timedOut || job.paused then return
+    val events = self.events
+    val id = job.id
+    val gen = job.dueGen
+    val left = job.deadlineMs - job.ran(now())
+    spawn(() ->
+      if left > 0 then threads.sleep(millis(left))
+      events.send(Due(id, gen)))
+
+  exited(id: long, status: Result[ExitStatus, IoError])
+    val job = jobs(id)
+    if job.state != "running" then return
+    // Whatever the job left running in its group goes with it, and a paused group is continued
+    // so the TERM reaches it.
+    marshal.signalGroups(home, id, job.pgid, signal.Terminate)
+    if job.paused then marshal.signalGroups(home, id, job.pgid, signal.Continue)
+    if job.timedOut && job.quietStopped
+      // the job's log ends saying why it was stopped, after all it wrote
+      val sample = job.sample.map(s -> s"; stack sample in $s").getOrElse("")
+      fs.appendText(job.log, s"\nmarshal: ${marshal.quietWords(job.spec.quietMs)} (quiet timeout)$sample\n")
+      attemptEnded(job, marshal.Quiet(job.spec.quietMs), "quiet")
+      return
+    if job.timedOut
+      attemptEnded(job, TimedOut, "timeout")
+      return
+    val outcome = status match
+      Ok(ExitStatus.Exited(code)) -> Outcome.Exited(code)
+      Ok(ExitStatus.Signalled(sig)) -> Outcome.Signalled(sig)
+      Ok(ExitStatus.TimedOut) -> Outcome.TimedOut
+      Err(IoError(ErrorKind.NotFound, _, _)) ->
+        eprintln(s"marshal: job $id ended while the daemon restarted, and how it ended was lost with the old image")
+        Outcome.Lost
+      Err(e) ->
+        eprintln(s"marshal: job $id could not be waited for: ${e.message}")
+        Outcome.Lost
+    val event = if outcome == Outcome.Lost then "lost" elif job.killed then "killed" else "finished"
+    attemptEnded(job, outcome, event)
+
+  due(id: long, gen: int)
+    val job = jobs(id)
+    if job.state != "running" || job.killed || job.timedOut || job.paused || gen != job.dueGen then return
+    outOfTime(job, s"passed its deadline of ${marshal.formatMillis(job.deadlineMs)}")
+
+  // Looks at the log of each running job that has a quiet timeout, and stops one whose log has gone
+  // without output for that long. A paused job, or one already being stopped, is not looked at.
+  quietCheck()
+    val t = now()
+    for job in running.toVector
+      if job.spec.quietMs <= 0 || job.killed || job.timedOut || job.paused then continue
+      job.quiet = marshal.quietSeen(job.quiet, marshal.fileBytes(job.log), t)
+      if marshal.quietPassed(job.quiet, job.spec.quietMs, t)
+        job.quietStopped = true
+        outOfTime(job, s"has had no output for ${marshal.formatMillis(job.spec.quietMs)}")
+
+  // The sample line for the exclusive job `job`: the load averages and the busiest processes that
+  // are not marshal's, the job's own tree and the daemon's among them.
+  sampleNow(job: Job) -> string
+    val groups = if job.pgid > 0 then marshal.groupsOf(home, job.id, job.pgid) else []
+    marshal.sampleLine(
+      marshal.loadAverages(),
+      marshal.outsiders(marshal.listProcs(), process.pid(), groups, marshal.SampleTop)
+    )
+
+  // `job`'s quiet-load clock, after the load is read as `load` at `t`.
+  settleSeen(job: Job, load: Option[real], t: long)
+    if load.isDefined then job.load = load
+    job.calm = marshal.calmSince(job.calm, load, job.spec.quietLoad, t)
+
+  // Once a second: the load is read for the queued exclusive jobs that wait for it to settle, and
+  // the queue looked at again when one has; and each running exclusive job whose last sample is
+  // `exclusiveSampleMs` old is given another.
+  exclusiveCheck()
+    val t = now()
+    // jobs still waiting for others, or to retry, are watched too, so a clock is never stale
+    val settling = (queue.toVector ++ waitingJobs.toVector).filter(j -> j.spec.quietLoad > 0.0)
+    if settling.nonEmpty
+      val load = marshal.loadAverages().headOption
+      for job in settling do settleSeen(job, load, t)
+      schedule()
+    val every = marshal.exclusiveSampleMs()
+    for job in running.toVector
+      if job.spec.exclusive && !job.paused && t - job.sampledMs >= every
+        fs.appendText(job.log, sampleNow(job) + "\n")
+        job.sampledMs = t
+
+  // Stops a running job that ran out of time, at its deadline or its quiet timeout (`why`): its
+  // busiest process is sampled, then its groups are stopped.
+  outOfTime(job: Job, why: string)
+    job.timedOut = true
+    val sample = s"$home/jobs/${job.id}.sample.txt"
+    job.sample = Some(sample)
+    eprintln(s"marshal: job ${job.id} $why: sampling and stopping it")
+    terminate(home, job.id, job.pgid, Some(sample))
+
+  // Ends a job: records it, answers its waiters and lets the scheduler use what it held.
+  conclude(job: Job, outcome: Outcome, event: string)
+    val t = now()
+    // a pause ends with the job
+    if job.paused
+      job.pausedMs += t - job.pausedAt
+      job.paused = false
+      job.pausedAt = 0
+    // A job cancelled while queued ran for no time: it "starts" and ends as it is cancelled.
+    if job.state == "running" then offMachine(job) else job.startedMs = t
+    job.state = "done"
+    job.endedMs = t
+    job.outcome = Some(outcome)
+    ended += job
+    val info = job.info(now())
+    record(event, job, [("run_ms", Json.num(info.elapsedMs)), ("exit", Json.num(marshal.exitCode(outcome)))])
+    if event == "finished" && outcome == Outcome.Exited(0)
+      val key = marshal.historyKey(job.spec.kind, job.spec.landing)
+      histories.get(key) match
+        Some(b) -> b += info.elapsedMs
+        None ->
+          val b = Buffer[long]()
+          b += info.elapsedMs
+          histories(key) = b
+    for w in job.waiters do give(w, Ended(info))
+    job.waiters.clear()
+    waitersOf(job.id)
+    schedule()
+    settled()
+
+  // A running job leaves the machine: the running jobs and take-slot's files.
+  offMachine(job: Job)
+    running.remove(running.indexOf(job))
+    // an external job's tree is not where its work ran, so its peak teaches nothing
+    if !job.spec.external
+      rememberPeak(marshal.historyKey(job.spec.kind, job.spec.landing), job.resident.peak)
+      rememberPeak(marshal.memoryDirKey(job.spec.kind, job.spec.landing, job.spec.dir), job.resident.peak)
+    val pid = job.pid
+    if pid > 0 then slots.foreach(ts -> if job.spec.landing then ts.releaseLanding(pid) else ts.unregister(pid))
+
+  // Measures the running jobs' process trees on a thread of its own, one measurement at a time.
+  measure()
+    if measuring || running.isEmpty then return
+    measuring = true
+    val groups = running.map(j -> (j.id, j.pgid)).toVector
+    val events = self.events
+    val home = self.home
+    spawn(() -> events.send(Measured(groups.map(g -> (g.0, marshal.jobResident(home, g.0, g.1))))))
+
+  // What a measurement found, for the jobs still running.
+  measured(sizes: Vector[(long, long)])
+    measuring = false
+    for (id, bytes) in sizes
+      jobs.get(id).foreach(job -> if job.state == "running" then job.resident = job.resident.measured(bytes))
+
+  // A client asks to follow events. Everything is decided here, on the daemon's thread, which is
+  // also the only one that appends to the log: what the log already holds is read and the watcher
+  // registered with no event between, so none is missed or seen twice.
+  watch(request: Request, out: Channel[Reply])
+    request match
+      Watch(_, cond, mode, since, sinceId) -> subscribe(Watcher(cond, mode, out), since, sinceId)
+      _ -> ()
+
+  subscribe(w: Watcher, since: Option[long], sinceId: Option[long])
+    watched = true
+    if stopping
+      refuse(w.out, "the daemon is stopping")
+      return
+    w.cond match
+      IsIdle ->
+        if idle() then answerWith(w, idleEvent()) else watchers += w
+      JobsEnded(ids) ->
+        for id in ids
+          if id < 1 || id >= nextId
+            refuse(w.out, s"no job $id")
             return
-        if job.timedOut
-            attemptEnded(job, TimedOut, "timeout")
-            return
-        val outcome = status match
-            Ok(ExitStatus.Exited(code)) -> Outcome.Exited(code)
-            Ok(ExitStatus.Signalled(sig)) -> Outcome.Signalled(sig)
-            Ok(ExitStatus.TimedOut) -> Outcome.TimedOut
-            Err(IoError(ErrorKind.NotFound, _, _)) ->
-                eprintln(s"marshal: job $id ended while the daemon restarted, and how it ended was lost with the old image")
-                Outcome.Lost
-            Err(e) ->
-                eprintln(s"marshal: job $id could not be waited for: ${e.message}")
-                Outcome.Lost
-        val event = if outcome == Outcome.Lost then "lost" elif job.killed then "killed" else "finished"
-        attemptEnded(job, outcome, event)
+        val text = fs.readText(home + "/events.jsonl").getOrElse("")
+        val pending = Buffer[long]()
+        for id in ids
+          marshal.endOf(text.lines, id) match
+            Some(ev) -> noteEnding(w, ev)
+            None -> pending += id
+        w.pending = pending.toVector
+        if w.pending.isEmpty then answerWith(w, w.last.get) else watchers += w
+      Matching(filter) ->
+        val replay = w.mode == Past || since.isDefined || sinceId.isDefined
+        val back = Buffer[Json]()
+        if replay
+          val text = fs.readText(home + "/events.jsonl").getOrElse("")
+          for line in text.lines
+            if line.isEmpty then continue
+            val ev = json.parse(line).ok match
+              Some(e) -> e
+              None -> continue
+            if ev.get("ts").flatMap(v -> v.asLong).getOrElse(0) < since.getOrElse(0) then continue
+            if ev.get("id").flatMap(v -> v.asLong).getOrElse(0) < sinceId.getOrElse(0) then continue
+            if marshal.admits(filter, ev) then back += ev
+        w.mode match
+          Once -> if back.nonEmpty then answerWith(w, back(0)) else watchers += w
+          Past ->
+            w.out.trySend(Replayed(back.toVector))
+            w.out.close()
+          Follow ->
+            if back.nonEmpty then w.out.trySend(Replayed(back.toVector))
+            watchers += w
 
-    due(id: long, gen: int)
-        val job = jobs(id)
-        if job.state != "running" || job.killed || job.timedOut || job.paused || gen != job.dueGen then return
-        outOfTime(job, s"passed its deadline of ${marshal.formatMillis(job.deadlineMs)}")
+  // `ev` ends one of the jobs a watcher waits for; `last` keeps the latest ending.
+  noteEnding(w: Watcher, ev: Json)
+    val ts = ev.get("ts").flatMap(v -> v.asLong).getOrElse(0)
+    if w.last.forall(l -> l.get("ts").flatMap(v -> v.asLong).getOrElse(0) <= ts) then w.last = Some(ev)
 
-    // Looks at the log of each running job that has a quiet timeout, and stops one whose log has gone
-    // without output for that long. A paused job, or one already being stopped, is not looked at.
-    quietCheck()
-        val t = now()
-        for job in running.toVector
-            if job.spec.quietMs <= 0 || job.killed || job.timedOut || job.paused then continue
-            job.quiet = marshal.quietSeen(job.quiet, marshal.fileBytes(job.log), t)
-            if marshal.quietPassed(job.quiet, job.spec.quietMs, t)
-                job.quietStopped = true
-                outOfTime(job, s"has had no output for ${marshal.formatMillis(job.spec.quietMs)}")
+  // The event a watcher for `idle` is answered with.
+  idleEvent() -> Json = Json.obj(
+    ("ts", Json.num(time.now().epochMillis)),
+    ("event", Json.str("idle")),
+    ("running", Json.num(0)),
+    ("queued", Json.num(0))
+  )
 
-    // The sample line for the exclusive job `job`: the load averages and the busiest processes that
-    // are not marshal's, the job's own tree and the daemon's among them.
-    sampleNow(job: Job) -> string
-        val groups = if job.pgid > 0 then marshal.groupsOf(home, job.id, job.pgid) else []
-        marshal.sampleLine(marshal.loadAverages(), marshal.outsiders(marshal.listProcs(), process.pid(), groups, marshal.SampleTop))
+  // A watcher that gets one answer: it is sent, and the stream ends.
+  answerWith(w: Watcher, ev: Json)
+    remove(w)
+    w.out.trySend(Streamed(ev))
+    w.out.close()
 
-    // `job`'s quiet-load clock, after the load is read as `load` at `t`.
-    settleSeen(job: Job, load: Option[real], t: long)
-        if load.isDefined then job.load = load
-        job.calm = marshal.calmSince(job.calm, load, job.spec.quietLoad, t)
+  // A request the daemon will not stream: the reason is the stream's one reply.
+  refuse(out: Channel[Reply], why: string)
+    out.trySend(Failed(why))
+    out.close()
 
-    // Once a second: the load is read for the queued exclusive jobs that wait for it to settle, and
-    // the queue looked at again when one has; and each running exclusive job whose last sample is
-    // `exclusiveSampleMs` old is given another.
-    exclusiveCheck()
-        val t = now()
-        // jobs still waiting for others, or to retry, are watched too, so a clock is never stale
-        val settling = (queue.toVector ++ waitingJobs.toVector).filter(j -> j.spec.quietLoad > 0.0)
-        if settling.nonEmpty
-            val load = marshal.loadAverages().headOption
-            for job in settling do settleSeen(job, load, t)
-            schedule()
-        val every = marshal.exclusiveSampleMs()
-        for job in running.toVector
-            if job.spec.exclusive && !job.paused && t - job.sampledMs >= every
-                fs.appendText(job.log, sampleNow(job) + "\n")
-                job.sampledMs = t
+  remove(w: Watcher)
+    val at = watchers.indexOf(w)
+    if at >= 0 then watchers.remove(at)
 
-    // Stops a running job that ran out of time, at its deadline or its quiet timeout (`why`): its
-    // busiest process is sampled, then its groups are stopped.
-    outOfTime(job: Job, why: string)
-        job.timedOut = true
-        val sample = s"$home/jobs/${job.id}.sample.txt"
-        job.sample = Some(sample)
-        eprintln(s"marshal: job ${job.id} $why: sampling and stopping it")
-        terminate(home, job.id, job.pgid, Some(sample))
-
-    // Ends a job: records it, answers its waiters and lets the scheduler use what it held.
-    conclude(job: Job, outcome: Outcome, event: string)
-        val t = now()
-        // a pause ends with the job
-        if job.paused
-            job.pausedMs += t - job.pausedAt
-            job.paused = false
-            job.pausedAt = 0
-        // A job cancelled while queued ran for no time: it "starts" and ends as it is cancelled.
-        if job.state == "running" then offMachine(job) else job.startedMs = t
-        job.state = "done"
-        job.endedMs = t
-        job.outcome = Some(outcome)
-        ended += job
-        val info = job.info(now())
-        record(event, job, [("run_ms", Json.num(info.elapsedMs)), ("exit", Json.num(marshal.exitCode(outcome)))])
-        if event == "finished" && outcome == Outcome.Exited(0)
-            val key = marshal.historyKey(job.spec.kind, job.spec.landing)
-            histories.get(key) match
-                Some(b) -> b += info.elapsedMs
-                None ->
-                    val b = Buffer[long]()
-                    b += info.elapsedMs
-                    histories(key) = b
-        for w in job.waiters do give(w, Ended(info))
-        job.waiters.clear()
-        waitersOf(job.id)
-        schedule()
-        settled()
-
-    // A running job leaves the machine: the running jobs and take-slot's files.
-    offMachine(job: Job)
-        running.remove(running.indexOf(job))
-        // an external job's tree is not where its work ran, so its peak teaches nothing
-        if !job.spec.external
-            rememberPeak(marshal.historyKey(job.spec.kind, job.spec.landing), job.resident.peak)
-            rememberPeak(marshal.memoryDirKey(job.spec.kind, job.spec.landing, job.spec.dir), job.resident.peak)
-        val pid = job.pid
-        if pid > 0 then slots.foreach(ts -> if job.spec.landing then ts.releaseLanding(pid) else ts.unregister(pid))
-
-    // Measures the running jobs' process trees on a thread of its own, one measurement at a time.
-    measure()
-        if measuring || running.isEmpty then return
-        measuring = true
-        val groups = running.map(j -> (j.id, j.pgid)).toVector
-        val events = self.events
-        val home = self.home
-        spawn(() -> events.send(Measured(groups.map(g -> (g.0, marshal.jobResident(home, g.0, g.1))))))
-
-    // What a measurement found, for the jobs still running.
-    measured(sizes: Vector[(long, long)])
-        measuring = false
-        for (id, bytes) in sizes
-            jobs.get(id).foreach(job -> if job.state == "running" then job.resident = job.resident.measured(bytes))
-
-    // A client asks to follow events. Everything is decided here, on the daemon's thread, which is
-    // also the only one that appends to the log: what the log already holds is read and the watcher
-    // registered with no event between, so none is missed or seen twice.
-    watch(request: Request, out: Channel[Reply])
-        request match
-            Watch(_, cond, mode, since, sinceId) -> subscribe(Watcher(cond, mode, out), since, sinceId)
-            _ -> ()
-
-    subscribe(w: Watcher, since: Option[long], sinceId: Option[long])
-        watched = true
-        if stopping
-            refuse(w.out, "the daemon is stopping")
-            return
-        w.cond match
-            IsIdle ->
-                if idle() then answerWith(w, idleEvent()) else watchers += w
-            JobsEnded(ids) ->
-                for id in ids
-                    if id < 1 || id >= nextId
-                        refuse(w.out, s"no job $id")
-                        return
-                val text = fs.readText(home + "/events.jsonl").getOrElse("")
-                val pending = Buffer[long]()
-                for id in ids
-                    marshal.endOf(text.lines, id) match
-                        Some(ev) -> noteEnding(w, ev)
-                        None -> pending += id
-                w.pending = pending.toVector
-                if w.pending.isEmpty then answerWith(w, w.last.get) else watchers += w
-            Matching(filter) ->
-                val replay = w.mode == Past || since.isDefined || sinceId.isDefined
-                val back = Buffer[Json]()
-                if replay
-                    val text = fs.readText(home + "/events.jsonl").getOrElse("")
-                    for line in text.lines
-                        if line.isEmpty then continue
-                        val ev = json.parse(line).ok match
-                            Some(e) -> e
-                            None -> continue
-                        if ev.get("ts").flatMap(v -> v.asLong).getOrElse(0) < since.getOrElse(0) then continue
-                        if ev.get("id").flatMap(v -> v.asLong).getOrElse(0) < sinceId.getOrElse(0) then continue
-                        if marshal.admits(filter, ev) then back += ev
-                w.mode match
-                    Once -> if back.nonEmpty then answerWith(w, back(0)) else watchers += w
-                    Past ->
-                        w.out.trySend(Replayed(back.toVector))
-                        w.out.close()
-                    Follow ->
-                        if back.nonEmpty then w.out.trySend(Replayed(back.toVector))
-                        watchers += w
-
-    // `ev` ends one of the jobs a watcher waits for; `last` keeps the latest ending.
-    noteEnding(w: Watcher, ev: Json)
-        val ts = ev.get("ts").flatMap(v -> v.asLong).getOrElse(0)
-        if w.last.forall(l -> l.get("ts").flatMap(v -> v.asLong).getOrElse(0) <= ts) then w.last = Some(ev)
-
-    // The event a watcher for `idle` is answered with.
-    idleEvent() -> Json = Json.obj(("ts", Json.num(time.now().epochMillis)), ("event", Json.str("idle")), ("running", Json.num(0)), ("queued", Json.num(0)))
-
-    // A watcher that gets one answer: it is sent, and the stream ends.
-    answerWith(w: Watcher, ev: Json)
+  // Offers an event just logged to every watcher.
+  publish(ev: Json)
+    for w in watchers.toVector
+      if w.out.isClosed()
         remove(w)
-        w.out.trySend(Streamed(ev))
-        w.out.close()
+        continue
+      w.cond match
+        IsIdle -> ()
+        JobsEnded(_) ->
+          val id = ev.get("id").flatMap(v -> v.asLong).getOrElse(0)
+          if marshal.endsJob(ev) && w.pending.contains(id)
+            noteEnding(w, ev)
+            w.pending = w.pending.filter(p -> p != id)
+            if w.pending.isEmpty then answerWith(w, w.last.get)
+        Matching(filter) ->
+          if marshal.admits(filter, ev)
+            if w.mode == Once then answerWith(w, ev) else offer(w, Streamed(ev))
 
-    // A request the daemon will not stream: the reason is the stream's one reply.
-    refuse(out: Channel[Reply], why: string)
-        out.trySend(Failed(why))
+  // Puts a reply in a watcher's buffer. A reader whose buffer is full is dropped, not waited for:
+  // the daemon never blocks on a client. Its stream loses its oldest reply, ends with a reply that
+  // says so, and closes.
+  offer(w: Watcher, reply: Reply)
+    if w.out.trySend(reply) then return
+    remove(w)
+    w.out.tryReceive()
+    w.out.trySend(
+      Failed(
+        "events were dropped: the reader did not keep up with the daemon; ask again with --since to see what it missed"
+      )
+    )
+    w.out.close()
+    eprintln("marshal: a client following events fell behind and was dropped")
+
+  // The state changed in a way that may answer a watcher of `idle`.
+  settled()
+    if watchers.isEmpty || !idle() then return
+    for w in watchers.toVector
+      if w.cond == IsIdle then answerWith(w, idleEvent())
+
+  // A watcher's client has gone.
+  unwatch(out: Channel[Reply])
+    for w in watchers.toVector
+      if w.out === out
+        remove(w)
         out.close()
 
-    remove(w: Watcher)
-        val at = watchers.indexOf(w)
-        if at >= 0 then watchers.remove(at)
+  // The jobs retention must not touch: every job this daemon holds that has not ended.
+  activeIds() -> Set[long] = jobs.values.filter(j -> j.state != "done").map(j -> j.id).toSet
 
-    // Offers an event just logged to every watcher.
-    publish(ev: Json)
-        for w in watchers.toVector
-            if w.out.isClosed()
-                remove(w)
-                continue
-            w.cond match
-                IsIdle -> ()
-                JobsEnded(_) ->
-                    val id = ev.get("id").flatMap(v -> v.asLong).getOrElse(0)
-                    if marshal.endsJob(ev) && w.pending.contains(id)
-                        noteEnding(w, ev)
-                        w.pending = w.pending.filter(p -> p != id)
-                        if w.pending.isEmpty then answerWith(w, w.last.get)
-                Matching(filter) ->
-                    if marshal.admits(filter, ev)
-                        if w.mode == Once then answerWith(w, ev) else offer(w, Streamed(ev))
+  // Forgets the jobs whose files were removed: they leave `ls`, and later questions about them
+  // are answered from the event log, as for a job an earlier daemon ran.
+  forget(ids: Vector[long])
+    val gone = ids.toSet
+    for id in ids do jobs.remove(id)
+    val keep = ended.filter(j -> !gone.contains(j.id)).toVector
+    ended.clear()
+    for j in keep do ended += j
+    earlier = earlier.filter(j -> !gone.contains(j.id))
 
-    // Puts a reply in a watcher's buffer. A reader whose buffer is full is dropped, not waited for:
-    // the daemon never blocks on a client. Its stream loses its oldest reply, ends with a reply that
-    // says so, and closes.
-    offer(w: Watcher, reply: Reply)
-        if w.out.trySend(reply) then return
+  // `marshal clean`.
+  cleanNow(rule: marshal.CleanRule) -> marshal.CleanReport
+    val report = marshal.sweepRule(home, activeIds(), time.now().epochMillis, config.retention, rule)
+    if !report.dryRun then forget(report.jobs)
+    report
+
+  // The automatic sweep, by the retention config.json sets.
+  sweep()
+    val report = marshal.sweepRetained(home, activeIds(), time.now().epochMillis, config.retention)
+    forget(report.jobs)
+    if !marshal.nothingRemoved(report)
+      eprintln(
+        s"marshal: retention removed ${report.jobs.length} jobs' files, ${report.runs.length} run directories, ${report.steps.length} compiled steps and ${report.events} events"
+      )
+
+  listing() -> Vector[JobInfo]
+    val t = now()
+    val drain = drainExpected(t, outsideNow().getOrElse(marshal.NoOutside))
+    (
+      running.toVector ++ queue.toVector ++ waitingJobs.toVector ++ ended.takeRight(Recent)
+    ).map(j -> j.info(t, startsAt(drain, j.id)))
+
+  // What take-slot holds and waits for, read under its mutex; None without a take-slot directory.
+  outsideNow() -> Option[Outside] = slots.map(ts ->
+    ts.lock()
+    val o = ts.scan(ours(), config.budget.units)
+    ts.unlock()
+    o)
+
+  // The job the machine drains for and when it is expected to start, in wall-clock milliseconds;
+  // None while nothing drains, the queue is held, or the start is not known.
+  drainExpected(t: long, outside: Outside) -> Option[(long, long)]
+    if queueHeld then return None
+    val started = running.map(j -> startedOf(j, t)).toVector
+    val waiting = eligible().map(j -> waitingOf(j, t))
+    val wall = time.now().epochMillis
+    marshal.drainStart(
+      config.budget,
+      started,
+      waiting,
+      t,
+      outside,
+      marshal.fairness(config, time.now().epochMicros)
+    ).map(d -> (d.0, wall + (d.1 - t)))
+
+  // When the job `id` is expected to start, if it is the one the machine drains for (`drain`); 0
+  // otherwise.
+  startsAt(drain: Option[(long, long)], id: long) -> long = drain.filter(d -> d.0 == id).map(d -> d.1).getOrElse(0)
+
+  usage() -> Usage = usageWith(slots.map(ts ->
+    ts.lock()
+    val o = ts.scan(ours(), config.budget.units)
+    ts.unlock()
+    o))
+
+  // Everything `marshal top` shows, with what take-slot holds read once for both the budget and
+  // the reasons the queued jobs wait.
+  overview() -> Overview
+    val outside = outsideNow()
+    val t = now()
+    val started = running.map(j -> startedOf(j, t)).toVector
+    val waiting = queue.map(j -> waitingOf(j, t)).toVector
+    val held = queue.filter(j -> j.held).map(j -> j.id).toVector
+    val drain = drainExpected(t, outside.getOrElse(marshal.NoOutside))
+    val queued = marshal.queueWaits(config.budget, started, waiting, held, queueHeld, t, outside.getOrElse(marshal.NoOutside), marshal.fairness(config, time.now().epochMicros)).map(w ->
+      QueuedJob(jobs(w.0).info(t, startsAt(drain, w.0)), w.1, w.2))
+    val recent = (earlier ++ ended.takeRight(Recent).map(j -> j.info(t))).takeRight(Recent).reverse
+    Overview(
+      usageWith(outside),
+      t - began,
+      running.map(j -> j.info(t)).toVector,
+      queued,
+      recent,
+      waitingJobs.map(j -> j.info(t)).toVector
+    )
+
+  private usageWith(outside: Option[Outside]) -> Usage
+    val dev = running.filter(j -> !j.spec.landing && !j.spec.quick)
+    Usage(
+      dev.map(j -> j.spec.units).sum,
+      config.budget.units,
+      running.map(j -> j.reserved).sum,
+      config.budget.memory,
+      running.length,
+      queue.length,
+      running.find(j -> j.spec.landing).map(j -> j.id),
+      slots.flatMap(ts -> outside.map(o -> TakeSlotUse(ts.dir, o.units, o.waiting.length, o.landing))),
+      running.map(j -> j.resident.now).sum,
+      machineMemory,
+      queueHeld,
+      running.map(j -> holds(j)).sum,
+      running.filter(j -> j.spec.quick).length,
+      running.find(j -> j.spec.exclusive).map(j -> j.id)
+    )
+
+  // A stop asks for the daemon to end: at once when nothing is queued or running; with `force`,
+  // after killing what runs and cancelling what waits; with `drain`, once what is queued and
+  // running has ended. Otherwise it is refused.
+  stop(force: bool, drain: bool, reply: Option[Channel[Reply]])
+    val busy = running.length + queue.length + waitingJobs.length
+    if busy > 0 && !force && !drain
+      val waits = if waitingJobs.isEmpty then "" else s" and ${waitingJobs.length} waiting"
+      reply.foreach(
+        r -> give(
+          r,
+          Failed(
+            s"${running.length} running and ${queue.length} queued$waits: `marshal stop --wait` waits for them and `--force` kills them"
+          )
+        )
+      )
+      return
+    // a held job, or any queued one while the queue is held, would never end
+    val heldQueued = queue.exists(j -> j.held)
+    val heldWaiting = waitingJobs.exists(j -> j.held)
+    if drain && !force && ((queueHeld && (queue.nonEmpty || waitingJobs.nonEmpty)) || heldQueued || heldWaiting)
+      val what = if queueHeld then "the queue is held" elif heldQueued then "a queued job is held" else "a waiting job is held"
+      reply.foreach(r -> give(r, Failed(s"$what, so `--wait` would wait for ever: release it first, or `--force`")))
+      return
+    // so would a paused one
+    if drain && !force
+      for job in running.find(j -> j.paused)
+        reply.foreach(
+          r -> give(
+            r,
+            Failed(s"job ${job.id} is paused, so `--wait` would wait for ever: resume it first, or `--force`")
+          )
+        )
+        return
+    reply.foreach(r -> stopReplies += r)
+    if force
+      stopping = true
+      // the waiting go first, so none joins the queue because a job cancelled before it ended
+      for job in waitingJobs.toVector
+        if job.state == "done" then continue
+        job.killed = true
+        waitingJobs.remove(waitingJobs.indexOf(job))
+        conclude(job, Cancelled, "killed")
+      for job in queue.toVector
+        job.killed = true
+        queue.remove(queue.indexOf(job))
+        conclude(job, Cancelled, "killed")
+      for job in running
+        if !job.killed && !job.timedOut then halt(job)
+    else
+      draining = true
+      if busy == 0 then stopping = true
+
+  // The daemon's last steps: the socket goes first, so a new daemon can start at once, then each
+  // `stop` is answered and the daemon waits for those answers to be written.
+  finish()
+    fs.remove(home + "/sock")
+    fs.remove(home + "/daemon.pid")
+    for ts in slots
+      ticket.foreach(name -> ts.removeTicket(name))
+    for r in stopReplies do give(r, Done)
+    if watchers.nonEmpty
+      for w in watchers.toVector
         remove(w)
-        w.out.tryReceive()
-        w.out.trySend(Failed("events were dropped: the reader did not keep up with the daemon; ask again with --since to see what it missed"))
-        w.out.close()
-        eprintln("marshal: a client following events fell behind and was dropped")
+        refuse(w.out, "the daemon stopped")
+    // the streams' threads write what they hold within one look, as the poll in `stream` is
+    // 50 ms: a client told the daemon stopped is not left to guess it from a closed connection
+    if watched then threads.sleep(millis(150))
+    while unwritten > 0
+      events.receive() match
+        Some(Written) -> unwritten -= 1
+        Some(FromClient(request, r)) -> if marshal.watching(request) then refuse(r, "the daemon is stopping") else give(
+          r,
+          Failed("the daemon is stopping")
+        )
+        Some(_) -> ()
+        None -> break
+    eprintln(s"marshal: daemon ${process.pid()} stopped")
 
-    // The state changed in a way that may answer a watcher of `idle`.
-    settled()
-        if watchers.isEmpty || !idle() then return
-        for w in watchers.toVector
-            if w.cond == IsIdle then answerWith(w, idleEvent())
+  // Replaces the daemon with a program, which takes the jobs over: `$MARSHAL_RESTART_PROGRAM` when
+  // set, else the program the client was run from (`client`; an older client sends none), else the
+  // daemon's own. A program that is not there or cannot be run is refused before anything is
+  // touched, and the daemon goes on. Before it
+  // goes, every running job is known to run or has ended and been recorded, every reply given is
+  // written, and the state is in `<home>/state.json`; requests that arrive meanwhile are not
+  // carried out, so their connections close unanswered and their clients ask the new image. When
+  // the program cannot be run, the daemon goes on as it was and says why.
+  restart(reply: Channel[Reply], client: Option[string])
+    if stopping || draining
+      give(reply, Failed("the daemon is stopping"))
+      return
+    val program = process.env("MARSHAL_RESTART_PROGRAM").orElse(client).orElse(process.executable()) match
+      Some(p) -> p
+      None ->
+        give(reply, Failed("the daemon cannot tell where its program is"))
+        return
+    if !fs.isFile(program)
+      give(reply, Failed(s"the daemon did not restart: $program is not a file"))
+      return
+    if Command("test", "-x", program).run().ok != Some(ExitStatus.Exited(0))
+      give(reply, Failed(s"the daemon did not restart: $program cannot be run"))
+      return
+    restarting = true
+    val held = Buffer[(Request, Channel[Reply])]()
+    val file = home + "/state.json"
+    var saved: Result[unit, IoError] = Ok(())
+    loop
+      while settle(held) do ()
+      while unwritten > 0 do during(held)
+      saved = marshal.writeAtomic(file, marshal.encodeState(state()).render + "\n")
+      if saved.isErr || !settle(held) then break
+    val failure = if termed then "a TERM arrived" else saved match
+      Err(e) -> s"cannot write $file: ${e.message}"
+      Ok(_) ->
+        // No command line starts another daemon while the socket is down: this one is starting.
+        fs.createDirAll(home + "/starting")
+        fs.writeText(home + "/starting/pid", process.pid().toString())
+        eprintln(
+          s"marshal: daemon ${process.pid()} restarting as $program with ${running.length} running and ${queue.length} queued"
+        )
+        val e = process.exec(program, ["daemon", "--resume", file]).err.get
+        fs.removeDirAll(home + "/starting")
+        s"cannot run $program: ${e.message}"
+    fs.remove(file)
+    restarting = false
+    eprintln(s"marshal: restart failed: $failure; this daemon goes on")
+    give(reply, Failed(s"the daemon did not restart: $failure"))
+    for (r, c) in held do answer(r, c)
+    if termed
+      eprintln("marshal: TERM received: stopping, killing what runs")
+      stop(true, false, None)
+    schedule()
 
-    // A watcher's client has gone.
-    unwatch(out: Channel[Reply])
-        for w in watchers.toVector
-            if w.out === out
-                remove(w)
-                out.close()
+  // Settles each running job: one that has ended is reaped and recorded here; one whose waiting
+  // thread has reaped it is recorded from that thread's message. Answers whether any had ended.
+  settle(held: Buffer[(Request, Channel[Reply])]) -> bool
+    var any = false
+    for job in running.toVector
+      process.tryWaitPid(job.pid) match
+        Ok(None) -> ()
+        Ok(Some(status)) ->
+          exited(job.id, Ok(status))
+          any = true
+        Err(_) ->
+          while job.state == "running" do during(held)
+          any = true
+    any
 
-    // The jobs retention must not touch: every job this daemon holds that has not ended.
-    activeIds() -> Set[long] = jobs.values.filter(j -> j.state != "done").map(j -> j.id).toSet
+  // One message while a restart hands over: a request waits for its outcome, the rest as usual.
+  during(held: Buffer[(Request, Channel[Reply])])
+    events.receive() match
+      Some(FromClient(r, c)) -> held += (r, c)
+      Some(Exit(id, status)) -> exited(id, status)
+      Some(Due(id, gen)) -> due(id, gen)
+      Some(Retry(id, attempt)) -> retryDue(id, attempt)
+      Some(Restop(id, gen)) -> restop(id, gen)
+      Some(Written) -> unwritten -= 1
+      Some(Terminate) -> termed = true
+      Some(Tick) -> ()
+      Some(Sweep) -> ()
+      Some(Sample) -> ()
+      Some(Measured(sizes)) -> measured(sizes)
+      Some(Unwatch(out)) -> unwatch(out)
+      None -> ()
 
-    // Forgets the jobs whose files were removed: they leave `ls`, and later questions about them
-    // are answered from the event log, as for a job an earlier daemon ran.
-    forget(ids: Vector[long])
-        val gone = ids.toSet
-        for id in ids do jobs.remove(id)
-        val keep = ended.filter(j -> !gone.contains(j.id)).toVector
-        ended.clear()
-        for j in keep do ended += j
-        earlier = earlier.filter(j -> !gone.contains(j.id))
+  // The daemon's state, as the next image reads it.
+  state() -> SavedState
+    val wallNow = time.now().epochMillis
+    val t = now()
+    val wall = (at: long) -> wallNow - (t - at)
+    val saved = (j: Job) -> SavedJob(
+      j.id,
+      j.spec,
+      j.state,
+      wall(j.submittedMs),
+      j.arrived,
+      j.startedAt,
+      if j.state == "done" then wall(j.endedMs) else 0,
+      j.deadlineMs,
+      j.expectedMs,
+      j.log,
+      j.pid,
+      j.pgid,
+      j.outcome,
+      j.killed,
+      j.timedOut,
+      j.sample,
+      j.resident.now,
+      j.resident.peak,
+      j.held,
+      j.priority,
+      j.urgentAt,
+      j.pausedMs,
+      if j.paused then wall(j.pausedAt) else 0,
+      j.attempt,
+      if j.state == "retrying" then wall(j.retryAt) else 0,
+      j.reserved,
+      j.learnedMem,
+      j.quietStopped,
+      j.reservedFrom,
+      j.durationLearned
+    )
+    SavedState(
+      reportedVersion(),
+      process.pid(),
+      wallNow,
+      wall(began),
+      nextId,
+      queue.map(saved).toVector,
+      running.map(saved).toVector,
+      ended.takeRight(Recent).map(saved).toVector,
+      ticket,
+      queueHeld,
+      waitingJobs.map(saved).toVector
+    )
 
-    // `marshal clean`.
-    cleanNow(rule: marshal.CleanRule) -> marshal.CleanReport
-        val report = marshal.sweepRule(home, activeIds(), time.now().epochMillis, config.retention, rule)
-        if !report.dryRun then forget(report.jobs)
-        report
-
-    // The automatic sweep, by the retention config.json sets.
-    sweep()
-        val report = marshal.sweepRetained(home, activeIds(), time.now().epochMillis, config.retention)
-        forget(report.jobs)
-        if !marshal.nothingRemoved(report)
-            eprintln(s"marshal: retention removed ${report.jobs.length} jobs' files, ${report.runs.length} run directories, ${report.steps.length} compiled steps and ${report.events} events")
-
-    listing() -> Vector[JobInfo]
-        val t = now()
-        val drain = drainExpected(t, outsideNow().getOrElse(marshal.NoOutside))
-        (running.toVector ++ queue.toVector ++ waitingJobs.toVector ++ ended.takeRight(Recent)).map(j -> j.info(t, startsAt(drain, j.id)))
-
-    // What take-slot holds and waits for, read under its mutex; None without a take-slot directory.
-    outsideNow() -> Option[Outside] = slots.map(ts ->
-        ts.lock()
-        val o = ts.scan(ours(), config.budget.units)
-        ts.unlock()
-        o)
-
-    // The job the machine drains for and when it is expected to start, in wall-clock milliseconds;
-    // None while nothing drains, the queue is held, or the start is not known.
-    drainExpected(t: long, outside: Outside) -> Option[(long, long)]
-        if queueHeld then return None
-        val started = running.map(j -> startedOf(j, t)).toVector
-        val waiting = eligible().map(j -> waitingOf(j, t))
-        val wall = time.now().epochMillis
-        marshal.drainStart(config.budget, started, waiting, t, outside, marshal.fairness(config, time.now().epochMicros)).map(d -> (d.0, wall + (d.1 - t)))
-
-    // When the job `id` is expected to start, if it is the one the machine drains for (`drain`); 0
-    // otherwise.
-    startsAt(drain: Option[(long, long)], id: long) -> long = drain.filter(d -> d.0 == id).map(d -> d.1).getOrElse(0)
-
-    usage() -> Usage = usageWith(slots.map(ts ->
-        ts.lock()
-        val o = ts.scan(ours(), config.budget.units)
-        ts.unlock()
-        o))
-
-    // Everything `marshal top` shows, with what take-slot holds read once for both the budget and
-    // the reasons the queued jobs wait.
-    overview() -> Overview
-        val outside = outsideNow()
-        val t = now()
-        val started = running.map(j -> startedOf(j, t)).toVector
-        val waiting = queue.map(j -> waitingOf(j, t)).toVector
-        val held = queue.filter(j -> j.held).map(j -> j.id).toVector
-        val drain = drainExpected(t, outside.getOrElse(marshal.NoOutside))
-        val queued = marshal.queueWaits(config.budget, started, waiting, held, queueHeld, t, outside.getOrElse(marshal.NoOutside), marshal.fairness(config, time.now().epochMicros)).map(w ->
-            QueuedJob(jobs(w.0).info(t, startsAt(drain, w.0)), w.1, w.2))
-        val recent = (earlier ++ ended.takeRight(Recent).map(j -> j.info(t))).takeRight(Recent).reverse
-        Overview(usageWith(outside), t - began, running.map(j -> j.info(t)).toVector, queued, recent, waitingJobs.map(j -> j.info(t)).toVector)
-
-    private usageWith(outside: Option[Outside]) -> Usage
-        val dev = running.filter(j -> !j.spec.landing && !j.spec.quick)
-        Usage(
-            dev.map(j -> j.spec.units).sum,
-            config.budget.units,
-            running.map(j -> j.reserved).sum,
-            config.budget.memory,
-            running.length,
-            queue.length,
-            running.find(j -> j.spec.landing).map(j -> j.id),
-            slots.flatMap(ts -> outside.map(o -> TakeSlotUse(ts.dir, o.units, o.waiting.length, o.landing))),
-            running.map(j -> j.resident.now).sum,
-            machineMemory,
-            queueHeld,
-            running.map(j -> holds(j)).sum,
-            running.filter(j -> j.spec.quick).length,
-            running.find(j -> j.spec.exclusive).map(j -> j.id))
-
-    // A stop asks for the daemon to end: at once when nothing is queued or running; with `force`,
-    // after killing what runs and cancelling what waits; with `drain`, once what is queued and
-    // running has ended. Otherwise it is refused.
-    stop(force: bool, drain: bool, reply: Option[Channel[Reply]])
-        val busy = running.length + queue.length + waitingJobs.length
-        if busy > 0 && !force && !drain
-            val waits = if waitingJobs.isEmpty then "" else s" and ${waitingJobs.length} waiting"
-            reply.foreach(r -> give(r, Failed(s"${running.length} running and ${queue.length} queued$waits: `marshal stop --wait` waits for them and `--force` kills them")))
-            return
-        // a held job, or any queued one while the queue is held, would never end
-        val heldQueued = queue.exists(j -> j.held)
-        val heldWaiting = waitingJobs.exists(j -> j.held)
-        if drain && !force && ((queueHeld && (queue.nonEmpty || waitingJobs.nonEmpty)) || heldQueued || heldWaiting)
-            val what = if queueHeld then "the queue is held" elif heldQueued then "a queued job is held" else "a waiting job is held"
-            reply.foreach(r -> give(r, Failed(s"$what, so `--wait` would wait for ever: release it first, or `--force`")))
-            return
-        // so would a paused one
-        if drain && !force
-            for job in running.find(j -> j.paused)
-                reply.foreach(r -> give(r, Failed(s"job ${job.id} is paused, so `--wait` would wait for ever: resume it first, or `--force`")))
-                return
-        reply.foreach(r -> stopReplies += r)
-        if force
-            stopping = true
-            // the waiting go first, so none joins the queue because a job cancelled before it ended
-            for job in waitingJobs.toVector
-                if job.state == "done" then continue
-                job.killed = true
-                waitingJobs.remove(waitingJobs.indexOf(job))
-                conclude(job, Cancelled, "killed")
-            for job in queue.toVector
-                job.killed = true
-                queue.remove(queue.indexOf(job))
-                conclude(job, Cancelled, "killed")
-            for job in running
-                if !job.killed && !job.timedOut then halt(job)
-        else
-            draining = true
-            if busy == 0 then stopping = true
-
-    // The daemon's last steps: the socket goes first, so a new daemon can start at once, then each
-    // `stop` is answered and the daemon waits for those answers to be written.
-    finish()
-        fs.remove(home + "/sock")
-        fs.remove(home + "/daemon.pid")
-        for ts in slots
-            ticket.foreach(name -> ts.removeTicket(name))
-        for r in stopReplies do give(r, Done)
-        if watchers.nonEmpty
-            for w in watchers.toVector
-                remove(w)
-                refuse(w.out, "the daemon stopped")
-        // the streams' threads write what they hold within one look, as the poll in `stream` is
-        // 50 ms: a client told the daemon stopped is not left to guess it from a closed connection
-        if watched then threads.sleep(millis(150))
-        while unwritten > 0
-            events.receive() match
-                Some(Written) -> unwritten -= 1
-                Some(FromClient(request, r)) -> if marshal.watching(request) then refuse(r, "the daemon is stopping") else give(r, Failed("the daemon is stopping"))
-                Some(_) -> ()
-                None -> break
-        eprintln(s"marshal: daemon ${process.pid()} stopped")
-
-    // Replaces the daemon with a program, which takes the jobs over: `$MARSHAL_RESTART_PROGRAM` when
-    // set, else the program the client was run from (`client`; an older client sends none), else the
-    // daemon's own. A program that is not there or cannot be run is refused before anything is
-    // touched, and the daemon goes on. Before it
-    // goes, every running job is known to run or has ended and been recorded, every reply given is
-    // written, and the state is in `<home>/state.json`; requests that arrive meanwhile are not
-    // carried out, so their connections close unanswered and their clients ask the new image. When
-    // the program cannot be run, the daemon goes on as it was and says why.
-    restart(reply: Channel[Reply], client: Option[string])
-        if stopping || draining
-            give(reply, Failed("the daemon is stopping"))
-            return
-        val program = process.env("MARSHAL_RESTART_PROGRAM").orElse(client).orElse(process.executable()) match
-            Some(p) -> p
-            None ->
-                give(reply, Failed("the daemon cannot tell where its program is"))
-                return
-        if !fs.isFile(program)
-            give(reply, Failed(s"the daemon did not restart: $program is not a file"))
-            return
-        if Command("test", "-x", program).run().ok != Some(ExitStatus.Exited(0))
-            give(reply, Failed(s"the daemon did not restart: $program cannot be run"))
-            return
-        restarting = true
-        val held = Buffer[(Request, Channel[Reply])]()
-        val file = home + "/state.json"
-        var saved: Result[unit, IoError] = Ok(())
-        loop
-            while settle(held) do ()
-            while unwritten > 0 do during(held)
-            saved = marshal.writeAtomic(file, marshal.encodeState(state()).render + "\n")
-            if saved.isErr || !settle(held) then break
-        val failure = if termed then "a TERM arrived" else saved match
-            Err(e) -> s"cannot write $file: ${e.message}"
-            Ok(_) ->
-                // No command line starts another daemon while the socket is down: this one is starting.
-                fs.createDirAll(home + "/starting")
-                fs.writeText(home + "/starting/pid", process.pid().toString())
-                eprintln(s"marshal: daemon ${process.pid()} restarting as $program with ${running.length} running and ${queue.length} queued")
-                val e = process.exec(program, ["daemon", "--resume", file]).err.get
-                fs.removeDirAll(home + "/starting")
-                s"cannot run $program: ${e.message}"
-        fs.remove(file)
-        restarting = false
-        eprintln(s"marshal: restart failed: $failure; this daemon goes on")
-        give(reply, Failed(s"the daemon did not restart: $failure"))
-        for (r, c) in held do answer(r, c)
-        if termed
-            eprintln("marshal: TERM received: stopping, killing what runs")
-            stop(true, false, None)
-        schedule()
-
-    // Settles each running job: one that has ended is reaped and recorded here; one whose waiting
-    // thread has reaped it is recorded from that thread's message. Answers whether any had ended.
-    settle(held: Buffer[(Request, Channel[Reply])]) -> bool
-        var any = false
-        for job in running.toVector
-            process.tryWaitPid(job.pid) match
-                Ok(None) -> ()
-                Ok(Some(status)) ->
-                    exited(job.id, Ok(status))
-                    any = true
-                Err(_) ->
-                    while job.state == "running" do during(held)
-                    any = true
-        any
-
-    // One message while a restart hands over: a request waits for its outcome, the rest as usual.
-    during(held: Buffer[(Request, Channel[Reply])])
-        events.receive() match
-            Some(FromClient(r, c)) -> held += (r, c)
-            Some(Exit(id, status)) -> exited(id, status)
-            Some(Due(id, gen)) -> due(id, gen)
-            Some(Retry(id, attempt)) -> retryDue(id, attempt)
-            Some(Restop(id, gen)) -> restop(id, gen)
-            Some(Written) -> unwritten -= 1
-            Some(Terminate) -> termed = true
-            Some(Tick) -> ()
-            Some(Sweep) -> ()
-            Some(Sample) -> ()
-            Some(Measured(sizes)) -> measured(sizes)
-            Some(Unwatch(out)) -> unwatch(out)
-            None -> ()
-
-    // The daemon's state, as the next image reads it.
-    state() -> SavedState
-        val wallNow = time.now().epochMillis
-        val t = now()
-        val wall = (at: long) -> wallNow - (t - at)
-        val saved = (j: Job) -> SavedJob(
-            j.id, j.spec, j.state, wall(j.submittedMs), j.arrived,
-            j.startedAt,
-            if j.state == "done" then wall(j.endedMs) else 0,
-            j.deadlineMs, j.expectedMs, j.log, j.pid, j.pgid, j.outcome, j.killed, j.timedOut, j.sample,
-            j.resident.now, j.resident.peak, j.held, j.priority, j.urgentAt,
-            j.pausedMs, if j.paused then wall(j.pausedAt) else 0,
-            j.attempt, if j.state == "retrying" then wall(j.retryAt) else 0,
-            j.reserved, j.learnedMem, j.quietStopped, j.reservedFrom, j.durationLearned)
-        SavedState(reportedVersion(), process.pid(), wallNow, wall(began), nextId,
-            queue.map(saved).toVector, running.map(saved).toVector, ended.takeRight(Recent).map(saved).toVector, ticket, queueHeld,
-            waitingJobs.map(saved).toVector)
-
-    // Takes over what an earlier image of this daemon saved: its jobs, queue and ticket. The
-    // running jobs are still this process's children, so they are waited for by pid; one that was
-    // being stopped is stopped again, since the thread stopping it went with the old image.
-    restore(s: SavedState)
-        val wallNow = time.now().epochMillis
-        val t = now()
-        val mono = (at: long) -> t - (wallNow - at)
-        began = mono(s.beganAt)
-        if s.nextId > nextId then nextId = s.nextId
-        ticket = s.ticket
-        queueHeld = s.queueHeld
-        val rebuilt = (sj: SavedJob) ->
-            val job = Job(sj.id, sj.spec, mono(sj.submittedAt), sj.arrived, sj.deadlineMs, sj.expectedMs, sj.log)
-            job.state = sj.state
-            job.startedMs = mono(if sj.startedAt == 0 then sj.endedAt else sj.startedAt)
-            job.startedAt = sj.startedAt
-            job.resident = Resident(sj.rss, sj.peakRss)
-            job.endedMs = mono(sj.endedAt)
-            job.pid = sj.pid
-            job.pgid = sj.pgid
-            job.outcome = sj.outcome
-            job.killed = sj.killed
-            job.timedOut = sj.timedOut
-            job.quietStopped = sj.quietStopped
-            // the quiet the old image saw is not carried over: the clock starts again here
-            job.quiet = marshal.quietStart(marshal.fileBytes(sj.log), t)
-            job.sample = sj.sample
-            job.held = sj.held
-            job.priority = sj.priority
-            job.urgentAt = sj.urgentAt
-            job.pausedMs = sj.pausedMs
-            // a paused job's processes stay stopped across the restart, and its clock with them
-            job.paused = sj.pausedAt > 0
-            job.pausedAt = if job.paused then mono(sj.pausedAt) else 0
-            job.attempt = sj.attempt
-            job.durationLearned = sj.durationLearned
-            // a state saved before reservations were recorded: learned again from the peaks
-            if sj.reserved < 0
-                reserve(job)
-            else
-                job.reserved = sj.reserved
-                job.learnedMem = sj.reservedLearned
-                // a state saved before the source was recorded: only kinds were learned then
-                val before = marshal.reservationSource(sj.spec.memory, sj.spec.memoryGiven, marshal.Reservation(sj.reserved, sj.reservedLearned), "kind")
-                job.reservedFrom = if sj.reservedFrom.nonEmpty then sj.reservedFrom else before
-            jobs(job.id) = job
-            job
-        for sj in s.ended do ended += rebuilt(sj)
-        for sj in s.queue do queue += rebuilt(sj)
-        for sj in s.running
-            val job = rebuilt(sj)
-            running += job
-            watch(job)
-            if job.killed || job.timedOut then terminate(home, job.id, job.pgid, None)
-            // the old image's stopping again went with it: a job paused just before the restart
-            // may have a process the STOP missed
-            if job.paused && !job.killed && !job.timedOut
-                stopGroups(job)
-                restopSoon(job)
-        // A waiting job waits again for those of its jobs that have not ended, which may be none by
-        // now; a job waiting to retry waits out what is left of its delay.
-        val waits = s.waiting.map(sj ->
-            val job = rebuilt(sj)
-            if job.state == "waiting" then job.after = job.spec.after.distinct
-            if job.state == "retrying" then job.retryAt = mono(sj.retryAt)
-            waitingJobs += job
-            job)
-        // an exclusive job waiting for the load to settle waits a whole window again: the calm the
-        // old image saw is not carried over
-        val settling = (queue.toVector ++ waits).filter(j -> j.spec.quietLoad > 0.0)
-        if settling.nonEmpty
-            val load = marshal.loadAverages().headOption
-            for job in settling do settleSeen(job, load, t)
-        for job in waits
-            if job.state == "retrying" then armRetry(job) else reconsider(job)
-        schedule()
+  // Takes over what an earlier image of this daemon saved: its jobs, queue and ticket. The
+  // running jobs are still this process's children, so they are waited for by pid; one that was
+  // being stopped is stopped again, since the thread stopping it went with the old image.
+  restore(s: SavedState)
+    val wallNow = time.now().epochMillis
+    val t = now()
+    val mono = (at: long) -> t - (wallNow - at)
+    began = mono(s.beganAt)
+    if s.nextId > nextId then nextId = s.nextId
+    ticket = s.ticket
+    queueHeld = s.queueHeld
+    val rebuilt = (sj: SavedJob) ->
+      val job = Job(sj.id, sj.spec, mono(sj.submittedAt), sj.arrived, sj.deadlineMs, sj.expectedMs, sj.log)
+      job.state = sj.state
+      job.startedMs = mono(if sj.startedAt == 0 then sj.endedAt else sj.startedAt)
+      job.startedAt = sj.startedAt
+      job.resident = Resident(sj.rss, sj.peakRss)
+      job.endedMs = mono(sj.endedAt)
+      job.pid = sj.pid
+      job.pgid = sj.pgid
+      job.outcome = sj.outcome
+      job.killed = sj.killed
+      job.timedOut = sj.timedOut
+      job.quietStopped = sj.quietStopped
+      // the quiet the old image saw is not carried over: the clock starts again here
+      job.quiet = marshal.quietStart(marshal.fileBytes(sj.log), t)
+      job.sample = sj.sample
+      job.held = sj.held
+      job.priority = sj.priority
+      job.urgentAt = sj.urgentAt
+      job.pausedMs = sj.pausedMs
+      // a paused job's processes stay stopped across the restart, and its clock with them
+      job.paused = sj.pausedAt > 0
+      job.pausedAt = if job.paused then mono(sj.pausedAt) else 0
+      job.attempt = sj.attempt
+      job.durationLearned = sj.durationLearned
+      // a state saved before reservations were recorded: learned again from the peaks
+      if sj.reserved < 0
+        reserve(job)
+      else
+        job.reserved = sj.reserved
+        job.learnedMem = sj.reservedLearned
+        // a state saved before the source was recorded: only kinds were learned then
+        val before = marshal.reservationSource(
+          sj.spec.memory,
+          sj.spec.memoryGiven,
+          marshal.Reservation(sj.reserved, sj.reservedLearned),
+          "kind"
+        )
+        job.reservedFrom = if sj.reservedFrom.nonEmpty then sj.reservedFrom else before
+      jobs(job.id) = job
+      job
+    for sj in s.ended do ended += rebuilt(sj)
+    for sj in s.queue do queue += rebuilt(sj)
+    for sj in s.running
+      val job = rebuilt(sj)
+      running += job
+      watch(job)
+      if job.killed || job.timedOut then terminate(home, job.id, job.pgid, None)
+      // the old image's stopping again went with it: a job paused just before the restart
+      // may have a process the STOP missed
+      if job.paused && !job.killed && !job.timedOut
+        stopGroups(job)
+        restopSoon(job)
+    // A waiting job waits again for those of its jobs that have not ended, which may be none by
+    // now; a job waiting to retry waits out what is left of its delay.
+    val waits = s.waiting.map(sj ->
+      val job = rebuilt(sj)
+      if job.state == "waiting" then job.after = job.spec.after.distinct
+      if job.state == "retrying" then job.retryAt = mono(sj.retryAt)
+      waitingJobs += job
+      job)
+    // an exclusive job waiting for the load to settle waits a whole window again: the calm the
+    // old image saw is not carried over
+    val settling = (queue.toVector ++ waits).filter(j -> j.spec.quietLoad > 0.0)
+    if settling.nonEmpty
+      val load = marshal.loadAverages().headOption
+      for job in settling do settleSeen(job, load, t)
+    for job in waits
+      if job.state == "retrying" then armRetry(job) else reconsider(job)
+    schedule()
 
 // Stops a job's process group: samples its busiest process first when `sample` names a file, then
 // TERM, and KILL after the grace period. Runs on a thread of its own, so the daemon goes on.
 terminate(home: string, id: long, pgid: long, sample: Option[string])
-    spawn(() ->
-        sample.foreach(file -> busiest(marshal.groupsOf(home, id, pgid)).foreach(pid -> Command("sample", pid.toString(), "5", "1", "-file", file).output()))
-        // TERM goes to the runner alone, which stops its step itself and so knows the run was
-        // stopped; a step ended under it first would read as a failed step
-        process.signal(-pgid, signal.Terminate)
-        threads.sleep(millis(Grace))
-        // the step group is read again: a step may have started since the TERM
-        marshal.signalGroups(home, id, pgid, signal.Kill)
-        ())
+  spawn(() ->
+    sample.foreach(
+      file -> busiest(marshal.groupsOf(home, id, pgid)).foreach(
+        pid -> Command("sample", pid.toString(), "5", "1", "-file", file).output()
+      )
+    )
+    // TERM goes to the runner alone, which stops its step itself and so knows the run was
+    // stopped; a step ended under it first would read as a failed step
+    process.signal(-pgid, signal.Terminate)
+    threads.sleep(millis(Grace))
+    // the step group is read again: a step may have started since the TERM
+    marshal.signalGroups(home, id, pgid, signal.Kill)
+    ())
 
 // The process of the groups that has used the most processor time.
 busiest(groups: Vector[long]) -> Option[long]
-    val pids = groups.flatMap(g -> marshal.groupMembers(g))
-    if pids.isEmpty then return None
-    val table = Command("ps", "-o", "pid=,time=", "-p", pids.map(p -> p.toString()).mkString(",")).output().getOrElse("")
-    var best: Option[(long, long)] = None
-    for line in table.lines
-        val words = line.trim.split(" ").filter(w -> w.nonEmpty)
-        if words.length < 2 then continue
-        (words(0).toLongOption(), marshal.parseCpuTime(words(1))) match
-            (Some(pid), Some(cpu)) if best.forall(b -> cpu > b.1) -> best = Some((pid, cpu))
-            _ -> ()
-    best.map(b -> b.0).orElse(Some(pids(0)))
+  val pids = groups.flatMap(g -> marshal.groupMembers(g))
+  if pids.isEmpty then return None
+  val table = Command("ps", "-o", "pid=,time=", "-p", pids.map(p -> p.toString()).mkString(",")).output().getOrElse("")
+  var best: Option[(long, long)] = None
+  for line in table.lines
+    val words = line.trim.split(" ").filter(w -> w.nonEmpty)
+    if words.length < 2 then continue
+    (words(0).toLongOption(), marshal.parseCpuTime(words(1))) match
+      (Some(pid), Some(cpu)) if best.forall(b -> cpu > b.1) -> best = Some((pid, cpu))
+      _ -> ()
+  best.map(b -> b.0).orElse(Some(pids(0)))
 
 // Serves one client: each request line is handed to the daemon's thread and its reply written back.
 connection(conn: UnixStream, events: Channel[Message])
-    loop
-        val line = conn.readLine() match
-            Ok(Some(l)) -> l
-            _ -> break
-        val request = marshal.decodeRequest(line)
-        if request.map(marshal.watching).getOrElse(false)
-            stream(conn, events, request.ok.get)
-            return
-        val reply = request match
-            Ok(r) ->
-                val back = Channel[Reply]()
-                events.send(FromClient(r, back))
-                back.receive().getOrElse(Failed("the daemon has stopped"))
-            Err(e) -> Failed(e)
-        val wrote = conn.writeText(marshal.encodeReply(reply).render + "\n")
-        val stopped = request match
-            Ok(Stop(_, _)) -> reply == Reply.Done
-            _ -> false
-        if stopped then conn.close()
-        if request.isOk then events.send(Written)
-        if stopped || wrote.isErr then break
-    conn.close()
+  loop
+    val line = conn.readLine() match
+      Ok(Some(l)) -> l
+      _ -> break
+    val request = marshal.decodeRequest(line)
+    if request.map(marshal.watching).getOrElse(false)
+      stream(conn, events, request.ok.get)
+      return
+    val reply = request match
+      Ok(r) ->
+        val back = Channel[Reply]()
+        events.send(FromClient(r, back))
+        back.receive().getOrElse(Failed("the daemon has stopped"))
+      Err(e) -> Failed(e)
+    val wrote = conn.writeText(marshal.encodeReply(reply).render + "\n")
+    val stopped = request match
+      Ok(Stop(_, _)) -> reply == Reply.Done
+      _ -> false
+    if stopped then conn.close()
+    if request.isOk then events.send(Written)
+    if stopped || wrote.isErr then break
+  conn.close()
 
 // Serves a watch on its client's connection, which it ends: the daemon writes replies into a
 // bounded stream and this thread writes them out, so a client that reads slowly holds up only its
 // own thread. A connection belongs to one thread, so the client's leaving is noticed between
 // writes by a read that waits briefly and finds the end.
 stream(conn: UnixStream, events: Channel[Message], request: Request)
-    val back = Channel[Reply](watchBuffer())
-    events.send(FromClient(request, back))
-    var gone = false
-    while !gone
-        // closed before the replies are taken, so every reply sent before it is among them
-        val ended = back.isClosed()
-        conn.setTimeout(millis(0))
-        loop
-            val reply = back.tryReceive() match
-                Some(r) -> r
-                None -> break
-            if conn.writeText(marshal.encodeReply(reply).render + "\n").isErr
-                gone = true
-                break
-        if ended || gone then break
-        conn.setTimeout(millis(50))
-        conn.read(1) match
-            Ok(bytes) -> if bytes.length == 0 then gone = true
-            Err(IoError(ErrorKind.TimedOut, _, _)) -> ()
-            Err(_) -> gone = true
-    conn.close()
-    events.send(Unwatch(back))
+  val back = Channel[Reply](watchBuffer())
+  events.send(FromClient(request, back))
+  var gone = false
+  while !gone
+    // closed before the replies are taken, so every reply sent before it is among them
+    val ended = back.isClosed()
+    conn.setTimeout(millis(0))
+    loop
+      val reply = back.tryReceive() match
+        Some(r) -> r
+        None -> break
+      if conn.writeText(marshal.encodeReply(reply).render + "\n").isErr
+        gone = true
+        break
+    if ended || gone then break
+    conn.setTimeout(millis(50))
+    conn.read(1) match
+      Ok(bytes) -> if bytes.length == 0 then gone = true
+      Err(IoError(ErrorKind.TimedOut, _, _)) -> ()
+      Err(_) -> gone = true
+  conn.close()
+  events.send(Unwatch(back))
 
 // The machine's memory in bytes, or 0 where it cannot be asked.
 machineMemory() -> long = process.totalMemory().getOrElse(0)
@@ -1448,138 +1709,153 @@ reportedVersion() -> string = process.env("MARSHAL_TEST_VERSION").getOrElse(mars
 // The state an earlier image of this daemon saved in `file` before it became this one, which is
 // removed once read; None, with the reason on standard error, when it cannot be read.
 resumed(file: string) -> Option[SavedState]
-    val text = fs.readText(file)
-    fs.remove(file)
-    val saved = text.mapErr(e -> e.message).flatMap(t -> marshal.decodeState(t))
-    saved match
-        Ok(s) if s.pid == process.pid() -> Some(s)
-        Ok(s) ->
-            eprintln(s"marshal: $file was saved by process ${s.pid}, not this one: its jobs are not this daemon's")
-            None
-        Err(e) ->
-            eprintln(s"marshal: cannot take over from $file: $e")
-            None
+  val text = fs.readText(file)
+  fs.remove(file)
+  val saved = text.mapErr(e -> e.message).flatMap(t -> marshal.decodeState(t))
+  saved match
+    Ok(s) if s.pid == process.pid() -> Some(s)
+    Ok(s) ->
+      eprintln(s"marshal: $file was saved by process ${s.pid}, not this one: its jobs are not this daemon's")
+      None
+    Err(e) ->
+      eprintln(s"marshal: cannot take over from $file: $e")
+      None
 
 // Runs the daemon for marshal's home directory `home` until it is stopped; answers the exit status.
 // `resume` names the state an earlier image of this process saved as it restarted.
 run(home: string, resume: Option[string] = None) -> int
-    fs.createDirAll(home + "/jobs") match
+  fs.createDirAll(home + "/jobs") match
+    Err(e) ->
+      eprintln(s"marshal: cannot make $home/jobs: ${e.message}")
+      return 1
+    Ok(_) -> ()
+  val saved = resume.flatMap(resumed)
+  // A restarted daemon already leads its session.
+  if resume.isEmpty then process.newSession()
+  // A restarted image owns the socket's path. What may still answer there is the image before
+  // it: a child that image was starting, forked but not yet running its program, holds a copy of
+  // its listener until it does. So the path is taken over rather than asked whether it is in use.
+  if resume.nonEmpty then fs.remove(home + "/sock")
+  val listener = UnixListener.bindReplacing(home + "/sock") match
+    Ok(l) -> l
+    Err(IoError(ErrorKind.AlreadyExists, _, _)) ->
+      eprintln("marshal: another daemon is listening; this one exits")
+      return 0
+    Err(e) ->
+      eprintln(s"marshal: cannot listen at $home/sock: ${e.message}")
+      fs.removeDirAll(home + "/starting")
+      return 1
+  fs.removeDirAll(home + "/starting")
+  val configText = if fs.exists(home + "/config.json") then fs.readText(home + "/config.json").getOrElse("") else ""
+  val machine = machineMemory()
+  val config = marshal.readConfig(configText, machine) match
+    Ok(c) -> c
+    Err(e) ->
+      eprintln(s"marshal: $e")
+      listener.close()
+      fs.remove(home + "/sock")
+      return 1
+  val takeSlot = marshal.takeSlotDir(process.env("MARSHAL_TAKE_SLOT_DIR"), config.takeSlot)
+  for dir in takeSlot
+    if !fs.isDir(dir)
+      eprintln(s"marshal: the take-slot directory $dir is not a directory")
+      listener.close()
+      fs.remove(home + "/sock")
+      return 1
+  val slots = takeSlot.map(dir -> TakeSlot(dir, process.pid()))
+  // what an earlier daemon that died left in take-slot's directory is its own to remove
+  val previous = fs.readText(home + "/daemon.pid").ok.flatMap(t -> t.trim.toLongOption()).getOrElse(0)
+  fs.writeText(home + "/daemon.pid", process.pid().toString())
+  val log = home + "/events.jsonl"
+  val recovered = marshal.recover(if fs.exists(log) then fs.readText(log).getOrElse("").lines else [])
+  // the jobs the log left open that a restart did not hand over were lost with the daemon that held them
+  val kept = saved.map(s -> (s.queue ++ s.running ++ s.waiting).map(j -> j.id)).getOrElse([])
+  val orphans = recovered.open.filter(ev -> !kept.contains(ev.get("id").flatMap(v -> v.asLong).getOrElse(0)))
+  for ev in orphans
+    val pgid = ev.get("pgid").flatMap(v -> v.asLong).getOrElse(0)
+    val alive = pgid > 0 && process.signal(-pgid, 0).isOk
+    marshal.lostLine(time.now().epochMillis, ev, alive) match
+      Some(line) ->
+        fs.appendText(log, line + "\n")
+        eprintln(
+          s"marshal: job ${ev("id")} was lost with the last daemon" + (
+            if alive then s"; its process group $pgid is still running" else ""
+          )
+        )
+      None -> eprintln(s"marshal: an open job's event is unreadable: $ev")
+  for ts in slots
+    ts.lock()
+    // a restarted daemon's own files are its jobs' and its ticket
+    ts.forget(
+      if saved.isDefined then 0 else previous,
+      orphans.map(ev -> ev.get("pid").orElse(ev.get("pgid")).flatMap(v -> v.asLong).getOrElse(0)).filter(p -> p > 0)
+    )
+    ts.unlock()
+  if recovered.unreadable > 0 then eprintln(s"marshal: ${recovered.unreadable} lines of $log are not events")
+  val histories = MutableMap[string, Buffer[long]]()
+  for (key, runs) in recovered.histories do histories(key) = runs.toBuffer()
+  val events = Channel[Message]()
+  spawn(() ->
+    loop
+      listener.accept() match
+        Ok(conn) -> spawn(() -> connection(conn, events))
         Err(e) ->
-            eprintln(s"marshal: cannot make $home/jobs: ${e.message}")
-            return 1
-        Ok(_) -> ()
-    val saved = resume.flatMap(resumed)
-    // A restarted daemon already leads its session.
-    if resume.isEmpty then process.newSession()
-    // A restarted image owns the socket's path. What may still answer there is the image before
-    // it: a child that image was starting, forked but not yet running its program, holds a copy of
-    // its listener until it does. So the path is taken over rather than asked whether it is in use.
-    if resume.nonEmpty then fs.remove(home + "/sock")
-    val listener = UnixListener.bindReplacing(home + "/sock") match
-        Ok(l) -> l
-        Err(IoError(ErrorKind.AlreadyExists, _, _)) ->
-            eprintln("marshal: another daemon is listening; this one exits")
-            return 0
-        Err(e) ->
-            eprintln(s"marshal: cannot listen at $home/sock: ${e.message}")
-            fs.removeDirAll(home + "/starting")
-            return 1
-    fs.removeDirAll(home + "/starting")
-    val configText = if fs.exists(home + "/config.json") then fs.readText(home + "/config.json").getOrElse("") else ""
-    val machine = machineMemory()
-    val config = marshal.readConfig(configText, machine) match
-        Ok(c) -> c
-        Err(e) ->
-            eprintln(s"marshal: $e")
-            listener.close()
-            fs.remove(home + "/sock")
-            return 1
-    val takeSlot = marshal.takeSlotDir(process.env("MARSHAL_TAKE_SLOT_DIR"), config.takeSlot)
-    for dir in takeSlot
-        if !fs.isDir(dir)
-            eprintln(s"marshal: the take-slot directory $dir is not a directory")
-            listener.close()
-            fs.remove(home + "/sock")
-            return 1
-    val slots = takeSlot.map(dir -> TakeSlot(dir, process.pid()))
-    // what an earlier daemon that died left in take-slot's directory is its own to remove
-    val previous = fs.readText(home + "/daemon.pid").ok.flatMap(t -> t.trim.toLongOption()).getOrElse(0)
-    fs.writeText(home + "/daemon.pid", process.pid().toString())
-    val log = home + "/events.jsonl"
-    val recovered = marshal.recover(if fs.exists(log) then fs.readText(log).getOrElse("").lines else [])
-    // the jobs the log left open that a restart did not hand over were lost with the daemon that held them
-    val kept = saved.map(s -> (s.queue ++ s.running ++ s.waiting).map(j -> j.id)).getOrElse([])
-    val orphans = recovered.open.filter(ev -> !kept.contains(ev.get("id").flatMap(v -> v.asLong).getOrElse(0)))
-    for ev in orphans
-        val pgid = ev.get("pgid").flatMap(v -> v.asLong).getOrElse(0)
-        val alive = pgid > 0 && process.signal(-pgid, 0).isOk
-        marshal.lostLine(time.now().epochMillis, ev, alive) match
-            Some(line) ->
-                fs.appendText(log, line + "\n")
-                eprintln(s"marshal: job ${ev("id")} was lost with the last daemon" + (if alive then s"; its process group $pgid is still running" else ""))
-            None -> eprintln(s"marshal: an open job's event is unreadable: $ev")
-    for ts in slots
-        ts.lock()
-        // a restarted daemon's own files are its jobs' and its ticket
-        ts.forget(if saved.isDefined then 0 else previous, orphans.map(ev -> ev.get("pid").orElse(ev.get("pgid")).flatMap(v -> v.asLong).getOrElse(0)).filter(p -> p > 0))
-        ts.unlock()
-    if recovered.unreadable > 0 then eprintln(s"marshal: ${recovered.unreadable} lines of $log are not events")
-    val histories = MutableMap[string, Buffer[long]]()
-    for (key, runs) in recovered.histories do histories(key) = runs.toBuffer()
-    val events = Channel[Message]()
+          eprintln(s"marshal: accept failed: ${e.message}")
+          break
+    ())
+  signal.watch(signal.Terminate) match
+    Ok(term) -> spawn(() ->
+      term.wait()
+      events.send(Terminate))
+    Err(e) -> eprintln(s"marshal: cannot watch TERM: ${e.message}")
+  // What may start changes with time alone, not only when a job comes or goes: a job waits past the
+  // bound, a running job passes its estimate. The ticker looks again every few seconds, and reads
+  // take-slot's files when there are any.
+  spawn(() ->
+    loop
+      threads.sleep(millis(TickMs))
+      events.send(Tick)
+    ())
+  spawn(() ->
+    loop
+      threads.sleep(millis(sweepInterval()))
+      events.send(Sweep)
+    ())
+  for owner in watchedOwner()
     spawn(() ->
-        loop
-            listener.accept() match
-                Ok(conn) -> spawn(() -> connection(conn, events))
-                Err(e) ->
-                    eprintln(s"marshal: accept failed: ${e.message}")
-                    break
-        ())
-    signal.watch(signal.Terminate) match
-        Ok(term) -> spawn(() ->
-            term.wait()
-            events.send(Terminate))
-        Err(e) -> eprintln(s"marshal: cannot watch TERM: ${e.message}")
-    // What may start changes with time alone, not only when a job comes or goes: a job waits past the
-    // bound, a running job passes its estimate. The ticker looks again every few seconds, and reads
-    // take-slot's files when there are any.
-    spawn(() ->
-        loop
-            threads.sleep(millis(TickMs))
-            events.send(Tick)
-        ())
-    spawn(() ->
-        loop
-            threads.sleep(millis(sweepInterval()))
-            events.send(Sweep)
-        ())
-    for owner in watchedOwner()
-        spawn(() ->
-            loop
-                threads.sleep(millis(200))
-                if process.signal(owner, 0).isErr
-                    events.send(Terminate)
-                    break
-            ())
-    spawn(() ->
-        loop
-            threads.sleep(millis(SampleMs))
-            events.send(Sample)
-        ())
-    val sharing = takeSlot.map(dir -> s", sharing take-slot's $dir").getOrElse("")
-    eprintln(s"marshal: daemon ${process.pid()} listening at $home/sock; units ${config.budget.units}, memory ${marshal.formatSize(config.budget.memory)}$sharing, ${orphans.length} jobs lost")
-    // the jobs earlier daemons ended, the ones just recorded as lost among them; a restarted
-    // daemon holds its own recent ones
-    val own = saved.map(s -> s.ended.map(j -> j.id)).getOrElse([])
-    val earlier = (recovered.ended.filter(j -> !own.contains(j.id)) ++ orphans.map(ev -> marshal.decodeJob(ev)).filter(r -> r.isOk).map(r -> marshal.asLost(r.ok.get))).sortBy(j -> j.id).takeRight(Recent)
-    val daemon = Daemon(home, config, events, recovered.nextId, histories, slots, earlier, machine)
-    for (key, peaks) in recovered.peaks
-        for p in peaks do daemon.rememberPeak(key, p)
-    for s in saved
-        daemon.restore(s)
-        val upgrade = if s.version == reportedVersion() then s"version ${s.version}" else s"version ${s.version} to ${reportedVersion()}"
-        val waits = if s.waiting.isEmpty then "" else s" and ${s.waiting.length} waiting"
-        eprintln(s"marshal: daemon ${process.pid()} restarted ($upgrade), taking over ${s.running.length} running and ${s.queue.length} queued$waits jobs")
-    daemon.sweep()
-    daemon.serve()
-    0
+      loop
+        threads.sleep(millis(200))
+        if process.signal(owner, 0).isErr
+          events.send(Terminate)
+          break
+      ())
+  spawn(() ->
+    loop
+      threads.sleep(millis(SampleMs))
+      events.send(Sample)
+    ())
+  val sharing = takeSlot.map(dir -> s", sharing take-slot's $dir").getOrElse("")
+  eprintln(
+    s"marshal: daemon ${process.pid()} listening at $home/sock; units ${config.budget.units}, memory ${marshal.formatSize(config.budget.memory)}$sharing, ${orphans.length} jobs lost"
+  )
+  // the jobs earlier daemons ended, the ones just recorded as lost among them; a restarted
+  // daemon holds its own recent ones
+  val own = saved.map(s -> s.ended.map(j -> j.id)).getOrElse([])
+  val earlier = (
+    recovered.ended.filter(j -> !own.contains(j.id)) ++ orphans.map(
+      ev -> marshal.decodeJob(ev)
+    ).filter(r -> r.isOk).map(r -> marshal.asLost(r.ok.get))
+  ).sortBy(j -> j.id).takeRight(Recent)
+  val daemon = Daemon(home, config, events, recovered.nextId, histories, slots, earlier, machine)
+  for (key, peaks) in recovered.peaks
+    for p in peaks do daemon.rememberPeak(key, p)
+  for s in saved
+    daemon.restore(s)
+    val upgrade = if s.version == reportedVersion() then s"version ${s.version}" else s"version ${s.version} to ${reportedVersion()}"
+    val waits = if s.waiting.isEmpty then "" else s" and ${s.waiting.length} waiting"
+    eprintln(
+      s"marshal: daemon ${process.pid()} restarted ($upgrade), taking over ${s.running.length} running and ${s.queue.length} queued$waits jobs"
+    )
+  daemon.sweep()
+  daemon.serve()
+  0

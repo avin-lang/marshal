@@ -8,17 +8,57 @@ import dev.avinlang.marshal
 import dev.avinlang.marshal.{JobInfo, Overview, QueuedJob, Usage, Why}
 import dev.avinlang.marshal.{NoUnits, NoMemory, LaneBusy, Draining, ForTakeSlot, Behind, Starting, Held, QueueHeld}
 import dev.avinlang.marshal.{Exited, Signalled, TimedOut, Cancelled, Lost, DependencyFailed, Quiet}
-import dev.avinlang.tui.{Black, Blue, Bold, BrightBlack, Char, Column, Ctrl, Cyan, Dim, Down, End, Enter, Escape, Event,
-                         Fill, Fixed, Green, Grid, Home, Key, KeyPress, Magenta, Modal, ModalStack, PageDown, PageUp,
-                         Rect, Red, Reverse, Rounded, Scrollbar, ScrollView, Segment, Span, Stop, Style, Table, Up, Yellow, textWidth,
-                         wrapChars}
+
+import dev.avinlang.tui.{
+  Black,
+  Blue,
+  Bold,
+  BrightBlack,
+  Char,
+  Column,
+  Ctrl,
+  Cyan,
+  Dim,
+  Down,
+  End,
+  Enter,
+  Escape,
+  Event,
+  Fill,
+  Fixed,
+  Green,
+  Grid,
+  Home,
+  Key,
+  KeyPress,
+  Magenta,
+  Modal,
+  ModalStack,
+  PageDown,
+  PageUp,
+  Rect,
+  Red,
+  Reverse,
+  Rounded,
+  Scrollbar,
+  ScrollView,
+  Segment,
+  Span,
+  Stop,
+  Style,
+  Table,
+  Up,
+  Yellow,
+  textWidth,
+  wrapChars
+}
 
 // Which jobs the table lists.
 data Filter
-    ShowAll
-    ShowRunning
-    ShowQueued
-    ShowFinished
+  ShowAll
+  ShowRunning
+  ShowQueued
+  ShowFinished
 
 // The filter `f` moves to from `f`.
 nextFilter(f: Filter) -> Filter
@@ -35,10 +75,10 @@ filterName(ShowFinished) = "finished"
 
 // What the loop does after a key: draw again, end, kill a job, or start a daemon.
 data Action
-    Stay
-    Quit
-    KillJob(id: long)
-    StartDaemon
+  Stay
+  Quit
+  KillJob(id: long)
+  StartDaemon
 
 // One line of the table: the job, and for a queued one its place and why it waits.
 data Line(job: JobInfo, queued: Option[(int, Why)])
@@ -46,15 +86,15 @@ data Line(job: JobInfo, queued: Option[(int, Why)])
 // The table's lines for `o` under `f`: running jobs, then queued ones in queue order, then the jobs
 // that ended last, the latest first.
 lines(o: Overview, f: Filter) -> Vector[Line]
-    val running = o.running.map(j -> Line(j, None))
-    val queued = o.queued.map(q -> Line(q.job, Some((q.position, q.why))))
-    val waits = o.waiting.map(j -> Line(j, None))
-    val recent = o.recent.map(j -> Line(j, None))
-    f match
-        ShowAll -> running ++ queued ++ waits ++ recent
-        ShowRunning -> running
-        ShowQueued -> queued ++ waits
-        ShowFinished -> recent
+  val running = o.running.map(j -> Line(j, None))
+  val queued = o.queued.map(q -> Line(q.job, Some((q.position, q.why))))
+  val waits = o.waiting.map(j -> Line(j, None))
+  val recent = o.recent.map(j -> Line(j, None))
+  f match
+    ShowAll -> running ++ queued ++ waits ++ recent
+    ShowRunning -> running
+    ShowQueued -> queued ++ waits
+    ShowFinished -> recent
 
 // Whether the table under `f` lists ended jobs, and so the earlier ones scrolled back to.
 admitsHistory(f: Filter) -> bool = f == ShowAll || f == ShowFinished
@@ -63,14 +103,14 @@ admitsHistory(f: Filter) -> bool = f == ShowAll || f == ShowFinished
 // line shown (counted from 1) and how many there are, `+` after the count while earlier jobs may be
 // there that are not loaded yet.
 positionText(first: int, last: int, total: int, more: bool) -> string =
-    s"jobs ${grouped(first)}–${grouped(last)} of ${grouped(total)}${if more then "+" else ""}"
+  s"jobs ${grouped(first)}–${grouped(last)} of ${grouped(total)}${if more then "+" else ""}"
 
 // `n` with a comma between each three digits: `1,234`.
 grouped(n: int) -> string
-    val digits = n.toString()
-    if n < 0 then return "-" + grouped(-n)
-    if digits.charCount <= 3 then return digits
-    grouped(n / 1000) + "," + digits.drop(digits.charCount - 3)
+  val digits = n.toString()
+  if n < 0 then return "-" + grouped(-n)
+  if digits.charCount <= 3 then return digits
+  grouped(n / 1000) + "," + digits.drop(digits.charCount - 3)
 
 // Whether a line is a job waiting for others or waiting to retry.
 waiting(l: Line) -> bool = l.job.outcome.isEmpty && (l.job.state == "waiting" || l.job.state == "retrying")
@@ -95,42 +135,52 @@ timeLeft(j: JobInfo, since: long) -> long = j.deadlineMs - j.elapsedMs - (if j.p
 // The style of a running job's time left out of `deadline`: red under a tenth of it or a minute,
 // yellow under a quarter or five minutes, plain otherwise.
 leftStyle(left: long, deadline: long) -> Style
+
 leftStyle(left, deadline)
-    | left * 10 < deadline || left < 60000 = Style.fg(Red).with(Bold)
-    | left * 4 < deadline || left < 300000 = Style.fg(Yellow)
-    | _ = Style.plain()
+  | left * 10 < deadline || left < 60000 = Style.fg(Red).with(Bold)
+  | left * 4 < deadline || left < 300000 = Style.fg(Yellow)
+  | _ = Style.plain()
 
 // A line's STATE cell and its style.
 stateOf(l: Line) -> (string, Style)
-    val j = l.job
-    l.queued match
-        Some((position, why)) -> (s"#$position ${whyText(why)}", Style.fg(Yellow))
-        None -> j.outcome match
-            None if waiting(l) -> (marshal.stateColumn(j), Style.fg(Yellow))
-            None ->
-                if j.paused then ("paused", Style.fg(Yellow).with(Bold | Reverse))
-                else (if j.landing then "landing" elif j.quick then "quick" elif j.exclusive then "exclusive" else "running", Style.fg(Green).with(Bold))
-            Some(Exited(0)) -> ("exit 0", Style.fg(Green))
-            Some(Exited(code)) -> (s"exit $code", Style.fg(Red).with(Bold))
-            Some(Signalled(sig)) -> if j.killed then ("killed", Style.fg(Magenta).with(Bold)) else (s"signal $sig", Style.fg(Red).with(Bold))
-            Some(TimedOut) -> ("timeout", Style.fg(Red).with(Bold | Reverse))
-            Some(Quiet(_)) -> ("quiet", Style.fg(Red).with(Bold | Reverse))
-            Some(Cancelled) -> ("cancelled", Style.fg(BrightBlack))
-            Some(Lost) -> ("lost", Style.fg(Magenta).with(Bold | Reverse))
-            Some(DependencyFailed(after)) -> (s"dep $after failed", Style.fg(BrightBlack))
+  val j = l.job
+  l.queued match
+    Some((position, why)) -> (s"#$position ${whyText(why)}", Style.fg(Yellow))
+    None -> j.outcome match
+      None if waiting(l) -> (marshal.stateColumn(j), Style.fg(Yellow))
+      None ->
+        if j.paused then ("paused", Style.fg(Yellow).with(Bold | Reverse))
+        else (
+          if j.landing then "landing" elif j.quick then "quick" elif j.exclusive then "exclusive" else "running",
+          Style.fg(Green).with(Bold)
+        )
+      Some(Exited(0)) -> ("exit 0", Style.fg(Green))
+      Some(Exited(code)) -> (s"exit $code", Style.fg(Red).with(Bold))
+      Some(Signalled(sig)) -> if j.killed then ("killed", Style.fg(Magenta).with(Bold)) else (
+        s"signal $sig",
+        Style.fg(Red).with(Bold)
+      )
+      Some(TimedOut) -> ("timeout", Style.fg(Red).with(Bold | Reverse))
+      Some(Quiet(_)) -> ("quiet", Style.fg(Red).with(Bold | Reverse))
+      Some(Cancelled) -> ("cancelled", Style.fg(BrightBlack))
+      Some(Lost) -> ("lost", Style.fg(Magenta).with(Bold | Reverse))
+      Some(DependencyFailed(after)) -> (s"dep $after failed", Style.fg(BrightBlack))
 
 // A line's DEADLINE cell and its style: time left for a running job, the deadline it will have for a
 // queued one, nothing for one that ended.
 deadlineOf(l: Line, since: long) -> (string, Style)
-    val j = l.job
-    if j.outcome.isDefined then return ("-", Style.fg(BrightBlack))
-    if l.queued.isDefined || waiting(l) then return (clock(j.deadlineMs), Style.fg(BrightBlack))
-    val left = timeLeft(j, since)
-    (if left <= 0 then "over" else clock(left), leftStyle(left, j.deadlineMs))
+  val j = l.job
+  if j.outcome.isDefined then return ("-", Style.fg(BrightBlack))
+  if l.queued.isDefined || waiting(l) then return (clock(j.deadlineMs), Style.fg(BrightBlack))
+  val left = timeLeft(j, since)
+  (if left <= 0 then "over" else clock(left), leftStyle(left, j.deadlineMs))
 
 // The time a line has run, `since` milliseconds after the snapshot; a paused job's run time stands
 // still.
-elapsedOf(l: Line, since: long) -> long = if l.job.outcome.isDefined || l.job.paused then l.job.elapsedMs else l.job.elapsedMs + since
+elapsedOf(
+    l: Line,
+    since: long
+) -> long = if l.job.outcome.isDefined || l.job.paused then l.job.elapsedMs else l.job.elapsedMs + since
 
 // The most cells the LABEL column takes, the fewest (its heading), and the cells COMMAND keeps at
 // least: the LABEL column is narrowed, or left out, on a screen too narrow to leave COMMAND that.
@@ -142,17 +192,17 @@ val CommandMin: int = 20
 val KindWidth: int = 8
 
 val columns: Vector[Column] = [
-    Column("ID", 5, 1),
-    Column("STATE", 14),
-    Column("KIND", KindWidth),
-    Column("UNITS", 5, 1),
-    Column("RESV", 6, 1),
-    Column("RSS", 5, 1),
-    Column("PEAK", 5, 1),
-    Column("STARTED", 11),
-    Column("ELAPSED", 8, 1),
-    Column("DEADLINE", 8, 1),
-    Column("COMMAND", 0, keep = CommandMin)
+  Column("ID", 5, 1),
+  Column("STATE", 14),
+  Column("KIND", KindWidth),
+  Column("UNITS", 5, 1),
+  Column("RESV", 6, 1),
+  Column("RSS", 5, 1),
+  Column("PEAK", 5, 1),
+  Column("STARTED", 11),
+  Column("ELAPSED", 8, 1),
+  Column("DEADLINE", 8, 1),
+  Column("COMMAND", 0, keep = CommandMin)
 ]
 
 // The column PEAK sits at, and the narrowest screen that shows it: the fixed columns with it take 85
@@ -167,9 +217,9 @@ showsPeak(width: int) -> bool = width >= PeakWidth
 // The columns a screen `width` cells wide draws, and where DEADLINE sits among them. Under 90 cells
 // STARTED is 7 wide (its heading and `hh:mm`), or 11 where a shown job started on another day.
 columnsFor(width: int, startedWidth: int) -> Vector[Column]
-    if showsPeak(width) then return columns
-    val narrow = columns.slice(0, PeakColumn) ++ columns.slice(PeakColumn + 1, columns.length)
-    narrow.map(c -> if c.title == "STARTED" then Column("STARTED", startedWidth) else c)
+  if showsPeak(width) then return columns
+  val narrow = columns.slice(0, PeakColumn) ++ columns.slice(PeakColumn + 1, columns.length)
+  narrow.map(c -> if c.title == "STARTED" then Column("STARTED", startedWidth) else c)
 
 // A measured size for the RSS and PEAK columns: `-` where nothing was measured.
 measuredText(bytes: long) -> string = if bytes <= 0 then "-" else marshal.roundSize(bytes)
@@ -180,21 +230,21 @@ styled(p: (string, Style)) -> Span = Span(p.0, Some(p.1))
 // A line's cells on a screen `width` cells wide, the start time read in `zone`: STATE and DEADLINE in
 // their colours, the rest in the table's.
 cells(l: Line, since: long, zone: time.Zone, today: string, width: int) -> Vector[Span]
-    val j = l.job
-    val all = [
-        Span(j.id.toString()),
-        styled(stateOf(l)),
-        Span(marshal.fittedKind(j, KindWidth)),
-        Span(j.units.toString()),
-        Span(marshal.reservedText(j)),
-        Span(measuredText(if j.state == "running" then j.rss else 0)),
-        Span(measuredText(j.peakRss)),
-        Span(if showsPeak(width) then marshal.startedColumn(j, zone) else marshal.startedShort(j, zone, today)),
-        Span(if marshal.notRunYet(j) then "-" else clock(elapsedOf(l, since))),
-        styled(deadlineOf(l, since)),
-        Span(j.cmd.mkString(" "))
-    ]
-    if showsPeak(width) then all else all.slice(0, PeakColumn) ++ all.slice(PeakColumn + 1, all.length)
+  val j = l.job
+  val all = [
+    Span(j.id.toString()),
+    styled(stateOf(l)),
+    Span(marshal.fittedKind(j, KindWidth)),
+    Span(j.units.toString()),
+    Span(marshal.reservedText(j)),
+    Span(measuredText(if j.state == "running" then j.rss else 0)),
+    Span(measuredText(j.peakRss)),
+    Span(if showsPeak(width) then marshal.startedColumn(j, zone) else marshal.startedShort(j, zone, today)),
+    Span(if marshal.notRunYet(j) then "-" else clock(elapsedOf(l, since))),
+    styled(deadlineOf(l, since)),
+    Span(j.cmd.mkString(" "))
+  ]
+  if showsPeak(width) then all else all.slice(0, PeakColumn) ++ all.slice(PeakColumn + 1, all.length)
 
 // The LABEL column: as wide as the longest label drawn, measured in display cells, between its heading
 // and `LabelCap`, cut with an ellipsis; always drawn, empty for a job without a label, except where the
@@ -202,11 +252,17 @@ cells(l: Line, since: long, zone: time.Zone, today: string, width: int) -> Vecto
 val LabelColumn: Column = Column("LABEL", 0, min = LabelMin, max = LabelCap, fit = true)
 
 // The columns `base` (the last of them COMMAND) with LABEL put before COMMAND.
-withLabelColumn(base: Vector[Column]) -> Vector[Column] = base.slice(0, base.length - 1) ++ [LabelColumn, base(base.length - 1)]
+withLabelColumn(base: Vector[Column]) -> Vector[Column] = base.slice(0, base.length - 1) ++ [
+  LabelColumn,
+  base(base.length - 1)
+]
 
 // A row of `cells` with the label put before the command, the last cell; empty for a job without a
 // label, which the table still draws at its heading's width.
-withLabelCell(cells: Vector[Span], label: string) -> Vector[Span] = cells.slice(0, cells.length - 1) ++ [Span(label), cells(cells.length - 1)]
+withLabelCell(cells: Vector[Span], label: string) -> Vector[Span] = cells.slice(0, cells.length - 1) ++ [
+  Span(label),
+  cells(cells.length - 1)
+]
 
 // How long, in milliseconds, the selected row stays highlighted after the last key.
 val IdleHideMs: long = 5000
@@ -228,390 +284,402 @@ revealsOnly(_) = false
 // waiting for its yes, the help, and the last message. `problem` says why there is no snapshot: no
 // daemon, or one that cannot give it.
 class App(val sock: string)
-    var overview: Option[Overview] = None
-    var problem: Option[string] = None
-    // Whether `s` may start a daemon: there is none.
-    var noDaemon = false
-    var filter: Filter = ShowAll
-    // The help, while it is open.
-    val modals: ModalStack = ModalStack()
-    var confirming: Option[JobInfo] = None
-    var message = ""
-    val table: Table = Table(columns)
-    var shown: Vector[Line] = []
-    var selectedId: Option[long] = None
-    // Whether the selection is on the first line because nothing has moved it off (or a key put it
-    // back), so a new snapshot leaves it there rather than following the job that was first.
-    private var followsTop = true
-    // When the last key came, on the clock `handle` and `draw` are given (milliseconds), and how long
-    // after it the selected row stops being highlighted. With no key yet, it is not highlighted.
-    var lastKeyAt: Option[long] = None
-    var hideAfter: long = IdleHideMs
-    // The log pane: the job it shows, the lines read from its log, and how many lines back from the
-    // end it is scrolled (0: it follows the end).
-    var logOf: Option[JobInfo] = None
-    var logLines: Vector[string] = []
-    // Holds how far back the pane is scrolled and draws the lines read, which end where it is.
-    private val logView: ScrollView = logScroll()
-    // Rows of the table's page and of the log pane at the last draw, which page keys move by.
-    var page = 1
-    var logRows = 10
-    // Where the jobs that ended before the snapshot's come from (none: the table stops at the
-    // snapshot's), the pages of them loaded, the latest first, and how many more there are (None:
-    // none asked for yet). The pages stay until the filter changes.
-    var history: Option[HistorySource] = None
-    var older: Vector[JobInfo] = []
-    var olderLeft: Option[int] = None
-    // What the bottom line says of the table's scroll, as the last draw found it ("" for nothing).
-    var position = ""
+  var overview: Option[Overview] = None
+  var problem: Option[string] = None
+  // Whether `s` may start a daemon: there is none.
+  var noDaemon = false
+  var filter: Filter = ShowAll
+  // The help, while it is open.
+  val modals: ModalStack = ModalStack()
+  var confirming: Option[JobInfo] = None
+  var message = ""
+  val table: Table = Table(columns)
+  var shown: Vector[Line] = []
+  var selectedId: Option[long] = None
+  // Whether the selection is on the first line because nothing has moved it off (or a key put it
+  // back), so a new snapshot leaves it there rather than following the job that was first.
+  private var followsTop = true
+  // When the last key came, on the clock `handle` and `draw` are given (milliseconds), and how long
+  // after it the selected row stops being highlighted. With no key yet, it is not highlighted.
+  var lastKeyAt: Option[long] = None
+  var hideAfter: long = IdleHideMs
+  // The log pane: the job it shows, the lines read from its log, and how many lines back from the
+  // end it is scrolled (0: it follows the end).
+  var logOf: Option[JobInfo] = None
+  var logLines: Vector[string] = []
+  // Holds how far back the pane is scrolled and draws the lines read, which end where it is.
+  private val logView: ScrollView = logScroll()
+  // Rows of the table's page and of the log pane at the last draw, which page keys move by.
+  var page = 1
+  var logRows = 10
+  // Where the jobs that ended before the snapshot's come from (none: the table stops at the
+  // snapshot's), the pages of them loaded, the latest first, and how many more there are (None:
+  // none asked for yet). The pages stay until the filter changes.
+  var history: Option[HistorySource] = None
+  var older: Vector[JobInfo] = []
+  var olderLeft: Option[int] = None
+  // What the bottom line says of the table's scroll, as the last draw found it ("" for nothing).
+  var position = ""
 
-    // A new snapshot.
-    update(o: Overview)
-        // once earlier jobs are loaded, the ended jobs the snapshot no longer carries join them, so
-        // the list scrolled back through has no hole
-        for before in overview
-            if olderLeft.isDefined
-                val now = (o.recent ++ o.running ++ o.waiting ++ o.queued.map(q -> q.job)).map(j -> j.id).toSet
-                older = before.recent.filter(j -> !now.contains(j.id)) ++ older
-        overview = Some(o)
-        problem = None
-        noDaemon = false
-        refresh()
+  // A new snapshot.
+  update(o: Overview)
+    // once earlier jobs are loaded, the ended jobs the snapshot no longer carries join them, so
+    // the list scrolled back through has no hole
+    for before in overview
+      if olderLeft.isDefined
+        val now = (o.recent ++ o.running ++ o.waiting ++ o.queued.map(q -> q.job)).map(j -> j.id).toSet
+        older = before.recent.filter(j -> !now.contains(j.id)) ++ older
+    overview = Some(o)
+    problem = None
+    noDaemon = false
+    refresh()
 
-    // No snapshot: `why`, and whether it is for want of a daemon, which `s` may start.
-    lost(why: string, startable: bool)
-        overview = None
-        problem = Some(why)
-        noDaemon = startable
+  // No snapshot: `why`, and whether it is for want of a daemon, which `s` may start.
+  lost(why: string, startable: bool)
+    overview = None
+    problem = Some(why)
+    noDaemon = startable
 
-    // The lines shown again, the selection kept on its job and the log pane on its own. A table that
-    // follows the top (the start, and wherever a key last left the selection on the first line) keeps
-    // the first line selected, so it goes on showing the newest jobs as more arrive above.
-    private refresh()
-        val live = overview.map(o -> lines(o, filter)).getOrElse([])
-        shown = if admitsHistory(filter) && older.nonEmpty then live ++ earlier(live) else live
-        val at = selectedId match
-            Some(id) -> if followsTop then 0 else shown.indexWhere(l -> l.job.id == id)
-            None -> if followsTop then 0 else -1
-        table.select(if at >= 0 then at else table.selected, shown.length)
-        remember()
-        for j in logOf
-            for o in overview
-                val now = lines(o, ShowAll).find(l -> l.job.id == j.id)
-                if now.isDefined then logOf = now.map(l -> l.job)
+  // The lines shown again, the selection kept on its job and the log pane on its own. A table that
+  // follows the top (the start, and wherever a key last left the selection on the first line) keeps
+  // the first line selected, so it goes on showing the newest jobs as more arrive above.
+  private refresh()
+    val live = overview.map(o -> lines(o, filter)).getOrElse([])
+    shown = if admitsHistory(filter) && older.nonEmpty then live ++ earlier(live) else live
+    val at = selectedId match
+      Some(id) -> if followsTop then 0 else shown.indexWhere(l -> l.job.id == id)
+      None -> if followsTop then 0 else -1
+    table.select(if at >= 0 then at else table.selected, shown.length)
+    remember()
+    for j in logOf
+      for o in overview
+        val now = lines(o, ShowAll).find(l -> l.job.id == j.id)
+        if now.isDefined then logOf = now.map(l -> l.job)
 
-    // The loaded earlier jobs as lines, leaving out any that `live` already lists.
-    private earlier(live: Vector[Line]) -> Vector[Line]
-        val ids = live.map(l -> l.job.id).toSet
-        older.filter(j -> !ids.contains(j.id)).map(j -> Line(j, None))
+  // The loaded earlier jobs as lines, leaving out any that `live` already lists.
+  private earlier(live: Vector[Line]) -> Vector[Line]
+    val ids = live.map(l -> l.job.id).toSet
+    older.filter(j -> !ids.contains(j.id)).map(j -> Line(j, None))
 
-    // Whether scrolling past the last line may load earlier jobs: there is a history, the filter lists
-    // ended jobs, and it is not known to hold no more.
-    pageable() -> bool = history.isDefined && admitsHistory(filter) && olderLeft != Some(0)
+  // Whether scrolling past the last line may load earlier jobs: there is a history, the filter lists
+  // ended jobs, and it is not known to hold no more.
+  pageable() -> bool = history.isDefined && admitsHistory(filter) && olderLeft != Some(0)
 
-    // Loads the next page of earlier jobs after the oldest ended job listed; how many lines it adds.
-    // Jobs already listed are left out, and a page that adds none is followed by the next while there
-    // are more. A history that cannot be read says why on the bottom line and adds none.
-    loadPage() -> int
-        val source = history match
-            Some(s) -> s
-            None -> return 0
-        val before = shown.length
-        val ended = shown.filter(l -> l.job.outcome.isDefined)
-        var cursor = if older.nonEmpty then older.lastOption.map(j -> j.id) else ended.lastOption.map(l -> l.job.id)
-        loop
-            if olderLeft == Some(0) then break
-            source(cursor, HistoryPageSize) match
-                Ok(p) ->
-                    val listed = (shown.map(l -> l.job.id) ++ older.map(j -> j.id)).toSet
-                    older = older ++ p.jobs.filter(j -> !listed.contains(j.id))
-                    olderLeft = Some(p.left)
-                    refresh()
-                    if shown.length > before || p.jobs.isEmpty then break
-                    cursor = p.jobs.lastOption.map(j -> j.id)
-                Err(why) ->
-                    message = s"cannot read earlier jobs: $why"
-                    break
-        shown.length - before
+  // Loads the next page of earlier jobs after the oldest ended job listed; how many lines it adds.
+  // Jobs already listed are left out, and a page that adds none is followed by the next while there
+  // are more. A history that cannot be read says why on the bottom line and adds none.
+  loadPage() -> int
+    val source = history match
+      Some(s) -> s
+      None -> return 0
+    val before = shown.length
+    val ended = shown.filter(l -> l.job.outcome.isDefined)
+    var cursor = if older.nonEmpty then older.lastOption.map(j -> j.id) else ended.lastOption.map(l -> l.job.id)
+    loop
+      if olderLeft == Some(0) then break
+      source(cursor, HistoryPageSize) match
+        Ok(p) ->
+          val listed = (shown.map(l -> l.job.id) ++ older.map(j -> j.id)).toSet
+          older = older ++ p.jobs.filter(j -> !listed.contains(j.id))
+          olderLeft = Some(p.left)
+          refresh()
+          if shown.length > before || p.jobs.isEmpty then break
+          cursor = p.jobs.lastOption.map(j -> j.id)
+        Err(why) ->
+          message = s"cannot read earlier jobs: $why"
+          break
+    shown.length - before
 
-    private remember()
-        selectedId = selected().map(j -> j.id)
+  private remember()
+    selectedId = selected().map(j -> j.id)
 
-    // The job selected, if any.
-    selected() -> Option[JobInfo] =
-        if 0 <= table.selected < shown.length then Some(shown(table.selected).job) else None
+  // The job selected, if any.
+  selected() -> Option[JobInfo] =
+    if 0 <= table.selected < shown.length then Some(shown(table.selected).job) else None
 
-    // The log the pane wants and how many of its last lines: enough to fill the pane at its scroll.
-    logWanted() -> Option[(string, int)] = logOf.map(j -> (j.log, logRows + logBack()))
+  // The log the pane wants and how many of its last lines: enough to fill the pane at its scroll.
+  logWanted() -> Option[(string, int)] = logOf.map(j -> (j.log, logRows + logBack()))
 
-    // How many lines back from the end the log pane is scrolled (0: it follows the end).
-    logBack() -> int = logView.back
+  // How many lines back from the end the log pane is scrolled (0: it follows the end).
+  logBack() -> int = logView.back
 
-    // Counts as a key at `now`, which highlights the selected row.
-    touch(now: long)
-        lastKeyAt = Some(now)
+  // Counts as a key at `now`, which highlights the selected row.
+  touch(now: long)
+    lastKeyAt = Some(now)
 
-    // Whether the selected row is highlighted at `now`: always while the log pane, the kill prompt
-    // or the help is showing, otherwise until `hideAfter` after the last key.
-    highlighted(now: long) -> bool =
-        logOf.isDefined || confirming.isDefined || helpShown() || lastKeyAt.exists(t -> now - t < hideAfter)
+  // Whether the selected row is highlighted at `now`: always while the log pane, the kill prompt
+  // or the help is showing, otherwise until `hideAfter` after the last key.
+  highlighted(now: long) -> bool =
+    logOf.isDefined || confirming.isDefined || helpShown() || lastKeyAt.exists(t -> now - t < hideAfter)
 
-    // Whether the help is showing.
-    helpShown() -> bool = !modals.isEmpty()
+  // Whether the help is showing.
+  helpShown() -> bool = !modals.isEmpty()
 
-    // Changes the state for `e`, which came at `now`, and says what to do next. A key that finds the
-    // highlight hidden and only moves or opens something shows it again and does nothing else.
-    handle(e: Event, now: long = 0) -> Action
-        if e is KeyPress(k, _)
-            val hidden = !highlighted(now)
-            lastKeyAt = Some(now)
-            message = ""
-            if hidden && revealsOnly(k) then return Stay
-        if confirming is Some(j)
-            confirming = None
-            return e match
-                KeyPress(Char('y'), _) -> KillJob(j.id)
-                KeyPress(Char('Y'), _) -> KillJob(j.id)
-                Stop(_) -> Quit
-                _ ->
-                    message = "not killed"
-                    Stay
-        if helpShown()
-            // any event closes the help: a key it takes itself, and a resize or a stop, which the
-            // stack leaves to the screen, closes it here
-            if !modals.handle(e) then modals.clear()
-            return if e is Stop(_) then Quit else Stay
-        e match
-            KeyPress(Char('c'), mods) if (mods & Ctrl) != 0 -> Quit
-            KeyPress(k, _) -> key(k)
-            Stop(_) -> Quit
-            _ -> Stay
+  // Changes the state for `e`, which came at `now`, and says what to do next. A key that finds the
+  // highlight hidden and only moves or opens something shows it again and does nothing else.
+  handle(e: Event, now: long = 0) -> Action
+    if e is KeyPress(k, _)
+      val hidden = !highlighted(now)
+      lastKeyAt = Some(now)
+      message = ""
+      if hidden && revealsOnly(k) then return Stay
+    if confirming is Some(j)
+      confirming = None
+      return e match
+        KeyPress(Char('y'), _) -> KillJob(j.id)
+        KeyPress(Char('Y'), _) -> KillJob(j.id)
+        Stop(_) -> Quit
+        _ ->
+          message = "not killed"
+          Stay
+    if helpShown()
+      // any event closes the help: a key it takes itself, and a resize or a stop, which the
+      // stack leaves to the screen, closes it here
+      if !modals.handle(e) then modals.clear()
+      return if e is Stop(_) then Quit else Stay
+    e match
+      KeyPress(Char('c'), mods) if (mods & Ctrl) != 0 -> Quit
+      KeyPress(k, _) -> key(k)
+      Stop(_) -> Quit
+      _ -> Stay
 
-    private key(k: Key) -> Action
-    key(Char('q')) = Quit
-    key(Char('h')) = showHelp()
-    key(Char('?')) = showHelp()
-    key(Char('f')) = cycleFilter()
-    key(Char('k')) = askKill()
-    key(Char('l')) = toggleLog()
-    key(Enter) = toggleLog()
-    key(Escape) = closeLog()
-    key(Char('s')) = if noDaemon then StartDaemon else Stay
-    key(Up) = move(-1)
-    key(Down) = if atBottom() then scrollBack() else move(1)
-    key(PageUp) = if logOf.isDefined then scrollLog(PageUp) else move(-page)
-    key(PageDown) = if logOf.isDefined then scrollLog(PageDown) elif atBottom() then scrollBack() else move(page)
-    key(Home) = if logOf.isDefined then scrollLog(Home) else moveTo(0)
-    key(End) = if logOf.isDefined then scrollLog(End) else oldest()
-    key(_) = Stay
+  private key(k: Key) -> Action
+  key(Char('q')) = Quit
+  key(Char('h')) = showHelp()
+  key(Char('?')) = showHelp()
+  key(Char('f')) = cycleFilter()
+  key(Char('k')) = askKill()
+  key(Char('l')) = toggleLog()
+  key(Enter) = toggleLog()
+  key(Escape) = closeLog()
+  key(Char('s')) = if noDaemon then StartDaemon else Stay
+  key(Up) = move(-1)
+  key(Down) = if atBottom() then scrollBack() else move(1)
+  key(PageUp) = if logOf.isDefined then scrollLog(PageUp) else move(-page)
+  key(PageDown) = if logOf.isDefined then scrollLog(PageDown) elif atBottom() then scrollBack() else move(page)
+  key(Home) = if logOf.isDefined then scrollLog(Home) else moveTo(0)
+  key(End) = if logOf.isDefined then scrollLog(End) else oldest()
+  key(_) = Stay
 
-    private showHelp() -> Action
-        modals.push(Help())
-        Stay
+  private showHelp() -> Action
+    modals.push(Help())
+    Stay
 
-    private cycleFilter() -> Action
-        filter = nextFilter(filter)
-        older = []
-        olderLeft = None
-        followsTop = false
-        refresh()
-        followsTop = table.selected <= 0
-        Stay
+  private cycleFilter() -> Action
+    filter = nextFilter(filter)
+    older = []
+    olderLeft = None
+    followsTop = false
+    refresh()
+    followsTop = table.selected <= 0
+    Stay
 
-    // Whether the selection is on the last line, or there are none.
-    private atBottom() -> bool = table.selected >= shown.length - 1
+  // Whether the selection is on the last line, or there are none.
+  private atBottom() -> bool = table.selected >= shown.length - 1
 
-    // Down or PgDn on the last line: the next page of earlier jobs, the selection on the first of them.
-    private scrollBack() -> Action
-        val first = shown.length
-        if pageable() && loadPage() > 0 then return moveTo(first)
-        if history.isDefined && admitsHistory(filter) && message.isEmpty then message = "no earlier jobs"
-        moveTo(shown.length - 1)
+  // Down or PgDn on the last line: the next page of earlier jobs, the selection on the first of them.
+  private scrollBack() -> Action
+    val first = shown.length
+    if pageable() && loadPage() > 0 then return moveTo(first)
+    if history.isDefined && admitsHistory(filter) && message.isEmpty then message = "no earlier jobs"
+    moveTo(shown.length - 1)
 
-    // End: the oldest job, every page of earlier jobs loaded first.
-    private oldest() -> Action
-        while pageable() && loadPage() > 0
-            ()
-        moveTo(shown.length - 1)
+  // End: the oldest job, every page of earlier jobs loaded first.
+  private oldest() -> Action
+    while pageable() && loadPage() > 0
+      ()
+    moveTo(shown.length - 1)
 
-    private askKill() -> Action
-        selected() match
-            Some(j) if j.outcome.isDefined -> message = s"job ${j.id} has already ended"
-            Some(j) -> confirming = Some(j)
-            None -> message = "no job selected"
-        Stay
+  private askKill() -> Action
+    selected() match
+      Some(j) if j.outcome.isDefined -> message = s"job ${j.id} has already ended"
+      Some(j) -> confirming = Some(j)
+      None -> message = "no job selected"
+    Stay
 
-    private toggleLog() -> Action
-        if logOf.isDefined then return closeLog()
-        logOf = selected()
-        logLines = []
-        logView.toEnd()
-        if logOf.isEmpty then message = "no job selected"
-        Stay
+  private toggleLog() -> Action
+    if logOf.isDefined then return closeLog()
+    logOf = selected()
+    logLines = []
+    logView.toEnd()
+    if logOf.isEmpty then message = "no job selected"
+    Stay
 
-    private closeLog() -> Action
-        logOf = None
-        logLines = []
-        logView.toEnd()
-        Stay
+  private closeLog() -> Action
+    logOf = None
+    logLines = []
+    logView.toEnd()
+    Stay
 
-    private scrollLog(k: Key) -> Action
-        logView.handle(k)
-        Stay
+  private scrollLog(k: Key) -> Action
+    logView.handle(k)
+    Stay
 
-    private move(n: int) -> Action = moveTo(table.selected + n)
+  private move(n: int) -> Action = moveTo(table.selected + n)
 
-    private moveTo(i: int) -> Action
-        table.select(i, shown.length)
-        followsTop = table.selected == 0
-        remember()
-        // the pane follows the selection
-        if logOf.isDefined && selected().map(j -> j.id) != logOf.map(j -> j.id)
-            logOf = selected()
-            logLines = []
-            logView.toEnd()
-        Stay
+  private moveTo(i: int) -> Action
+    table.select(i, shown.length)
+    followsTop = table.selected == 0
+    remember()
+    // the pane follows the selection
+    if logOf.isDefined && selected().map(j -> j.id) != logOf.map(j -> j.id)
+      logOf = selected()
+      logLines = []
+      logView.toEnd()
+    Stay
 
-    // Draws the screen into `g`, `since` milliseconds after the snapshot came: the header, the table,
-    // the log pane under it when open, the bottom line, and the help over everything when open.
-    draw(g: Grid, since: long, now: long = 0)
-        if overview is Some(o)
-            // the header, the body, and the bottom line; with the log open, the table takes half the
-            // body (at least two rows) and the pane the rest
-            val screen = g.area().rows([Fixed(drawHeader(g, o, since, filter)), Fill(), Fixed(1)])
-            val body = screen(1)
-            val parts = body.rows([Fixed(if logOf.isDefined then maxInt(body.h / 2, 2) else body.h), Fill()])
-            val area = parts(0)
-            page = if area.h > 2 then area.h - 1 else 1
-            val zone = time.localZone()
-            val today = time.now().atZone(zone).format("YYYY-MM-DD")
-            val rows = shown.map(l -> cells(l, since, zone, today, area.w))
-            val startedWidth = if rows.exists(r -> r(PeakColumn).text.charCount > 7) then 11 else 7
-            val base = columnsFor(area.w, startedWidth)
-            val drawing = Table(withLabelColumn(base))
-            // a bar down the right edge while the lines overflow the rows, over the lines loaded
-            drawing.scrollbar = Some(Scrollbar())
-            drawing.selected = table.selected
-            drawing.offset = table.offset
-            drawing.selectedStyle = if highlighted(now) then Style.plain().with(Reverse) else drawing.rowStyle
-            drawing.drawSpans(g, area, rows.zip(shown).map(p -> withLabelCell(p.0, p.1.job.label)))
-            table.selected = drawing.selected
-            table.offset = drawing.offset
-            remember()
-            position = positionOf(area.h - 1)
-            for j in logOf
-                drawLog(g, parts(1), j)
-        else
-            position = ""
-            drawProblem(g)
-        drawFooter(g)
-        modals.draw(g, g.area())
+  // Draws the screen into `g`, `since` milliseconds after the snapshot came: the header, the table,
+  // the log pane under it when open, the bottom line, and the help over everything when open.
+  draw(g: Grid, since: long, now: long = 0)
+    if overview is Some(o)
+      // the header, the body, and the bottom line; with the log open, the table takes half the
+      // body (at least two rows) and the pane the rest
+      val screen = g.area().rows([Fixed(drawHeader(g, o, since, filter)), Fill(), Fixed(1)])
+      val body = screen(1)
+      val parts = body.rows([Fixed(if logOf.isDefined then maxInt(body.h / 2, 2) else body.h), Fill()])
+      val area = parts(0)
+      page = if area.h > 2 then area.h - 1 else 1
+      val zone = time.localZone()
+      val today = time.now().atZone(zone).format("YYYY-MM-DD")
+      val rows = shown.map(l -> cells(l, since, zone, today, area.w))
+      val startedWidth = if rows.exists(r -> r(PeakColumn).text.charCount > 7) then 11 else 7
+      val base = columnsFor(area.w, startedWidth)
+      val drawing = Table(withLabelColumn(base))
+      // a bar down the right edge while the lines overflow the rows, over the lines loaded
+      drawing.scrollbar = Some(Scrollbar())
+      drawing.selected = table.selected
+      drawing.offset = table.offset
+      drawing.selectedStyle = if highlighted(now) then Style.plain().with(Reverse) else drawing.rowStyle
+      drawing.drawSpans(g, area, rows.zip(shown).map(p -> withLabelCell(p.0, p.1.job.label)))
+      table.selected = drawing.selected
+      table.offset = drawing.offset
+      remember()
+      position = positionOf(area.h - 1)
+      for j in logOf
+        drawLog(g, parts(1), j)
+    else
+      position = ""
+      drawProblem(g)
+    drawFooter(g)
+    modals.draw(g, g.area())
 
-    // What the bottom line says of the table's scroll with `visible` rows for lines: which lines show,
-    // of how many, while they do not all fit or earlier jobs may be loaded; "" otherwise.
-    positionOf(visible: int) -> string
-        val count = shown.length
-        if count == 0 || (count <= visible && !pageable()) then return ""
-        val first = table.offset + 1
-        val last = minInt(table.offset + maxInt(visible, 1), count)
-        val more = pageable() && olderLeft.isEmpty
-        val total = count + (if pageable() then olderLeft.getOrElse(0) else 0)
-        positionText(first, last, total, more)
+  // What the bottom line says of the table's scroll with `visible` rows for lines: which lines show,
+  // of how many, while they do not all fit or earlier jobs may be loaded; "" otherwise.
+  positionOf(visible: int) -> string
+    val count = shown.length
+    if count == 0 || (count <= visible && !pageable()) then return ""
+    val first = table.offset + 1
+    val last = minInt(table.offset + maxInt(visible, 1), count)
+    val more = pageable() && olderLeft.isEmpty
+    val total = count + (if pageable() then olderLeft.getOrElse(0) else 0)
+    positionText(first, last, total, more)
 
-    // The log pane: a box titled with the job, its log's lines at the pane's scroll inside.
-    private drawLog(g: Grid, r: Rect, j: JobInfo)
-        if r.h < 3
-            logRows = 1
-            logView.rows = 1
-            return
-        val whole = r.inset(1)
-        g.fill(r.x, r.y, r.w, r.h, Style.plain())
-        val follow = if logBack() == 0 then "following" else s"${logBack()} lines back"
-        g.box(r, Style.fg(Cyan), Rounded, s"job ${j.id} log, $follow; PgUp PgDn Home End scroll, Esc closes")
-        val inside = whole.shrink(drawLogHeader(g, whole, j), 0, 0, 0)
-        logRows = maxInt(inside.h, 1)
-        // the lines read are the last `logRows + logBack()` of the log, or all of a shorter one: the
-        // pane shows those that end `logBack()` lines before the last
-        logView.draw(g, inside, logLines)
-        if logLines.isEmpty then g.text(inside.x, inside.y, "(nothing in the log yet)", Style.fg(BrightBlack), inside)
+  // The log pane: a box titled with the job, its log's lines at the pane's scroll inside.
+  private drawLog(g: Grid, r: Rect, j: JobInfo)
+    if r.h < 3
+      logRows = 1
+      logView.rows = 1
+      return
+    val whole = r.inset(1)
+    g.fill(r.x, r.y, r.w, r.h, Style.plain())
+    val follow = if logBack() == 0 then "following" else s"${logBack()} lines back"
+    g.box(r, Style.fg(Cyan), Rounded, s"job ${j.id} log, $follow; PgUp PgDn Home End scroll, Esc closes")
+    val inside = whole.shrink(drawLogHeader(g, whole, j), 0, 0, 0)
+    logRows = maxInt(inside.h, 1)
+    // the lines read are the last `logRows + logBack()` of the log, or all of a shorter one: the
+    // pane shows those that end `logBack()` lines before the last
+    logView.draw(g, inside, logLines)
+    if logLines.isEmpty then g.text(inside.x, inside.y, "(nothing in the log yet)", Style.fg(BrightBlack), inside)
 
-    // The fixed header of the log pane: the job's kind, with its label if it has one beside it, and its whole command line, wrapped to the
-    // pane, labels in bold and values dim, then a rule; the log scrolls below it, so none of this
-    // can be taken for a line the job printed. At least one row is left for the log, so a command
-    // too long for a short pane ends in an ellipsis. Returns the rows used (none if the pane is too
-    // small to also show a log row).
-    private drawLogHeader(g: Grid, box: Rect, j: JobInfo) -> int
-        if box.h < 4 || box.w < 1 then return 0
-        val width = maxInt(box.w - LogLabel.charCount, 1)
-        val lines = wrapChars(j.cmd.mkString(" "), width)
-        // the label stands on the kind's line, after the kind, and wraps onto the rows below under
-        // where it began, whole while there is room: one command row, the rule and one log row stay
-        val kindEnd = box.x + LogLabel.charCount + j.kind.charCount
-        val labelX = kindEnd + LabelGap + LabelWord.charCount
-        val labelLines = if j.label.isEmpty then [] else wrapChars(j.label,maxInt(box.x + box.w - labelX, 1))
-        val labelShown = labelLines.take(maxInt(box.h - 3, 1))
-        val extra = maxInt(labelShown.length - 1, 0)
-        // kind, the label's further rows, the rule and at least one log row leave this many for the command
-        val room = maxInt(box.h - 3 - extra, 0)
-        val shownLines = if lines.length <= room then lines else lines.take(room)
-        val clipped = lines.length > shownLines.length
-        g.text(box.x, box.y, "kind", Style.plain().with(Bold), box)
-        g.text(box.x + LogLabel.charCount, box.y, j.kind, Style.fg(BrightBlack), box)
-        if labelShown.nonEmpty
-            g.text(kindEnd + LabelGap, box.y, LabelWord.trim, Style.plain().with(Bold), box)
-        for (text, k) in labelShown.zipWithIndex
-            g.text(labelX, box.y + k, text, Style.fg(BrightBlack), box)
-        val top = box.y + 1 + extra
-        for (text, k) in shownLines.zipWithIndex
-            val last = clipped && k == shownLines.length - 1
-            val t = if last && text.charCount > 1 then text.take(text.charCount - 1) + "…" elif last then "…" else text
-            if k == 0 then g.text(box.x, top, "command", Style.plain().with(Bold), box)
-            g.text(box.x + LogLabel.charCount, top + k, t, Style.fg(BrightBlack), box)
-        val ruleY = top + maxInt(shownLines.length, 1)
-        g.hline(box.x, ruleY, box.w, Style.fg(Cyan), clip = box)
-        ruleY - box.y + 1
+  // The fixed header of the log pane: the job's kind, with its label if it has one beside it, and its whole command line, wrapped to the
+  // pane, labels in bold and values dim, then a rule; the log scrolls below it, so none of this
+  // can be taken for a line the job printed. At least one row is left for the log, so a command
+  // too long for a short pane ends in an ellipsis. Returns the rows used (none if the pane is too
+  // small to also show a log row).
+  private drawLogHeader(g: Grid, box: Rect, j: JobInfo) -> int
+    if box.h < 4 || box.w < 1 then return 0
+    val width = maxInt(box.w - LogLabel.charCount, 1)
+    val lines = wrapChars(j.cmd.mkString(" "), width)
+    // the label stands on the kind's line, after the kind, and wraps onto the rows below under
+    // where it began, whole while there is room: one command row, the rule and one log row stay
+    val kindEnd = box.x + LogLabel.charCount + j.kind.charCount
+    val labelX = kindEnd + LabelGap + LabelWord.charCount
+    val labelLines = if j.label.isEmpty then [] else wrapChars(j.label, maxInt(box.x + box.w - labelX, 1))
+    val labelShown = labelLines.take(maxInt(box.h - 3, 1))
+    val extra = maxInt(labelShown.length - 1, 0)
+    // kind, the label's further rows, the rule and at least one log row leave this many for the command
+    val room = maxInt(box.h - 3 - extra, 0)
+    val shownLines = if lines.length <= room then lines else lines.take(room)
+    val clipped = lines.length > shownLines.length
+    g.text(box.x, box.y, "kind", Style.plain().with(Bold), box)
+    g.text(box.x + LogLabel.charCount, box.y, j.kind, Style.fg(BrightBlack), box)
+    if labelShown.nonEmpty
+      g.text(kindEnd + LabelGap, box.y, LabelWord.trim, Style.plain().with(Bold), box)
+    for (text, k) in labelShown.zipWithIndex
+      g.text(labelX, box.y + k, text, Style.fg(BrightBlack), box)
+    val top = box.y + 1 + extra
+    for (text, k) in shownLines.zipWithIndex
+      val last = clipped && k == shownLines.length - 1
+      val t = if last && text.charCount > 1 then text.take(text.charCount - 1) + "…" elif last then "…" else text
+      if k == 0 then g.text(box.x, top, "command", Style.plain().with(Bold), box)
+      g.text(box.x + LogLabel.charCount, top + k, t, Style.fg(BrightBlack), box)
+    val ruleY = top + maxInt(shownLines.length, 1)
+    g.hline(box.x, ruleY, box.w, Style.fg(Cyan), clip = box)
+    ruleY - box.y + 1
 
-    // With no snapshot: why, and what the keys do about it.
-    private drawProblem(g: Grid)
-        g.text(0, 0, "marshal top", Style.plain().with(Bold))
-        val why = problem.getOrElse("asking the daemon…")
-        g.text(0, 2, why, Style.fg(Yellow))
-        val hint = if noDaemon then "s starts one; q quits; looking again every second" else "q quits; looking again every second"
-        g.text(0, 3, hint, Style.fg(BrightBlack))
+  // With no snapshot: why, and what the keys do about it.
+  private drawProblem(g: Grid)
+    g.text(0, 0, "marshal top", Style.plain().with(Bold))
+    val why = problem.getOrElse("asking the daemon…")
+    g.text(0, 2, why, Style.fg(Yellow))
+    val hint = if noDaemon then "s starts one; q quits; looking again every second" else "q quits; looking again every second"
+    g.text(0, 3, hint, Style.fg(BrightBlack))
 
-    // The bottom line: a kill's question, or the keys and the last message.
-    private drawFooter(g: Grid)
-        if g.height < 1 then return
-        val y = g.height - 1
-        val line = Rect(0, y, g.width, 1)
-        g.fill(0, y, g.width, 1, Style.plain())
-        if confirming is Some(j)
-            g.text(0, y, s"Kill job ${j.id} (${j.cmd.mkString(" ")})? y/n", Style(Black, Red, Bold), line)
-            return
-        val x = g.keyHints(0, y, footerKeys, Style.plain().with(Bold), Style(Black, Cyan, 0), line, sep = 0, gap = 0, cut = true)
-        // the scroll position at the right end, where it fits beside the keys; the message before it
-        val right = if position.nonEmpty && x + 2 + textWidth(position) <= g.width then g.width - textWidth(position) else g.width
-        if right < g.width then g.text(right, y, position, Style.fg(BrightBlack), line)
-        val room = (if right < g.width then right - 1 else g.width) - x - 1
-        if message.nonEmpty && room > 0
-            g.textIn(x + 1, y, room, message, Style.fg(Yellow), 1, line)
+  // The bottom line: a kill's question, or the keys and the last message.
+  private drawFooter(g: Grid)
+    if g.height < 1 then return
+    val y = g.height - 1
+    val line = Rect(0, y, g.width, 1)
+    g.fill(0, y, g.width, 1, Style.plain())
+    if confirming is Some(j)
+      g.text(0, y, s"Kill job ${j.id} (${j.cmd.mkString(" ")})? y/n", Style(Black, Red, Bold), line)
+      return
+    val x = g.keyHints(
+      0,
+      y,
+      footerKeys,
+      Style.plain().with(Bold),
+      Style(Black, Cyan, 0),
+      line,
+      sep = 0,
+      gap = 0,
+      cut = true
+    )
+    // the scroll position at the right end, where it fits beside the keys; the message before it
+    val right = if position.nonEmpty && x + 2 + textWidth(
+      position
+    ) <= g.width then g.width - textWidth(position) else g.width
+    if right < g.width then g.text(right, y, position, Style.fg(BrightBlack), line)
+    val room = (if right < g.width then right - 1 else g.width) - x - 1
+    if message.nonEmpty && room > 0
+      g.textIn(x + 1, y, room, message, Style.fg(Yellow), 1, line)
 
 // The help, over the screen: the lines one column in from its border, cut at the box's edge where the
 // screen is too small, and closed by any key.
 class Help(): Modal
-    override title() -> string = "help; any key closes"
+  override title() -> string = "help; any key closes"
 
-    override measure(maxWidth: int, maxHeight: int) -> (int, int)
-        var widest = 0
-        for l in helpLines
-            if textWidth(l) > widest then widest = textWidth(l)
-        (minInt(widest + 2, maxWidth), minInt(helpLines.length, maxHeight))
+  override measure(maxWidth: int, maxHeight: int) -> (int, int)
+    var widest = 0
+    for l in helpLines
+      if textWidth(l) > widest then widest = textWidth(l)
+    (minInt(widest + 2, maxWidth), minInt(helpLines.length, maxHeight))
 
-    override draw(g: Grid, r: Rect)
-        for (l, i) in helpLines.zipWithIndex
-            g.text(r.x + 1, r.y + i, l, Style.plain(), r)
+  override draw(g: Grid, r: Rect)
+    for (l, i) in helpLines.zipWithIndex
+      g.text(r.x + 1, r.y + i, l, Style.plain(), r)
 
-    override handle(e: Event) -> bool = false
+  override handle(e: Event) -> bool = false
 
 // How far back the log pane scrolls, in lines.
 val MaxBack: int = 10000
@@ -619,12 +687,12 @@ val MaxBack: int = 10000
 // The log pane's view: anchored at the end, a page the whole pane, and as far back as `MaxBack`
 // lines, though only the last lines read are given to it.
 private logScroll() -> ScrollView
-    val view = ScrollView()
-    view.fromEnd = true
-    view.overlap = 0
-    view.backLimit = MaxBack
-    view.rows = 10
-    view
+  val view = ScrollView()
+  view.fromEnd = true
+  view.overlap = 0
+  view.backLimit = MaxBack
+  view.rows = 10
+  view
 
 // A job's label in the log pane header stands after its kind: `label`, two spaces, the text, with
 // `LabelGap` spaces between the kind and the word.
@@ -636,35 +704,39 @@ val LogLabel: string = "command "
 
 // The keys the bottom line names, each with its word.
 val footerKeys: Vector[(string, string)] = [
-    ("h", "Help "), ("Enter", "Log "), ("k", "Kill "), ("f", "Filter "), ("q", "Quit ")
+  ("h", "Help "),
+  ("Enter", "Log "),
+  ("k", "Kill "),
+  ("f", "Filter "),
+  ("q", "Quit ")
 ]
 
 // What the help shows.
 val helpLines: Vector[string] = [
-    "Up, Down, PgUp, PgDn, Home, End   select a job",
-    "                (after 5 seconds without a key the highlight hides; the first",
-    "                such key or Enter only shows it again, on the same job)",
-    "                Down or PgDn on the last job loads earlier ones from the",
-    "                event log; End goes to the very oldest; the bottom line",
-    "                says which jobs show, `jobs 41–60 of 1,234`",
-    "Enter  l        the selected job's log, following its end",
-    "                (open: PgUp PgDn Home End scroll it, Esc closes)",
-    "k               kill the selected job, after y",
-    "f               show all jobs, running, queued or finished",
-    "h  ?            this help",
-    "q               quit",
-    "",
-    "A queued job's STATE is its place in the queue and why it waits:",
-    "no units, no memory, lane busy (another landing job), take-slot",
-    "(what take-slot.zsh holds or waits for), or behind the job at",
-    "the head of the queue, which it would delay; held (marshal hold),",
-    "or queue held (marshal pause); quick full (both quick slots",
-    "taken). A quick job runs as quick, its kind marked ^; a landing",
-    "job's is marked *; an exclusive job's #; an urgent job's ! (^!,",
-    "*! and #! together).",
-    "after 3,4 waits for jobs 3 and 4",
-    "to end; retry 2 waits to make its second attempt.",
-    "DEADLINE is the time left; yellow, then red, as it nears."
+  "Up, Down, PgUp, PgDn, Home, End   select a job",
+  "                (after 5 seconds without a key the highlight hides; the first",
+  "                such key or Enter only shows it again, on the same job)",
+  "                Down or PgDn on the last job loads earlier ones from the",
+  "                event log; End goes to the very oldest; the bottom line",
+  "                says which jobs show, `jobs 41–60 of 1,234`",
+  "Enter  l        the selected job's log, following its end",
+  "                (open: PgUp PgDn Home End scroll it, Esc closes)",
+  "k               kill the selected job, after y",
+  "f               show all jobs, running, queued or finished",
+  "h  ?            this help",
+  "q               quit",
+  "",
+  "A queued job's STATE is its place in the queue and why it waits:",
+  "no units, no memory, lane busy (another landing job), take-slot",
+  "(what take-slot.zsh holds or waits for), or behind the job at",
+  "the head of the queue, which it would delay; held (marshal hold),",
+  "or queue held (marshal pause); quick full (both quick slots",
+  "taken). A quick job runs as quick, its kind marked ^; a landing",
+  "job's is marked *; an exclusive job's #; an urgent job's ! (^!,",
+  "*! and #! together).",
+  "after 3,4 waits for jobs 3 and 4",
+  "to end; retry 2 waits to make its second attempt.",
+  "DEADLINE is the time left; yellow, then red, as it nears."
 ]
 
 // The header, three lines and a blank one, and the first row under it.
@@ -672,75 +744,96 @@ val helpLines: Vector[string] = [
 //   units [██████▒▒▒·······]  5 + take-slot 4 / 12, 1 waiting
 //   mem   [███·············]  12G / 56G   rss 9.4G   machine 64G
 drawHeader(g: Grid, o: Overview, since: long, f: Filter) -> int
-    val u = o.usage
-    val held = if u.queueHeld then [Span(" (held)", Some(Style.fg(Red).with(Bold)))] else []
-    g.spans(0, 0, [
-        Span("marshal", Some(Style.plain().with(Bold))),
-        Span(s"  up ${clock(o.uptimeMs + since)}   "),
-        Span(s"${u.running} running", Some(Style.fg(Green))),
-        Span("  "),
-        Span(s"${u.queued} queued", Some(Style.fg(Yellow)))] ++ held ++ [
-        Span("   landing: "),
-        styled(laneText(o))] ++ quickText(u))
-    val shown = s"filter: ${filterName(f)}"
-    if g.width > textWidth(shown) then g.text(g.width - textWidth(shown), 0, shown, Style.fg(BrightBlack))
-    val barWidth = minInt(maxInt(g.width / 3, 10), 40)
-    val outside = u.takeSlot.map(t -> t.units).getOrElse(0)
-    g.text(0, 1, "units ")
-    unitBar(g, 6, 1, barWidth, u.units, outside, u.unitBudget)
-    val share = u.takeSlot match
-        Some(t) -> s" + take-slot $outside / ${u.unitBudget}" + (if t.waiting > 0 then s", ${t.waiting} waiting" else "")
-        None -> s" / ${u.unitBudget}"
-    val after = g.text(6 + barWidth + 3, 1, s"${u.units}$share")
-    landingUnits(g, after, 1, o)
-    g.text(0, 2, "mem   ")
-    val bounded = u.memoryBudget != long.MaxValue && u.memoryBudget > 0
-    memBar(g, 6, 2, barWidth, u.memory, u.held, if bounded then u.memoryBudget else 0)
-    val mem = if bounded then s"${marshal.formatSize(u.memory)} / ${marshal.formatSize(u.memoryBudget)}" else marshal.formatSize(u.memory)
-    g.text(6 + barWidth + 3, 2, mem + memoryText(u))
-    4
+  val u = o.usage
+  val held = if u.queueHeld then [Span(" (held)", Some(Style.fg(Red).with(Bold)))] else []
+  g.spans(
+    0,
+    0,
+    [
+      Span("marshal", Some(Style.plain().with(Bold))),
+      Span(s"  up ${clock(o.uptimeMs + since)}   "),
+      Span(s"${u.running} running", Some(Style.fg(Green))),
+      Span("  "),
+      Span(s"${u.queued} queued", Some(Style.fg(Yellow)))
+    ] ++ held ++ [Span("   landing: "), styled(laneText(o))] ++ quickText(u)
+  )
+  val shown = s"filter: ${filterName(f)}"
+  if g.width > textWidth(shown) then g.text(g.width - textWidth(shown), 0, shown, Style.fg(BrightBlack))
+  val barWidth = minInt(maxInt(g.width / 3, 10), 40)
+  val outside = u.takeSlot.map(t -> t.units).getOrElse(0)
+  g.text(0, 1, "units ")
+  unitBar(g, 6, 1, barWidth, u.units, outside, u.unitBudget)
+  val share = u.takeSlot match
+    Some(t) -> s" + take-slot $outside / ${u.unitBudget}" + (if t.waiting > 0 then s", ${t.waiting} waiting" else "")
+    None -> s" / ${u.unitBudget}"
+  val after = g.text(6 + barWidth + 3, 1, s"${u.units}$share")
+  landingUnits(g, after, 1, o)
+  g.text(0, 2, "mem   ")
+  val bounded = u.memoryBudget != long.MaxValue && u.memoryBudget > 0
+  memBar(g, 6, 2, barWidth, u.memory, u.held, if bounded then u.memoryBudget else 0)
+  val mem = if bounded then s"${marshal.formatSize(u.memory)} / ${marshal.formatSize(u.memoryBudget)}" else marshal.formatSize(u.memory)
+  g.text(6 + barWidth + 3, 2, mem + memoryText(u))
+  4
 
 // What the header says after the memory the running jobs reserve: what they hold, as last measured,
 // and the memory the machine has, where it is known.
 memoryText(u: Usage) -> string =
-    s"   rss ${marshal.roundSize(u.rss)}" + (if u.machineMemory > 0 then s"   machine ${marshal.roundSize(u.machineMemory)}" else "")
+  s"   rss ${marshal.roundSize(u.rss)}" + (
+    if u.machineMemory > 0 then s"   machine ${marshal.roundSize(u.machineMemory)}" else ""
+  )
 
 // The units of the landing job that runs, which the landing lane holds outside the unit budget, after
 // the units line from column `x` of row `y`: `   landing 1`, in the landing job's colour. Nothing while
 // no landing job runs, and nothing where the whole of it does not fit on the screen.
 landingUnits(g: Grid, x: int, y: int, o: Overview)
-    for id in o.usage.landing
-        for j in o.running.find(j -> j.id == id)
-            val text = s"landing ${j.units}"
-            if x + 3 + textWidth(text) <= g.width then g.text(x + 3, y, text, Style.fg(Cyan))
+  for id in o.usage.landing
+    for j in o.running.find(j -> j.id == id)
+      val text = s"landing ${j.units}"
+      if x + 3 + textWidth(text) <= g.width then g.text(x + 3, y, text, Style.fg(Cyan))
 
 // The quick lane in the header, `   quick: 1/2`, while a quick job runs; nothing otherwise.
 quickText(u: Usage) -> Vector[Span]
-    if u.quick == 0 then return []
-    [Span("   quick: "), Span(s"${u.quick}/${marshal.QuickSlots}", Some(Style.fg(Cyan).with(Bold)))]
+  if u.quick == 0 then return []
+  [Span("   quick: "), Span(s"${u.quick}/${marshal.QuickSlots}", Some(Style.fg(Cyan).with(Bold)))]
 
 // Who holds the landing lane, as the header says it.
 laneText(o: Overview) -> (string, Style)
-    o.usage.landing match
-        Some(id) ->
-            val units = o.running.find(j -> j.id == id).map(j -> if j.units == 1 then " (1 unit)" else s" (${j.units} units)").getOrElse("")
-            (s"job $id$units", Style.fg(Cyan).with(Bold))
-        None ->
-            if o.usage.takeSlot.exists(t -> t.landing) then ("take-slot", Style.fg(Magenta).with(Bold))
-            else ("free", Style.fg(BrightBlack))
+  o.usage.landing match
+    Some(id) ->
+      val units = o.running.find(j -> j.id == id).map(
+        j -> if j.units == 1 then " (1 unit)" else s" (${j.units} units)"
+      ).getOrElse("")
+      (s"job $id$units", Style.fg(Cyan).with(Bold))
+    None ->
+      if o.usage.takeSlot.exists(t -> t.landing) then ("take-slot", Style.fg(Magenta).with(Bold))
+      else ("free", Style.fg(BrightBlack))
 
 // The unit budget as a bar `width` cells wide between brackets: marshal's development units in
 // green, take-slot's after them in magenta, the rest dotted. Each boundary is at the nearest cell, a
 // half rounding up. A budget of 0 counts as 1.
 unitBar(g: Grid, x: int, y: int, width: int, ours: int, outside: int, budget: int)
-    g.gauge(x, y, width + 2, [Segment(real(ours), Style.fg(Green)), Segment(real(outside), Style.fg(Magenta))], real(if budget > 0 then budget else 1))
+  g.gauge(
+    x,
+    y,
+    width + 2,
+    [Segment(real(ours), Style.fg(Green)), Segment(real(outside), Style.fg(Magenta))],
+    real(if budget > 0 then budget else 1)
+  )
 
 // The memory meter, `width` cells between brackets from column `x` of row `y`: the memory the running
 // jobs reserve (`reserved`) in cyan, and what admission counts them holding beyond it (`held`, a job's
 // measured memory where it is more than its reservation) in blue, as shares of `budget`; empty for
 // a budget of 0 (none set).
 memBar(g: Grid, x: int, y: int, width: int, reserved: long, held: long, budget: long)
-    g.gauge(x, y, width + 2, [Segment(real(reserved), Style.fg(Cyan)), Segment(real(held - reserved), Style.fg(Blue))], real(budget), rest = ' ', eighths = true)
+  g.gauge(
+    x,
+    y,
+    width + 2,
+    [Segment(real(reserved), Style.fg(Cyan)), Segment(real(held - reserved), Style.fg(Blue))],
+    real(budget),
+    rest = ' ',
+    eighths = true
+  )
 
 private minInt(a: int, b: int) -> int = if a < b then a else b
 private maxInt(a: int, b: int) -> int = if a > b then a else b

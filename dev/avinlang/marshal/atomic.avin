@@ -10,19 +10,23 @@ import avin.io.IoError
 import avin.process
 
 // `file` written with `text`, replacing what was there in one step.
-writeAtomic(file: string, text: string) -> Result[unit, IoError] = writeAtomicVia(file, text, s"$file.tmp-${process.pid()}")
+writeAtomic(file: string, text: string) -> Result[unit, IoError] = writeAtomicVia(
+  file,
+  text,
+  s"$file.tmp-${process.pid()}"
+)
 
 // As `writeAtomic`, with the temporary file at `tmp`, which must be on the file system of `file`:
 // for a target in a directory whose every entry is read as a record, so a temporary name there
 // would be taken for one.
 writeAtomicVia(file: string, text: string, tmp: string) -> Result[unit, IoError]
-    val wrote = fs.writeText(tmp, text)
-    if wrote.isErr
-        fs.remove(tmp)
-        return wrote
-    val moved = fs.rename(tmp, file)
-    if moved.isErr then fs.remove(tmp)
-    moved
+  val wrote = fs.writeText(tmp, text)
+  if wrote.isErr
+    fs.remove(tmp)
+    return wrote
+  val moved = fs.rename(tmp, file)
+  if moved.isErr then fs.remove(tmp)
+  moved
 
 // The name a compiled step has in the cache: the first 32 hexadecimal digits (128 bits) of the
 // SHA-256 of the compiler's version and the source text. A prefix keeps file names short, and 128

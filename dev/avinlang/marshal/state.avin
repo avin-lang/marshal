@@ -53,7 +53,8 @@ data SavedJob(
     reservedLearned: bool = false,
     quietStopped: bool = false,
     reservedFrom: string = "",
-    durationLearned: bool = false)
+    durationLearned: bool = false
+)
 
 // The whole daemon: the version and process that saved it, when, when the daemon first began, the
 // next job id, the queue in order, the running jobs, the jobs that ended last (oldest first), the
@@ -70,155 +71,164 @@ data SavedState(
     ended: Vector[SavedJob],
     ticket: Option[string],
     queueHeld: bool = false,
-    waiting: Vector[SavedJob] = [])
+    waiting: Vector[SavedJob] = []
+)
 
 private orNull[T](o: Option[T], f: (T) -> Json) -> Json = o.map(f).getOrElse(Json.Null)
 
 encodeSavedJob(j: SavedJob) -> Json = Json.obj(
-    ("id", Json.num(j.id)),
-    ("spec", encodeSpec(j.spec)),
-    ("state", Json.str(j.state)),
-    ("submitted_at", Json.num(j.submittedAt)),
-    ("arrived", Json.num(j.arrived)),
-    ("started_at", Json.num(j.startedAt)),
-    ("ended_at", Json.num(j.endedAt)),
-    ("deadline_ms", Json.num(j.deadlineMs)),
-    ("expected_ms", Json.num(j.expectedMs)),
-    ("log", Json.str(j.log)),
-    ("pid", Json.num(j.pid)),
-    ("pgid", Json.num(j.pgid)),
-    ("outcome", orNull(j.outcome, encodeOutcome)),
-    ("killed", Json.Bool(j.killed)),
-    ("timed_out", Json.Bool(j.timedOut)),
-    ("sample", orNull(j.sample, s -> Json.str(s))),
-    ("rss", Json.num(j.rss)),
-    ("peak_rss", Json.num(j.peakRss)),
-    ("held", Json.Bool(j.held)),
-    ("priority", Json.num(j.priority)),
-    ("urgent_at", Json.num(j.urgentAt)),
-    ("paused_ms", Json.num(j.pausedMs)),
-    ("paused_at", Json.num(j.pausedAt)),
-    ("attempt", Json.num(j.attempt)),
-    ("retry_at", Json.num(j.retryAt)),
-    ("reserved", Json.num(j.reserved)),
-    ("reserved_learned", Json.Bool(j.reservedLearned)),
-    ("quiet_stopped", Json.Bool(j.quietStopped)),
-    ("reserved_from", Json.str(j.reservedFrom)),
-    ("duration_learned", Json.Bool(j.durationLearned)))
+  ("id", Json.num(j.id)),
+  ("spec", encodeSpec(j.spec)),
+  ("state", Json.str(j.state)),
+  ("submitted_at", Json.num(j.submittedAt)),
+  ("arrived", Json.num(j.arrived)),
+  ("started_at", Json.num(j.startedAt)),
+  ("ended_at", Json.num(j.endedAt)),
+  ("deadline_ms", Json.num(j.deadlineMs)),
+  ("expected_ms", Json.num(j.expectedMs)),
+  ("log", Json.str(j.log)),
+  ("pid", Json.num(j.pid)),
+  ("pgid", Json.num(j.pgid)),
+  ("outcome", orNull(j.outcome, encodeOutcome)),
+  ("killed", Json.Bool(j.killed)),
+  ("timed_out", Json.Bool(j.timedOut)),
+  ("sample", orNull(j.sample, s -> Json.str(s))),
+  ("rss", Json.num(j.rss)),
+  ("peak_rss", Json.num(j.peakRss)),
+  ("held", Json.Bool(j.held)),
+  ("priority", Json.num(j.priority)),
+  ("urgent_at", Json.num(j.urgentAt)),
+  ("paused_ms", Json.num(j.pausedMs)),
+  ("paused_at", Json.num(j.pausedAt)),
+  ("attempt", Json.num(j.attempt)),
+  ("retry_at", Json.num(j.retryAt)),
+  ("reserved", Json.num(j.reserved)),
+  ("reserved_learned", Json.Bool(j.reservedLearned)),
+  ("quiet_stopped", Json.Bool(j.quietStopped)),
+  ("reserved_from", Json.str(j.reservedFrom)),
+  ("duration_learned", Json.Bool(j.durationLearned))
+)
 
 private whole(j: Json, key: string) -> Result[long, string] = j.get(key).flatMap(v -> v.asLong) match
-    Some(n) -> Ok(n)
-    None -> Err(s"`$key` is not a whole number")
+  Some(n) -> Ok(n)
+  None -> Err(s"`$key` is not a whole number")
 
 // A whole number that state written before it was recorded does not have: 0.
 private wholeOrZero(j: Json, key: string) -> Result[long, string] = j.get(key) match
-    None | Some(Json.Null) -> Ok(0)
-    Some(_) -> whole(j, key)
+  None | Some(Json.Null) -> Ok(0)
+  Some(_) -> whole(j, key)
 
 // A whole number that state written before it was recorded does not have: `absent`.
 private wholeOr(j: Json, key: string, absent: long) -> Result[long, string] = j.get(key) match
-    None | Some(Json.Null) -> Ok(absent)
-    Some(_) -> whole(j, key)
+  None | Some(Json.Null) -> Ok(absent)
+  Some(_) -> whole(j, key)
 
 private text(j: Json, key: string) -> Result[string, string] = j.get(key).flatMap(v -> v.asString) match
-    Some(s) -> Ok(s)
-    None -> Err(s"`$key` is not a string")
+  Some(s) -> Ok(s)
+  None -> Err(s"`$key` is not a string")
 
 private truth(j: Json, key: string) -> Result[bool, string] = j.get(key).flatMap(v -> v.asBool) match
-    Some(b) -> Ok(b)
-    None -> Err(s"`$key` is not a bool")
+  Some(b) -> Ok(b)
+  None -> Err(s"`$key` is not a bool")
 
 // A field a state saved before it existed lacks: absent or null reads as `absent`.
 private truthOr(j: Json, key: string, absent: bool) -> Result[bool, string] = j.get(key) match
-    None | Some(Json.Null) -> Ok(absent)
-    Some(_) -> truth(j, key)
+  None | Some(Json.Null) -> Ok(absent)
+  Some(_) -> truth(j, key)
 
 private intOr(j: Json, key: string, absent: int) -> Result[int, string] = j.get(key) match
-    None | Some(Json.Null) -> Ok(absent)
-    Some(v) -> v.asInt match
-        Some(n) -> Ok(n)
-        None -> Err(s"`$key` is not an int")
+  None | Some(Json.Null) -> Ok(absent)
+  Some(v) -> v.asInt match
+    Some(n) -> Ok(n)
+    None -> Err(s"`$key` is not an int")
 
 private maybeText(j: Json, key: string) -> Result[Option[string], string] = j.get(key) match
-    None | Some(Json.Null) -> Ok(None)
-    Some(v) -> v.asString match
-        Some(s) -> Ok(Some(s))
-        None -> Err(s"`$key` is not a string")
+  None | Some(Json.Null) -> Ok(None)
+  Some(v) -> v.asString match
+    Some(s) -> Ok(Some(s))
+    None -> Err(s"`$key` is not a string")
 
 decodeSavedJob(j: Json) -> Result[SavedJob, string]
-    val id = whole(j, "id")?
-    val spec = decodeSpec(j.get("spec").getOrElse(Json.Null)).mapErr(e -> s"job $id: $e")?
-    val outcome = j.get("outcome") match
-        None | Some(Json.Null) -> None
-        Some(o) -> Some(decodeOutcome(o).mapErr(e -> s"job $id: $e")?)
-    Ok(SavedJob(
-        id,
-        spec,
-        text(j, "state")?,
-        whole(j, "submitted_at")?,
-        whole(j, "arrived")?,
-        whole(j, "started_at")?,
-        whole(j, "ended_at")?,
-        whole(j, "deadline_ms")?,
-        whole(j, "expected_ms")?,
-        text(j, "log")?,
-        whole(j, "pid")?,
-        whole(j, "pgid")?,
-        outcome,
-        truth(j, "killed")?,
-        truth(j, "timed_out")?,
-        maybeText(j, "sample")?,
-        wholeOrZero(j, "rss")?,
-        wholeOrZero(j, "peak_rss")?,
-        truthOr(j, "held", false)?,
-        intOr(j, "priority", 0)?,
-        wholeOrZero(j, "urgent_at")?,
-        wholeOrZero(j, "paused_ms")?,
-        wholeOrZero(j, "paused_at")?,
-        intOr(j, "attempt", 1)?,
-        wholeOrZero(j, "retry_at")?,
-        wholeOr(j, "reserved", -1)?,
-        truthOr(j, "reserved_learned", false)?,
-        truthOr(j, "quiet_stopped", false)?,
-        maybeText(j, "reserved_from")?.getOrElse(""),
-        truthOr(j, "duration_learned", false)?))
+  val id = whole(j, "id")?
+  val spec = decodeSpec(j.get("spec").getOrElse(Json.Null)).mapErr(e -> s"job $id: $e")?
+  val outcome = j.get("outcome") match
+    None | Some(Json.Null) -> None
+    Some(o) -> Some(decodeOutcome(o).mapErr(e -> s"job $id: $e")?)
+  Ok(
+    SavedJob(
+      id,
+      spec,
+      text(j, "state")?,
+      whole(j, "submitted_at")?,
+      whole(j, "arrived")?,
+      whole(j, "started_at")?,
+      whole(j, "ended_at")?,
+      whole(j, "deadline_ms")?,
+      whole(j, "expected_ms")?,
+      text(j, "log")?,
+      whole(j, "pid")?,
+      whole(j, "pgid")?,
+      outcome,
+      truth(j, "killed")?,
+      truth(j, "timed_out")?,
+      maybeText(j, "sample")?,
+      wholeOrZero(j, "rss")?,
+      wholeOrZero(j, "peak_rss")?,
+      truthOr(j, "held", false)?,
+      intOr(j, "priority", 0)?,
+      wholeOrZero(j, "urgent_at")?,
+      wholeOrZero(j, "paused_ms")?,
+      wholeOrZero(j, "paused_at")?,
+      intOr(j, "attempt", 1)?,
+      wholeOrZero(j, "retry_at")?,
+      wholeOr(j, "reserved", -1)?,
+      truthOr(j, "reserved_learned", false)?,
+      truthOr(j, "quiet_stopped", false)?,
+      maybeText(j, "reserved_from")?.getOrElse(""),
+      truthOr(j, "duration_learned", false)?
+    )
+  )
 
 encodeState(s: SavedState) -> Json = Json.obj(
-    ("version", Json.str(s.version)),
-    ("pid", Json.num(s.pid)),
-    ("saved_at", Json.num(s.savedAt)),
-    ("began_at", Json.num(s.beganAt)),
-    ("next_id", Json.num(s.nextId)),
-    ("queue", Json.Arr(s.queue.map(encodeSavedJob))),
-    ("running", Json.Arr(s.running.map(encodeSavedJob))),
-    ("ended", Json.Arr(s.ended.map(encodeSavedJob))),
-    ("ticket", orNull(s.ticket, t -> Json.str(t))),
-    ("queue_held", Json.Bool(s.queueHeld)),
-    ("waiting", Json.Arr(s.waiting.map(encodeSavedJob))))
+  ("version", Json.str(s.version)),
+  ("pid", Json.num(s.pid)),
+  ("saved_at", Json.num(s.savedAt)),
+  ("began_at", Json.num(s.beganAt)),
+  ("next_id", Json.num(s.nextId)),
+  ("queue", Json.Arr(s.queue.map(encodeSavedJob))),
+  ("running", Json.Arr(s.running.map(encodeSavedJob))),
+  ("ended", Json.Arr(s.ended.map(encodeSavedJob))),
+  ("ticket", orNull(s.ticket, t -> Json.str(t))),
+  ("queue_held", Json.Bool(s.queueHeld)),
+  ("waiting", Json.Arr(s.waiting.map(encodeSavedJob)))
+)
 
 private savedJobs(j: Json, key: string) -> Result[Vector[SavedJob], string]
-    val items = j.get(key).flatMap(v -> v.asVector) match
-        Some(xs) -> xs
-        None -> return Err(s"`$key` is not an array")
-    val out = Buffer[SavedJob]()
-    for item in items do out += decodeSavedJob(item)?
-    Ok(out.toVector)
+  val items = j.get(key).flatMap(v -> v.asVector) match
+    Some(xs) -> xs
+    None -> return Err(s"`$key` is not an array")
+  val out = Buffer[SavedJob]()
+  for item in items do out += decodeSavedJob(item)?
+  Ok(out.toVector)
 
 // The state in `saved`, or why it cannot be read.
 decodeState(saved: string) -> Result[SavedState, string]
-    val j = json.parse(saved) match
-        Ok(v) -> v
-        Err(e) -> return Err(s"not JSON: $e")
-    if j.asMembers.isEmpty then return Err("the state is not a JSON object")
-    Ok(SavedState(
-        text(j, "version")?,
-        whole(j, "pid")?,
-        whole(j, "saved_at")?,
-        whole(j, "began_at")?,
-        whole(j, "next_id")?,
-        savedJobs(j, "queue")?,
-        savedJobs(j, "running")?,
-        savedJobs(j, "ended")?,
-        maybeText(j, "ticket")?,
-        truthOr(j, "queue_held", false)?,
-        if j.has("waiting") then savedJobs(j, "waiting")? else Vector[SavedJob]()))
+  val j = json.parse(saved) match
+    Ok(v) -> v
+    Err(e) -> return Err(s"not JSON: $e")
+  if j.asMembers.isEmpty then return Err("the state is not a JSON object")
+  Ok(
+    SavedState(
+      text(j, "version")?,
+      whole(j, "pid")?,
+      whole(j, "saved_at")?,
+      whole(j, "began_at")?,
+      whole(j, "next_id")?,
+      savedJobs(j, "queue")?,
+      savedJobs(j, "running")?,
+      savedJobs(j, "ended")?,
+      maybeText(j, "ticket")?,
+      truthOr(j, "queue_held", false)?,
+      if j.has("waiting") then savedJobs(j, "waiting")? else Vector[SavedJob]()
+    )
+  )

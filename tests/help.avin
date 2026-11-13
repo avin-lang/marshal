@@ -8,53 +8,61 @@ readme() -> string = fs.readText("README.md").getOrElse(fail("README.md is read 
 
 @test("the README's command list has every command's line, word for word")
 readmeHasEveryCommandLine()
-    val text = readme()
-    for c in cli.Commands do assert(text.contains(cli.commandLine(c)), cli.commandLine(c))
+  val text = readme()
+  for c in cli.Commands do assert(text.contains(cli.commandLine(c)), cli.commandLine(c))
 
 @test("the README documents every option the usage lists")
 readmeHasEveryOption()
-    val text = readme()
-    for flag in ["--kind", "--units", "--mem", "--landing", "--urgent", "--dir", "--deadline", "--quiet-timeout"] do
-        assert(text.contains(s"| `$flag"), flag)
-        assert(cli.usage.contains(flag), flag)
+  val text = readme()
+  for flag in ["--kind", "--units", "--mem", "--landing", "--urgent", "--dir", "--deadline", "--quiet-timeout"] do
+    assert(text.contains(s"| `$flag"), flag)
+    assert(cli.usage.contains(flag), flag)
 
 @test("the usage names every command, and each command has its own usage")
 everyCommandHasUsage()
-    for c in cli.Commands do
-        val name = c.0.split(" ")(0)
-        assert(cli.usage.contains(cli.commandLine(c)), name)
-        assert(cli.commandHelp(name).exists(h -> h.startsWith(s"usage: marshal ${c.0}")), name)
-    assertEq(cli.commandHelp("dance"), None)
-    assertEq(cli.commandHelp(""), None)
+  for c in cli.Commands do
+    val name = c.0.split(" ")(0)
+    assert(cli.usage.contains(cli.commandLine(c)), name)
+    assert(cli.commandHelp(name).exists(h -> h.startsWith(s"usage: marshal ${c.0}")), name)
+  assertEq(cli.commandHelp("dance"), None)
+  assertEq(cli.commandHelp(""), None)
 
 @test("only submit and run print the options")
 optionsOnlyForSubmitAndRun()
-    for name in ["submit", "run"] do assert(cli.commandHelp(name).get.contains("--deadline"), name)
-    for name in ["wait", "ls", "kill", "tail", "status", "stop", "daemon"] do assert(!cli.commandHelp(name).get.contains("--deadline"), name)
+  for name in ["submit", "run"] do assert(cli.commandHelp(name).get.contains("--deadline"), name)
+  for name in [
+    "wait",
+    "ls",
+    "kill",
+    "tail",
+    "status",
+    "stop",
+    "daemon"
+  ] do assert(!cli.commandHelp(name).get.contains("--deadline"), name)
 
 @test("help is asked for by --help or -h before any --")
 asksHelpBeforeDashDash()
-    for name in ["wait", "ls", "kill", "tail", "status", "stop", "daemon"] do
-        assert(cli.asksHelp(name, ["--help"]), name)
-        assert(cli.asksHelp(name, ["-h"]), name)
-        assert(cli.asksHelp(name, ["3", "--help"]), name)
-        assert(!cli.asksHelp(name, []), name)
-        assert(!cli.asksHelp(name, ["--", "--help"]), name)
-        assert(!cli.asksHelp(name, ["--help2"]), name)
-        assert(!cli.asksHelp(name, ["-help"]), name)
+  for name in ["wait", "ls", "kill", "tail", "status", "stop", "daemon"] do
+    assert(cli.asksHelp(name, ["--help"]), name)
+    assert(cli.asksHelp(name, ["-h"]), name)
+    assert(cli.asksHelp(name, ["3", "--help"]), name)
+    assert(!cli.asksHelp(name, []), name)
+    assert(!cli.asksHelp(name, ["--", "--help"]), name)
+    assert(!cli.asksHelp(name, ["--help2"]), name)
+    assert(!cli.asksHelp(name, ["-help"]), name)
 
 @test("for submit and run the options are read up to -- or the command's first word")
 asksHelpInOptions()
-    for name in ["submit", "run"] do
-        assert(cli.asksHelp(name, ["--help"]), name)
-        assert(cli.asksHelp(name, ["-h"]), name)
-        assert(cli.asksHelp(name, ["--landing", "--help"]), name)
-        assert(cli.asksHelp(name, ["--kind", "x", "--units", "2", "-h"]), name)
-        assert(!cli.asksHelp(name, []), name)
-        assert(!cli.asksHelp(name, ["--", "prog", "--help"]), name)
-        assert(!cli.asksHelp(name, ["--", "--help"]), name)
-        assert(!cli.asksHelp(name, ["prog", "--help"]), name)
-        assert(!cli.asksHelp(name, ["--kind", "x", "prog", "-h"]), name)
-        assert(!cli.asksHelp(name, ["--kind", "--help"]), name)
-        assert(!cli.asksHelp(name, ["--kind"]), name)
-        assert(!cli.asksHelp(name, ["--landing", "--", "--help"]), name)
+  for name in ["submit", "run"] do
+    assert(cli.asksHelp(name, ["--help"]), name)
+    assert(cli.asksHelp(name, ["-h"]), name)
+    assert(cli.asksHelp(name, ["--landing", "--help"]), name)
+    assert(cli.asksHelp(name, ["--kind", "x", "--units", "2", "-h"]), name)
+    assert(!cli.asksHelp(name, []), name)
+    assert(!cli.asksHelp(name, ["--", "prog", "--help"]), name)
+    assert(!cli.asksHelp(name, ["--", "--help"]), name)
+    assert(!cli.asksHelp(name, ["prog", "--help"]), name)
+    assert(!cli.asksHelp(name, ["--kind", "x", "prog", "-h"]), name)
+    assert(!cli.asksHelp(name, ["--kind", "--help"]), name)
+    assert(!cli.asksHelp(name, ["--kind"]), name)
+    assert(!cli.asksHelp(name, ["--landing", "--", "--help"]), name)

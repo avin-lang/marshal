@@ -25,28 +25,30 @@ val TicketMark: string = "marshal"
 // `take_slot` (`configured`); empty text in either turns sharing off, and with neither nothing is
 // shared: sharing is off unless it is configured.
 takeSlotDir(env: Option[string], configured: Option[string]) -> Option[string] =
-    env.orElse(configured).filter(dir -> dir.nonEmpty)
+  env.orElse(configured).filter(dir -> dir.nonEmpty)
 
 // A waiter's ticket name as take-slot writes it: `<seconds>.<six digits>-<pid>`.
 ticketName(arrivedMicros: long, pid: long) -> string =
-    s"${arrivedMicros / 1000000}.${(arrivedMicros % 1000000).toString().padStart(6, '0')}-$pid"
+  s"${arrivedMicros / 1000000}.${(arrivedMicros % 1000000).toString().padStart(6, '0')}-$pid"
 
 // The arrival (wall-clock microseconds) and pid a ticket name holds, or None for another name. A
 // fraction of other than six digits is read as the decimal it is.
 parseTicket(name: string) -> Option[(long, long)]
-    val dash = name.lastIndexOf("-")
-    if dash < 1 then return None
-    val time = name.slice(0, dash)
-    val dot = time.indexOf(".")
-    val (whole, fraction) = if dot < 0 then (time, "") else (time.slice(0, dot), time.slice(dot + 1, time.byteLength))
-    if dot >= 0 && fraction.isEmpty then return None
-    val micros = if fraction.isEmpty then Some(long(0)) else digits(fraction).flatMap(_ -> digits((fraction + "000000").take(6)))
-    (digits(whole), micros, digits(name.slice(dash + 1, name.byteLength))) match
-        (Some(seconds), Some(us), Some(pid)) -> Some((seconds * 1000000 + us, pid))
-        _ -> None
+  val dash = name.lastIndexOf("-")
+  if dash < 1 then return None
+  val time = name.slice(0, dash)
+  val dot = time.indexOf(".")
+  val (whole, fraction) = if dot < 0 then (time, "") else (time.slice(0, dot), time.slice(dot + 1, time.byteLength))
+  if dot >= 0 && fraction.isEmpty then return None
+  val micros = if fraction.isEmpty then Some(long(0)) else digits(fraction).flatMap(
+    _ -> digits((fraction + "000000").take(6))
+  )
+  (digits(whole), micros, digits(name.slice(dash + 1, name.byteLength))) match
+    (Some(seconds), Some(us), Some(pid)) -> Some((seconds * 1000000 + us, pid))
+    _ -> None
 
 private digits(text: string) -> Option[long] =
-    if text.nonEmpty && text.chars.forall(c -> '0' <= c <= '9') then text.toLongOption() else None
+  if text.nonEmpty && text.chars.forall(c -> '0' <= c <= '9') then text.toLongOption() else None
 
 // Whether `pid` is a live process this program may signal: take-slot's `kill -0`.
 alive(pid: long) -> bool = pid > 0 && process.signal(pid, 0).isOk
@@ -56,127 +58,131 @@ private pidIn(file: string) -> Option[long] = fs.readText(file).ok.flatMap(t -> 
 
 // take-slot's directory `dir`, used by the process `me` (the daemon).
 class TakeSlot(val dir: string, val me: long)
-    private var depth = 0
+  private var depth = 0
 
-    held() -> string = dir + "/slot-units"
-    waiting() -> string = dir + "/slot-waiting"
-    mutex() -> string = dir + "/slot-units.mutex"
-    landLock() -> string = dir + "/land.lock"
+  held() -> string = dir + "/slot-units"
+  waiting() -> string = dir + "/slot-waiting"
+  mutex() -> string = dir + "/slot-units.mutex"
+  landLock() -> string = dir + "/land.lock"
 
-    // Takes take-slot's mutex, waiting while a live process holds it; one whose holder has died is
-    // removed. Nested calls hold it once.
-    lock()
-        depth += 1
-        if depth > 1 then return
-        loop
-            fs.createDir(mutex()) match
-                Ok(_) -> break
-                Err(_) ->
-                    pidIn(mutex() + "/pid") match
-                        Some(owner) if !alive(owner) ->
-                            fs.remove(mutex() + "/pid")
-                            fs.removeDir(mutex())
-                            continue
-                        _ -> ()
-                    threads.sleep(millis(200))
-        writeAtomic(mutex() + "/pid", me.toString())
+  // Takes take-slot's mutex, waiting while a live process holds it; one whose holder has died is
+  // removed. Nested calls hold it once.
+  lock()
+    depth += 1
+    if depth > 1 then return
+    loop
+      fs.createDir(mutex()) match
+        Ok(_) -> break
+        Err(_) ->
+          pidIn(mutex() + "/pid") match
+            Some(owner) if !alive(owner) ->
+              fs.remove(mutex() + "/pid")
+              fs.removeDir(mutex())
+              continue
+            _ -> ()
+          threads.sleep(millis(200))
+    writeAtomic(mutex() + "/pid", me.toString())
 
-    unlock()
-        depth -= 1
-        if depth > 0 then return
-        fs.remove(mutex() + "/pid")
-        fs.removeDir(mutex())
+  unlock()
+    depth -= 1
+    if depth > 0 then return
+    fs.remove(mutex() + "/pid")
+    fs.removeDir(mutex())
 
-    // What take-slot holds and waits for, apart from marshal's own registrations (`ours`, job pids)
-    // and the daemon's own ticket. Stale files are removed as they are met. Call with the mutex held.
-    scan(ours: Vector[long], budget: int) -> Outside
-        fs.createDirAll(held())
-        fs.createDirAll(waiting())
-        var units = 0
-        for name in fs.listDir(held()).getOrElse([])
-            val pid = name.toLongOption().getOrElse(0)
-            if !alive(pid)
-                fs.remove(held() + "/" + name)
-            elif !ours.contains(pid)
-                units += fs.readText(held() + "/" + name).ok.flatMap(t -> t.trim.toIntOption()).getOrElse(0)
-        for name in ["build.lock", "build2.lock", "build3.lock", "build4.lock", "build5.lock"]
-            val lock = dir + "/" + name
-            if !fs.isDir(lock) then continue
-            if pidIn(lock + "/pid").exists(p -> alive(p))
-                units += 4
-            else
-                fs.remove(lock + "/pid")
-                fs.removeDir(lock)
-        val tickets = Buffer[Ticket]()
-        for name in fs.listDir(waiting()).getOrElse([])
-            val file = waiting() + "/" + name
-            parseTicket(name) match
-                Some((arrived, pid)) if alive(pid) ->
-                    if pid != me
-                        val wants = fs.readText(file).ok.flatMap(t -> t.lines.headOption).flatMap(l -> l.trim.toIntOption()).getOrElse(1)
-                        tickets += Ticket(arrived, if wants > budget then budget else wants)
-                // take-slot removes a ticket of a dead pid; a name it cannot read it never made
-                Some(_) -> fs.remove(file)
-                None -> ()
-        Outside(units, tickets.toVector, landingHeld(ours))
+  // What take-slot holds and waits for, apart from marshal's own registrations (`ours`, job pids)
+  // and the daemon's own ticket. Stale files are removed as they are met. Call with the mutex held.
+  scan(ours: Vector[long], budget: int) -> Outside
+    fs.createDirAll(held())
+    fs.createDirAll(waiting())
+    var units = 0
+    for name in fs.listDir(held()).getOrElse([])
+      val pid = name.toLongOption().getOrElse(0)
+      if !alive(pid)
+        fs.remove(held() + "/" + name)
+      elif !ours.contains(pid)
+        units += fs.readText(held() + "/" + name).ok.flatMap(t -> t.trim.toIntOption()).getOrElse(0)
+    for name in ["build.lock", "build2.lock", "build3.lock", "build4.lock", "build5.lock"]
+      val lock = dir + "/" + name
+      if !fs.isDir(lock) then continue
+      if pidIn(lock + "/pid").exists(p -> alive(p))
+        units += 4
+      else
+        fs.remove(lock + "/pid")
+        fs.removeDir(lock)
+    val tickets = Buffer[Ticket]()
+    for name in fs.listDir(waiting()).getOrElse([])
+      val file = waiting() + "/" + name
+      parseTicket(name) match
+        Some((arrived, pid)) if alive(pid) ->
+          if pid != me
+            val wants = fs.readText(file).ok.flatMap(t -> t.lines.headOption).flatMap(
+              l -> l.trim.toIntOption()
+            ).getOrElse(1)
+            tickets += Ticket(arrived, if wants > budget then budget else wants)
+        // take-slot removes a ticket of a dead pid; a name it cannot read it never made
+        Some(_) -> fs.remove(file)
+        None -> ()
+    Outside(units, tickets.toVector, landingHeld(ours))
 
-    // Whether a process other than one of `ours` holds the landing lock. A lock with no pid yet is
-    // being taken; one whose holder has died is removed.
-    landingHeld(ours: Vector[long]) -> bool
-        if !fs.isDir(landLock()) then return false
-        val holder = fs.readText(landLock() + "/pid").getOrElse("").trim
-        if holder.isEmpty then return true
-        val pid = holder.toLongOption().getOrElse(0)
-        if alive(pid) then return !ours.contains(pid)
-        fs.remove(landLock() + "/pid")
-        fs.removeDir(landLock())
-        false
+  // Whether a process other than one of `ours` holds the landing lock. A lock with no pid yet is
+  // being taken; one whose holder has died is removed.
+  landingHeld(ours: Vector[long]) -> bool
+    if !fs.isDir(landLock()) then return false
+    val holder = fs.readText(landLock() + "/pid").getOrElse("").trim
+    if holder.isEmpty then return true
+    val pid = holder.toLongOption().getOrElse(0)
+    if alive(pid) then return !ours.contains(pid)
+    fs.remove(landLock() + "/pid")
+    fs.removeDir(landLock())
+    false
 
-    // Counts the job `pid` against take-slot's budget. Call with the mutex held.
-    register(pid: long, units: int)
-        writeAtomicVia(held() + "/" + pid.toString(), units.toString() + "\n", s"$dir/.units-$pid.tmp")
+  // Counts the job `pid` against take-slot's budget. Call with the mutex held.
+  register(pid: long, units: int)
+    writeAtomicVia(held() + "/" + pid.toString(), units.toString() + "\n", s"$dir/.units-$pid.tmp")
 
-    unregister(pid: long)
-        fs.remove(held() + "/" + pid.toString())
+  unregister(pid: long)
+    fs.remove(held() + "/" + pid.toString())
 
-    // Makes the landing lock, removing a stale one first; false while a live run holds it.
-    takeLanding() -> bool
-        if fs.createDir(landLock()).isOk then return true
-        if landingHeld([]) then return false
-        fs.createDir(landLock()).isOk
+  // Makes the landing lock, removing a stale one first; false while a live run holds it.
+  takeLanding() -> bool
+    if fs.createDir(landLock()).isOk then return true
+    if landingHeld([]) then return false
+    fs.createDir(landLock()).isOk
 
-    // Names the landing job `pid` as the lock's holder.
-    landed(pid: long)
-        writeAtomic(landLock() + "/pid", pid.toString() + "\n")
+  // Names the landing job `pid` as the lock's holder.
+  landed(pid: long)
+    writeAtomic(landLock() + "/pid", pid.toString() + "\n")
 
-    // Removes the landing lock when `pid` holds it, or when it has no holder (`pid` 0: a job that
-    // could not be started).
-    releaseLanding(pid: long)
-        val holder = pidIn(landLock() + "/pid")
-        if holder == Some(pid) || (pid == 0 && holder.isEmpty)
-            fs.remove(landLock() + "/pid")
-            fs.removeDir(landLock())
+  // Removes the landing lock when `pid` holds it, or when it has no holder (`pid` 0: a job that
+  // could not be started).
+  releaseLanding(pid: long)
+    val holder = pidIn(landLock() + "/pid")
+    if holder == Some(pid) || (pid == 0 && holder.isEmpty)
+      fs.remove(landLock() + "/pid")
+      fs.removeDir(landLock())
 
-    // Writes the daemon's ticket for a job that arrived at `arrived` and waits for `units`; answers
-    // its name.
-    putTicket(arrived: long, units: int) -> string
-        val name = ticketName(arrived, me)
-        fs.createDirAll(waiting())
-        writeAtomicVia(waiting() + "/" + name, units.toString() + "\n" + TicketMark + "\n", s"$dir/.ticket-$me.tmp")
-        name
+  // Writes the daemon's ticket for a job that arrived at `arrived` and waits for `units`; answers
+  // its name.
+  putTicket(arrived: long, units: int) -> string
+    val name = ticketName(arrived, me)
+    fs.createDirAll(waiting())
+    writeAtomicVia(waiting() + "/" + name, units.toString() + "\n" + TicketMark + "\n", s"$dir/.ticket-$me.tmp")
+    name
 
-    removeTicket(name: string)
-        fs.remove(waiting() + "/" + name)
+  removeTicket(name: string)
+    fs.remove(waiting() + "/" + name)
 
-    // Removes what an earlier daemon `daemon` left: its tickets (marked as marshal's, so a take-slot
-    // run that has since been given the same pid keeps its own), and the registrations and landing
-    // lock of the jobs it left open (`pids`). Call with the mutex held.
-    forget(daemon: long, pids: Vector[long])
-        for name in fs.listDir(waiting()).getOrElse([])
-            val file = waiting() + "/" + name
-            parseTicket(name) match
-                Some((_, pid)) if pid == daemon && pid != me && fs.readText(file).getOrElse("").contains(TicketMark) -> fs.remove(file)
-                _ -> ()
-        for pid in pids
-            unregister(pid)
-            releaseLanding(pid)
+  // Removes what an earlier daemon `daemon` left: its tickets (marked as marshal's, so a take-slot
+  // run that has since been given the same pid keeps its own), and the registrations and landing
+  // lock of the jobs it left open (`pids`). Call with the mutex held.
+  forget(daemon: long, pids: Vector[long])
+    for name in fs.listDir(waiting()).getOrElse([])
+      val file = waiting() + "/" + name
+      parseTicket(name) match
+        Some((_, pid)) if pid == daemon && pid != me && fs.readText(file).getOrElse("").contains(
+          TicketMark
+        ) -> fs.remove(file)
+        _ -> ()
+    for pid in pids
+      unregister(pid)
+      releaseLanding(pid)

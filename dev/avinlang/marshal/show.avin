@@ -6,45 +6,49 @@ import avin.time
 
 // The line `wait` and `run` end with.
 resultLine(j: JobInfo) -> string
-    val took = formatMillis(j.elapsedMs)
-    val how = j.outcome match
-        Some(Exited(code)) -> s"exited $code after $took"
-        Some(Signalled(sig)) -> if j.killed then s"killed (signal $sig) after $took" else s"ended by signal $sig after $took"
-        Some(TimedOut) ->
-            val sample = j.sample.map(s -> s"; stack sample in $s").getOrElse("")
-            s"timed out after $took (deadline ${formatMillis(j.deadlineMs)})$sample"
-        Some(Quiet(afterMs)) ->
-            val sample = j.sample.map(s -> s"; stack sample in $s").getOrElse("")
-            s"${quietWords(afterMs)} (quiet timeout), having run $took$sample"
-        Some(Cancelled) -> "cancelled before it started"
-        Some(Lost) -> "lost: the daemon stopped while it was queued or running"
-        Some(DependencyFailed(after)) -> s"cancelled before it started: job $after, which it waited for, did not succeed"
-        None -> s"is ${j.state}"
-    val attempts = if j.attempt > 1 && j.outcome.isDefined then s" (attempt ${j.attempt})" else ""
-    s"marshal: job ${j.id} $how$attempts; log ${j.log}"
+  val took = formatMillis(j.elapsedMs)
+  val how = j.outcome match
+    Some(Exited(code)) -> s"exited $code after $took"
+    Some(
+      Signalled(sig)
+    ) -> if j.killed then s"killed (signal $sig) after $took" else s"ended by signal $sig after $took"
+    Some(TimedOut) ->
+      val sample = j.sample.map(s -> s"; stack sample in $s").getOrElse("")
+      s"timed out after $took (deadline ${formatMillis(j.deadlineMs)})$sample"
+    Some(Quiet(afterMs)) ->
+      val sample = j.sample.map(s -> s"; stack sample in $s").getOrElse("")
+      s"${quietWords(afterMs)} (quiet timeout), having run $took$sample"
+    Some(Cancelled) -> "cancelled before it started"
+    Some(Lost) -> "lost: the daemon stopped while it was queued or running"
+    Some(DependencyFailed(after)) -> s"cancelled before it started: job $after, which it waited for, did not succeed"
+    None -> s"is ${j.state}"
+  val attempts = if j.attempt > 1 && j.outcome.isDefined then s" (attempt ${j.attempt})" else ""
+  s"marshal: job ${j.id} $how$attempts; log ${j.log}"
 
 // A job's state as a listing's column shows it: a job waiting for others with the jobs it waits
 // for (`after 3,4`), a job waiting to retry with the attempt it will make, and a job held by hand
 // as `held`.
 stateColumn(j: JobInfo) -> string = j.outcome match
-    Some(Exited(code)) -> s"exit $code"
-    Some(Signalled(sig)) -> if j.killed then "killed" else s"signal $sig"
-    Some(TimedOut) -> "timeout"
-    Some(Quiet(_)) -> "quiet"
-    Some(Cancelled) -> "cancelled"
-    Some(Lost) -> "lost"
-    Some(DependencyFailed(after)) -> s"dep $after failed"
-    None ->
-        val waits = "after " + j.after.map(id -> id.toString()).mkString(",")
-        if j.held then (if j.state == "waiting" then "held " + waits else "held")
-        elif j.paused then "paused"
-        else j.state match
-            "waiting" -> waits
-            "retrying" -> s"retry ${j.attempt}"
-            other -> other
+  Some(Exited(code)) -> s"exit $code"
+  Some(Signalled(sig)) -> if j.killed then "killed" else s"signal $sig"
+  Some(TimedOut) -> "timeout"
+  Some(Quiet(_)) -> "quiet"
+  Some(Cancelled) -> "cancelled"
+  Some(Lost) -> "lost"
+  Some(DependencyFailed(after)) -> s"dep $after failed"
+  None ->
+    val waits = "after " + j.after.map(id -> id.toString()).mkString(",")
+    if j.held then (if j.state == "waiting" then "held " + waits else "held")
+    elif j.paused then "paused"
+    else j.state match
+      "waiting" -> waits
+      "retrying" -> s"retry ${j.attempt}"
+      other -> other
 
 // Whether a job is still to run: queued, held, waiting for others or waiting to retry.
-notRunYet(j: JobInfo) -> bool = j.outcome.isEmpty && (j.state == "queued" || j.state == "waiting" || j.state == "retrying")
+notRunYet(j: JobInfo) -> bool = j.outcome.isEmpty && (
+  j.state == "queued" || j.state == "waiting" || j.state == "retrying"
+)
 
 // The ELAPSED column for `ms` of run time: `-` for a job that has not started, whose wait is
 // `queued_ms` in the JSON.
@@ -53,14 +57,17 @@ elapsedColumn(j: JobInfo, ms: long) -> string = if notRunYet(j) then "-" else fo
 // When a job started, as the STARTED column shows it: the local date and minute, `11-07 08:31`, in
 // `zone`; `-` for a job that has not started (queued, or cancelled before it ran).
 startedColumn(j: JobInfo, zone: time.Zone) -> string
-startedColumn(j, zone) = if j.startedAt <= 0 then "-" else time.epochMillis(j.startedAt).atZone(zone).format("MM-DD hh:mm")
+
+startedColumn(j, zone) = if j.startedAt <= 0 then "-" else time.epochMillis(j.startedAt).atZone(zone).format(
+  "MM-DD hh:mm"
+)
 
 // The same for a narrow screen: just `hh:mm` for a job that started on `today` (a `YYYY-MM-DD` in
 // `zone`), the full form for any other day.
 startedShort(j: JobInfo, zone: time.Zone, today: string) -> string
-    if j.startedAt <= 0 then return "-"
-    val at = time.epochMillis(j.startedAt).atZone(zone)
-    if at.format("YYYY-MM-DD") == today then at.format("hh:mm") else at.format("MM-DD hh:mm")
+  if j.startedAt <= 0 then return "-"
+  val at = time.epochMillis(j.startedAt).atZone(zone)
+  if at.format("YYYY-MM-DD") == today then at.format("hh:mm") else at.format("MM-DD hh:mm")
 
 // Why a queued job waits, in the words `top` shows and `ls` appends to `queued`.
 whyText(w: Why) -> string
@@ -76,39 +83,44 @@ whyText(Held) = "held"
 whyText(QueueHeld) = "queue held"
 whyText(QuickFull) = "quick lane full"
 whyText(Emptying) = "emptying"
+
 whyText(Load(load, limit, calmMs)) =
-    if load >= limit then s"load ${loadText(load)} ≥ ${loadText(limit)}" else s"load ${loadText(load)} < ${loadText(limit)} for ${formatMillis(calmMs)}"
+  if load >= limit then s"load ${loadText(load)} ≥ ${loadText(limit)}" else s"load ${loadText(load)} < ${loadText(limit)} for ${formatMillis(calmMs)}"
+
 whyText(ForExclusive(id)) = s"exclusive $id"
 
 // A job's state cell in `ls`: `stateColumn`, and for a job that is plainly `queued` and has a reason
 // in `whys` (job id, reason), the reason after it: `queued (draining)`. A job held by hand already
 // says `held`, so its reason adds nothing.
 stateWithWhy(j: JobInfo, whys: Vector[(long, Why)]) -> string
-    val state = stateColumn(j)
-    if state != "queued" then return state
-    whys.find(w -> w.0 == j.id) match
-        Some((_, Held)) -> state
-        Some((_, why)) -> s"$state (${whyText(why)})"
-        None -> state
+  val state = stateColumn(j)
+  if state != "queued" then return state
+  whys.find(w -> w.0 == j.id) match
+    Some((_, Held)) -> state
+    Some((_, why)) -> s"$state (${whyText(why)})"
+    None -> state
 
 // The listing `ls` prints: a header, then one row per job. A LABEL column stands before COMMAND, and
 // always, empty for a job without a label. `whys`
 // gives the queued jobs' reasons to wait; with none, a queued job shows plain `queued`.
 listing(jobs: Vector[JobInfo], whys: Vector[(long, Why)] = []) -> string
-    val zone = time.localZone()
-    val rows = [["ID", "STATE", "KIND", "UNITS", "RESV", "STARTED", "ELAPSED", "LABEL", "COMMAND"]] ++ jobs.map(j -> [
-        j.id.toString(),
-        stateWithWhy(j, whys),
-        laneKind(j),
-        j.units.toString(),
-        reservedText(j),
-        startedColumn(j, zone),
-        elapsedColumn(j, j.elapsedMs),
-        j.label,
-        j.cmd.mkString(" ")])
-    val last = rows(0).length - 1
-    val widths = (0..<last).map(c -> rows.map(r -> r(c).charCount).max)
-    rows.map(r -> (0..<last).map(c -> r(c).padEnd(widths(c), ' ')).mkString("  ") + "  " + r(last)).mkString("\n")
+  val zone = time.localZone()
+  val rows = [["ID", "STATE", "KIND", "UNITS", "RESV", "STARTED", "ELAPSED", "LABEL", "COMMAND"]] ++ jobs.map(
+    j -> [
+      j.id.toString(),
+      stateWithWhy(j, whys),
+      laneKind(j),
+      j.units.toString(),
+      reservedText(j),
+      startedColumn(j, zone),
+      elapsedColumn(j, j.elapsedMs),
+      j.label,
+      j.cmd.mkString(" ")
+    ]
+  )
+  val last = rows(0).length - 1
+  val widths = (0 ..< last).map(c -> rows.map(r -> r(c).charCount).max)
+  rows.map(r -> (0 ..< last).map(c -> r(c).padEnd(widths(c), ' ')).mkString("  ") + "  " + r(last)).mkString("\n")
 
 // A job's kind as a listing shows it, marked with its lane: `*` after a landing job's, `^` after a
 // quick job's, `#` after an exclusive job's, and `!` after that for a job in the urgent band
@@ -121,26 +133,30 @@ laneKind(j: JobInfo) -> string = kindMarked(j.kind, j.landing, j.quick, j.urgent
 fittedKind(j: JobInfo, width: int) -> string = fittedMarked(j.kind, j.landing, j.quick, j.urgent, width, j.exclusive)
 
 fittedMarked(kind: string, landing: bool, quick: bool, urgent: bool, width: int, exclusive: bool = false) -> string
-    val marks = kindMarked("", landing, quick, urgent, exclusive)
-    val whole = kind + marks
-    if whole.charCount <= width then return whole
-    val room = width - marks.charCount - 1
-    if room < 0 then return ("…" + marks).take(if width < 0 then 0 else width)
-    kind.take(room) + "…" + marks
+  val marks = kindMarked("", landing, quick, urgent, exclusive)
+  val whole = kind + marks
+  if whole.charCount <= width then return whole
+  val room = width - marks.charCount - 1
+  if room < 0 then return ("…" + marks).take(if width < 0 then 0 else width)
+  kind.take(room) + "…" + marks
 
 // A kind with its marks: the lane's (`*` landing, `^` quick, `#` exclusive; a job is in one), then
 // `!` for urgent.
 kindMarked(kind: string, landing: bool, quick: bool, urgent: bool, exclusive: bool = false) -> string
-    val lane = if landing then "*" elif quick then "^" elif exclusive then "#" else ""
-    kind + lane + (if urgent then "!" else "")
+  val lane = if landing then "*" elif quick then "^" elif exclusive then "#" else ""
+  kind + lane + (if urgent then "!" else "")
 
 // The line `status` prints. The quick lane is named only while a quick job runs, and an exclusive job
 // only while it runs.
 usageLine(u: Usage) -> string
-    val memory = if u.memoryBudget == long.MaxValue then formatSize(u.memory) else s"${formatSize(u.memory)}/${formatSize(u.memoryBudget)}"
-    val lane = u.landing.map(id -> s"job $id").getOrElse("free")
-    val outside = u.takeSlot.map(t -> s"; take-slot holds ${t.units} units, ${t.waiting} waiting" + (if t.landing then ", the landing lane" else "")).getOrElse("")
-    val held = if u.queueHeld then "; the queue is held: nothing new starts" else ""
-    val quick = if u.quick > 0 then s", quick lane ${u.quick}/$QuickSlots" else ""
-    val exclusive = u.exclusive.map(id -> s"; exclusive job $id owns the machine: nothing else starts").getOrElse("")
-    s"units ${u.units}/${u.unitBudget}, memory $memory, ${u.running} running, ${u.queued} queued, landing lane $lane$quick$outside$exclusive$held"
+  val memory = if u.memoryBudget == long.MaxValue then formatSize(
+    u.memory
+  ) else s"${formatSize(u.memory)}/${formatSize(u.memoryBudget)}"
+  val lane = u.landing.map(id -> s"job $id").getOrElse("free")
+  val outside = u.takeSlot.map(
+    t -> s"; take-slot holds ${t.units} units, ${t.waiting} waiting" + (if t.landing then ", the landing lane" else "")
+  ).getOrElse("")
+  val held = if u.queueHeld then "; the queue is held: nothing new starts" else ""
+  val quick = if u.quick > 0 then s", quick lane ${u.quick}/$QuickSlots" else ""
+  val exclusive = u.exclusive.map(id -> s"; exclusive job $id owns the machine: nothing else starts").getOrElse("")
+  s"units ${u.units}/${u.unitBudget}, memory $memory, ${u.running} running, ${u.queued} queued, landing lane $lane$quick$outside$exclusive$held"

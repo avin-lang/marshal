@@ -13,29 +13,29 @@ stepGroupFile(home: string, id: long) -> string = s"$home/runs/$id/step.pgid"
 
 // The group of the step job `id` is running; 0 where there is none or the file is not a group.
 stepGroupOf(home: string, id: long) -> long
-    val n = fs.readText(stepGroupFile(home, id)).getOrElse("").trim.toLongOption().getOrElse(0)
-    if n > 1 then n else 0
+  val n = fs.readText(stepGroupFile(home, id)).getOrElse("").trim.toLongOption().getOrElse(0)
+  if n > 1 then n else 0
 
 // Records `pgid` as job `id`'s current step group, whole or not at all.
 recordStepGroup(home: string, id: string, pgid: long)
-    val file = s"$home/runs/$id/step.pgid"
-    writeAtomic(file, pgid.toString())
-    ()
+  val file = s"$home/runs/$id/step.pgid"
+  writeAtomic(file, pgid.toString())
+  ()
 
 // Forgets job `id`'s step group: the step has ended.
 forgetStepGroup(home: string, id: string)
-    fs.remove(s"$home/runs/$id/step.pgid")
-    ()
+  fs.remove(s"$home/runs/$id/step.pgid")
+  ()
 
 // Every process group of job `id`: the group `pgid` it was started in, and its step's group.
 groupsOf(home: string, id: long, pgid: long) -> Vector[long]
-    val step = stepGroupOf(home, id)
-    if step > 0 && step != pgid then [pgid, step] else [pgid]
+  val step = stepGroupOf(home, id)
+  if step > 0 && step != pgid then [pgid, step] else [pgid]
 
 // The resident bytes of all of job `id`'s processes: those of its own group and of its step's.
 jobResident(home: string, id: long, pgid: long) -> long =
-    groupsOf(home, id, pgid).map(g -> groupResident(g)).sum
+  groupsOf(home, id, pgid).map(g -> groupResident(g)).sum
 
 // Signals every group of job `id`; the errors of a group nobody is in are not an error.
 signalGroups(home: string, id: long, pgid: long, sig: int)
-    for g in groupsOf(home, id, pgid) do process.signal(-g, sig)
+  for g in groupsOf(home, id, pgid) do process.signal(-g, sig)

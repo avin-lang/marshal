@@ -15,102 +15,116 @@ val ExtMi: long = 1024 * 1024
 
 // The daemon's answer to the raw request line `request`.
 rawAnswer(home: string, request: string) -> string
-    val conn = UnixStream.connect(home + "/sock").ok.get
-    conn.writeText(request + "\n").ok.get
-    val reply = conn.readLine().ok.get.get
-    conn.close()
-    reply
+  val conn = UnixStream.connect(home + "/sock").ok.get
+  conn.writeText(request + "\n").ok.get
+  val reply = conn.readLine().ok.get.get
+  conn.close()
+  reply
 
-@test("--external without --mem is refused by the command line, and by the daemon whatever client sent it; nothing is submitted")
+@test(
+  "--external without --mem is refused by the command line, and by the daemon whatever client sent it; nothing is submitted"
+)
 externalRefusedE2e()
-    val home = newHome()
-    val r = m(home, "submit", "--external", "--", "true")
-    assertEq(r.code, 2)
-    assert(r.out.contains("`--external` needs `--mem <size>`"), r.out)
-    val run = m(home, "run", "--external", "--kind", "linux", "--", "true")
-    assertEq(run.code, 2)
-    assertEq(events(home).length, 0)
-    // a daemon to ask: a job that is not external
-    assertEq(m(home, "run", "--", "true").code, 0)
-    val raw = s"{\"op\":\"submit\",\"kind\":\"build\",\"units\":1,\"mem\":0,\"dir\":\"$home\",\"cmd\":[\"true\"],\"external\":true}"
-    val answer = rawAnswer(home, raw)
-    assert(answer.contains("`--external` needs `--mem"), answer)
-    // a mem above 0 counts as given, as it does for a reservation
-    val given = rawAnswer(home, raw.replace("\"mem\":0", "\"mem\":1048576"))
-    assert(given.contains("\"ok\":true"), given)
-    cleanUp(home)
+  val home = newHome()
+  val r = m(home, "submit", "--external", "--", "true")
+  assertEq(r.code, 2)
+  assert(r.out.contains("`--external` needs `--mem <size>`"), r.out)
+  val run = m(home, "run", "--external", "--kind", "linux", "--", "true")
+  assertEq(run.code, 2)
+  assertEq(events(home).length, 0)
+  // a daemon to ask: a job that is not external
+  assertEq(m(home, "run", "--", "true").code, 0)
+  val raw = s"{\"op\":\"submit\",\"kind\":\"build\",\"units\":1,\"mem\":0,\"dir\":\"$home\",\"cmd\":[\"true\"],\"external\":true}"
+  val answer = rawAnswer(home, raw)
+  assert(answer.contains("`--external` needs `--mem"), answer)
+  // a mem above 0 counts as given, as it does for a reservation
+  val given = rawAnswer(home, raw.replace("\"mem\":0", "\"mem\":1048576"))
+  assert(given.contains("\"ok\":true"), given)
+  cleanUp(home)
 
-@test("an external job reserves its --mem, is shown with @ and as external, and its measured peak teaches its kind nothing, across a restart too")
+@test(
+  "an external job reserves its --mem, is shown with @ and as external, and its measured peak teaches its kind nothing, across a restart too"
+)
 externalNotLearnedE2e()
-    val home = newHome()
-    for _ in 0 ..< 2
-        assertEq(m(home, "run", "--external", "--mem", "300M", "--kind", "ext", "--", "sleep", "2.5").code, 0)
-    val ends = events(home).filter(e -> e("event").asString == Some("finished"))
-    assertEq(ends.length, 2)
-    // the tree was measured, and the event says the measurement is not the work's
-    for e in ends
-        assert(e("peak_rss").asLong.getOrElse(0) > 0, e.render)
-        assertEq(e("external").asBool, Some(true))
-    // a job of the kind that is not external has nothing learned to reserve
-    val plain = submitted(home, "--kind", "ext", "--", "sleep", "30")
-    val jp = statusJob(home, plain)
-    assertEq((jp("resv").asLong, jp("resv_learned").asBool, jp.get("external")), (Some(long(0)), Some(false), None))
-    // nor after the next daemon has read the event log
-    assertEq(m(home, "stop", "--force").code, 0)
-    val again = submitted(home, "--kind", "ext", "--", "sleep", "30")
-    assertEq(statusJob(home, again)("resv_learned").asBool, Some(false))
-    assertEq(statusJob(home, again)("resv").asLong, Some(long(0)))
-    // stats leave the external jobs' peaks out
-    val stats = json.parse(m(home, "stats", "--json", "--kind", "ext").out).ok.get
-    val kind = stats("kinds").asVector.get.find(k -> k("kind").asString == Some("ext")).get
-    assertEq(kind("peak_max"), Json.Null)
-    assertEq(m(home, "stop", "--force").code, 0)
-    cleanUp(home)
+  val home = newHome()
+  for _ in 0 ..< 2
+    assertEq(m(home, "run", "--external", "--mem", "300M", "--kind", "ext", "--", "sleep", "2.5").code, 0)
+  val ends = events(home).filter(e -> e("event").asString == Some("finished"))
+  assertEq(ends.length, 2)
+  // the tree was measured, and the event says the measurement is not the work's
+  for e in ends
+    assert(e("peak_rss").asLong.getOrElse(0) > 0, e.render)
+    assertEq(e("external").asBool, Some(true))
+  // a job of the kind that is not external has nothing learned to reserve
+  val plain = submitted(home, "--kind", "ext", "--", "sleep", "30")
+  val jp = statusJob(home, plain)
+  assertEq((jp("resv").asLong, jp("resv_learned").asBool, jp.get("external")), (Some(long(0)), Some(false), None))
+  // nor after the next daemon has read the event log
+  assertEq(m(home, "stop", "--force").code, 0)
+  val again = submitted(home, "--kind", "ext", "--", "sleep", "30")
+  assertEq(statusJob(home, again)("resv_learned").asBool, Some(false))
+  assertEq(statusJob(home, again)("resv").asLong, Some(long(0)))
+  // stats leave the external jobs' peaks out
+  val stats = json.parse(m(home, "stats", "--json", "--kind", "ext").out).ok.get
+  val kind = stats("kinds").asVector.get.find(k -> k("kind").asString == Some("ext")).get
+  assertEq(kind("peak_max"), Json.Null)
+  assertEq(m(home, "stop", "--force").code, 0)
+  cleanUp(home)
 
-@test("an external job's reservation is held whatever its tree measures, shown in ls, status --json and top, and kept by restart and rerun")
+@test(
+  "an external job's reservation is held whatever its tree measures, shown in ls, status --json and top, and kept by restart and rerun"
+)
 externalShownE2e()
-    val home = newHome("{\"memory\": \"1G\"}")
-    val a = submitted(home, "--external", "--mem", "700M", "--label", "linux checks", "--", "sleep", "30")
-    // 700M of 1G is held for it, so a 400M job waits though the first one's tree holds almost nothing
-    val b = submitted(home, "--mem", "400M", "--", "sleep", "30")
-    assert(within(3000, () -> started(home, a)))
-    val ja = statusJob(home, a)
-    assertEq((ja("mem").asLong, ja("resv").asLong, ja("resv_learned").asBool, ja("external").asBool), (Some(700 * ExtMi), Some(700 * ExtMi), Some(false), Some(true)))
-    assertEq(statusJob(home, b)("state").asString, Some("queued"))
-    assert(lsRowOf(home, a).contains(" @700M "), lsRowOf(home, a))
-    assert(!lsRowOf(home, b).contains("@"), lsRowOf(home, b))
-    restarted(home)
-    val after = statusJob(home, a)
-    assertEq((after("resv").asLong, after("external").asBool, after("state").asString), (Some(700 * ExtMi), Some(true), Some("running")))
-    assertEq(statusJob(home, b)("state").asString, Some("queued"))
-    assert(lsRowOf(home, a).contains(" @700M "), lsRowOf(home, a))
-    assertEq(m(home, "kill", a.toString()).code, 0)
-    assertEq(m(home, "kill", b.toString()).code, 0)
-    val r = m(home, "rerun", a.toString())
-    assertEq(r.code, 0)
-    val c = r.out.trim.toLong()
-    val jc = statusJob(home, c)
-    assertEq((jc("resv").asLong, jc("external").asBool), (Some(700 * ExtMi), Some(true)))
-    val spec = events(home).find(e -> e("id").asLong == Some(c) && e("event").asString == Some("submitted")).get("spec")
-    assertEq(spec("external").asBool, Some(true))
-    assertEq(m(home, "stop", "--force").code, 0)
-    cleanUp(home)
+  val home = newHome("{\"memory\": \"1G\"}")
+  val a = submitted(home, "--external", "--mem", "700M", "--label", "linux checks", "--", "sleep", "30")
+  // 700M of 1G is held for it, so a 400M job waits though the first one's tree holds almost nothing
+  val b = submitted(home, "--mem", "400M", "--", "sleep", "30")
+  assert(within(3000, () -> started(home, a)))
+  val ja = statusJob(home, a)
+  assertEq(
+    (ja("mem").asLong, ja("resv").asLong, ja("resv_learned").asBool, ja("external").asBool),
+    (Some(700 * ExtMi), Some(700 * ExtMi), Some(false), Some(true))
+  )
+  assertEq(statusJob(home, b)("state").asString, Some("queued"))
+  assert(lsRowOf(home, a).contains(" @700M "), lsRowOf(home, a))
+  assert(!lsRowOf(home, b).contains("@"), lsRowOf(home, b))
+  restarted(home)
+  val after = statusJob(home, a)
+  assertEq(
+    (after("resv").asLong, after("external").asBool, after("state").asString),
+    (Some(700 * ExtMi), Some(true), Some("running"))
+  )
+  assertEq(statusJob(home, b)("state").asString, Some("queued"))
+  assert(lsRowOf(home, a).contains(" @700M "), lsRowOf(home, a))
+  assertEq(m(home, "kill", a.toString()).code, 0)
+  assertEq(m(home, "kill", b.toString()).code, 0)
+  val r = m(home, "rerun", a.toString())
+  assertEq(r.code, 0)
+  val c = r.out.trim.toLong()
+  val jc = statusJob(home, c)
+  assertEq((jc("resv").asLong, jc("external").asBool), (Some(700 * ExtMi), Some(true)))
+  val spec = events(home).find(e -> e("id").asLong == Some(c) && e("event").asString == Some("submitted")).get("spec")
+  assertEq(spec("external").asBool, Some(true))
+  assertEq(m(home, "stop", "--force").code, 0)
+  cleanUp(home)
 
-@test("a docker command that runs work in the engine, submitted without --external, is warned of on stderr and submitted; dockerize and echo docker are not")
+@test(
+  "a docker command that runs work in the engine, submitted without --external, is warned of on stderr and submitted; dockerize and echo docker are not"
+)
 dockerWarningE2e()
-    val home = newHome()
-    val warned = m(home, "submit", "--", "/nonexistent/docker", "run", "img")
-    assertEq(warned.code, 0)
-    assert(warned.out.contains("warning") && warned.out.contains("--external --mem"), warned.out)
-    // the warning is on stderr: standard output is the id alone
-    val quiet = homed(Command(bin(), "submit", "--", "/nonexistent/docker", "compose", "up"), home).output().getOrElse("")
-    assert(quiet.trim.toLongOption().isDefined, quiet)
-    for cmd in [["/nonexistent/dockerize", "run"], ["echo", "docker", "run"]]
-        val r = m(home, (["submit", "--"] ++ cmd)*)
-        assertEq(r.code, 0)
-        assert(!r.out.contains("warning"), r.out)
-    val declared = m(home, "submit", "--external", "--mem", "1G", "--", "/nonexistent/docker", "run", "img")
-    assertEq(declared.code, 0)
-    assert(!declared.out.contains("warning"), declared.out)
-    assertEq(m(home, "stop", "--force").code, 0)
-    cleanUp(home)
+  val home = newHome()
+  val warned = m(home, "submit", "--", "/nonexistent/docker", "run", "img")
+  assertEq(warned.code, 0)
+  assert(warned.out.contains("warning") && warned.out.contains("--external --mem"), warned.out)
+  // the warning is on stderr: standard output is the id alone
+  val quiet = homed(Command(bin(), "submit", "--", "/nonexistent/docker", "compose", "up"), home).output().getOrElse("")
+  assert(quiet.trim.toLongOption().isDefined, quiet)
+  for cmd in [["/nonexistent/dockerize", "run"], ["echo", "docker", "run"]]
+    val r = m(home, (["submit", "--"] ++ cmd)*)
+    assertEq(r.code, 0)
+    assert(!r.out.contains("warning"), r.out)
+  val declared = m(home, "submit", "--external", "--mem", "1G", "--", "/nonexistent/docker", "run", "img")
+  assertEq(declared.code, 0)
+  assert(!declared.out.contains("warning"), declared.out)
+  assertEq(m(home, "stop", "--force").code, 0)
+  cleanUp(home)

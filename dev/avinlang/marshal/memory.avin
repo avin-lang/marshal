@@ -8,12 +8,12 @@ import avin.process
 // The resident bytes of the processes `pids`, summed by asking `resident` of each. A process that has
 // ended since it was listed answers NotFound and counts nothing; so does one that cannot be asked.
 residentOf(pids: Vector[long], resident: (long) -> Result[long, IoError]) -> long
-    var total: long = 0
-    for pid in pids
-        resident(pid) match
-            Ok(n) -> total += n
-            Err(_) -> ()
-    total
+  var total: long = 0
+  for pid in pids
+    resident(pid) match
+      Ok(n) -> total += n
+      Err(_) -> ()
+  total
 
 // The resident bytes of a job's whole process tree: every process of its group `pgid`, the group it
 // was started in and every program it starts joins.
@@ -22,15 +22,15 @@ groupResident(pgid: long) -> long = residentOf(groupMembers(pgid), pid -> proces
 // The processes of the process group `pgid`; none where it cannot be asked, for a group nobody is in
 // and for a `pgid` that is not a group's.
 groupMembers(pgid: long) -> Vector[long]
-    if pgid <= 0 then return []
-    process.groupMembers(pgid).getOrElse([])
+  if pgid <= 0 then return []
+  process.groupMembers(pgid).getOrElse([])
 
 // A job's memory as measured: the latest measurement, and the most any has found.
 data Resident(now: long, peak: long)
 
 impl Resident
-    // After a measurement of `bytes`: the peak never goes down.
-    measured(bytes: long) -> Resident = Resident(bytes, if bytes > peak then bytes else peak)
+  // After a measurement of `bytes`: the peak never goes down.
+  measured(bytes: long) -> Resident = Resident(bytes, if bytes > peak then bytes else peak)
 
 // Reservations learned from the peaks jobs of a kind reached. A job that gives no memory reserves
 // its history key's learned peak (its kind's in its directory, or its kind's: `memoryHistory`): the most of the last `window` peaks, plus `marginPercent`, rounded
@@ -48,23 +48,23 @@ data Reservation(bytes: long, learned: bool)
 
 // The peak a key's history (oldest first) teaches, or None while it has too few peaks.
 learnedPeak(learning: MemoryLearning, peaks: Vector[long]) -> Option[long]
-    val runs = peaks.filter(p -> p > 0).takeRight(learning.window)
-    if runs.length < learning.minRuns || runs.isEmpty then return None
-    val most = runs.max
-    val margin = most / 100 * learning.marginPercent + most % 100 * learning.marginPercent / 100
-    val withMargin = if most > long.MaxValue - margin then long.MaxValue else most + margin
-    if withMargin > long.MaxValue - Mebi then return Some(withMargin)
-    Some((withMargin + Mebi - 1) / Mebi * Mebi)
+  val runs = peaks.filter(p -> p > 0).takeRight(learning.window)
+  if runs.length < learning.minRuns || runs.isEmpty then return None
+  val most = runs.max
+  val margin = most / 100 * learning.marginPercent + most % 100 * learning.marginPercent / 100
+  val withMargin = if most > long.MaxValue - margin then long.MaxValue else most + margin
+  if withMargin > long.MaxValue - Mebi then return Some(withMargin)
+  Some((withMargin + Mebi - 1) / Mebi * Mebi)
 
 // The reservation of a job that declared `memory`, `given` saying it was given: a given memory, `0`
 // among them, is the reservation; otherwise the learned peak, held to the whole `budget` so a job
 // that has peaked above it still starts once nothing else holds memory, and runs alone; 0 for a
 // kind nothing has been learned of.
 reservationFor(learning: MemoryLearning, memory: long, given: bool, peaks: Vector[long], budget: long) -> Reservation
-    if given || memory > 0 then return Reservation(memory, false)
-    learnedPeak(learning, peaks) match
-        Some(p) -> Reservation(if p > budget then budget else p, true)
-        None -> Reservation(0, false)
+  if given || memory > 0 then return Reservation(memory, false)
+  learnedPeak(learning, peaks) match
+    Some(p) -> Reservation(if p > budget then budget else p, true)
+    None -> Reservation(0, false)
 
 // The history key of the jobs of a kind run in one working directory: one kind covers suites of
 // very different sizes (a small package's tests and a compiler's), so a directory learns its own
@@ -76,13 +76,16 @@ memoryDirKey(kind: string, landing: bool, dir: string) -> string = historyKey(ki
 data MemoryHistory(peaks: Vector[long], from: string)
 
 memoryHistory(learning: MemoryLearning, dirPeaks: Vector[long], kindPeaks: Vector[long]) -> MemoryHistory =
-    if dirPeaks.filter(p -> p > 0).length >=learning.minRuns then MemoryHistory(dirPeaks, "kind+dir") else MemoryHistory(kindPeaks, "kind")
+  if dirPeaks.filter(p -> p > 0).length >= learning.minRuns then MemoryHistory(
+    dirPeaks,
+    "kind+dir"
+  ) else MemoryHistory(kindPeaks, "kind")
 
 // Where a job's reservation came from, as `status --json` shows it in `resv_from`: `given` for a
 // memory it gave (`--mem`, `0` among them), the key its learned peak came from (`kind+dir` or
 // `kind`), or `none` while nothing has been learned.
 reservationSource(memory: long, given: bool, r: Reservation, from: string) -> string =
-    if given || memory > 0 then "given" elif r.learned then from else "none"
+  if given || memory > 0 then "given" elif r.learned then from else "none"
 
 // What admission counts a running job as holding: its reservation, or what it was last measured
 // holding where that is more. A job holding more than it reserved delays the next start; one

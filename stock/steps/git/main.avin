@@ -24,197 +24,210 @@ data Options(remote: string, target: string, tree: string, head: string, branche
 
 // The options of a subcommand, and its other words, which are branches.
 options(args: Vector[string]) -> Result[Options, string]
-    var remote = "origin"
-    var target = ""
-    var tree = ""
-    var head = ""
-    val branches = Buffer[string]()
-    var i = 0
-    while i < args.length
-        val word = args(i)
-        i += 1
-        if !["--remote", "--target", "--tree", "--head"].contains(word)
-            if word.startsWith("--") then return Err(s"no option `$word`")
-            branches += word
-            continue
-        if i >= args.length then return Err(s"`$word` needs a value")
-        val value = args(i)
-        i += 1
-        word match
-            "--remote" -> remote = value
-            "--target" -> target = value
-            "--tree" -> tree = value
-            _ -> head = value
-    Ok(Options(remote, target, tree, head, branches.toVector))
+  var remote = "origin"
+  var target = ""
+  var tree = ""
+  var head = ""
+  val branches = Buffer[string]()
+  var i = 0
+  while i < args.length
+    val word = args(i)
+    i += 1
+    if !["--remote", "--target", "--tree", "--head"].contains(word)
+      if word.startsWith("--") then return Err(s"no option `$word`")
+      branches += word
+      continue
+    if i >= args.length then return Err(s"`$word` needs a value")
+    val value = args(i)
+    i += 1
+    word match
+      "--remote" -> remote = value
+      "--target" -> target = value
+      "--tree" -> tree = value
+      _ -> head = value
+  Ok(Options(remote, target, tree, head, branches.toVector))
 
 // Runs git with `args`, its output and errors with ours, the command shown first; answers whether it
 // succeeded.
 git(args: string*) -> bool
-    println("+ git " + args.mkString(" "))
-    Command("git", args*).run() match
-        Ok(status) -> status.isSuccess
-        Err(e) ->
-            println(s"cannot run git: ${e.message}")
-            false
+  println("+ git " + args.mkString(" "))
+  Command("git", args*).run() match
+    Ok(status) -> status.isSuccess
+    Err(e) ->
+      println(s"cannot run git: ${e.message}")
+      false
 
 // What git with `args` prints, trimmed, where it succeeds; its errors go with ours.
 gitOut(args: string*) -> Option[string] = Command("git", args*).output().ok.map(t -> t.trim)
 
 // The commit `ref` names, where it names one.
-commitOf(ref: string) -> Option[string] = gitOut("rev-parse", "--verify", "--quiet", ref + "^{commit}").filter(s -> s.nonEmpty)
+commitOf(ref: string) -> Option[string] = gitOut(
+  "rev-parse",
+  "--verify",
+  "--quiet",
+  ref + "^{commit}"
+).filter(s -> s.nonEmpty)
 
 // The branch the remote's HEAD names.
 remoteHead(remote: string) -> Option[string]
-    val said = gitOut("ls-remote", "--symref", remote, "HEAD").getOrElse("")
-    for line in said.lines
-        if line.startsWith("ref: refs/heads/") then return Some(line.drop(16).split("\t")(0))
-    None
+  val said = gitOut("ls-remote", "--symref", remote, "HEAD").getOrElse("")
+  for line in said.lines
+    if line.startsWith("ref: refs/heads/") then return Some(line.drop(16).split("\t")(0))
+  None
 
 // The target the options give, or the remote's HEAD branch.
 targetOf(o: Options) -> Result[string, string]
-    if o.target.nonEmpty then return Ok(o.target)
-    remoteHead(o.remote) match
-        Some(t) -> Ok(t)
-        None -> Err(s"no --target given, and the remote `${o.remote}` names no HEAD branch")
+  if o.target.nonEmpty then return Ok(o.target)
+  remoteHead(o.remote) match
+    Some(t) -> Ok(t)
+    None -> Err(s"no --target given, and the remote `${o.remote}` names no HEAD branch")
 
 // A worktree of the repository and the branch it has checked out ("" where none).
 data Worktree(dir: string, branch: string)
 
 // The repository's worktrees, the main one first.
 worktrees() -> Vector[Worktree]
-    val out = Buffer[Worktree]()
-    var dir = ""
-    var branch = ""
-    for line in (gitOut("worktree", "list", "--porcelain").getOrElse("") + "\n").lines
-        if line.startsWith("worktree ")
-            dir = line.drop(9)
-        elif line.startsWith("branch refs/heads/")
-            branch = line.drop(18)
-        elif line.trim.isEmpty && dir.nonEmpty
-            out += Worktree(dir, branch)
-            dir = ""
-            branch = ""
-    if dir.nonEmpty then out += Worktree(dir, branch)
-    out.toVector
+  val out = Buffer[Worktree]()
+  var dir = ""
+  var branch = ""
+  for line in (gitOut("worktree", "list", "--porcelain").getOrElse("") + "\n").lines
+    if line.startsWith("worktree ")
+      dir = line.drop(9)
+    elif line.startsWith("branch refs/heads/")
+      branch = line.drop(18)
+    elif line.trim.isEmpty && dir.nonEmpty
+      out += Worktree(dir, branch)
+      dir = ""
+      branch = ""
+  if dir.nonEmpty then out += Worktree(dir, branch)
+  out.toVector
 
 refused(message: string) -> int
-    println(message)
-    1
+  println(message)
+  1
 
 merge(o: Options) -> int
-    val target = targetOf(o) match
-        Ok(t) -> t
-        Err(e) -> return refused(e)
-    if o.tree.isEmpty then return refused("merge needs --tree, where the merged tree is made")
-    if o.branches.isEmpty then return refused("merge needs at least one branch")
-    println("=== STEP fetch")
-    if !git("fetch", o.remote) then return refused(s"cannot fetch `${o.remote}`")
-    val base = commitOf(s"refs/remotes/${o.remote}/$target") match
-        Some(c) -> c
-        None -> return refused(s"the remote `${o.remote}` has no branch `$target`")
-    if fs.exists(o.tree) then return refused(s"${o.tree} is there already: a merge makes its tree afresh")
-    if !git("worktree", "add", "--detach", o.tree, base) then return refused(s"cannot make the worktree ${o.tree}")
-    for b in o.branches
-        println(s"=== STEP merge $b")
-        val ref = s"refs/remotes/${o.remote}/$b"
-        if commitOf(ref).isEmpty
-            println(s"=== FAIL merge $b")
-            return refused(s"the remote `${o.remote}` has no branch `$b`")
-        if !git("-C", o.tree, "merge", "--no-edit", ref)
-            git("-C", o.tree, "merge", "--abort")
-            println(s"=== FAIL merge $b")
-            return refused(s"`$b` does not merge onto $target and the branches before it")
-    val head = gitOut("-C", o.tree, "rev-parse", "HEAD") match
-        Some(h) -> h
-        None -> return refused("cannot read the merged tree's commit")
-    println(s"=== HEAD $head")
-    0
+  val target = targetOf(o) match
+    Ok(t) -> t
+    Err(e) -> return refused(e)
+  if o.tree.isEmpty then return refused("merge needs --tree, where the merged tree is made")
+  if o.branches.isEmpty then return refused("merge needs at least one branch")
+  println("=== STEP fetch")
+  if !git("fetch", o.remote) then return refused(s"cannot fetch `${o.remote}`")
+  val base = commitOf(s"refs/remotes/${o.remote}/$target") match
+    Some(c) -> c
+    None -> return refused(s"the remote `${o.remote}` has no branch `$target`")
+  if fs.exists(o.tree) then return refused(s"${o.tree} is there already: a merge makes its tree afresh")
+  if !git("worktree", "add", "--detach", o.tree, base) then return refused(s"cannot make the worktree ${o.tree}")
+  for b in o.branches
+    println(s"=== STEP merge $b")
+    val ref = s"refs/remotes/${o.remote}/$b"
+    if commitOf(ref).isEmpty
+      println(s"=== FAIL merge $b")
+      return refused(s"the remote `${o.remote}` has no branch `$b`")
+    if !git("-C", o.tree, "merge", "--no-edit", ref)
+      git("-C", o.tree, "merge", "--abort")
+      println(s"=== FAIL merge $b")
+      return refused(s"`$b` does not merge onto $target and the branches before it")
+  val head = gitOut("-C", o.tree, "rev-parse", "HEAD") match
+    Some(h) -> h
+    None -> return refused("cannot read the merged tree's commit")
+  println(s"=== HEAD $head")
+  0
 
 land(o: Options) -> int
-    val target = targetOf(o) match
-        Ok(t) -> t
-        Err(e) -> return refused(e)
-    if o.head.isEmpty then return refused("nothing to land: no step of the pass said `=== HEAD`")
-    println("=== STEP check")
-    if !git("fetch", o.remote, target) then return refused(s"cannot fetch `$target` from `${o.remote}`")
-    val tip = commitOf(s"refs/remotes/${o.remote}/$target") match
-        Some(c) -> c
-        None -> return refused(s"the remote `${o.remote}` has no branch `$target`")
-    if !git("merge-base", "--is-ancestor", tip, o.head)
-        return refused(s"refused: $target on ${o.remote} is now $tip, which ${o.head} does not contain, so landing it would not be a fast-forward; nothing was pushed")
-    println("=== STEP push")
-    if !git("push", o.remote, s"${o.head}:refs/heads/$target") then return refused(s"the push was refused: nothing landed, and nothing is torn down")
-    val now = gitOut("ls-remote", o.remote, s"refs/heads/$target").getOrElse("").split("\t")(0)
-    if now != o.head then return refused(s"after the push, $target on ${o.remote} is `$now`, not ${o.head}")
-    println(s"landed ${o.head} on $target")
-    println("=== STEP fast-forward")
-    // the repository's own target branch follows, a fast-forward only; where it cannot, it is said
-    // and left as it is: the remote has landed, which is what the rest depends on
-    val holder = worktrees().find(w -> w.branch == target)
-    val moved = holder match
-        Some(w) -> git("-C", w.dir, "merge", "--ff-only", o.head)
-        None -> if commitOf(s"refs/heads/$target").isDefined then git("push", ".", s"${o.head}:refs/heads/$target") else true
-    if !moved then println(s"warning: the local `$target` is not an ancestor of ${o.head} and was left where it is")
-    0
+  val target = targetOf(o) match
+    Ok(t) -> t
+    Err(e) -> return refused(e)
+  if o.head.isEmpty then return refused("nothing to land: no step of the pass said `=== HEAD`")
+  println("=== STEP check")
+  if !git("fetch", o.remote, target) then return refused(s"cannot fetch `$target` from `${o.remote}`")
+  val tip = commitOf(s"refs/remotes/${o.remote}/$target") match
+    Some(c) -> c
+    None -> return refused(s"the remote `${o.remote}` has no branch `$target`")
+  if !git("merge-base", "--is-ancestor", tip, o.head)
+    return refused(
+      s"refused: $target on ${o.remote} is now $tip, which ${o.head} does not contain, so landing it would not be a fast-forward; nothing was pushed"
+    )
+  println("=== STEP push")
+  if !git("push", o.remote, s"${o.head}:refs/heads/$target") then return refused(
+    s"the push was refused: nothing landed, and nothing is torn down"
+  )
+  val now = gitOut("ls-remote", o.remote, s"refs/heads/$target").getOrElse("").split("\t")(0)
+  if now != o.head then return refused(s"after the push, $target on ${o.remote} is `$now`, not ${o.head}")
+  println(s"landed ${o.head} on $target")
+  println("=== STEP fast-forward")
+  // the repository's own target branch follows, a fast-forward only; where it cannot, it is said
+  // and left as it is: the remote has landed, which is what the rest depends on
+  val holder = worktrees().find(w -> w.branch == target)
+  val moved = holder match
+    Some(w) -> git("-C", w.dir, "merge", "--ff-only", o.head)
+    None -> if commitOf(s"refs/heads/$target").isDefined then git(
+      "push",
+      ".",
+      s"${o.head}:refs/heads/$target"
+    ) else true
+  if !moved then println(s"warning: the local `$target` is not an ancestor of ${o.head} and was left where it is")
+  0
 
 teardown(o: Options) -> int
-    if o.head.isEmpty then return refused("teardown needs --head, the commit that landed")
-    git("fetch", "--prune", o.remote)
-    val trees = worktrees()
-    val kept = Buffer[string]()
-    for b in o.branches
-        println(s"=== STEP teardown $b")
-        // its worktree, never the main one, and never forced: one with changes is kept
-        val tree = trees.drop(1).find(w -> w.branch == b)
-        if tree.exists(w -> !git("worktree", "remove", w.dir))
-            kept += b
-            println(s"kept $b: its worktree ${tree.get.dir} could not be removed")
-            continue
-        // the remote's copy, only where what landed contains it
-        val remoteRef = s"refs/remotes/${o.remote}/$b"
-        if commitOf(remoteRef).isDefined
-            if !git("merge-base", "--is-ancestor", remoteRef, o.head)
-                kept += b
-                println(s"kept $b: ${o.remote}/$b has commits that did not land (amended, or pushed again after the merge)")
-                continue
-            if !git("push", o.remote, "--delete", b)
-                kept += b
-                println(s"kept $b: the remote refused to delete it")
-                continue
-        // the branch itself, with -d, which refuses one not merged
-        if commitOf(s"refs/heads/$b").isDefined && !git("branch", "-d", b)
-            kept += b
-            println(s"kept $b: git would not delete the branch with -d")
-            continue
-        println(s"tore down $b")
-    if kept.isEmpty then return 0
-    for b in kept do println(s"=== FAIL teardown $b")
-    refused(s"kept ${kept.mkString(" ")}")
+  if o.head.isEmpty then return refused("teardown needs --head, the commit that landed")
+  git("fetch", "--prune", o.remote)
+  val trees = worktrees()
+  val kept = Buffer[string]()
+  for b in o.branches
+    println(s"=== STEP teardown $b")
+    // its worktree, never the main one, and never forced: one with changes is kept
+    val tree = trees.drop(1).find(w -> w.branch == b)
+    if tree.exists(w -> !git("worktree", "remove", w.dir))
+      kept += b
+      println(s"kept $b: its worktree ${tree.get.dir} could not be removed")
+      continue
+    // the remote's copy, only where what landed contains it
+    val remoteRef = s"refs/remotes/${o.remote}/$b"
+    if commitOf(remoteRef).isDefined
+      if !git("merge-base", "--is-ancestor", remoteRef, o.head)
+        kept += b
+        println(s"kept $b: ${o.remote}/$b has commits that did not land (amended, or pushed again after the merge)")
+        continue
+      if !git("push", o.remote, "--delete", b)
+        kept += b
+        println(s"kept $b: the remote refused to delete it")
+        continue
+    // the branch itself, with -d, which refuses one not merged
+    if commitOf(s"refs/heads/$b").isDefined && !git("branch", "-d", b)
+      kept += b
+      println(s"kept $b: git would not delete the branch with -d")
+      continue
+    println(s"tore down $b")
+  if kept.isEmpty then return 0
+  for b in kept do println(s"=== FAIL teardown $b")
+  refused(s"kept ${kept.mkString(" ")}")
 
 cleanup(o: Options) -> int
-    if o.tree.isEmpty then return refused("cleanup needs --tree")
-    if fs.exists(o.tree)
-        // the tree is the run's own scratch, made by `merge`: nothing in it is anyone's work
-        fs.removeDirAll(o.tree) match
-            Err(e) -> return refused(s"cannot remove ${o.tree}: ${e.message}")
-            Ok(_) -> ()
-    git("worktree", "prune")
-    0
+  if o.tree.isEmpty then return refused("cleanup needs --tree")
+  if fs.exists(o.tree)
+    // the tree is the run's own scratch, made by `merge`: nothing in it is anyone's work
+    fs.removeDirAll(o.tree) match
+      Err(e) -> return refused(s"cannot remove ${o.tree}: ${e.message}")
+      Ok(_) -> ()
+  git("worktree", "prune")
+  0
 
 main(args: Vector[string]) -> int
-    if args.isEmpty
-        eprintln("usage: git (merge | land | teardown | cleanup) [options] [<branch>...]")
-        return 2
-    val o = options(args.drop(1)) match
-        Ok(o) -> o
-        Err(e) ->
-            eprintln(s"git ${args(0)}: $e")
-            return 2
-    args(0) match
-        "merge" -> merge(o)
-        "land" -> land(o)
-        "teardown" -> teardown(o)
-        "cleanup" -> cleanup(o)
-        other ->
-            eprintln(s"no step `$other`: merge, land, teardown or cleanup")
-            2
+  if args.isEmpty
+    eprintln("usage: git (merge | land | teardown | cleanup) [options] [<branch>...]")
+    return 2
+  val o = options(args.drop(1)) match
+    Ok(o) -> o
+    Err(e) ->
+      eprintln(s"git ${args(0)}: $e")
+      return 2
+  args(0) match
+    "merge" -> merge(o)
+    "land" -> land(o)
+    "teardown" -> teardown(o)
+    "cleanup" -> cleanup(o)
+    other ->
+      eprintln(s"no step `$other`: merge, land, teardown or cleanup")
+      2

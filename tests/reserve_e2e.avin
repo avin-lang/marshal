@@ -13,174 +13,192 @@ val Mi: long = 1024 * 1024
 
 // An ending event of job `id`, of `kind`, that peaked at `peak` bytes.
 peakLine(id: long, kind: string, peak: long, event: string = "finished", exit: int = 0) -> string =
-    s"{\"ts\":1762000000000,\"event\":\"$event\",\"id\":$id,\"kind\":\"$kind\",\"landing\":false,\"exit\":$exit,\"run_ms\":1000,\"peak_rss\":$peak}"
+  s"{\"ts\":1762000000000,\"event\":\"$event\",\"id\":$id,\"kind\":\"$kind\",\"landing\":false,\"exit\":$exit,\"run_ms\":1000,\"peak_rss\":$peak}"
 
 // A home with a 1G memory budget whose event log already holds two jobs of `big` that peaked at
 // 600M, two of `small` at 100M, and two of `huge` at 2G, one of them a failure.
 seededHome() -> string
-    val home = newHome("{\"memory\": \"1G\"}")
-    val lines = [
-        peakLine(1, "big", 600 * Mi), peakLine(2, "big", 550 * Mi),
-        peakLine(3, "small", 100 * Mi), peakLine(4, "small", 90 * Mi),
-        peakLine(5, "huge", 2048 * Mi), peakLine(6, "huge", 1500 * Mi, "finished", 1)]
-    fs.writeText(home + "/events.jsonl", lines.mkString("\n") + "\n").ok.get
-    home
+  val home = newHome("{\"memory\": \"1G\"}")
+  val lines = [
+    peakLine(1, "big", 600 * Mi),
+    peakLine(2, "big", 550 * Mi),
+    peakLine(3, "small", 100 * Mi),
+    peakLine(4, "small", 90 * Mi),
+    peakLine(5, "huge", 2048 * Mi),
+    peakLine(6, "huge", 1500 * Mi, "finished", 1)
+  ]
+  fs.writeText(home + "/events.jsonl", lines.mkString("\n") + "\n").ok.get
+  home
 
 // Job `id` as `status --json` lists it among the running or queued jobs.
 statusJob(home: string, id: long) -> Json
-    val status = json.parse(m(home, "status", "--json").out).ok.get
-    val all = status("running").asVector.get ++ status("queued").asVector.get
-    all.find(j -> j("id").asLong == Some(id)).get
+  val status = json.parse(m(home, "status", "--json").out).ok.get
+  val all = status("running").asVector.get ++ status("queued").asVector.get
+  all.find(j -> j("id").asLong == Some(id)).get
 
 @test("two jobs of a kind that peaked at 600M are not admitted together in 1G, while two small ones are")
 learnedAdmission()
-    val home = seededHome()
-    val a = submitted(home, "--kind", "big", "--", "sleep", "0.6")
-    val b = submitted(home, "--kind", "big", "--", "sleep", "0.1")
-    assertEq(m(home, "wait", b.toString()).code, 0)
-    assert(at(home, a, "finished") < at(home, b, "started"), s"${eventsOf(home, a)} ${eventsOf(home, b)}")
-    val c = submitted(home, "--kind", "small", "--", "sleep", "0.6")
-    val d = submitted(home, "--kind", "small", "--", "sleep", "0.1")
-    assertEq(m(home, "wait", c.toString()).code, 0)
-    assert(at(home, d, "started") < at(home, c, "finished"), s"${eventsOf(home, c)} ${eventsOf(home, d)}")
-    cleanUp(home)
+  val home = seededHome()
+  val a = submitted(home, "--kind", "big", "--", "sleep", "0.6")
+  val b = submitted(home, "--kind", "big", "--", "sleep", "0.1")
+  assertEq(m(home, "wait", b.toString()).code, 0)
+  assert(at(home, a, "finished") < at(home, b, "started"), s"${eventsOf(home, a)} ${eventsOf(home, b)}")
+  val c = submitted(home, "--kind", "small", "--", "sleep", "0.6")
+  val d = submitted(home, "--kind", "small", "--", "sleep", "0.1")
+  assertEq(m(home, "wait", c.toString()).code, 0)
+  assert(at(home, d, "started") < at(home, c, "finished"), s"${eventsOf(home, c)} ${eventsOf(home, d)}")
+  cleanUp(home)
 
-@test("a learned reservation shows in ls with ~ and in status --json as resv, marked learned; --mem 0 and --mem 300M do not learn")
+@test(
+  "a learned reservation shows in ls with ~ and in status --json as resv, marked learned; --mem 0 and --mem 300M do not learn"
+)
 learnedShown()
-    val home = seededHome()
-    val a = submitted(home, "--kind", "big", "--", "sleep", "30")
-    val none = submitted(home, "--kind", "big", "--mem", "0", "--", "sleep", "30")
-    val given = submitted(home, "--kind", "big", "--mem", "300M", "--", "sleep", "30")
-    val b = submitted(home, "--kind", "big", "--", "sleep", "30")
-    // 600M, the most of the two, and a tenth more
-    assert(lsRow(home, a).contains(" ~660M "), lsRow(home, a))
-    assert(lsRow(home, b).contains(" ~660M "), lsRow(home, b))
-    assert(lsRow(home, given).contains(" 300M "), lsRow(home, given))
-    assert(!lsRow(home, none).contains("~"), lsRow(home, none))
-    val ja = statusJob(home, a)
-    assertEq((ja("mem").asLong, ja("resv").asLong, ja("resv_learned").asBool), (Some(long(0)), Some(660 * Mi), Some(true)))
-    val jn = statusJob(home, none)
-    assertEq((jn("resv").asLong, jn("resv_learned").asBool), (Some(long(0)), Some(false)))
-    val jg = statusJob(home, given)
-    assertEq((jg("resv").asLong, jg("resv_learned").asBool), (Some(300 * Mi), Some(false)))
-    // the opted-out and the 300M jobs run beside the first big one (960M of 1G); the second big one
-    // waits for memory
-    val status = json.parse(m(home, "status", "--json").out).ok.get
-    val running = status("running").asVector.get.map(j -> j("id").asLong.get)
-    assert(running.contains(a) && running.contains(none) && !running.contains(b), s"$running")
-    assertEq(status("mem").asLong, Some(660 * Mi + 300 * Mi))
-    assert(status("mem_held").asLong.get >= 960 * Mi, s"${status("mem_held")}")
-    // a job of a kind nothing was learned of reserves nothing, as before
-    val fresh = submitted(home, "--kind", "fresh", "--", "sleep", "30")
-    assertEq(statusJob(home, fresh)("resv").asLong, Some(long(0)))
-    assertEq(m(home, "stop", "--force").code, 0)
-    cleanUp(home)
+  val home = seededHome()
+  val a = submitted(home, "--kind", "big", "--", "sleep", "30")
+  val none = submitted(home, "--kind", "big", "--mem", "0", "--", "sleep", "30")
+  val given = submitted(home, "--kind", "big", "--mem", "300M", "--", "sleep", "30")
+  val b = submitted(home, "--kind", "big", "--", "sleep", "30")
+  // 600M, the most of the two, and a tenth more
+  assert(lsRow(home, a).contains(" ~660M "), lsRow(home, a))
+  assert(lsRow(home, b).contains(" ~660M "), lsRow(home, b))
+  assert(lsRow(home, given).contains(" 300M "), lsRow(home, given))
+  assert(!lsRow(home, none).contains("~"), lsRow(home, none))
+  val ja = statusJob(home, a)
+  assertEq(
+    (ja("mem").asLong, ja("resv").asLong, ja("resv_learned").asBool),
+    (Some(long(0)), Some(660 * Mi), Some(true))
+  )
+  val jn = statusJob(home, none)
+  assertEq((jn("resv").asLong, jn("resv_learned").asBool), (Some(long(0)), Some(false)))
+  val jg = statusJob(home, given)
+  assertEq((jg("resv").asLong, jg("resv_learned").asBool), (Some(300 * Mi), Some(false)))
+  // the opted-out and the 300M jobs run beside the first big one (960M of 1G); the second big one
+  // waits for memory
+  val status = json.parse(m(home, "status", "--json").out).ok.get
+  val running = status("running").asVector.get.map(j -> j("id").asLong.get)
+  assert(running.contains(a) && running.contains(none) && !running.contains(b), s"$running")
+  assertEq(status("mem").asLong, Some(660 * Mi + 300 * Mi))
+  assert(status("mem_held").asLong.get >= 960 * Mi, s"${status("mem_held")}")
+  // a job of a kind nothing was learned of reserves nothing, as before
+  val fresh = submitted(home, "--kind", "fresh", "--", "sleep", "30")
+  assertEq(statusJob(home, fresh)("resv").asLong, Some(long(0)))
+  assertEq(m(home, "stop", "--force").code, 0)
+  cleanUp(home)
 
 @test("a kind that peaked above the whole budget is accepted, reserves the budget, and runs alone")
 overBudgetRunsAlone()
-    val home = seededHome()
-    val small = submitted(home, "--kind", "small", "--", "sleep", "0.6")
-    val huge = submitted(home, "--kind", "huge", "--", "sleep", "0.3")
-    val after = submitted(home, "--kind", "small", "--", "sleep", "0.1")
-    assertEq(statusJob(home, huge)("resv").asLong, Some(1024 * Mi))
-    assertEq(m(home, "wait", after.toString()).code, 0)
-    assertEq(eventsOf(home, huge).last, "finished")
-    assert(at(home, small, "finished") < at(home, huge, "started"), s"${eventsOf(home, huge)}")
-    assert(at(home, huge, "finished") < at(home, after, "started"), s"${eventsOf(home, after)}")
-    // a given memory above the budget is still refused
-    val refused = m(home, "submit", "--kind", "huge", "--mem", "2G", "--", "true")
-    assertEq(refused.code, 2)
-    cleanUp(home)
+  val home = seededHome()
+  val small = submitted(home, "--kind", "small", "--", "sleep", "0.6")
+  val huge = submitted(home, "--kind", "huge", "--", "sleep", "0.3")
+  val after = submitted(home, "--kind", "small", "--", "sleep", "0.1")
+  assertEq(statusJob(home, huge)("resv").asLong, Some(1024 * Mi))
+  assertEq(m(home, "wait", after.toString()).code, 0)
+  assertEq(eventsOf(home, huge).last, "finished")
+  assert(at(home, small, "finished") < at(home, huge, "started"), s"${eventsOf(home, huge)}")
+  assert(at(home, huge, "finished") < at(home, after, "started"), s"${eventsOf(home, after)}")
+  // a given memory above the budget is still refused
+  val refused = m(home, "submit", "--kind", "huge", "--mem", "2G", "--", "true")
+  assertEq(refused.code, 2)
+  cleanUp(home)
 
 @test("a learned reservation survives marshal restart, queued and running")
 learnedAcrossRestart()
-    val home = seededHome()
-    val a = submitted(home, "--kind", "big", "--", "sleep", "30")
-    val b = submitted(home, "--kind", "big", "--", "sleep", "30")
-    restarted(home)
-    for id in [a, b]
-        val j = statusJob(home, id)
-        assertEq((j("resv").asLong, j("resv_learned").asBool), (Some(660 * Mi), Some(true)))
-    assertEq(statusJob(home, b)("state").asString, Some("queued"))
-    assertEq(m(home, "stop", "--force").code, 0)
-    cleanUp(home)
+  val home = seededHome()
+  val a = submitted(home, "--kind", "big", "--", "sleep", "30")
+  val b = submitted(home, "--kind", "big", "--", "sleep", "30")
+  restarted(home)
+  for id in [a, b]
+    val j = statusJob(home, id)
+    assertEq((j("resv").asLong, j("resv_learned").asBool), (Some(660 * Mi), Some(true)))
+  assertEq(statusJob(home, b)("state").asString, Some("queued"))
+  assertEq(m(home, "stop", "--force").code, 0)
+  cleanUp(home)
 
 // An ending event of job `id`, of kind `test`, run in `dir`, that peaked at `peak` bytes.
 dirPeakLine(id: long, dir: string, peak: long) -> string =
-    s"{\"ts\":1762000000000,\"event\":\"finished\",\"id\":$id,\"kind\":\"test\",\"landing\":false,\"dir\":\"$dir\",\"exit\":0,\"run_ms\":1000,\"peak_rss\":$peak}"
+  s"{\"ts\":1762000000000,\"event\":\"finished\",\"id\":$id,\"kind\":\"test\",\"landing\":false,\"dir\":\"$dir\",\"exit\":0,\"run_ms\":1000,\"peak_rss\":$peak}"
 
 // A home with a 1G budget whose log holds `test` jobs of three directories: `big` peaked at 600M
 // twice, `small` at 100M twice, and `once` at 50M once.
 dirSeededHome() -> string
-    val home = newHome("{\"memory\": \"1G\"}")
-    for d in ["big", "small", "once", "fresh"] do fs.createDir(home + "/" + d).ok.get
-    val lines = [
-        dirPeakLine(1, home + "/big", 600 * Mi), dirPeakLine(2, home + "/small", 100 * Mi),
-        dirPeakLine(3, home + "/big", 550 * Mi), dirPeakLine(4, home + "/small", 90 * Mi),
-        dirPeakLine(5, home + "/once", 50 * Mi)]
-    fs.writeText(home + "/events.jsonl", lines.mkString("\n") + "\n").ok.get
-    home
+  val home = newHome("{\"memory\": \"1G\"}")
+  for d in ["big", "small", "once", "fresh"] do fs.createDir(home + "/" + d).ok.get
+  val lines = [
+    dirPeakLine(1, home + "/big", 600 * Mi),
+    dirPeakLine(2, home + "/small", 100 * Mi),
+    dirPeakLine(3, home + "/big", 550 * Mi),
+    dirPeakLine(4, home + "/small", 90 * Mi),
+    dirPeakLine(5, home + "/once", 50 * Mi)
+  ]
+  fs.writeText(home + "/events.jsonl", lines.mkString("\n") + "\n").ok.get
+  home
 
-@test("two directories of one kind learn separately; one with fewer than two peaks falls back to the kind's; --mem overrides both")
+@test(
+  "two directories of one kind learn separately; one with fewer than two peaks falls back to the kind's; --mem overrides both"
+)
 learnedPerDir()
-    val home = dirSeededHome()
-    val big = submitted(home, "--kind", "test", "--dir", home + "/big", "--", "sleep", "30")
-    val small = submitted(home, "--kind", "test", "--dir", home + "/small", "--", "sleep", "30")
-    val once = submitted(home, "--kind", "test", "--dir", home + "/once", "--", "sleep", "30")
-    val fresh = submitted(home, "--kind", "test", "--dir", home + "/fresh", "--", "sleep", "30")
-    val given = submitted(home, "--kind", "test", "--dir", home + "/small", "--mem", "300M", "--", "sleep", "30")
-    val none = submitted(home, "--kind", "test", "--dir", home + "/big", "--mem", "0", "--", "sleep", "30")
-    val other = submitted(home, "--kind", "other", "--dir", home + "/big", "--", "sleep", "30")
-    val resv = (id: long) ->
-        val j = statusJob(home, id)
-        (j("resv").asLong.get, j("resv_learned").asBool.get, j("resv_from").asString.get)
-    // 600M and 100M, each with a tenth more, rounded up to a mebibyte
-    assertEq(resv(big), (660 * Mi, true, "kind+dir"))
-    assertEq(resv(small), (110 * Mi, true, "kind+dir"))
-    // one peak, or none, in the directory: the kind's most, 600M
-    assertEq(resv(once), (660 * Mi, true, "kind"))
-    assertEq(resv(fresh), (660 * Mi, true, "kind"))
-    assertEq(resv(given), (300 * Mi, false, "given"))
-    assertEq(resv(none), (long(0), false, "given"))
-    // another kind in a directory that taught `test` learns nothing from it
-    assertEq(resv(other), (long(0), false, "none"))
-    assert(lsRow(home, small).contains(" ~110M "), lsRow(home, small))
-    // the source survives a restart
-    restarted(home)
-    assertEq(resv(small), (110 * Mi, true, "kind+dir"))
-    assertEq(resv(once), (660 * Mi, true, "kind"))
-    assertEq(m(home, "stop", "--force").code, 0)
-    cleanUp(home)
+  val home = dirSeededHome()
+  val big = submitted(home, "--kind", "test", "--dir", home + "/big", "--", "sleep", "30")
+  val small = submitted(home, "--kind", "test", "--dir", home + "/small", "--", "sleep", "30")
+  val once = submitted(home, "--kind", "test", "--dir", home + "/once", "--", "sleep", "30")
+  val fresh = submitted(home, "--kind", "test", "--dir", home + "/fresh", "--", "sleep", "30")
+  val given = submitted(home, "--kind", "test", "--dir", home + "/small", "--mem", "300M", "--", "sleep", "30")
+  val none = submitted(home, "--kind", "test", "--dir", home + "/big", "--mem", "0", "--", "sleep", "30")
+  val other = submitted(home, "--kind", "other", "--dir", home + "/big", "--", "sleep", "30")
+  val resv = (id: long) ->
+    val j = statusJob(home, id)
+    (j("resv").asLong.get, j("resv_learned").asBool.get, j("resv_from").asString.get)
+  // 600M and 100M, each with a tenth more, rounded up to a mebibyte
+  assertEq(resv(big), (660 * Mi, true, "kind+dir"))
+  assertEq(resv(small), (110 * Mi, true, "kind+dir"))
+  // one peak, or none, in the directory: the kind's most, 600M
+  assertEq(resv(once), (660 * Mi, true, "kind"))
+  assertEq(resv(fresh), (660 * Mi, true, "kind"))
+  assertEq(resv(given), (300 * Mi, false, "given"))
+  assertEq(resv(none), (long(0), false, "given"))
+  // another kind in a directory that taught `test` learns nothing from it
+  assertEq(resv(other), (long(0), false, "none"))
+  assert(lsRow(home, small).contains(" ~110M "), lsRow(home, small))
+  // the source survives a restart
+  restarted(home)
+  assertEq(resv(small), (110 * Mi, true, "kind+dir"))
+  assertEq(resv(once), (660 * Mi, true, "kind"))
+  assertEq(m(home, "stop", "--force").code, 0)
+  cleanUp(home)
 
-@test("a job the daemon ran teaches its own directory: after two small runs there, the directory's peaks win over the kind's")
+@test(
+  "a job the daemon ran teaches its own directory: after two small runs there, the directory's peaks win over the kind's"
+)
 learnedPerDirLive()
-    val home = dirSeededHome()
-    for _ in 0 ..< 2
-        assertEq(m(home, "run", "--kind", "test", "--dir", home + "/fresh", "--", "sleep", "2.5").code, 0)
-    val j = statusJob(home, submitted(home, "--kind", "test", "--dir", home + "/fresh", "--", "sleep", "30"))
-    assertEq(j("resv_from").asString, Some("kind+dir"))
-    assert(j("resv").asLong.get < 600 * Mi, s"${j("resv")}")
-    // and the kind keeps learning from every directory
-    val k = statusJob(home, submitted(home, "--kind", "test", "--dir", home + "/once", "--", "sleep", "30"))
-    assertEq((k("resv").asLong, k("resv_from").asString), (Some(660 * Mi), Some("kind")))
-    // stats stays per kind: the runs of two directories make one `test` row
-    assertEq(m(home, "run", "--kind", "test", "--dir", home + "/small", "--mem", "0", "--", "true").code, 0)
-    val rows = m(home, "stats").out.lines.filter(l -> l.startsWith("test ")).toVector
-    assertEq(rows.length, 1)
-    assertEq(m(home, "stop", "--force").code, 0)
-    cleanUp(home)
+  val home = dirSeededHome()
+  for _ in 0 ..< 2
+    assertEq(m(home, "run", "--kind", "test", "--dir", home + "/fresh", "--", "sleep", "2.5").code, 0)
+  val j = statusJob(home, submitted(home, "--kind", "test", "--dir", home + "/fresh", "--", "sleep", "30"))
+  assertEq(j("resv_from").asString, Some("kind+dir"))
+  assert(j("resv").asLong.get < 600 * Mi, s"${j("resv")}")
+  // and the kind keeps learning from every directory
+  val k = statusJob(home, submitted(home, "--kind", "test", "--dir", home + "/once", "--", "sleep", "30"))
+  assertEq((k("resv").asLong, k("resv_from").asString), (Some(660 * Mi), Some("kind")))
+  // stats stays per kind: the runs of two directories make one `test` row
+  assertEq(m(home, "run", "--kind", "test", "--dir", home + "/small", "--mem", "0", "--", "true").code, 0)
+  val rows = m(home, "stats").out.lines.filter(l -> l.startsWith("test ")).toVector
+  assertEq(rows.length, 1)
+  assertEq(m(home, "stop", "--force").code, 0)
+  cleanUp(home)
 
 @test("the peaks of jobs the daemon itself ran and measured teach the next job of their kind")
 learnedLive()
-    val home = newHome()
-    for _ in 0 ..< 2
-        assertEq(m(home, "run", "--kind", "live", "--", "sleep", "2.5").code, 0)
-    val peaks = events(home).filter(e -> e("event").asString == Some("finished")).map(e -> e("peak_rss").asLong.getOrElse(0))
-    assert(peaks.forall(p -> p > 0), s"$peaks")
-    val c = submitted(home, "--kind", "live", "--", "sleep", "30")
-    val j = statusJob(home, c)
-    assertEq(j("resv_learned").asBool, Some(true))
-    assert(j("resv").asLong.get > peaks.max, s"${j("resv")} $peaks")
-    assert(lsRow(home, c).contains("~"), lsRow(home, c))
-    assertEq(m(home, "stop", "--force").code, 0)
-    cleanUp(home)
+  val home = newHome()
+  for _ in 0 ..< 2
+    assertEq(m(home, "run", "--kind", "live", "--", "sleep", "2.5").code, 0)
+  val peaks = events(home).filter(
+    e -> e("event").asString == Some("finished")
+  ).map(e -> e("peak_rss").asLong.getOrElse(0))
+  assert(peaks.forall(p -> p > 0), s"$peaks")
+  val c = submitted(home, "--kind", "live", "--", "sleep", "30")
+  val j = statusJob(home, c)
+  assertEq(j("resv_learned").asBool, Some(true))
+  assert(j("resv").asLong.get > peaks.max, s"${j("resv")} $peaks")
+  assert(lsRow(home, c).contains("~"), lsRow(home, c))
+  assertEq(m(home, "stop", "--force").code, 0)
+  cleanUp(home)

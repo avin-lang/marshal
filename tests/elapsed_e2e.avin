@@ -10,48 +10,48 @@ import dev.avinlang.json.Json
 
 // The ELAPSED cell of job `id` in `ls`.
 elapsedCell(home: string, id: long) -> string
-    val rows = m(home, "ls").out.lines.toVector
-    val from = rows(0).indexOf("ELAPSED")
-    val to = rows(0).indexOf("LABEL")
-    rows.find(r -> r.startsWith(id.toString() + " ")).get.slice(from, to).trim
+  val rows = m(home, "ls").out.lines.toVector
+  val from = rows(0).indexOf("ELAPSED")
+  val to = rows(0).indexOf("LABEL")
+  rows.find(r -> r.startsWith(id.toString() + " ")).get.slice(from, to).trim
 
 // A running or queued job `id` as `status --json` gives it.
 jobJson(home: string, id: long) -> Json
-    val r = m(home, "status", "--json")
-    assertEq(r.code, 0)
-    val s = json.parse(r.out.trim).ok.get
-    (s("running").asVector.get ++ s("queued").asVector.get).find(j -> j("id").asLong == Some(id)).get
+  val r = m(home, "status", "--json")
+  assertEq(r.code, 0)
+  val s = json.parse(r.out.trim).ok.get
+  (s("running").asVector.get ++ s("queued").asVector.get).find(j -> j("id").asLong == Some(id)).get
 
 @test("a queued, a held and an --after job show - for ELAPSED, and a job that waited counts from its start")
 elapsedFromStart()
-    val home = newHome("{\"units\": 1}")
-    val blocker = submitted(home, "--", "sleep", "30")
-    val queued = submitted(home, "--", "sleep", "30")
-    val held = submitted(home, "--", "true")
-    val after = submitted(home, "--after", held.toString(), "--", "true")
-    assertEq(m(home, "hold", held.toString()).code, 0)
-    threads.sleep(millis(1500))
-    assertEq(elapsedCell(home, queued), "-")
-    assertEq(elapsedCell(home, held), "-")
-    assertEq(elapsedCell(home, after), "-")
-    // the wait is in queued_ms, and elapsed_ms is 0
-    assertEq(jobJson(home, queued)("elapsed_ms").asLong, Some(long(0)))
-    assert(jobJson(home, queued)("queued_ms").asLong.get >= 1400, jobJson(home, queued).render)
-    assert(elapsedCell(home, blocker) != "-")
-    assertEq(m(home, "kill", blocker.toString()).code, 0)
-    // the queued job starts now, after waiting 1.5 seconds or more
-    var started = false
-    for _ in 0..<100 do
-        if !started && jobJson(home, queued)("state").asString == Some("running") then started = true
-        if !started then threads.sleep(millis(50))
-    assert(started, "the queued job did not start")
-    val j = jobJson(home, queued)
-    assert(j("elapsed_ms").asLong.get < 1000, j.render)
-    assert(j("queued_ms").asLong.get >= 1400, j.render)
-    assert(elapsedCell(home, queued) != "-")
-    assertEq(m(home, "kill", queued.toString()).code, 0)
-    assertEq(m(home, "release", held.toString()).code, 0)
-    assertEq(m(home, "wait", held.toString()).code, 0)
-    assertEq(m(home, "wait", after.toString()).code, 0)
-    assert(elapsedCell(home, held) != "-")
-    cleanUp(home)
+  val home = newHome("{\"units\": 1}")
+  val blocker = submitted(home, "--", "sleep", "30")
+  val queued = submitted(home, "--", "sleep", "30")
+  val held = submitted(home, "--", "true")
+  val after = submitted(home, "--after", held.toString(), "--", "true")
+  assertEq(m(home, "hold", held.toString()).code, 0)
+  threads.sleep(millis(1500))
+  assertEq(elapsedCell(home, queued), "-")
+  assertEq(elapsedCell(home, held), "-")
+  assertEq(elapsedCell(home, after), "-")
+  // the wait is in queued_ms, and elapsed_ms is 0
+  assertEq(jobJson(home, queued)("elapsed_ms").asLong, Some(long(0)))
+  assert(jobJson(home, queued)("queued_ms").asLong.get >= 1400, jobJson(home, queued).render)
+  assert(elapsedCell(home, blocker) != "-")
+  assertEq(m(home, "kill", blocker.toString()).code, 0)
+  // the queued job starts now, after waiting 1.5 seconds or more
+  var started = false
+  for _ in 0 ..< 100 do
+    if !started && jobJson(home, queued)("state").asString == Some("running") then started = true
+    if !started then threads.sleep(millis(50))
+  assert(started, "the queued job did not start")
+  val j = jobJson(home, queued)
+  assert(j("elapsed_ms").asLong.get < 1000, j.render)
+  assert(j("queued_ms").asLong.get >= 1400, j.render)
+  assert(elapsedCell(home, queued) != "-")
+  assertEq(m(home, "kill", queued.toString()).code, 0)
+  assertEq(m(home, "release", held.toString()).code, 0)
+  assertEq(m(home, "wait", held.toString()).code, 0)
+  assertEq(m(home, "wait", after.toString()).code, 0)
+  assert(elapsedCell(home, held) != "-")
+  cleanUp(home)

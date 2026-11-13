@@ -7,56 +7,69 @@ import dev.avinlang.tui.{Blue, BrightBlack, Cyan, Grid, Style}
 
 // The meter drawn 16 cells wide at the left of a fresh grid, against a 16G budget unless told.
 bar(reserved: long, held: long, budget: long = 16 * G) -> Grid
-    val g = Grid(20, 1)
-    top.memBar(g, 0, 0, 16, reserved, held, budget)
-    g
+  val g = Grid(20, 1)
+  top.memBar(g, 0, 0, 16, reserved, held, budget)
+  g
 
 // The colour of each of the meter's cells, `c` cyan, `b` blue, `.` empty.
 shades(g: Grid) -> string =
-    (1 .. 16).map(x -> if g(x, 0).text == " " then "." elif g(x, 0).style.fg == Cyan then "c" elif g(x, 0).style.fg == Blue then "b" else "?").mkString("")
+  (1 .. 16).map(
+    x -> if g(
+      x,
+      0
+    ).text == " " then "." elif g(x, 0).style.fg == Cyan then "c" elif g(x, 0).style.fg == Blue then "b" else "?"
+  ).mkString("")
 
 // The meter as it was drawn before measured memory was shown beside it.
 before(reserved: long, budget: long) -> Grid
-    val g = Grid(20, 1)
-    g.text(0, 0, "[")
-    val f = if budget > 0 then real(reserved) / real(budget) else 0.0
-    g.meter(1, 0, 16, if f > 1.0 then 1.0 else f, Style.fg(Cyan), Style.fg(BrightBlack))
-    g.text(17, 0, "]")
-    g
+  val g = Grid(20, 1)
+  g.text(0, 0, "[")
+  val f = if budget > 0 then real(reserved) / real(budget) else 0.0
+  g.meter(1, 0, 16, if f > 1.0 then 1.0 else f, Style.fg(Cyan), Style.fg(BrightBlack))
+  g.text(17, 0, "]")
+  g
 
 sameCells(a: Grid, b: Grid)
-    for x in 0 ..< 20
-        assert(a(x, 0) == b(x, 0), s"cell $x: ${a(x, 0)} is not ${b(x, 0)}")
+  for x in 0 ..< 20
+    assert(a(x, 0) == b(x, 0), s"cell $x: ${a(x, 0)} is not ${b(x, 0)}")
 
 @test("reserved memory alone is the meter as it always was, cyan, held equal or unknown alike")
 reservedOnly()
-    assertEq(shades(bar(4 * G, 4 * G)), "cccc............")
-    assertEq(g0(bar(4 * G, 4 * G)), "[████            ]")
-    for (r, held) in [(4 * G, 4 * G), (4 * G, 0), (4 * G, 2 * G), (G * 9 / 2, 0), (long(0), long(0)), (16 * G, 16 * G), (40 * G, 0)]
-        sameCells(bar(r, held), before(r, 16 * G))
-    // no budget set: an empty meter, as before
-    sameCells(bar(4 * G, 9 * G, 0), before(4 * G, 0))
+  assertEq(shades(bar(4 * G, 4 * G)), "cccc............")
+  assertEq(g0(bar(4 * G, 4 * G)), "[████            ]")
+  for (r, held) in [
+    (4 * G, 4 * G),
+    (4 * G, 0),
+    (4 * G, 2 * G),
+    (G * 9 / 2, 0),
+    (long(0), long(0)),
+    (16 * G, 16 * G),
+    (40 * G, 0)
+  ]
+    sameCells(bar(r, held), before(r, 16 * G))
+  // no budget set: an empty meter, as before
+  sameCells(bar(4 * G, 9 * G, 0), before(4 * G, 0))
 
 @test("measured memory alone, with nothing reserved, fills the meter in blue")
 rssOnly()
-    assertEq(shades(bar(0, 8 * G)), "bbbbbbbb........")
-    assertEq(g0(bar(0, 8 * G)), "[████████        ]")
-    // more than the budget fills the meter and no more
-    assertEq(shades(bar(0, 40 * G)), "bbbbbbbbbbbbbbbb")
+  assertEq(shades(bar(0, 8 * G)), "bbbbbbbb........")
+  assertEq(g0(bar(0, 8 * G)), "[████████        ]")
+  // more than the budget fills the meter and no more
+  assertEq(shades(bar(0, 40 * G)), "bbbbbbbbbbbbbbbb")
 
 g0(g: Grid) -> string = g.rowText(0).trim
 
 @test("reserved and measured beyond it: cyan for the reservations, then blue for the rest")
 both()
-    assertEq(shades(bar(4 * G, 10 * G)), "ccccbbbbbb......")
-    assertEq(g0(bar(4 * G, 10 * G)), "[██████████      ]")
-    // a reservation ending part way through a cell keeps its partial block in cyan, blue after it
-    val g = bar(G * 9 / 2, 10 * G)
-    assertEq(shades(g), "cccccbbbbb......")
-    assertEq(g(5, 0).text, "▌")
-    assertEq(g(5, 0).style.fg, Cyan)
-    assertEq(g(6, 0).style.fg, Blue)
-    // both past the budget: the reservations fill it
-    assertEq(shades(bar(20 * G, 30 * G)), "cccccccccccccccc")
-    // a reservation too small for a cell's eighth leaves the whole span blue
-    assertEq(shades(bar(1, 8 * G)), "bbbbbbbb........")
+  assertEq(shades(bar(4 * G, 10 * G)), "ccccbbbbbb......")
+  assertEq(g0(bar(4 * G, 10 * G)), "[██████████      ]")
+  // a reservation ending part way through a cell keeps its partial block in cyan, blue after it
+  val g = bar(G * 9 / 2, 10 * G)
+  assertEq(shades(g), "cccccbbbbb......")
+  assertEq(g(5, 0).text, "▌")
+  assertEq(g(5, 0).style.fg, Cyan)
+  assertEq(g(6, 0).style.fg, Blue)
+  // both past the budget: the reservations fill it
+  assertEq(shades(bar(20 * G, 30 * G)), "cccccccccccccccc")
+  // a reservation too small for a cell's eighth leaves the whole span blue
+  assertEq(shades(bar(1, 8 * G)), "bbbbbbbb........")

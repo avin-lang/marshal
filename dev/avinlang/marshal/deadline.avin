@@ -19,34 +19,37 @@ historyKey(kind: string, landing: bool) -> string = if landing then kind + "+lan
 // The deadline of a kind nothing has been learned of: a landing run 120 minutes, a build 20, a test
 // 45, anything else 30.
 defaultDeadlineMs(kind: string, landing: bool) -> long
-    if landing then 120 * Minute
-    elif kind == "build" then 20 * Minute
-    elif kind == "test" then 45 * Minute
-    else 30 * Minute
+  if landing then 120 * Minute
+  elif kind == "build" then 20 * Minute
+  elif kind == "test" then 45 * Minute
+  else 30 * Minute
 
 // The middle of the durations, the mean of the two middle ones for an even count; 0 for none.
 median(xs: Vector[long]) -> long
-    if xs.isEmpty then return 0
-    val s = xs.sorted
-    val n = s.length
-    if n % 2 == 1 then s(n / 2) else s(n / 2 - 1) / 2 + s(n / 2) / 2 + (s(n / 2 - 1) % 2 + s(n / 2) % 2) / 2
+  if xs.isEmpty then return 0
+  val s = xs.sorted
+  val n = s.length
+  if n % 2 == 1 then s(n / 2) else s(n / 2 - 1) / 2 + s(n / 2) / 2 + (s(n / 2 - 1) % 2 + s(n / 2) % 2) / 2
 
 // The last `window` runs of the history, the ones learning reads.
 private recent(learning: Learning, history: Vector[long]) -> Vector[long] = history.takeRight(learning.window)
 
 // The deadline of a job of this kind, given its key's history (oldest first).
 deadlineMs(learning: Learning, kind: string, landing: bool, history: Vector[long]) -> long
-    val runs = recent(learning, history)
-    if runs.length < learning.minRuns then return defaultDeadlineMs(kind, landing)
-    val m = median(runs)
-    val learned = if m > long.MaxValue / learning.factor then long.MaxValue else m * learning.factor
-    if learned < learning.floorMs then learning.floorMs else learned
+  val runs = recent(learning, history)
+  if runs.length < learning.minRuns then return defaultDeadlineMs(kind, landing)
+  val m = median(runs)
+  val learned = if m > long.MaxValue / learning.factor then long.MaxValue else m * learning.factor
+  if learned < learning.floorMs then learning.floorMs else learned
 
 // How long a job of this kind is expected to run: the median of its history, or half its default
 // deadline while too little is known. The scheduler's backfill reads it.
 expectedMs(learning: Learning, kind: string, landing: bool, history: Vector[long]) -> long
-    val runs = recent(learning, history)
-    if runs.length < learning.minRuns then defaultDeadlineMs(kind, landing) / 2 else median(runs)
+  val runs = recent(learning, history)
+  if runs.length < learning.minRuns then defaultDeadlineMs(kind, landing) / 2 else median(runs)
 
 // Whether `expectedMs` is learned from the history rather than guessed from the default deadline.
-durationLearned(learning: Learning, history: Vector[long]) -> bool = recent(learning, history).length >= learning.minRuns
+durationLearned(
+    learning: Learning,
+    history: Vector[long]
+) -> bool = recent(learning, history).length >= learning.minRuns

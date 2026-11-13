@@ -22,126 +22,144 @@ data TypeLine(
     rest: Vector[string],
     label: string = "",
     quietMs: long = 0,
-    quick: bool = false)
+    quick: bool = false
+)
 
 // Takes run-type's own options out of `args` (they may stand anywhere before a `--`), leaving the
 // type's name and its parameters in order. A parameter's value that is spelt like one of these
 // options is written `--name=value`.
 typeLine(args: Vector[string]) -> Result[TypeLine, string]
-    var dir: Option[string] = None
-    var deadline: Option[long] = None
-    var units: Option[int] = None
-    var memory: Option[long] = None
-    var label = ""
-    var quiet: long = 0
-    var submitOnly = false
-    var quick = false
-    var help = false
-    val rest = Buffer[string]()
-    var i = 0
-    while i < args.length
-        val word = args(i)
-        if word == "--"
-            rest ++= args.drop(i)
-            break
-        i += 1
-        if word == "--submit"
-            submitOnly = true
-            continue
-        if word == "--quick"
-            quick = true
-            continue
-        if word == "--help" || word == "-h"
-            help = true
-            continue
-        if !["--dir", "--deadline", "--quiet-timeout", "--units", "--mem", "--label"].contains(word)
-            rest += word
-            continue
-        if i >= args.length then return Err(s"`$word` needs a value")
-        val value = args(i)
-        i += 1
-        word match
-            "--dir" -> dir = Some(value)
-            "--deadline" -> marshal.parseDeadline(value) match
-                Some(ms) -> deadline = Some(ms)
-                None -> return Err(s"`--deadline $value`: a deadline is minutes, or a number with s, m or h, such as 90s")
-            "--quiet-timeout" -> quiet = parseQuietTimeout(value)?
-            "--units" -> value.toIntOption() match
-                Some(n) -> units = Some(n)
-                None -> return Err(s"`--units $value`: units are a whole number")
-            "--label" -> label = marshal.checkLabel(value).mapErr(e -> s"`--label`: $e")?
-            _ -> marshal.parseSize(value) match
-                Some(n) -> memory = Some(n)
-                None -> return Err(s"`--mem $value`: a size is a whole number with K, M, G or T, such as 29G")
-    Ok(TypeLine(dir, deadline, units, memory, submitOnly, help, rest.toVector, label, quiet, quick))
+  var dir: Option[string] = None
+  var deadline: Option[long] = None
+  var units: Option[int] = None
+  var memory: Option[long] = None
+  var label = ""
+  var quiet: long = 0
+  var submitOnly = false
+  var quick = false
+  var help = false
+  val rest = Buffer[string]()
+  var i = 0
+  while i < args.length
+    val word = args(i)
+    if word == "--"
+      rest ++= args.drop(i)
+      break
+    i += 1
+    if word == "--submit"
+      submitOnly = true
+      continue
+    if word == "--quick"
+      quick = true
+      continue
+    if word == "--help" || word == "-h"
+      help = true
+      continue
+    if !["--dir", "--deadline", "--quiet-timeout", "--units", "--mem", "--label"].contains(word)
+      rest += word
+      continue
+    if i >= args.length then return Err(s"`$word` needs a value")
+    val value = args(i)
+    i += 1
+    word match
+      "--dir" -> dir = Some(value)
+      "--deadline" -> marshal.parseDeadline(value) match
+        Some(ms) -> deadline = Some(ms)
+        None -> return Err(s"`--deadline $value`: a deadline is minutes, or a number with s, m or h, such as 90s")
+      "--quiet-timeout" -> quiet = parseQuietTimeout(value)?
+      "--units" -> value.toIntOption() match
+        Some(n) -> units = Some(n)
+        None -> return Err(s"`--units $value`: units are a whole number")
+      "--label" -> label = marshal.checkLabel(value).mapErr(e -> s"`--label`: $e")?
+      _ -> marshal.parseSize(value) match
+        Some(n) -> memory = Some(n)
+        None -> return Err(s"`--mem $value`: a size is a whole number with K, M, G or T, such as 29G")
+  Ok(TypeLine(dir, deadline, units, memory, submitOnly, help, rest.toVector, label, quiet, quick))
 
 // `marshal run-type <type> …`, or with `typeName` given, `marshal train …` and the like.
 runType(args: Vector[string], typeName: Option[string]) -> int
-    val line = typeLine(args) match
-        Ok(l) -> l
-        Err(e) -> return complain(s"marshal: $e")
-    val (name, params) = typeName match
-        Some(n) -> (n, line.rest)
-        None -> line.rest match
-            [] ->
-                if line.help
-                    println(commandHelp("run-type").get)
-                    return 0
-                return complain("marshal: give the type to run: marshal run-type <type> [parameters]")
-            words -> (words(0), words.drop(1))
-    val cwd = process.currentDir().getOrElse(".")
-    val dir = line.dir.map(d -> runner.absolute(d, cwd)).getOrElse(cwd)
-    if !fs.isDir(dir) then return complain(s"marshal: $dir is not a directory")
-    val file = runner.findType(name, dir, home(), runner.stockDir()) match
-        Ok(f) -> f
-        Err(e) -> return complain(s"marshal: $e")
-    val t = runner.loadType(file) match
-        Ok(t) -> t
-        Err(e) -> return complain(s"marshal: $e")
-    if line.help
-        println(marshal.typeHelp(t))
-        return 0
-    marshal.bindParams(t, params).flatMap(v -> marshal.checkBound(t, v)) match
-        Ok(_) -> ()
-        Err(e) -> return complain(s"marshal: ${t.name}: $e\n(`marshal run-type ${t.name} --help` lists its parameters)")
-    val own = process.executable() match
-        Some(p) -> p
-        None -> return complain("marshal: cannot find this program's own executable to run the steps with")
-    var env = process.environment().toVector.sortBy(e -> e.0)
-    // the job runs from a copy of the type and of marshal, which an upgrade of the installation cannot remove
-    var program = marshal.stablePath(own)
-    var typeFile = file
-    marshal.snapshotType(home(), file, t, runner.stockDir(), own) match
-        Ok(snap) ->
-            typeFile = snap.typeFile
-            program = snap.executable.getOrElse(program)
-            for stock in snap.stock do env = env.filter(e -> e.0 != "MARSHAL_STOCK") ++ [("MARSHAL_STOCK", stock)]
-        Err(e) -> eprintln(s"marshal: note: not copying the type for the job: $e; it runs from the installed files")
-    // a quick run keeps the type's own deadline only where the quick lane allows it
-    val typeDeadline = if line.quick then t.deadlineMs.filter(d -> d <= marshal.QuickCapMs) else t.deadlineMs
-    val spec = JobSpec(t.kind, line.units.getOrElse(t.units), line.memory.getOrElse(t.memory), t.landing, dir,
-        line.deadline.orElse(typeDeadline), [program, "run-steps", typeFile] ++ params, env, false, [], false, 0, 0, false, line.label, line.quietMs, quick = line.quick)
-    val (id, log) = askDaemon(Request.Submit(spec)) match
-        Ok(Submitted(id, log, hint)) ->
-            if hint.nonEmpty then eprintln(hint)
-            (id, log)
-        Ok(Failed(e)) -> return complain(s"marshal: $e")
-        Ok(other) -> return complain(s"marshal: unexpected reply $other")
-        Err(e) -> return complain(e)
-    if line.submitOnly
-        println(id)
-        return 0
-    println(s"marshal: job $id: ${t.name}, log $log")
-    askDaemon(Request.Wait(id)) match
-        Ok(Ended(job)) ->
-            println(marshal.resultLine(job))
-            for text in fs.readText(s"${home()}/runs/$id/report.txt").ok do print(text)
-            job.outcome.map(marshal.exitCode).getOrElse(Trouble)
-        Ok(Failed(e)) -> complain(s"marshal: $e")
-        Ok(other) -> complain(s"marshal: unexpected reply $other")
-        Err(e) -> complain(e)
+  val line = typeLine(args) match
+    Ok(l) -> l
+    Err(e) -> return complain(s"marshal: $e")
+  val (name, params) = typeName match
+    Some(n) -> (n, line.rest)
+    None -> line.rest match
+      [] ->
+        if line.help
+          println(commandHelp("run-type").get)
+          return 0
+        return complain("marshal: give the type to run: marshal run-type <type> [parameters]")
+      words -> (words(0), words.drop(1))
+  val cwd = process.currentDir().getOrElse(".")
+  val dir = line.dir.map(d -> runner.absolute(d, cwd)).getOrElse(cwd)
+  if !fs.isDir(dir) then return complain(s"marshal: $dir is not a directory")
+  val file = runner.findType(name, dir, home(), runner.stockDir()) match
+    Ok(f) -> f
+    Err(e) -> return complain(s"marshal: $e")
+  val t = runner.loadType(file) match
+    Ok(t) -> t
+    Err(e) -> return complain(s"marshal: $e")
+  if line.help
+    println(marshal.typeHelp(t))
+    return 0
+  marshal.bindParams(t, params).flatMap(v -> marshal.checkBound(t, v)) match
+    Ok(_) -> ()
+    Err(e) -> return complain(s"marshal: ${t.name}: $e\n(`marshal run-type ${t.name} --help` lists its parameters)")
+  val own = process.executable() match
+    Some(p) -> p
+    None -> return complain("marshal: cannot find this program's own executable to run the steps with")
+  var env = process.environment().toVector.sortBy(e -> e.0)
+  // the job runs from a copy of the type and of marshal, which an upgrade of the installation cannot remove
+  var program = marshal.stablePath(own)
+  var typeFile = file
+  marshal.snapshotType(home(), file, t, runner.stockDir(), own) match
+    Ok(snap) ->
+      typeFile = snap.typeFile
+      program = snap.executable.getOrElse(program)
+      for stock in snap.stock do env = env.filter(e -> e.0 != "MARSHAL_STOCK") ++ [("MARSHAL_STOCK", stock)]
+    Err(e) -> eprintln(s"marshal: note: not copying the type for the job: $e; it runs from the installed files")
+  // a quick run keeps the type's own deadline only where the quick lane allows it
+  val typeDeadline = if line.quick then t.deadlineMs.filter(d -> d <= marshal.QuickCapMs) else t.deadlineMs
+  val spec = JobSpec(
+    t.kind,
+    line.units.getOrElse(t.units),
+    line.memory.getOrElse(t.memory),
+    t.landing,
+    dir,
+    line.deadline.orElse(typeDeadline),
+    [program, "run-steps", typeFile] ++ params,
+    env,
+    false,
+    [],
+    false,
+    0,
+    0,
+    false,
+    line.label,
+    line.quietMs,
+    quick = line.quick
+  )
+  val (id, log) = askDaemon(Request.Submit(spec)) match
+    Ok(Submitted(id, log, hint)) ->
+      if hint.nonEmpty then eprintln(hint)
+      (id, log)
+    Ok(Failed(e)) -> return complain(s"marshal: $e")
+    Ok(other) -> return complain(s"marshal: unexpected reply $other")
+    Err(e) -> return complain(e)
+  if line.submitOnly
+    println(id)
+    return 0
+  println(s"marshal: job $id: ${t.name}, log $log")
+  askDaemon(Request.Wait(id)) match
+    Ok(Ended(job)) ->
+      println(marshal.resultLine(job))
+      for text in fs.readText(s"${home()}/runs/$id/report.txt").ok do print(text)
+      job.outcome.map(marshal.exitCode).getOrElse(Trouble)
+    Ok(Failed(e)) -> complain(s"marshal: $e")
+    Ok(other) -> complain(s"marshal: unexpected reply $other")
+    Err(e) -> complain(e)
 
 // `marshal run-steps <file> <parameters>`: what a type's job runs.
 runSteps(args: Vector[string]) -> int = args match
-    [] -> complain("marshal: run-steps takes a type's file and its parameters")
-    _ -> runner.main(args(0), args.drop(1))
+  [] -> complain("marshal: run-steps takes a type's file and its parameters")
+  _ -> runner.main(args(0), args.drop(1))

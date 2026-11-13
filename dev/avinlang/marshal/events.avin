@@ -20,8 +20,8 @@ val endings: Set[string] = {"finished", "timeout", "quiet", "killed", "cancelled
 
 // One event line, without its line feed.
 eventLine(ts: long, event: string, job: JobInfo, extra: Vector[(string, Json)]) -> string =
-    val head = [("ts", Json.num(ts)), ("event", Json.str(event))]
-    Json.Obj(head ++ encodeJob(job).asMembers.get ++ extra).render
+  val head = [("ts", Json.num(ts)), ("event", Json.str(event))]
+  Json.Obj(head ++ encodeJob(job).asMembers.get ++ extra).render
 
 // What a daemon learns from the log when it starts.
 // - `nextId`: one past the highest job id the log has seen, or 1.
@@ -33,102 +33,166 @@ eventLine(ts: long, event: string, job: JobInfo, extra: Vector[(string, Json)]) 
 // - `peaks`: the `peak_rss` of every ending event that has one above 0, oldest first, whatever the
 //   outcome: what reservations are learned from. Each is kept under its `historyKey` and, where the
 //   event names its `dir`, under its `memoryDirKey` too.
-data Recovered(nextId: long, open: Vector[Json], histories: Map[string, Vector[long]], unreadable: int, ended: Vector[JobInfo], peaks: Map[string, Vector[long]])
+data Recovered(
+    nextId: long,
+    open: Vector[Json],
+    histories: Map[string, Vector[long]],
+    unreadable: int,
+    ended: Vector[JobInfo],
+    peaks: Map[string, Vector[long]]
+)
 
 recover(lines: Iterable[string], keep: int = 10) -> Recovered
-    var maxId: long = 0
-    var unreadable = 0
-    val last = Buffer[(long, Json)]()
-    val position = MutableMap[long, int]()
-    val histories = MutableMap[string, Buffer[long]]()
-    val peaks = MutableMap[string, Buffer[long]]()
-    for line in lines
-        if line.trim.isEmpty then continue
-        val ev = json.parse(line) match
-            Ok(j) -> j
-            Err(_) ->
-                unreadable += 1
-                continue
-        val fields = (ev.get("id").flatMap(v -> v.asLong), ev.get("event").flatMap(v -> v.asString))
-        val (id, kind) = fields match
-            (Some(i), Some(k)) -> (i, k)
-            _ ->
-                unreadable += 1
-                continue
-        if id > maxId then maxId = id
-        position.get(id) match
-            Some(p) -> last(p) = (id, ev)
+  var maxId: long = 0
+  var unreadable = 0
+  val last = Buffer[(long, Json)]()
+  val position = MutableMap[long, int]()
+  val histories = MutableMap[string, Buffer[long]]()
+  val peaks = MutableMap[string, Buffer[long]]()
+  for line in lines
+    if line.trim.isEmpty then continue
+    val ev = json.parse(line) match
+      Ok(j) -> j
+      Err(_) ->
+        unreadable += 1
+        continue
+    val fields = (ev.get("id").flatMap(v -> v.asLong), ev.get("event").flatMap(v -> v.asString))
+    val (id, kind) = fields match
+      (Some(i), Some(k)) -> (i, k)
+      _ ->
+        unreadable += 1
+        continue
+    if id > maxId then maxId = id
+    position.get(id) match
+      Some(p) -> last(p) = (id, ev)
+      None ->
+        position(id) = last.length
+        last += (id, ev)
+    val peak = ev.get("peak_rss").flatMap(v -> v.asLong).getOrElse(0)
+    // an external job's peak is its tree's, not its work's: never learned from
+    if endings.contains(kind) && peak > 0 && ev.get("external").flatMap(v -> v.asBool) != Some(true)
+      val evKind = ev.get("kind").flatMap(v -> v.asString).getOrElse("")
+      val evLanding = ev.get("landing").flatMap(v -> v.asBool).getOrElse(false)
+      // an event without a directory teaches its kind only
+      val keys = [historyKey(evKind, evLanding)] ++ ev.get("dir").flatMap(v -> v.asString).map(
+        d -> [memoryDirKey(evKind, evLanding, d)]
+      ).getOrElse(Vector[string]())
+      for key in keys
+        peaks.get(key) match
+          Some(b) -> b += peak
+          None ->
+            val b = Buffer[long]()
+            b += peak
+            peaks(key) = b
+    if kind == "finished" && ev.get("exit").flatMap(v -> v.asLong) == Some(long(0)) && !(
+      ev.get("killed").flatMap(v -> v.asBool) == Some(true)
+    )
+      val run = ev.get("run_ms").flatMap(v -> v.asLong)
+      val key = historyKey(
+        ev.get("kind").flatMap(v -> v.asString).getOrElse(""),
+        ev.get("landing").flatMap(v -> v.asBool).getOrElse(false)
+      )
+      run match
+        Some(ms) ->
+          histories.get(key) match
+            Some(b) -> b += ms
             None ->
-                position(id) = last.length
-                last += (id, ev)
-        val peak = ev.get("peak_rss").flatMap(v -> v.asLong).getOrElse(0)
-        // an external job's peak is its tree's, not its work's: never learned from
-        if endings.contains(kind) && peak > 0 && ev.get("external").flatMap(v -> v.asBool) != Some(true)
-            val evKind = ev.get("kind").flatMap(v -> v.asString).getOrElse("")
-            val evLanding = ev.get("landing").flatMap(v -> v.asBool).getOrElse(false)
-            // an event without a directory teaches its kind only
-            val keys = [historyKey(evKind, evLanding)] ++ ev.get("dir").flatMap(v -> v.asString).map(d -> [memoryDirKey(evKind, evLanding, d)]).getOrElse(Vector[string]())
-            for key in keys
-                peaks.get(key) match
-                    Some(b) -> b += peak
-                    None ->
-                        val b = Buffer[long]()
-                        b += peak
-                        peaks(key) = b
-        if kind == "finished" && ev.get("exit").flatMap(v -> v.asLong) == Some(long(0)) && !(ev.get("killed").flatMap(v -> v.asBool) == Some(true))
-            val run = ev.get("run_ms").flatMap(v -> v.asLong)
-            val key = historyKey(ev.get("kind").flatMap(v -> v.asString).getOrElse(""), ev.get("landing").flatMap(v -> v.asBool).getOrElse(false))
-            run match
-                Some(ms) ->
-                    histories.get(key) match
-                        Some(b) -> b += ms
-                        None ->
-                            val b = Buffer[long]()
-                            b += ms
-                            histories(key) = b
-                None -> ()
-    val open = last.filter(e -> !endings.contains(e.1.get("event").flatMap(v -> v.asString).getOrElse(""))).map(e -> e.1)
-    val learned = histories.keys.map(k -> (k, histories(k).toVector)).toMap
-    val ended = last.filter(e -> endings.contains(e.1.get("event").flatMap(v -> v.asString).getOrElse(""))).map(e -> decodeJob(e.1)).filter(r -> r.isOk).map(r -> r.ok.get)
-    val peaked = peaks.keys.map(k -> (k, peaks(k).toVector)).toMap
-    Recovered(maxId + 1, open.toVector, learned, unreadable, ended.takeRight(keep).toVector, peaked)
+              val b = Buffer[long]()
+              b += ms
+              histories(key) = b
+        None -> ()
+  val open = last.filter(e -> !endings.contains(e.1.get("event").flatMap(v -> v.asString).getOrElse(""))).map(e -> e.1)
+  val learned = histories.keys.map(k -> (k, histories(k).toVector)).toMap
+  val ended = last.filter(
+    e -> endings.contains(e.1.get("event").flatMap(v -> v.asString).getOrElse(""))
+  ).map(e -> decodeJob(e.1)).filter(r -> r.isOk).map(r -> r.ok.get)
+  val peaked = peaks.keys.map(k -> (k, peaks(k).toVector)).toMap
+  Recovered(maxId + 1, open.toVector, learned, unreadable, ended.takeRight(keep).toVector, peaked)
 
 // The `lost` event for a job whose last event is `ev`: done, its outcome `Lost`, and `group_alive`
 // saying whether its process group still had processes when the new daemon looked. None when `ev`
 // is not a job's event.
 lostLine(ts: long, ev: Json, groupAlive: bool) -> Option[string] = decodeJob(ev) match
-    Ok(j) ->
-        val lost = asLost(j)
-        val pgid = ev.get("pgid").getOrElse(Json.num(0))
-        Some(eventLine(ts, "lost", lost, [("run_ms", Json.num(j.elapsedMs)), ("exit", Json.num(exitCode(Lost))), ("pgid", pgid), ("group_alive", Json.Bool(groupAlive))]))
-    Err(_) -> None
+  Ok(j) ->
+    val lost = asLost(j)
+    val pgid = ev.get("pgid").getOrElse(Json.num(0))
+    Some(
+      eventLine(
+        ts,
+        "lost",
+        lost,
+        [
+          ("run_ms", Json.num(j.elapsedMs)),
+          ("exit", Json.num(exitCode(Lost))),
+          ("pgid", pgid),
+          ("group_alive", Json.Bool(groupAlive))
+        ]
+      )
+    )
+  Err(_) -> None
 
 // Job `j` as its `lost` event describes it.
-asLost(j: JobInfo) -> JobInfo = JobInfo(j.id, j.kind, j.units, j.memory, j.landing, j.dir, j.cmd, "done", Some(Lost), j.killed, j.queuedMs, j.elapsedMs, j.deadlineMs, j.log, j.sample, 0, j.peakRss, j.startedAt, j.held, j.priority, j.urgent, false, [], j.attempt, 0, false, j.label, j.quietMs, j.reservedFrom, j.external, j.quick)
+asLost(j: JobInfo) -> JobInfo = JobInfo(
+  j.id,
+  j.kind,
+  j.units,
+  j.memory,
+  j.landing,
+  j.dir,
+  j.cmd,
+  "done",
+  Some(Lost),
+  j.killed,
+  j.queuedMs,
+  j.elapsedMs,
+  j.deadlineMs,
+  j.log,
+  j.sample,
+  0,
+  j.peakRss,
+  j.startedAt,
+  j.held,
+  j.priority,
+  j.urgent,
+  false,
+  [],
+  j.attempt,
+  0,
+  false,
+  j.label,
+  j.quietMs,
+  j.reservedFrom,
+  j.external,
+  j.quick
+)
 
 // Whether an event ends its job for good: an ending, and not one of an attempt that runs again.
 endsJob(ev: Json) -> bool =
-    endings.contains(ev.get("event").flatMap(v -> v.asString).getOrElse("")) && ev.get("retrying").flatMap(v -> v.asBool) != Some(true)
+  endings.contains(
+    ev.get("event").flatMap(v -> v.asString).getOrElse("")
+  ) && ev.get("retrying").flatMap(v -> v.asBool) != Some(true)
 
 // The specification job `id` was submitted with, as its `submitted` event records it; None when the
 // log has no such event or it records none.
 specOf(lines: Iterable[string], id: long) -> Option[JobSpec]
-    for line in lines
-        if !line.contains("\"id\":" + id.toString()) || !line.contains("\"submitted\"") then continue
-        json.parse(line) match
-            Ok(ev) if ev.get("id").flatMap(v -> v.asLong) == Some(id) && ev.get("event").flatMap(v -> v.asString) == Some("submitted") ->
-                return ev.get("spec").flatMap(s -> decodeSpec(s).ok)
-            _ -> ()
-    None
+  for line in lines
+    if !line.contains("\"id\":" + id.toString()) || !line.contains("\"submitted\"") then continue
+    json.parse(line) match
+      Ok(ev) if ev.get("id").flatMap(v -> v.asLong) == Some(id) && ev.get("event").flatMap(
+        v -> v.asString
+      ) == Some("submitted") ->
+        return ev.get("spec").flatMap(s -> decodeSpec(s).ok)
+      _ -> ()
+  None
 
 // The last event that ended job `id` for good, or None while the log has none: the ending of an
 // attempt that runs again does not end it.
 endOf(lines: Iterable[string], id: long) -> Option[Json]
-    var found: Option[Json] = None
-    for line in lines
-        if !line.contains("\"id\":" + id.toString()) then continue
-        json.parse(line) match
-            Ok(ev) if ev.get("id").flatMap(v -> v.asLong) == Some(id) && endsJob(ev) ->
-                found = Some(ev)
-            _ -> ()
-    found
+  var found: Option[Json] = None
+  for line in lines
+    if !line.contains("\"id\":" + id.toString()) then continue
+    json.parse(line) match
+      Ok(ev) if ev.get("id").flatMap(v -> v.asLong) == Some(id) && endsJob(ev) ->
+        found = Some(ev)
+      _ -> ()
+  found

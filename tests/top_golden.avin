@@ -19,241 +19,389 @@ styleText(s: Style) -> string = s"${s.fg}/${s.bg}/${s.attrs}"
 // `g` as text: its rows between bars, then for each row the runs of cells in one style other than
 // the plain one, as `row x..end style`.
 screenText(g: Grid) -> string
-    val rows = (0 ..< g.height).map(y -> "|" + g.rowText(y) + "|").toVector
-    val runs = Vector.newBuilder[string]()
-    for y in 0 ..< g.height
-        var x = 0
-        while x < g.width
-            val s = g(x, y).style
-            var end = x + 1
-            while end < g.width && g(end, y).style == s
-                end += 1
-            if s != Style.plain() then runs.addOne(s"$y $x..$end ${styleText(s)}")
-            x = end
-    (rows ++ ["--"] ++ runs.result()).mkString("\n") + "\n"
+  val rows = (0 ..< g.height).map(y -> "|" + g.rowText(y) + "|").toVector
+  val runs = Vector.newBuilder[string]()
+  for y in 0 ..< g.height
+    var x = 0
+    while x < g.width
+      val s = g(x, y).style
+      var end = x + 1
+      while end < g.width && g(end, y).style == s
+        end += 1
+      if s != Style.plain() then runs.addOne(s"$y $x..$end ${styleText(s)}")
+      x = end
+  (rows ++ ["--"] ++ runs.result()).mkString("\n") + "\n"
 
 // Checks `g` against the golden file `name`, or writes it when MARSHAL_GOLDEN_WRITE is set.
 golden(name: string, g: Grid)
-    val file = s"$GoldenDir/$name.txt"
-    val got = screenText(g)
-    if process.env("MARSHAL_GOLDEN_WRITE").isDefined
-        fs.createDirAll(GoldenDir).ok.get
-        fs.writeText(file, got).ok.get
-        return
-    val want = fs.readText(file).ok.getOrElse(s"(no golden file $file)")
-    if got != want then println(s"the screen differs from $file")
-    assertEq(got, want)
+  val file = s"$GoldenDir/$name.txt"
+  val got = screenText(g)
+  if process.env("MARSHAL_GOLDEN_WRITE").isDefined
+    fs.createDirAll(GoldenDir).ok.get
+    fs.writeText(file, got).ok.get
+    return
+  val want = fs.readText(file).ok.getOrElse(s"(no golden file $file)")
+  if got != want then println(s"the screen differs from $file")
+  assertEq(got, want)
 
 // A job with every field the screen reads, as a snapshot gives it.
-gjob(id: long, kind: string = "build", state: string = "running", outcome: Option[Outcome] = None, units: int = 1,
-     landing: bool = false, cmd: Vector[string] = ["make", "-j4"], elapsed: long = 2 * minuteMs, deadline: long = 30 * minuteMs,
-     memory: long = 0, rss: long = 0, peak: long = 0, paused: bool = false, killed: bool = false, label: string = "",
-     after: Vector[long] = [], attempt: int = 1, reserved: long = 0, learned: bool = false, quick: bool = false, urgent: bool = false, exclusive: bool = false) -> JobInfo =
-    JobInfo(id, kind, units, memory, landing, "/w", cmd, state, outcome, killed, 0, elapsed, deadline, s"/h/jobs/$id.log", None,
-            rss = rss, peakRss = peak, paused = paused, after = after, attempt = attempt, reserved = reserved,
-            reservedLearned = learned, label = label, quick = quick, urgent = urgent, exclusive = exclusive)
+gjob(
+    id: long,
+    kind: string = "build",
+    state: string = "running",
+    outcome: Option[Outcome] = None,
+    units: int = 1,
+    landing: bool = false,
+    cmd: Vector[string] = ["make", "-j4"],
+    elapsed: long = 2 * minuteMs,
+    deadline: long = 30 * minuteMs,
+    memory: long = 0,
+    rss: long = 0,
+    peak: long = 0,
+    paused: bool = false,
+    killed: bool = false,
+    label: string = "",
+    after: Vector[long] = [],
+    attempt: int = 1,
+    reserved: long = 0,
+    learned: bool = false,
+    quick: bool = false,
+    urgent: bool = false,
+    exclusive: bool = false
+) -> JobInfo =
+  JobInfo(
+    id,
+    kind,
+    units,
+    memory,
+    landing,
+    "/w",
+    cmd,
+    state,
+    outcome,
+    killed,
+    0,
+    elapsed,
+    deadline,
+    s"/h/jobs/$id.log",
+    None,
+    rss = rss,
+    peakRss = peak,
+    paused = paused,
+    after = after,
+    attempt = attempt,
+    reserved = reserved,
+    reservedLearned = learned,
+    label = label,
+    quick = quick,
+    urgent = urgent,
+    exclusive = exclusive
+  )
 
 // A busy daemon: a landing job, a paused one, take-slot holding units with runs waiting, the queue
 // held, every reason to wait, jobs waiting for others or to retry, and every way a job ends.
 busy() -> Overview
-    val running = [
-        gjob(21, kind = "test", units = 2, landing = true, cmd = ["sysl", "test", "compiler", "--timeout", "1800"], elapsed = 25 * minuteMs,
-             memory = 4 * G, rss = 3 * G, peak = 5 * G, label = "release 0.3 train"),
-        gjob(22, units = 3, cmd = ["cargo", "build", "--release"], elapsed = 29 * minuteMs + 30000, memory = 2 * G, rss = 2 * G + G / 2, peak = 3 * G),
-        gjob(23, kind = "bench", paused = true, cmd = ["./bench.sh"], elapsed = 3 * minuteMs, deadline = 4 * minuteMs, reserved = G, learned = true),
-        gjob(24, kind = "lint", cmd = ["eslint", "."], elapsed = 26 * minuteMs, deadline = 30 * minuteMs)]
-    val queuedJobs = [
-        QueuedJob(gjob(30, state = "queued", deadline = 45 * minuteMs, units = 4), 1, Why.NoUnits),
-        QueuedJob(gjob(31, state = "queued", memory = 8 * G), 2, Why.NoMemory),
-        QueuedJob(gjob(32, kind = "test", state = "queued", landing = true), 3, Why.LaneBusy),
-        QueuedJob(gjob(33, state = "queued"), 4, Why.Draining),
-        QueuedJob(gjob(34, state = "queued"), 5, Why.ForTakeSlot),
-        QueuedJob(gjob(35, state = "queued"), 6, Why.Behind(30)),
-        QueuedJob(gjob(36, state = "queued"), 7, Why.Starting),
-        QueuedJob(gjob(37, state = "queued", label = "日本語のラベルはとても長い"), 8, Why.Held),
-        QueuedJob(gjob(38, state = "queued"), 9, Why.QueueHeld)]
-    val waits = [gjob(40, state = "waiting", after = [21, 22]), gjob(41, state = "retrying", attempt = 2)]
-    val recent = [
-        gjob(19, state = "done", outcome = Some(Outcome.Quiet(600000))),
-        gjob(18, state = "done", outcome = Some(Outcome.DependencyFailed(17))),
-        gjob(17, state = "done", outcome = Some(Outcome.Exited(1))),
-        gjob(16, state = "done", outcome = Some(Outcome.Signalled(9))),
-        gjob(15, state = "done", outcome = Some(Outcome.Exited(0)), peak = 700 * 1048576)]
-    Overview(Usage(6, 12, 7 * G, 16 * G, 4, 9, Some(21), Some(TakeSlotUse("/s/.git", 3, 2, false)), 6 * G, 64 * G, true, 10 * G),
-             90061000, running, queuedJobs, recent, waits)
+  val running = [
+    gjob(
+      21,
+      kind = "test",
+      units = 2,
+      landing = true,
+      cmd = ["sysl", "test", "compiler", "--timeout", "1800"],
+      elapsed = 25 * minuteMs,
+      memory = 4 * G,
+      rss = 3 * G,
+      peak = 5 * G,
+      label = "release 0.3 train"
+    ),
+    gjob(
+      22,
+      units = 3,
+      cmd = ["cargo", "build", "--release"],
+      elapsed = 29 * minuteMs + 30000,
+      memory = 2 * G,
+      rss = 2 * G + G / 2,
+      peak = 3 * G
+    ),
+    gjob(
+      23,
+      kind = "bench",
+      paused = true,
+      cmd = ["./bench.sh"],
+      elapsed = 3 * minuteMs,
+      deadline = 4 * minuteMs,
+      reserved = G,
+      learned = true
+    ),
+    gjob(24, kind = "lint", cmd = ["eslint", "."], elapsed = 26 * minuteMs, deadline = 30 * minuteMs)
+  ]
+  val queuedJobs = [
+    QueuedJob(gjob(30, state = "queued", deadline = 45 * minuteMs, units = 4), 1, Why.NoUnits),
+    QueuedJob(gjob(31, state = "queued", memory = 8 * G), 2, Why.NoMemory),
+    QueuedJob(gjob(32, kind = "test", state = "queued", landing = true), 3, Why.LaneBusy),
+    QueuedJob(gjob(33, state = "queued"), 4, Why.Draining),
+    QueuedJob(gjob(34, state = "queued"), 5, Why.ForTakeSlot),
+    QueuedJob(gjob(35, state = "queued"), 6, Why.Behind(30)),
+    QueuedJob(gjob(36, state = "queued"), 7, Why.Starting),
+    QueuedJob(gjob(37, state = "queued", label = "日本語のラベルはとても長い"), 8, Why.Held),
+    QueuedJob(gjob(38, state = "queued"), 9, Why.QueueHeld)
+  ]
+  val waits = [gjob(40, state = "waiting", after = [21, 22]), gjob(41, state = "retrying", attempt = 2)]
+  val recent = [
+    gjob(19, state = "done", outcome = Some(Outcome.Quiet(600000))),
+    gjob(18, state = "done", outcome = Some(Outcome.DependencyFailed(17))),
+    gjob(17, state = "done", outcome = Some(Outcome.Exited(1))),
+    gjob(16, state = "done", outcome = Some(Outcome.Signalled(9))),
+    gjob(15, state = "done", outcome = Some(Outcome.Exited(0)), peak = 700 * 1048576)
+  ]
+  Overview(
+    Usage(6, 12, 7 * G, 16 * G, 4, 9, Some(21), Some(TakeSlotUse("/s/.git", 3, 2, false)), 6 * G, 64 * G, true, 10 * G),
+    90061000,
+    running,
+    queuedJobs,
+    recent,
+    waits
+  )
 
-idleDaemon() -> Overview =Overview(Usage(0, 12, 0, 16 * G, 0, 0, None, None), 5000, [], [], [])
+idleDaemon() -> Overview = Overview(Usage(0, 12, 0, 16 * G, 0, 0, None, None), 5000, [], [], [])
 
 @test("the unit bar puts each boundary at the nearest cell and an exact half rounds up, wherever the half falls")
 unitBarHalves()
-    // 15 of 22 in 11 cells is exactly 7.5, and 1 of 4 in 10 is 2.5: both round up
-    assertEq(counts(0, 15, 22, 11), [0, 8])
-    assertEq(counts(15, 0, 22, 11), [8, 0])
-    assertEq(counts(1, 0, 4, 10), [3, 0])
-    assertEq(counts(7, 8, 22, 11), [4, 4])
-    // past the budget the bar is full, and a budget of 0 counts as 1
-    assertEq(counts(10, 10, 12, 12), [10, 2])
-    assertEq(counts(1, 0, 0, 10), [10, 0])
+  // 15 of 22 in 11 cells is exactly 7.5, and 1 of 4 in 10 is 2.5: both round up
+  assertEq(counts(0, 15, 22, 11), [0, 8])
+  assertEq(counts(15, 0, 22, 11), [8, 0])
+  assertEq(counts(1, 0, 4, 10), [3, 0])
+  assertEq(counts(7, 8, 22, 11), [4, 4])
+  // past the budget the bar is full, and a budget of 0 counts as 1
+  assertEq(counts(10, 10, 12, 12), [10, 2])
+  assertEq(counts(1, 0, 0, 10), [10, 0])
 
 // The green cells and the magenta ones of a unit bar `width` wide for `ours` and `outside` of `budget`.
 private counts(ours: int, outside: int, budget: int, width: int) -> Vector[int]
-    val g = Grid(width + 2, 1)
-    top.unitBar(g, 0, 0, width, ours, outside, budget)
-    val cells = (1 .. width).map(x -> g(x, 0).style.fg).toVector
-    [cells.count(c -> c == Green), cells.count(c -> c == Magenta)]
+  val g = Grid(width + 2, 1)
+  top.unitBar(g, 0, 0, width, ours, outside, budget)
+  val cells = (1 .. width).map(x -> g(x, 0).style.fg).toVector
+  [cells.count(c -> c == Green), cells.count(c -> c == Magenta)]
 
 @test("golden: the main list of a full daemon at every width, wide to narrow")
 goldenMain()
-    for (w, h) in [(140, 24), (120, 22), (100, 20), (90, 20), (89, 20), (80, 18), (60, 16), (40, 12), (24, 8)]
-        golden(s"full-$w", drawn(viewing(full()), w, h))
+  for (w, h) in [(140, 24), (120, 22), (100, 20), (90, 20), (89, 20), (80, 18), (60, 16), (40, 12), (24, 8)]
+    golden(s"full-$w", drawn(viewing(full()), w, h))
 
 @test("golden: a busy daemon, with landing, take-slot, a paused job, the queue held and every state")
 goldenBusy()
-    for (w, h) in [(160, 30), (120, 30), (100, 28), (89, 28), (70, 24), (40, 14)]
-        golden(s"busy-$w", drawn(viewing(busy()), w, h))
-    // time on since the snapshot: clocks move, the paused job's stands still
-    golden("busy-later", drawn(viewing(busy()), 120, 30, 5 * minuteMs))
+  for (w, h) in [(160, 30), (120, 30), (100, 28), (89, 28), (70, 24), (40, 14)]
+    golden(s"busy-$w", drawn(viewing(busy()), w, h))
+  // time on since the snapshot: clocks move, the paused job's stands still
+  golden("busy-later", drawn(viewing(busy()), 120, 30, 5 * minuteMs))
 
 @test("golden: every filter")
 goldenFilters()
-    val app = viewing(busy())
-    for name in ["running", "queued", "finished", "all"]
-        app.handle(key('f'))
-        golden(s"filter-$name", drawn(app, 120, 30))
+  val app = viewing(busy())
+  for name in ["running", "queued", "finished", "all"]
+    app.handle(key('f'))
+    golden(s"filter-$name", drawn(app, 120, 30))
 
 @test("golden: an empty daemon, no daemon, one that cannot answer, and none asked yet")
 goldenEmpty()
-    golden("empty", drawn(viewing(idleDaemon()), 100, 12))
-    golden("empty-narrow", drawn(viewing(idleDaemon()), 30, 8))
-    val none = App("/h/sock")
-    golden("asking", drawn(none, 80, 8))
-    none.lost("no daemon at /h/sock (connection refused)", true)
-    golden("no-daemon", drawn(none, 80, 8))
-    none.lost("the daemon cannot give a snapshot", false)
-    golden("cannot-answer", drawn(none, 80, 8))
+  golden("empty", drawn(viewing(idleDaemon()), 100, 12))
+  golden("empty-narrow", drawn(viewing(idleDaemon()), 30, 8))
+  val none = App("/h/sock")
+  golden("asking", drawn(none, 80, 8))
+  none.lost("no daemon at /h/sock (connection refused)", true)
+  golden("no-daemon", drawn(none, 80, 8))
+  none.lost("the daemon cannot give a snapshot", false)
+  golden("cannot-answer", drawn(none, 80, 8))
 
 @test("golden: the selection hidden after the delay, and scrolled to the end of a short screen")
 goldenSelection()
-    val app = viewing(busy())
-    app.handle(press(Down))
-    app.handle(press(Down))
-    val g = Grid(120, 30)
-    app.draw(g, 0, 60000)
-    golden("hidden", g)
-    app.handle(press(End), 60000)
-    app.handle(press(End), 60000)
-    golden("end-short", drawn(app, 100, 14))
+  val app = viewing(busy())
+  app.handle(press(Down))
+  app.handle(press(Down))
+  val g = Grid(120, 30)
+  app.draw(g, 0, 60000)
+  golden("hidden", g)
+  app.handle(press(End), 60000)
+  app.handle(press(End), 60000)
+  golden("end-short", drawn(app, 100, 14))
 
 @test("golden: the log pane with its header, following, scrolled back, empty, wrapped and squeezed")
 goldenLog()
-    val app = viewing(busy())
-    app.handle(press(Enter))
-    app.logLines = (1 .. 60).map(i -> s"line $i of the build output").toVector
-    golden("log-labelled", drawn(app, 120, 34))
-    golden("log-narrow", drawn(app, 50, 34))
-    app.handle(press(PageUp))
-    golden("log-back", drawn(app, 120, 34))
-    app.handle(press(Home))
-    golden("log-home", drawn(app, 120, 34))
-    app.handle(press(End))
-    app.handle(press(Down))
-    app.logLines = []
-    golden("log-empty", drawn(app, 100, 30))
-    val long = ["sh", "-c", (0 ..< 14).map(i -> "abcdefghij").mkString("")]
-    val wrapping = viewing(Overview(full().usage, 0, [gjob(1, cmd = long, label = "a label long enough to wrap in a narrow pane")], [], []))
-    wrapping.handle(press(Enter))
-    wrapping.logLines = ["first", "last"]
-    for (w, h) in [(60, 30), (60, 16), (60, 14), (60, 12), (40, 12), (30, 10), (100, 9), (100, 8), (100, 7)]
-        golden(s"log-wrap-$w-$h", drawn(wrapping, w, h))
+  val app = viewing(busy())
+  app.handle(press(Enter))
+  app.logLines = (1 .. 60).map(i -> s"line $i of the build output").toVector
+  golden("log-labelled", drawn(app, 120, 34))
+  golden("log-narrow", drawn(app, 50, 34))
+  app.handle(press(PageUp))
+  golden("log-back", drawn(app, 120, 34))
+  app.handle(press(Home))
+  golden("log-home", drawn(app, 120, 34))
+  app.handle(press(End))
+  app.handle(press(Down))
+  app.logLines = []
+  golden("log-empty", drawn(app, 100, 30))
+  val long = ["sh", "-c", (0 ..< 14).map(i -> "abcdefghij").mkString("")]
+  val wrapping = viewing(
+    Overview(full().usage, 0, [gjob(1, cmd = long, label = "a label long enough to wrap in a narrow pane")], [], [])
+  )
+  wrapping.handle(press(Enter))
+  wrapping.logLines = ["first", "last"]
+  for (w, h) in [(60, 30), (60, 16), (60, 14), (60, 12), (40, 12), (30, 10), (100, 9), (100, 8), (100, 7)]
+    golden(s"log-wrap-$w-$h", drawn(wrapping, w, h))
 
 @test("golden: the help, wide and squeezed, and the kill prompt and messages on the bottom line")
 goldenOverlays()
-    val app = viewing(busy())
-    app.handle(key('h'))
-    golden("help", drawn(app, 120, 30))
-    golden("help-small", drawn(app, 50, 14))
-    app.handle(key('x'))
-    app.handle(key('k'))
-    golden("kill-prompt", drawn(app, 120, 30))
-    golden("kill-prompt-narrow", drawn(app, 40, 12))
-    app.handle(key('n'))
-    golden("not-killed", drawn(app, 120, 30))
-    app.handle(key('f'))
-    app.handle(key('f'))
-    app.handle(key('f'))
-    app.handle(press(End))
-    app.handle(key('k'))
-    golden("already-ended", drawn(app, 120, 30))
-    val none = viewing(idleDaemon())
-    none.handle(key('k'))
-    golden("no-job-selected", drawn(none, 80, 10))
-    // a resize while the help shows closes it
-    app.handle(key('h'))
-    app.handle(Resize(120, 30))
-    golden("help-resized", drawn(app, 120, 30))
+  val app = viewing(busy())
+  app.handle(key('h'))
+  golden("help", drawn(app, 120, 30))
+  golden("help-small", drawn(app, 50, 14))
+  app.handle(key('x'))
+  app.handle(key('k'))
+  golden("kill-prompt", drawn(app, 120, 30))
+  golden("kill-prompt-narrow", drawn(app, 40, 12))
+  app.handle(key('n'))
+  golden("not-killed", drawn(app, 120, 30))
+  app.handle(key('f'))
+  app.handle(key('f'))
+  app.handle(key('f'))
+  app.handle(press(End))
+  app.handle(key('k'))
+  golden("already-ended", drawn(app, 120, 30))
+  val none = viewing(idleDaemon())
+  none.handle(key('k'))
+  golden("no-job-selected", drawn(none, 80, 10))
+  // a resize while the help shows closes it
+  app.handle(key('h'))
+  app.handle(Resize(120, 30))
+  golden("help-resized", drawn(app, 120, 30))
 
-@test("golden: the quick lane: running quick jobs say quick with their kind marked ^, the header counts the lane, and a third waits for it")
+@test(
+  "golden: the quick lane: running quick jobs say quick with their kind marked ^, the header counts the lane, and a third waits for it"
+)
 goldenQuickLane()
-    val running = [
-        gjob(41, kind = "test", units = 4, cmd = ["avin", "test", "."], elapsed = 20000, deadline = 2 * minuteMs, quick = true),
-        gjob(42, kind = "test", units = 4, cmd = ["avin", "test", "lib"], elapsed = 5000, deadline = 2 * minuteMs, quick = true),
-        gjob(40, units = 12, cmd = ["make", "-j12"], elapsed = 10 * minuteMs)]
-    val queued = [
-        QueuedJob(gjob(43, kind = "test", state = "queued", units = 4, deadline = 2 * minuteMs, quick = true), 1, Why.QuickFull),
-        QueuedJob(gjob(44, state = "queued", units = 1), 1, Why.NoUnits)]
-    val o = Overview(Usage(12, 12, 0, 16 * G, 3, 2, None, None, quick = 2), 60000, running, queued, [])
-    golden("quick-lane", drawn(viewing(o), 100, 12))
-    // with no quick job running, the header says nothing of the lane
-    assert(!drawn(viewing(idleDaemon()), 100, 10).rowText(0).contains("quick"))
-    assert(drawn(viewing(o), 100, 12).rowText(0).contains("quick: 2/2"))
+  val running = [
+    gjob(
+      41,
+      kind = "test",
+      units = 4,
+      cmd = ["avin", "test", "."],
+      elapsed = 20000,
+      deadline = 2 * minuteMs,
+      quick = true
+    ),
+    gjob(
+      42,
+      kind = "test",
+      units = 4,
+      cmd = ["avin", "test", "lib"],
+      elapsed = 5000,
+      deadline = 2 * minuteMs,
+      quick = true
+    ),
+    gjob(40, units = 12, cmd = ["make", "-j12"], elapsed = 10 * minuteMs)
+  ]
+  val queued = [
+    QueuedJob(
+      gjob(43, kind = "test", state = "queued", units = 4, deadline = 2 * minuteMs, quick = true),
+      1,
+      Why.QuickFull
+    ),
+    QueuedJob(gjob(44, state = "queued", units = 1), 1, Why.NoUnits)
+  ]
+  val o = Overview(Usage(12, 12, 0, 16 * G, 3, 2, None, None, quick = 2), 60000, running, queued, [])
+  golden("quick-lane", drawn(viewing(o), 100, 12))
+  // with no quick job running, the header says nothing of the lane
+  assert(!drawn(viewing(idleDaemon()), 100, 10).rowText(0).contains("quick"))
+  assert(drawn(viewing(o), 100, 12).rowText(0).contains("quick: 2/2"))
 
-@test("golden: an urgent job's kind is marked !, after its lane's mark, running, queued and ended; a long kind is cut as build* is")
+@test(
+  "golden: an urgent job's kind is marked !, after its lane's mark, running, queued and ended; a long kind is cut as build* is"
+)
 goldenUrgentMarks()
-    val running = [
-        gjob(51, kind = "test", urgent = true, cmd = ["make", "test"]),
-        gjob(52, kind = "test", units = 4, cmd = ["avin", "test", "."], elapsed = 20000, deadline = 2 * minuteMs, quick = true, urgent = true),
-        gjob(53, kind = "test", landing = true, urgent = true, cmd = ["sysl", "test", "compiler"]),
-        gjob(54, kind = "funl-test", urgent = true, cmd = ["sbt", "test"]),
-        gjob(55, kind = "build", landing = false, cmd = ["make"])]
-    val queued = [
-        QueuedJob(gjob(56, kind = "test", state = "queued", urgent = true), 1, Why.NoUnits),
-        QueuedJob(gjob(57, kind = "test", state = "queued", quick = true, urgent = true, deadline = 2 * minuteMs), 1, Why.QuickFull),
-        QueuedJob(gjob(58, state = "queued"), 2, Why.NoUnits)]
-    val ended = [gjob(50, kind = "test", state = "done", outcome = Some(Outcome.Exited(0)), urgent = true)]
-    val o = Overview(Usage(8, 12, 0, 16 * G, 5, 3, Some(53), None, quick = 1), 60000, running, queued, ended)
-    golden("urgent-marks", drawn(viewing(o), 120, 20))
-    golden("urgent-marks-80", drawn(viewing(o), 80, 20))
-    assert(drawn(viewing(o), 120, 20).rowText(5).contains("test!"))
-    assert(drawn(viewing(o), 120, 20).rowText(8).contains("funl-t…!"))
+  val running = [
+    gjob(51, kind = "test", urgent = true, cmd = ["make", "test"]),
+    gjob(
+      52,
+      kind = "test",
+      units = 4,
+      cmd = ["avin", "test", "."],
+      elapsed = 20000,
+      deadline = 2 * minuteMs,
+      quick = true,
+      urgent = true
+    ),
+    gjob(53, kind = "test", landing = true, urgent = true, cmd = ["sysl", "test", "compiler"]),
+    gjob(54, kind = "funl-test", urgent = true, cmd = ["sbt", "test"]),
+    gjob(55, kind = "build", landing = false, cmd = ["make"])
+  ]
+  val queued = [
+    QueuedJob(gjob(56, kind = "test", state = "queued", urgent = true), 1, Why.NoUnits),
+    QueuedJob(
+      gjob(57, kind = "test", state = "queued", quick = true, urgent = true, deadline = 2 * minuteMs),
+      1,
+      Why.QuickFull
+    ),
+    QueuedJob(gjob(58, state = "queued"), 2, Why.NoUnits)
+  ]
+  val ended = [gjob(50, kind = "test", state = "done", outcome = Some(Outcome.Exited(0)), urgent = true)]
+  val o = Overview(Usage(8, 12, 0, 16 * G, 5, 3, Some(53), None, quick = 1), 60000, running, queued, ended)
+  golden("urgent-marks", drawn(viewing(o), 120, 20))
+  golden("urgent-marks-80", drawn(viewing(o), 80, 20))
+  assert(drawn(viewing(o), 120, 20).rowText(5).contains("test!"))
+  assert(drawn(viewing(o), 120, 20).rowText(8).contains("funl-t…!"))
 
 @test("golden: an exclusive job's kind is marked #, running, queued and ended, with ! after it")
 goldenExclusiveMarks()
-    val running = [gjob(61, kind = "bench", units = 12, exclusive = true, cmd = ["./bench"]), gjob(62, kind = "bench", exclusive = true, urgent = true, cmd = ["./bench", "-x"])]
-    val queued = [QueuedJob(gjob(63, kind = "bench", state = "queued", exclusive = true), 1, Why.NoUnits)]
-    val ended = [gjob(60, kind = "bench", state = "done", outcome = Some(Outcome.Exited(0)), exclusive = true)]
-    val o = Overview(Usage(8, 12, 0, 16 * G, 5, 3, None, None), 60000, running, queued, ended)
-    golden("exclusive-marks", drawn(viewing(o), 100, 16))
-    assert(drawn(viewing(o), 100, 16).rowText(5).contains("bench#"))
-    assert(drawn(viewing(o), 100, 16).rowText(6).contains("bench#!"))
+  val running = [
+    gjob(61, kind = "bench", units = 12, exclusive = true, cmd = ["./bench"]),
+    gjob(62, kind = "bench", exclusive = true, urgent = true, cmd = ["./bench", "-x"])
+  ]
+  val queued = [QueuedJob(gjob(63, kind = "bench", state = "queued", exclusive = true), 1, Why.NoUnits)]
+  val ended = [gjob(60, kind = "bench", state = "done", outcome = Some(Outcome.Exited(0)), exclusive = true)]
+  val o = Overview(Usage(8, 12, 0, 16 * G, 5, 3, None, None), 60000, running, queued, ended)
+  golden("exclusive-marks", drawn(viewing(o), 100, 16))
+  assert(drawn(viewing(o), 100, 16).rowText(5).contains("bench#"))
+  assert(drawn(viewing(o), 100, 16).rowText(6).contains("bench#!"))
 
 // A daemon running only a landing job of `units`, with take-slot's use if any.
 landingOnly(units: int, takeSlot: Option[TakeSlotUse]) -> Overview =
-    Overview(Usage(0, 12, 0, 16 * G, 1, 0, Some(7), takeSlot), 60000, [gjob(7, kind = "test", units = units, landing = true)], [], [])
+  Overview(
+    Usage(0, 12, 0, 16 * G, 1, 0, Some(7), takeSlot),
+    60000,
+    [gjob(7, kind = "test", units = units, landing = true)],
+    [],
+    []
+  )
 
-@test("golden: the units line adds the landing job's units, outside the budget, and drops them whole where they do not fit")
+@test(
+  "golden: the units line adds the landing job's units, outside the budget, and drops them whole where they do not fit"
+)
 goldenLandingUnits()
-    val alone = landingOnly(1, None)
-    // `0 / 12   landing 1` ends at column 40 of a 40-cell screen, and is dropped from a 39-cell one
-    for w in [100, 40, 39, 24]
-        golden(s"landing-units-$w", drawn(viewing(alone), w, 10))
-    val beside = landingOnly(3, Some(TakeSlotUse("/s/.git", 4, 0, false)))
-    // `0 + take-slot 4 / 12   landing 3` ends at column 61 of a 61-cell screen
-    for w in [120, 61, 60, 40]
-        golden(s"landing-units-takeslot-$w", drawn(viewing(beside), w, 10))
-    golden("landing-units-takeslot-waiting", drawn(viewing(landingOnly(2, Some(TakeSlotUse("/s/.git", 4, 3, false)))), 100, 10))
-    // the lane held by take-slot, or by a landing job not among the running ones: nothing is added
-    golden("landing-units-lane-takeslot", drawn(viewing(Overview(Usage(0, 12, 0, 16 * G, 0, 0, None, Some(TakeSlotUse("/s", 2, 0, true))), 0, [], [], [])), 100, 10))
-    golden("landing-units-not-running", drawn(viewing(Overview(Usage(0, 12, 0, 16 * G, 0, 1, Some(9), None), 0, [], [], [])), 100, 10))
-    val row = drawn(viewing(alone), 100, 10).rowText(1)
-    assert(row.contains("] 0 / 12   landing 1"), row)
-    assert(!drawn(viewing(alone), 39, 10).rowText(1).contains("landing"))
+  val alone = landingOnly(1, None)
+  // `0 / 12   landing 1` ends at column 40 of a 40-cell screen, and is dropped from a 39-cell one
+  for w in [100, 40, 39, 24]
+    golden(s"landing-units-$w", drawn(viewing(alone), w, 10))
+  val beside = landingOnly(3, Some(TakeSlotUse("/s/.git", 4, 0, false)))
+  // `0 + take-slot 4 / 12   landing 3` ends at column 61 of a 61-cell screen
+  for w in [120, 61, 60, 40]
+    golden(s"landing-units-takeslot-$w", drawn(viewing(beside), w, 10))
+  golden(
+    "landing-units-takeslot-waiting",
+    drawn(viewing(landingOnly(2, Some(TakeSlotUse("/s/.git", 4, 3, false)))), 100, 10)
+  )
+  // the lane held by take-slot, or by a landing job not among the running ones: nothing is added
+  golden(
+    "landing-units-lane-takeslot",
+    drawn(
+      viewing(Overview(Usage(0, 12, 0, 16 * G, 0, 0, None, Some(TakeSlotUse("/s", 2, 0, true))), 0, [], [], [])),
+      100,
+      10
+    )
+  )
+  golden(
+    "landing-units-not-running",
+    drawn(viewing(Overview(Usage(0, 12, 0, 16 * G, 0, 1, Some(9), None), 0, [], [], [])), 100, 10)
+  )
+  val row = drawn(viewing(alone), 100, 10).rowText(1)
+  assert(row.contains("] 0 / 12   landing 1"), row)
+  assert(!drawn(viewing(alone), 39, 10).rowText(1).contains("landing"))

@@ -16,168 +16,180 @@ import dev.avinlang.marshal.{Outcome, Overview, Reply, Why}
 // Runs `marshal top` against `home` in a 100 by 30 pty, typing `keys` (a shell `printf` format) once
 // it has drawn: what it wrote, with every escape sequence a space and runs of blanks one space.
 topIn(home: string, keys: string, zone: string = "") -> string
-    val script = "(sleep 3; printf '" + keys + "'; sleep 2) | script -q /dev/null sh -c 'stty cols 100 rows 30; \"$M\" top; echo STATUS=$?'"
-    val base = Command("sh", "-c", script).withEnv("M", bin()).withEnv("MARSHAL_HOME", home).withEnv("MARSHAL_TAKE_SLOT_DIR", slots(home))
-    val out = (if zone.nonEmpty then base.withEnv("TZ", zone) else base).output().getOrElse("")
-    plainText(out)
+  val script = "(sleep 3; printf '"
+    + keys
+    + "'; sleep 2) | script -q /dev/null sh -c 'stty cols 100 rows 30; \"$M\" top; echo STATUS=$?'"
+  val base = Command("sh", "-c", script).withEnv("M", bin()).withEnv("MARSHAL_HOME", home).withEnv(
+    "MARSHAL_TAKE_SLOT_DIR",
+    slots(home)
+  )
+  val out = (if zone.nonEmpty then base.withEnv("TZ", zone) else base).output().getOrElse("")
+  plainText(out)
 
 // Runs `marshal top` against `home` with the highlight hiding after `idleMs`, running the shell
 // commands `steps` (sleeps and `printf`s of keys) in front of it: everything it wrote, escape
 // sequences and all.
 topRaw(home: string, steps: string, idleMs: int) -> string
-    val script = "(" + steps + ") | script -q /dev/null sh -c 'stty cols 100 rows 30; \"$M\" top; echo STATUS=$?'"
-    val base = Command("sh", "-c", script).withEnv("M", bin()).withEnv("MARSHAL_HOME", home).withEnv("MARSHAL_TAKE_SLOT_DIR", slots(home))
-    base.withEnv("MARSHAL_TEST_TOP_IDLE_MS", idleMs.toString()).output().getOrElse("")
+  val script = "(" + steps + ") | script -q /dev/null sh -c 'stty cols 100 rows 30; \"$M\" top; echo STATUS=$?'"
+  val base = Command("sh", "-c", script).withEnv("M", bin()).withEnv("MARSHAL_HOME", home).withEnv(
+    "MARSHAL_TAKE_SLOT_DIR",
+    slots(home)
+  )
+  base.withEnv("MARSHAL_TEST_TOP_IDLE_MS", idleMs.toString()).output().getOrElse("")
 
 // `text` with each escape sequence (ESC, `[`, parameters, a final letter) a space, and every run of
 // blanks one space.
 plainText(text: string) -> string
-    val out = StringWriter()
-    var escaping = false
-    for c in text.chars
-        if escaping
-            if 'a' <= c <= 'z' || 'A' <= c <= 'Z'
-                escaping = false
-                out.write(" ")
-        else if c == '\u{1b}'
-            escaping = true
-        else
-            out.write(c.toString())
-    out.text.split(" ").filter((w: string) -> w.trim.nonEmpty).mkString(" ")
+  val out = StringWriter()
+  var escaping = false
+  for c in text.chars
+    if escaping
+      if 'a' <= c <= 'z' || 'A' <= c <= 'Z'
+        escaping = false
+        out.write(" ")
+    else if c == '\u{1b}'
+      escaping = true
+    else
+      out.write(c.toString())
+  out.text.split(" ").filter((w: string) -> w.trim.nonEmpty).mkString(" ")
 
 // Waits up to five seconds for job `id` of `home` to be running.
 runningSoon(home: string, id: long) -> bool
-    for _ in 0 ..< 50
-        if eventsOf(home, id).contains("started") then return true
-        threads.sleep(millis(100))
-    false
+  for _ in 0 ..< 50
+    if eventsOf(home, id).contains("started") then return true
+    threads.sleep(millis(100))
+  false
 
 @test("top in a pty shows the running job's row and quits on q with status 0, leaving the job running")
 topShowsRunningJob()
-    if process.os() != MacOS then return
-    val home = newHome()
-    assertEq(m(home, "run", "--", "true").code, 0)
-    val id = submitted(home, "--units", "3", "--", "sleep", "60")
-    assert(runningSoon(home, id))
-    val shown = topIn(home, "q")
-    assert(shown.contains("STATUS=0"), shown)
-    assert(shown.contains("marshal up"), shown)
-    assert(shown.contains(s"$id running build 3"), shown)
-    assert(shown.contains("sleep 60"), shown)
-    assert(shown.contains("1 exit 0 build 1"), shown)
-    assert(shown.contains("3 + take-slot 0 / 12"), shown)
-    assertEq(eventsOf(home, id), ["submitted", "started"])
-    cleanUp(home)
+  if process.os() != MacOS then return
+  val home = newHome()
+  assertEq(m(home, "run", "--", "true").code, 0)
+  val id = submitted(home, "--units", "3", "--", "sleep", "60")
+  assert(runningSoon(home, id))
+  val shown = topIn(home, "q")
+  assert(shown.contains("STATUS=0"), shown)
+  assert(shown.contains("marshal up"), shown)
+  assert(shown.contains(s"$id running build 3"), shown)
+  assert(shown.contains("sleep 60"), shown)
+  assert(shown.contains("1 exit 0 build 1"), shown)
+  assert(shown.contains("3 + take-slot 0 / 12"), shown)
+  assertEq(eventsOf(home, id), ["submitted", "started"])
+  cleanUp(home)
 
 @test("top in a pty shows when each job started in the terminal's zone, and - for a queued one")
 topShowsStartTime()
-    if process.os() != MacOS then return
-    val home = newHome("{\"units\": 1}")
-    val id = submitted(home, "--", "sleep", "60")
-    val waiting = submitted(home, "--", "sleep", "60")
-    assert(runningSoon(home, id))
-    val startedAt = snapshotOf(home).running(0).startedAt
-    assert(startedAt > 0)
-    val utc = topIn(home, "q", "UTC")
-    val utcText = time.epochMillis(startedAt).atZone(time.utc).format("MM-DD hh:mm")
-    assert(utc.contains(s"$id running build 1 - ") && utc.contains(s" $utcText 0:"), utc)
-    assert(utc.contains(s"$waiting #1 no units build 1 - - - - "), utc)
-    val york = topIn(home, "q", "America/New_York")
-    val yorkText = time.epochMillis(startedAt).atZone(time.zone("America/New_York").ok.get).format("MM-DD hh:mm")
-    assert(york.contains(s"$id running build 1 - ") && york.contains(s" $yorkText 0:"), york)
-    assert(utcText != yorkText)
-    cleanUp(home)
+  if process.os() != MacOS then return
+  val home = newHome("{\"units\": 1}")
+  val id = submitted(home, "--", "sleep", "60")
+  val waiting = submitted(home, "--", "sleep", "60")
+  assert(runningSoon(home, id))
+  val startedAt = snapshotOf(home).running(0).startedAt
+  assert(startedAt > 0)
+  val utc = topIn(home, "q", "UTC")
+  val utcText = time.epochMillis(startedAt).atZone(time.utc).format("MM-DD hh:mm")
+  assert(utc.contains(s"$id running build 1 - ") && utc.contains(s" $utcText 0:"), utc)
+  assert(utc.contains(s"$waiting #1 no units build 1 - - - - "), utc)
+  val york = topIn(home, "q", "America/New_York")
+  val yorkText = time.epochMillis(startedAt).atZone(time.zone("America/New_York").ok.get).format("MM-DD hh:mm")
+  assert(york.contains(s"$id running build 1 - ") && york.contains(s" $yorkText 0:"), york)
+  assert(utcText != yorkText)
+  cleanUp(home)
 
-@test("top in a pty starts with no row highlighted, shows it on a key, hides it when idle and shows it again on the next key without moving")
+@test(
+  "top in a pty starts with no row highlighted, shows it on a key, hides it when idle and shows it again on the next key without moving"
+)
 topHidesHighlightWhenIdle()
-    if process.os() != MacOS then return
-    val home = newHome()
-    val id = submitted(home, "--", "sleep", "60")
-    assert(runningSoon(home, id))
-    // the selected row's first cell, reversed, as the terminal is told to draw it
-    val lit = "\u{1b}[7m    " + id.toString() + " "
-    val idle = topRaw(home, "sleep 3; printf q", 1000)
-    assert(idle.contains("STATUS=0"), plainText(idle))
-    assert(idle.contains(s"running"), plainText(idle))
-    assertEq(idle.split(lit).length, 1)
-    // a key shows it; with no key after it the screen is not drawn lit again
-    val shown = topRaw(home, "sleep 3; printf x; sleep 1; printf q", 5000)
-    assertEq(shown.split(lit).length, 2)
-    // key, idle past the delay (hidden), Down (only shows it again on the same job), q
-    val again = topRaw(home, "sleep 3; printf x; sleep 3; printf '\\033[B'; sleep 1; printf q", 1000)
-    assert(again.contains("STATUS=0"), plainText(again))
-    assertEq(again.split(lit).length, 3)
-    cleanUp(home)
+  if process.os() != MacOS then return
+  val home = newHome()
+  val id = submitted(home, "--", "sleep", "60")
+  assert(runningSoon(home, id))
+  // the selected row's first cell, reversed, as the terminal is told to draw it
+  val lit = "\u{1b}[7m    " + id.toString() + " "
+  val idle = topRaw(home, "sleep 3; printf q", 1000)
+  assert(idle.contains("STATUS=0"), plainText(idle))
+  assert(idle.contains(s"running"), plainText(idle))
+  assertEq(idle.split(lit).length, 1)
+  // a key shows it; with no key after it the screen is not drawn lit again
+  val shown = topRaw(home, "sleep 3; printf x; sleep 1; printf q", 5000)
+  assertEq(shown.split(lit).length, 2)
+  // key, idle past the delay (hidden), Down (only shows it again on the same job), q
+  val again = topRaw(home, "sleep 3; printf x; sleep 3; printf '\\033[B'; sleep 1; printf q", 1000)
+  assert(again.contains("STATUS=0"), plainText(again))
+  assertEq(again.split(lit).length, 3)
+  cleanUp(home)
 
 @test("top kills the selected job after k and y")
 topKills()
-    if process.os() != MacOS then return
-    val home = newHome()
-    val id = submitted(home, "--", "sleep", "60")
-    assert(runningSoon(home, id))
-    val shown = topIn(home, "kyq")
-    assert(shown.contains("Kill job 1 (sleep 60)? y/n"), shown)
-    assert(shown.contains("job 1 is being stopped"), shown)
-    val r = m(home, "wait", id.toString())
-    assertEq(r.code, 143)
-    assert(r.out.contains("killed"), r.out)
-    cleanUp(home)
+  if process.os() != MacOS then return
+  val home = newHome()
+  val id = submitted(home, "--", "sleep", "60")
+  assert(runningSoon(home, id))
+  val shown = topIn(home, "kyq")
+  assert(shown.contains("Kill job 1 (sleep 60)? y/n"), shown)
+  assert(shown.contains("job 1 is being stopped"), shown)
+  val r = m(home, "wait", id.toString())
+  assertEq(r.code, 143)
+  assert(r.out.contains("killed"), r.out)
+  cleanUp(home)
 
 @test("top with no daemon says so, starts none, and quits on q with status 0")
 topWithoutDaemon()
-    if process.os() != MacOS then return
-    val home = newHome()
-    val shown = topIn(home, "q")
-    assert(shown.contains("STATUS=0"), shown)
-    assert(shown.contains("no daemon at"), shown)
-    assert(shown.contains("s starts one"), shown)
-    assert(!fs.exists(home + "/sock"))
-    fs.removeDirAll(home)
+  if process.os() != MacOS then return
+  val home = newHome()
+  val shown = topIn(home, "q")
+  assert(shown.contains("STATUS=0"), shown)
+  assert(shown.contains("no daemon at"), shown)
+  assert(shown.contains("s starts one"), shown)
+  assert(!fs.exists(home + "/sock"))
+  fs.removeDirAll(home)
 
 @test("top takes no arguments, and where there is no terminal it says so and exits 2")
 topRefusals()
-    val home = newHome()
-    val r = m(home, "top", "now")
-    assertEq(r.code, 2)
-    assert(r.out.contains("top takes no arguments"), r.out)
-    val s = m(home, "top")
-    assertEq(s.code, 2)
-    assert(s.out.contains("not a terminal"), s.out)
-    assert(!fs.exists(home + "/sock"))
-    fs.removeDirAll(home)
+  val home = newHome()
+  val r = m(home, "top", "now")
+  assertEq(r.code, 2)
+  assert(r.out.contains("top takes no arguments"), r.out)
+  val s = m(home, "top")
+  assertEq(s.code, 2)
+  assert(s.out.contains("not a terminal"), s.out)
+  assert(!fs.exists(home + "/sock"))
+  fs.removeDirAll(home)
 
 // The daemon's snapshot of `home`, asked over its socket.
 snapshotOf(home: string) -> Overview
-    val conn = UnixStream.connect(home + "/sock").ok.get
-    conn.writeText("{\"op\":\"snapshot\"}\n").ok.get
-    val reply = conn.readLine().ok.get.get
-    conn.close()
-    marshal.decodeReply(reply) match
-        Ok(Reply.Viewed(o)) -> o
-        other -> fail(s"not a snapshot: $other")
+  val conn = UnixStream.connect(home + "/sock").ok.get
+  conn.writeText("{\"op\":\"snapshot\"}\n").ok.get
+  val reply = conn.readLine().ok.get.get
+  conn.close()
+  marshal.decodeReply(reply) match
+    Ok(Reply.Viewed(o)) -> o
+    other -> fail(s"not a snapshot: $other")
 
-@test("the daemon's snapshot has the budget, the running job, the queued one and why it waits, and jobs earlier daemons ended")
+@test(
+  "the daemon's snapshot has the budget, the running job, the queued one and why it waits, and jobs earlier daemons ended"
+)
 snapshotFromDaemon()
-    val home = newHome()
-    assertEq(m(home, "run", "--", "sh", "-c", "exit 4").code, 4)
-    m(home, "stop")
-    val big = submitted(home, "--units", "10", "--", "sleep", "60")
-    assert(runningSoon(home, big))
-    val waiting = submitted(home, "--units", "4", "--", "sleep", "1")
-    val o = snapshotOf(home)
-    assertEq(o.usage.units, 10)
-    assertEq(o.usage.unitBudget, 12)
-    assertEq(o.usage.running, 1)
-    assertEq(o.usage.queued, 1)
-    assertEq(o.usage.takeSlot.map(t -> t.units), Some(0))
-    assert(0 <= o.uptimeMs < 60000, o.uptimeMs.toString())
-    assertEq(o.running.map(j -> j.id), [big])
-    assertEq(o.queued.map(q -> (q.job.id, q.position, q.why)), [(waiting, 1, Why.NoUnits)])
-    // the job the first daemon ran is recent to the second
-    assertEq(o.recent.map(j -> (j.id, j.outcome)), [(long(1), Some(Outcome.Exited(4)))])
-    m(home, "kill", big.toString())
-    assertEq(m(home, "wait", waiting.toString()).code, 0)
-    val after = snapshotOf(home)
-    assertEq(after.recent.map(j -> j.id), [waiting, big, long(1)])
-    assert(after.queued.isEmpty && after.running.isEmpty)
-    cleanUp(home)
+  val home = newHome()
+  assertEq(m(home, "run", "--", "sh", "-c", "exit 4").code, 4)
+  m(home, "stop")
+  val big = submitted(home, "--units", "10", "--", "sleep", "60")
+  assert(runningSoon(home, big))
+  val waiting = submitted(home, "--units", "4", "--", "sleep", "1")
+  val o = snapshotOf(home)
+  assertEq(o.usage.units, 10)
+  assertEq(o.usage.unitBudget, 12)
+  assertEq(o.usage.running, 1)
+  assertEq(o.usage.queued, 1)
+  assertEq(o.usage.takeSlot.map(t -> t.units), Some(0))
+  assert(0 <= o.uptimeMs < 60000, o.uptimeMs.toString())
+  assertEq(o.running.map(j -> j.id), [big])
+  assertEq(o.queued.map(q -> (q.job.id, q.position, q.why)), [(waiting, 1, Why.NoUnits)])
+  // the job the first daemon ran is recent to the second
+  assertEq(o.recent.map(j -> (j.id, j.outcome)), [(long(1), Some(Outcome.Exited(4)))])
+  m(home, "kill", big.toString())
+  assertEq(m(home, "wait", waiting.toString()).code, 0)
+  val after = snapshotOf(home)
+  assertEq(after.recent.map(j -> j.id), [waiting, big, long(1)])
+  assert(after.queued.isEmpty && after.running.isEmpty)
+  cleanUp(home)

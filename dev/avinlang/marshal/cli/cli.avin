@@ -23,31 +23,65 @@ import dev.avinlang.json.Json
 // Each command: how it is written after `marshal`, and what it does. The README's command list
 // is these lines, word for word.
 val Commands: Vector[(string, string)] = [
-    ("submit [options] -- <command...>", "queue a job; prints its id"),
-    ("run [options] -- <command...>", "submit and wait: prints the log's path, then the result; exits with the job's status"),
-    ("run-type <type> [parameters]", "runs a job type's steps as one job and waits; <type> --help lists its parameters"),
-    ("train [parameters] <branch...>", "run-type train: merges the branches, builds and tests them, lands them when green"),
-    ("wait <id> | --until <cond> [--timeout <t>] [--since <t>]", "waits for the job (--timeout also with an id), prints one result line, exits with its status; or waits for an event (--since only here), prints it, exits 0; 124 on timeout"),
-    ("events [--follow] [--since <t>] [<filter>]", "the logged events as JSON lines; --follow goes on streaming them until killed"),
-    ("ls", "jobs queued, running and recently ended; a queued job's state says why it waits: queued (draining)"),
-    ("kill <id>", "stops the job's whole process tree (a queued or waiting job is cancelled)"),
-    ("rerun <id>", "submits an ended job again: its command, directory, environment, kind, label and resources; prints the new id"),
-    ("clean [--older-than <t>] [--keep <n>] [--dry-run]", "removes the logs of ended jobs (never a job that is not over), stale run directories and unused compiled steps; prints what went and the bytes freed; --dry-run only lists them"),
-    ("hold <id>", "keeps a queued job from starting; it keeps its place"),
-    ("release <id>", "lets a held job start again"),
-    ("priority <id> <n> | --urgent", "places a queued job in its lane: higher first; --urgent: the back of the urgent band"),
-    ("pause [<id>]", "stops a running job's processes, keeping its units, its deadline's clock stopped; with no id, holds the queue"),
-    ("resume [<id>]", "continues a paused job; with no id, releases the queue"),
-    ("tail <id> [-f] [-n <lines>]", "the job's log; -f follows it until the job ends"),
-    ("grep <id> <pattern> [-i] [-v] [-n] [-c] [-F] [-m <n>] [-A|-B|-C <n>] [--last <n>]", "the lines of the job's log that match the pattern (a regular expression; -F: literal text), as grep prints them; exits 0 when a line matched, 1 when none did, 2 on an error"),
-    ("status [--json]", "the budget in use; --json: one JSON object with the running and queued jobs"),
-    ("history [options]", "ended jobs from the event log, newest first: id, kind, outcome, exit code, duration, when, label"),
-    ("stats [options]", "per kind from the event log: count, success rate, p50/p90/max duration, timeouts, deadline, peak memory"),
-    ("top", "a live view of the budget, the jobs and their logs; h lists its keys"),
-    ("stop [--wait | --force]", "stops the daemon; refused while jobs run unless it may wait for them or kill them"),
-    ("restart", "the daemon becomes the marshal installed now, keeping its jobs running and queued"),
-    ("version", "marshal's version, and the running daemon's"),
-    ("daemon", "runs the daemon in the foreground")]
+  ("submit [options] -- <command...>", "queue a job; prints its id"),
+  (
+    "run [options] -- <command...>",
+    "submit and wait: prints the log's path, then the result; exits with the job's status"
+  ),
+  ("run-type <type> [parameters]", "runs a job type's steps as one job and waits; <type> --help lists its parameters"),
+  (
+    "train [parameters] <branch...>",
+    "run-type train: merges the branches, builds and tests them, lands them when green"
+  ),
+  (
+    "wait <id> | --until <cond> [--timeout <t>] [--since <t>]",
+    "waits for the job (--timeout also with an id), prints one result line, exits with its status; or waits for an event (--since only here), prints it, exits 0; 124 on timeout"
+  ),
+  (
+    "events [--follow] [--since <t>] [<filter>]",
+    "the logged events as JSON lines; --follow goes on streaming them until killed"
+  ),
+  ("ls", "jobs queued, running and recently ended; a queued job's state says why it waits: queued (draining)"),
+  ("kill <id>", "stops the job's whole process tree (a queued or waiting job is cancelled)"),
+  (
+    "rerun <id>",
+    "submits an ended job again: its command, directory, environment, kind, label and resources; prints the new id"
+  ),
+  (
+    "clean [--older-than <t>] [--keep <n>] [--dry-run]",
+    "removes the logs of ended jobs (never a job that is not over), stale run directories and unused compiled steps; prints what went and the bytes freed; --dry-run only lists them"
+  ),
+  ("hold <id>", "keeps a queued job from starting; it keeps its place"),
+  ("release <id>", "lets a held job start again"),
+  (
+    "priority <id> <n> | --urgent",
+    "places a queued job in its lane: higher first; --urgent: the back of the urgent band"
+  ),
+  (
+    "pause [<id>]",
+    "stops a running job's processes, keeping its units, its deadline's clock stopped; with no id, holds the queue"
+  ),
+  ("resume [<id>]", "continues a paused job; with no id, releases the queue"),
+  ("tail <id> [-f] [-n <lines>]", "the job's log; -f follows it until the job ends"),
+  (
+    "grep <id> <pattern> [-i] [-v] [-n] [-c] [-F] [-m <n>] [-A|-B|-C <n>] [--last <n>]",
+    "the lines of the job's log that match the pattern (a regular expression; -F: literal text), as grep prints them; exits 0 when a line matched, 1 when none did, 2 on an error"
+  ),
+  ("status [--json]", "the budget in use; --json: one JSON object with the running and queued jobs"),
+  (
+    "history [options]",
+    "ended jobs from the event log, newest first: id, kind, outcome, exit code, duration, when, label"
+  ),
+  (
+    "stats [options]",
+    "per kind from the event log: count, success rate, p50/p90/max duration, timeouts, deadline, peak memory"
+  ),
+  ("top", "a live view of the budget, the jobs and their logs; h lists its keys"),
+  ("stop [--wait | --force]", "stops the daemon; refused while jobs run unless it may wait for them or kill them"),
+  ("restart", "the daemon becomes the marshal installed now, keeping its jobs running and queued"),
+  ("version", "marshal's version, and the running daemon's"),
+  ("daemon", "runs the daemon in the foreground")
+]
 
 // The options of `submit` and `run`.
 val Options: string = """
@@ -128,21 +162,23 @@ val Footer: string = "Marshal's files are in $MARSHAL_HOME, or ~/.marshal. `mars
 
 // One line of the command list: `marshal` and the command, then what it does.
 commandLine(c: (string, string)) -> string
-    val left = "marshal " + c.0
-    if left.byteLength >= 43 then left + "  " + c.1 else left.padEnd(43, ' ') + c.1
+  val left = "marshal " + c.0
+  if left.byteLength >= 43 then left + "  " + c.1 else left.padEnd(43, ' ') + c.1
 
 // What `marshal --help` prints.
-val usage: string = "usage: marshal <command> [options]\n\n" + Commands.map(commandLine).mkString("\n") + "\n\n" + Options + "\n" + Queries + "\n\n" + Footer
+val usage: string = "usage: marshal <command> [options]\n\n" + Commands.map(
+  commandLine
+).mkString("\n") + "\n\n" + Options + "\n" + Queries + "\n\n" + Footer
 
 // What `marshal <command> --help` prints, or None for a word that is not a command.
 commandHelp(name: string) -> Option[string]
-    Commands.find(c -> c.0.split(" ")(0) == name).map(c ->
-        val head = s"usage: marshal ${c.0}\n\n${c.1}"
-        if name == "submit" || name == "run" then head + "\n\n" + Options
-        elif name == "history" || name == "stats" then head + "\n\n" + Queries
-        elif name == "grep" then head + "\n\n" + GrepOptions
-        elif name == "wait" || name == "events" then head + "\n" + marshal.Grammar
-        else head)
+  Commands.find(c -> c.0.split(" ")(0) == name).map(c ->
+    val head = s"usage: marshal ${c.0}\n\n${c.1}"
+    if name == "submit" || name == "run" then head + "\n\n" + Options
+    elif name == "history" || name == "stats" then head + "\n\n" + Queries
+    elif name == "grep" then head + "\n\n" + GrepOptions
+    elif name == "wait" || name == "events" then head + "\n" + marshal.Grammar
+    else head)
 
 private isHelp(word: string) -> bool = word == "--help" || word == "-h"
 
@@ -157,12 +193,20 @@ asksHelp(_, args) = args.takeWhile(a -> a != "--").exists(isHelp)
 
 private optionsAskHelp(args: Vector[string], i: int) -> bool
 optionsAskHelp(args, i) | i >= args.length = false
+
 optionsAskHelp(args, i)
-    | args(i) == "--" = false
-    | isHelp(args(i)) = true
-    | args(i) == "--landing" || args(i) == "--urgent" || args(i) == "--external" || args(i) == "--quick" || args(i) == "--exclusive" = optionsAskHelp(args, i + 1)
-    | args(i).startsWith("--") = optionsAskHelp(args, i + 2)
-    | _ = false
+  | args(i) == "--" = false
+  | isHelp(args(i)) = true
+  | args(
+    i
+  ) == "--landing" || args(
+    i
+  ) == "--urgent" || args(i) == "--external" || args(i) == "--quick" || args(i) == "--exclusive" = optionsAskHelp(
+    args,
+    i + 1
+  )
+  | args(i).startsWith("--") = optionsAskHelp(args, i + 2)
+  | _ = false
 
 // Marshal's own failures (a bad command line, no daemon) exit with this; a job's status is its own.
 val Trouble: int = 2
@@ -170,87 +214,92 @@ val Trouble: int = 2
 home() -> string = process.env("MARSHAL_HOME").getOrElse(process.homeDir().getOrElse("/") + "/.marshal")
 
 main(args: Vector[string]) -> int
-    if args.isEmpty then return complain(usage)
-    val rest = args.drop(1)
-    commandHelp(args(0)) match
-        Some(text) if asksHelp(args(0), rest) ->
-            println(text)
-            return 0
-        _ -> ()
-    args(0) match
-        "submit" -> submit(rest, false)
-        "run" -> submit(rest, true)
-        "run-type" -> runType(rest, None)
-        "train" -> runType(rest, Some("train"))
-        "run-steps" -> runSteps(rest)
-        "wait" -> if rest.contains("--until") then waitUntil(rest) else waitJob(rest)
-        "events" -> events(rest)
-        "rerun" -> withId(rest, id -> rerun(id))
-        "clean" -> clean(rest)
-        "kill" -> withId(rest, id -> simple(Request.Kill(id), s"marshal: job $id is being stopped"))
-        "hold" -> withId(rest, id -> simple(Request.Hold(id), s"marshal: job $id is held"))
-        "release" -> withId(rest, id -> simple(Request.Release(id), s"marshal: job $id is released"))
-        "priority" -> priority(rest)
-        "pause" ->
-            if rest.isEmpty then simple(Request.PauseQueue, "marshal: the queue is held: running jobs go on, nothing new starts")
-            else withId(rest, id -> simple(Request.PauseJob(id), s"marshal: job $id is paused"))
-        "resume" ->
-            if rest.isEmpty then simple(Request.ResumeQueue, "marshal: the queue is released")
-            else withId(rest, id -> simple(Request.ResumeJob(id), s"marshal: job $id is resumed"))
-        "ls" -> list()
-        "status" -> rest match
-            [] -> status()
-            ["--json"] -> statusJson()
-            _ -> complain("marshal: status takes --json or nothing")
-        "history" -> history(rest)
-        "stats" -> stats(rest)
-        "tail" -> tail(rest)
-        "grep" -> grep(rest)
-        "top" -> top(rest)
-        "stop" -> stop(rest)
-        "restart" -> if rest.isEmpty then restart() else complain("marshal: restart takes no arguments")
-        "version" -> if rest.isEmpty then version() else complain("marshal: version takes no arguments")
-        "daemon" -> rest match
-            [] -> daemon.run(home())
-            ["--resume", file] -> daemon.run(home(), Some(file))
-            _ -> complain("marshal: daemon takes no arguments")
-        "--help" | "-h" ->
-            println(usage)
-            0
-        "help" -> rest match
-            [] ->
-                println(usage)
-                0
-            [name] -> commandHelp(name) match
-                Some(text) ->
-                    println(text)
-                    0
-                None -> complain(s"marshal: no command `$name`\n\n$usage")
-            _ -> complain("marshal: help takes one command")
-        other -> complain(s"marshal: no command `$other`\n\n$usage")
+  if args.isEmpty then return complain(usage)
+  val rest = args.drop(1)
+  commandHelp(args(0)) match
+    Some(text) if asksHelp(args(0), rest) ->
+      println(text)
+      return 0
+    _ -> ()
+  args(0) match
+    "submit" -> submit(rest, false)
+    "run" -> submit(rest, true)
+    "run-type" -> runType(rest, None)
+    "train" -> runType(rest, Some("train"))
+    "run-steps" -> runSteps(rest)
+    "wait" -> if rest.contains("--until") then waitUntil(rest) else waitJob(rest)
+    "events" -> events(rest)
+    "rerun" -> withId(rest, id -> rerun(id))
+    "clean" -> clean(rest)
+    "kill" -> withId(rest, id -> simple(Request.Kill(id), s"marshal: job $id is being stopped"))
+    "hold" -> withId(rest, id -> simple(Request.Hold(id), s"marshal: job $id is held"))
+    "release" -> withId(rest, id -> simple(Request.Release(id), s"marshal: job $id is released"))
+    "priority" -> priority(rest)
+    "pause" ->
+      if rest.isEmpty then simple(
+        Request.PauseQueue,
+        "marshal: the queue is held: running jobs go on, nothing new starts"
+      )
+      else withId(rest, id -> simple(Request.PauseJob(id), s"marshal: job $id is paused"))
+    "resume" ->
+      if rest.isEmpty then simple(Request.ResumeQueue, "marshal: the queue is released")
+      else withId(rest, id -> simple(Request.ResumeJob(id), s"marshal: job $id is resumed"))
+    "ls" -> list()
+    "status" -> rest match
+      [] -> status()
+      ["--json"] -> statusJson()
+      _ -> complain("marshal: status takes --json or nothing")
+    "history" -> history(rest)
+    "stats" -> stats(rest)
+    "tail" -> tail(rest)
+    "grep" -> grep(rest)
+    "top" -> top(rest)
+    "stop" -> stop(rest)
+    "restart" -> if rest.isEmpty then restart() else complain("marshal: restart takes no arguments")
+    "version" -> if rest.isEmpty then version() else complain("marshal: version takes no arguments")
+    "daemon" -> rest match
+      [] -> daemon.run(home())
+      ["--resume", file] -> daemon.run(home(), Some(file))
+      _ -> complain("marshal: daemon takes no arguments")
+    "--help" | "-h" ->
+      println(usage)
+      0
+    "help" -> rest match
+      [] ->
+        println(usage)
+        0
+      [name] -> commandHelp(name) match
+        Some(text) ->
+          println(text)
+          0
+        None -> complain(s"marshal: no command `$name`\n\n$usage")
+      _ -> complain("marshal: help takes one command")
+    other -> complain(s"marshal: no command `$other`\n\n$usage")
 
 complain(message: string) -> int
-    eprintln(message)
-    Trouble
+  eprintln(message)
+  Trouble
 
 withId(args: Vector[string], body: (long) -> int) -> int
+
 withId([word], body) = word.toLongOption() match
-    Some(id) -> body(id)
-    None -> complain(s"marshal: `$word` is not a job id")
+  Some(id) -> body(id)
+  None -> complain(s"marshal: `$word` is not a job id")
+
 withId(_, _) = complain("marshal: give one job id")
 
 // `priority <id> <n>` or `priority <id> --urgent`.
 priority(args: Vector[string]) -> int
-    val (word, level) = args match
-        [w, l] -> (w, l)
-        _ -> return complain("marshal: priority takes a job id and a whole number, or --urgent")
-    val id = word.toLongOption() match
-        Some(n) -> n
-        None -> return complain(s"marshal: `$word` is not a job id")
-    val p = parsePriority(level) match
-        Some(p) -> p
-        None -> return complain(s"marshal: `$level` is not a priority: a whole number, or --urgent")
-    simple(Request.Prioritize(id, p), s"marshal: job $id is placed")
+  val (word, level) = args match
+    [w, l] -> (w, l)
+    _ -> return complain("marshal: priority takes a job id and a whole number, or --urgent")
+  val id = word.toLongOption() match
+    Some(n) -> n
+    None -> return complain(s"marshal: `$word` is not a job id")
+  val p = parsePriority(level) match
+    Some(p) -> p
+    None -> return complain(s"marshal: `$level` is not a priority: a whole number, or --urgent")
+  simple(Request.Prioritize(id, p), s"marshal: job $id is placed")
 
 // A priority as the command line gives it: a whole number, or `--urgent`.
 parsePriority(word: string) -> Option[marshal.Priority]
@@ -260,200 +309,222 @@ parsePriority(word) = word.toIntOption().map(n -> marshal.Level(n))
 // Reads the options of `submit` and `run`, `[options] [--] command...`. The command begins after `--`, or at the first word that is
 // not an option.
 parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]) -> Result[JobSpec, string]
-    var kind: Option[string] = None
-    var units: Option[int] = None
-    var memory: long = 0
-    var memoryGiven = false
-    var landing = false
-    var urgent = false
-    var quick = false
-    var workDir = dir
-    var deadline: Option[long] = None
-    var quiet: long = 0
-    val after = Buffer[long]()
-    var afterMode: Option[string] = None
-    var retries = 0
-    var retryDelay: long = 0
-    var label = ""
-    var external = false
-    var exclusive = false
-    var quietLoad = 0.0
-    var i = 0
-    while i < args.length
-        val word = args(i)
-        if word == "--"
-            i += 1
-            break
-        if !word.startsWith("--") then break
-        if word == "--landing"
-            landing = true
-            i += 1
-            continue
-        if word == "--urgent"
-            urgent = true
-            i += 1
-            continue
-        if word == "--external"
-            external = true
-            i += 1
-            continue
-        if word == "--quick"
-            quick = true
-            i += 1
-            continue
-        if word == "--exclusive"
-            exclusive = true
-            i += 1
-            continue
-        if i + 1 >= args.length then return Err(s"`$word` needs a value")
-        val value = args(i + 1)
-        word match
-            "--kind" ->
-                if value.isEmpty then return Err("a kind is a word, not empty")
-                kind = Some(value)
-            "--units" -> value.toIntOption() match
-                Some(n) -> units = Some(n)
-                None -> return Err(s"`--units $value`: units are a whole number")
-            "--mem" -> marshal.parseSize(value) match
-                Some(n) ->
-                    memory = n
-                    memoryGiven = true
-                None -> return Err(s"`--mem $value`: a size is a whole number with K, M, G or T, such as 29G")
-            "--dir" -> workDir = if value.startsWith("/") then value else dir + "/" + value
-            "--deadline" -> marshal.parseDeadline(value) match
-                Some(ms) -> deadline = Some(ms)
-                None -> return Err(s"`--deadline $value`: a deadline is minutes, or a number with s, m or h, such as 90s")
-            "--quiet-timeout" -> quiet = parseQuietTimeout(value)?
-            "--after" | "--after-ok" | "--after-any" ->
-                val mode = if word == "--after-any" then "--after-any" else "--after-ok"
-                if afterMode.exists(m -> m != mode) then return Err("a job waits with --after-ok or with --after-any, not both")
-                afterMode = Some(mode)
-                after ++= parseIds(value).mapErr(e -> s"`$word $value`: $e")?
-            "--retries" -> value.toIntOption() match
-                Some(n) if n >= 0 -> retries = n
-                _ -> return Err(s"`--retries $value`: retries are a whole number, 0 or more")
-            "--retry-delay" -> marshal.parseDeadline(value) match
-                Some(ms) -> retryDelay = ms
-                None -> return Err(s"`--retry-delay $value`: a delay is minutes, or a number with s, m or h, such as 90s")
-            "--label" -> label = marshal.checkLabel(value).mapErr(e -> s"`--label`: $e")?
-            "--quiet-load" -> value.toRealOption() match
-                Some(n) if n > 0.0 -> quietLoad = n
-                _ -> return Err(s"`--quiet-load $value`: a load average is a number above 0, such as 4 or 2.5")
-            _ -> return Err(s"no option `$word`")
-        i += 2
-    val cmd = args.drop(i)
-    if cmd.isEmpty then return Err("no command to run: give it after `--`")
-    marshal.externalRefusal(external, memoryGiven) match
-        Some(why) -> return Err(why)
-        None -> ()
-    val k = kind.getOrElse(if cmd.exists(w -> w == "test") then "test" else "build")
-    val spec = JobSpec(k, units.getOrElse(marshal.defaultUnits(k)), memory, landing, workDir, deadline, cmd, env, urgent,
-        after.toVector.distinct, afterMode == Some("--after-any"), retries, retryDelay, memoryGiven, label, quiet, external, quick, exclusive, quietLoad)
-    for why in marshal.exclusiveRefusal(spec) do return Err(why)
-    Ok(spec)
+  var kind: Option[string] = None
+  var units: Option[int] = None
+  var memory: long = 0
+  var memoryGiven = false
+  var landing = false
+  var urgent = false
+  var quick = false
+  var workDir = dir
+  var deadline: Option[long] = None
+  var quiet: long = 0
+  val after = Buffer[long]()
+  var afterMode: Option[string] = None
+  var retries = 0
+  var retryDelay: long = 0
+  var label = ""
+  var external = false
+  var exclusive = false
+  var quietLoad = 0.0
+  var i = 0
+  while i < args.length
+    val word = args(i)
+    if word == "--"
+      i += 1
+      break
+    if !word.startsWith("--") then break
+    if word == "--landing"
+      landing = true
+      i += 1
+      continue
+    if word == "--urgent"
+      urgent = true
+      i += 1
+      continue
+    if word == "--external"
+      external = true
+      i += 1
+      continue
+    if word == "--quick"
+      quick = true
+      i += 1
+      continue
+    if word == "--exclusive"
+      exclusive = true
+      i += 1
+      continue
+    if i + 1 >= args.length then return Err(s"`$word` needs a value")
+    val value = args(i + 1)
+    word match
+      "--kind" ->
+        if value.isEmpty then return Err("a kind is a word, not empty")
+        kind = Some(value)
+      "--units" -> value.toIntOption() match
+        Some(n) -> units = Some(n)
+        None -> return Err(s"`--units $value`: units are a whole number")
+      "--mem" -> marshal.parseSize(value) match
+        Some(n) ->
+          memory = n
+          memoryGiven = true
+        None -> return Err(s"`--mem $value`: a size is a whole number with K, M, G or T, such as 29G")
+      "--dir" -> workDir = if value.startsWith("/") then value else dir + "/" + value
+      "--deadline" -> marshal.parseDeadline(value) match
+        Some(ms) -> deadline = Some(ms)
+        None -> return Err(s"`--deadline $value`: a deadline is minutes, or a number with s, m or h, such as 90s")
+      "--quiet-timeout" -> quiet = parseQuietTimeout(value)?
+      "--after" | "--after-ok" | "--after-any" ->
+        val mode = if word == "--after-any" then "--after-any" else "--after-ok"
+        if afterMode.exists(m -> m != mode) then return Err("a job waits with --after-ok or with --after-any, not both")
+        afterMode = Some(mode)
+        after ++= parseIds(value).mapErr(e -> s"`$word $value`: $e")?
+      "--retries" -> value.toIntOption() match
+        Some(n) if n >= 0 -> retries = n
+        _ -> return Err(s"`--retries $value`: retries are a whole number, 0 or more")
+      "--retry-delay" -> marshal.parseDeadline(value) match
+        Some(ms) -> retryDelay = ms
+        None -> return Err(s"`--retry-delay $value`: a delay is minutes, or a number with s, m or h, such as 90s")
+      "--label" -> label = marshal.checkLabel(value).mapErr(e -> s"`--label`: $e")?
+      "--quiet-load" -> value.toRealOption() match
+        Some(n) if n > 0.0 -> quietLoad = n
+        _ -> return Err(s"`--quiet-load $value`: a load average is a number above 0, such as 4 or 2.5")
+      _ -> return Err(s"no option `$word`")
+    i += 2
+  val cmd = args.drop(i)
+  if cmd.isEmpty then return Err("no command to run: give it after `--`")
+  marshal.externalRefusal(external, memoryGiven) match
+    Some(why) -> return Err(why)
+    None -> ()
+  val k = kind.getOrElse(if cmd.exists(w -> w == "test") then "test" else "build")
+  val spec = JobSpec(
+    k,
+    units.getOrElse(marshal.defaultUnits(k)),
+    memory,
+    landing,
+    workDir,
+    deadline,
+    cmd,
+    env,
+    urgent,
+    after.toVector.distinct,
+    afterMode == Some("--after-any"),
+    retries,
+    retryDelay,
+    memoryGiven,
+    label,
+    quiet,
+    external,
+    quick,
+    exclusive,
+    quietLoad
+  )
+  for why in marshal.exclusiveRefusal(spec) do return Err(why)
+  Ok(spec)
 
 // The value of `--quiet-timeout`, written as `--deadline` writes a deadline, in milliseconds.
 parseQuietTimeout(value: string) -> Result[long, string] = marshal.parseDeadline(value) match
-    Some(ms) -> Ok(ms)
-    None -> Err(s"`--quiet-timeout $value`: a quiet timeout is minutes, or a number with s, m or h, such as 90s")
+  Some(ms) -> Ok(ms)
+  None -> Err(s"`--quiet-timeout $value`: a quiet timeout is minutes, or a number with s, m or h, such as 90s")
 
 // Job ids separated by commas, such as `3,4`.
 parseIds(text: string) -> Result[Vector[long], string]
-    val ids = Buffer[long]()
-    for word in text.split(",")
-        word.trim.toLongOption() match
-            Some(id) if id >= 1 -> ids += id
-            _ -> return Err(s"`$word` is not a job id")
-    Ok(ids.toVector)
+  val ids = Buffer[long]()
+  for word in text.split(",")
+    word.trim.toLongOption() match
+      Some(id) if id >= 1 -> ids += id
+      _ -> return Err(s"`$word` is not a job id")
+  Ok(ids.toVector)
 
 submit(args: Vector[string], andWait: bool) -> int
-    val dir = process.currentDir().getOrElse(".")
-    val env = process.environment().toVector.sortBy(e -> e.0)
-    val spec = parseSubmission(args, dir, env) match
-        Ok(s) -> s
-        Err(e) -> return complain(s"marshal: $e")
-    if !spec.external && marshal.looksExternal(spec.cmd) then eprintln(marshal.ExternalWarning)
-    val (id, log) = askDaemon(Request.Submit(spec)) match
-        Ok(Submitted(id, log, hint)) ->
-            if hint.nonEmpty then eprintln(hint)
-            (id, log)
-        Ok(Failed(e)) -> return complain(s"marshal: $e")
-        Ok(other) -> return complain(s"marshal: unexpected reply $other")
-        Err(e) -> return complain(e)
-    if !andWait
-        println(id)
-        return 0
-    println(s"marshal: job $id: log $log")
-    waitFor(id)
+  val dir = process.currentDir().getOrElse(".")
+  val env = process.environment().toVector.sortBy(e -> e.0)
+  val spec = parseSubmission(args, dir, env) match
+    Ok(s) -> s
+    Err(e) -> return complain(s"marshal: $e")
+  if !spec.external && marshal.looksExternal(spec.cmd) then eprintln(marshal.ExternalWarning)
+  val (id, log) = askDaemon(Request.Submit(spec)) match
+    Ok(Submitted(id, log, hint)) ->
+      if hint.nonEmpty then eprintln(hint)
+      (id, log)
+    Ok(Failed(e)) -> return complain(s"marshal: $e")
+    Ok(other) -> return complain(s"marshal: unexpected reply $other")
+    Err(e) -> return complain(e)
+  if !andWait
+    println(id)
+    return 0
+  println(s"marshal: job $id: log $log")
+  waitFor(id)
 
 waitFor(id: long) -> int = askDaemon(Request.Wait(id)) match
-    Ok(Ended(job)) ->
-        println(marshal.resultLine(job))
-        job.outcome.map(marshal.exitCode).getOrElse(Trouble)
-    Ok(Failed(e)) -> complain(s"marshal: $e")
-    Ok(other) -> complain(s"marshal: unexpected reply $other")
-    Err(e) -> complain(e)
+  Ok(Ended(job)) ->
+    println(marshal.resultLine(job))
+    job.outcome.map(marshal.exitCode).getOrElse(Trouble)
+  Ok(Failed(e)) -> complain(s"marshal: $e")
+  Ok(other) -> complain(s"marshal: unexpected reply $other")
+  Err(e) -> complain(e)
 
 // `wait <id> [--timeout <t>]`, the option before or after the id: waits for the job as `wait <id>`
 // does; when it has not ended by the timeout, says so on one line and exits 124.
 waitJob(args: Vector[string]) -> int
-    var id: Option[long] = None
-    var timeout: Option[long] = None
-    var i = 0
-    while i < args.length
-        args(i) match
-            "--timeout" ->
-                if i + 1 >= args.length then return complain("marshal: --timeout needs a value")
-                if timeout.isDefined then return complain("marshal: --timeout is given twice")
-                val value = args(i + 1)
-                timeout = marshal.parseDeadline(value) match
-                    Some(ms) -> Some(ms)
-                    None -> return complain(s"marshal: `--timeout $value`: a timeout is minutes, or a number with s, m or h, such as 90s")
-                i += 2
-            "--since" -> return complain("marshal: --since goes with wait --until, not with a job id")
-            word ->
-                if word.startsWith("--") then return complain(s"marshal: wait <id> takes --timeout, not `$word`")
-                if id.isDefined then return complain("marshal: give one job id")
-                id = word.toLongOption() match
-                    Some(n) -> Some(n)
-                    None -> return complain(s"marshal: `$word` is not a job id")
-                i += 1
-    val job = id match
-        Some(n) -> n
-        None -> return complain("marshal: give one job id")
-    val finished = Atomic(0)
-    timeout.foreach(ms -> spawn(() ->
-        threads.sleep(millis(ms))
-        if finished.compareAndSet(0, 1)
-            eprintln(s"marshal: timed out after ${marshal.formatMillis(ms)} waiting for job $job")
-            process.exit(TimedOutWaiting)
-        ()))
-    val code = waitFor(job)
-    finished.compareAndSet(0, 1)
-    code
+  var id: Option[long] = None
+  var timeout: Option[long] = None
+  var i = 0
+  while i < args.length
+    args(i) match
+      "--timeout" ->
+        if i + 1 >= args.length then return complain("marshal: --timeout needs a value")
+        if timeout.isDefined then return complain("marshal: --timeout is given twice")
+        val value = args(i + 1)
+        timeout = marshal.parseDeadline(value) match
+          Some(ms) -> Some(ms)
+          None -> return complain(
+            s"marshal: `--timeout $value`: a timeout is minutes, or a number with s, m or h, such as 90s"
+          )
+        i += 2
+      "--since" -> return complain("marshal: --since goes with wait --until, not with a job id")
+      word ->
+        if word.startsWith("--") then return complain(s"marshal: wait <id> takes --timeout, not `$word`")
+        if id.isDefined then return complain("marshal: give one job id")
+        id = word.toLongOption() match
+          Some(n) -> Some(n)
+          None -> return complain(s"marshal: `$word` is not a job id")
+        i += 1
+  val job = id match
+    Some(n) -> n
+    None -> return complain("marshal: give one job id")
+  val finished = Atomic(0)
+  timeout.foreach(ms -> spawn(() ->
+    threads.sleep(millis(ms))
+    if finished.compareAndSet(0, 1)
+      eprintln(s"marshal: timed out after ${marshal.formatMillis(ms)} waiting for job $job")
+      process.exit(TimedOutWaiting)
+    ()))
+  val code = waitFor(job)
+  finished.compareAndSet(0, 1)
+  code
 
 // `rerun <id>`: prints the id of the job that runs job `id` again.
 rerun(id: long) -> int = askDaemon(Request.Rerun(id)) match
-    Ok(Submitted(n, _, _)) ->
-        println(n)
-        0
-    Ok(Failed(e)) -> complain(s"marshal: $e")
-    Ok(other) -> complain(s"marshal: unexpected reply $other")
-    Err(e) -> complain(e)
+  Ok(Submitted(n, _, _)) ->
+    println(n)
+    0
+  Ok(Failed(e)) -> complain(s"marshal: $e")
+  Ok(other) -> complain(s"marshal: unexpected reply $other")
+  Err(e) -> complain(e)
 
 // `clean [--older-than <t>] [--keep <n>] [--dry-run]`: asks the daemon to remove what retention
 // allows and prints what it removed.
 clean(args: Vector[string]) -> int
-    val rule = marshal.parseCleanArgs(args) match
-        Ok(r) -> r
-        Err(e) -> return complain(s"marshal: clean: $e")
-    askDaemon(Request.Clean(rule)) match
-        Ok(marshal.Cleaned(report)) ->
-            for line in marshal.cleanLines(report) do println(line)
-            0
-        Ok(Failed(e)) -> complain(s"marshal: $e")
-        Ok(other) -> complain(s"marshal: unexpected reply $other")
-        Err(e) -> complain(e)
+  val rule = marshal.parseCleanArgs(args) match
+    Ok(r) -> r
+    Err(e) -> return complain(s"marshal: clean: $e")
+  askDaemon(Request.Clean(rule)) match
+    Ok(marshal.Cleaned(report)) ->
+      for line in marshal.cleanLines(report) do println(line)
+      0
+    Ok(Failed(e)) -> complain(s"marshal: $e")
+    Ok(other) -> complain(s"marshal: unexpected reply $other")
+    Err(e) -> complain(e)
 
 // What `wait --until` and `events` exit with when no daemon can be reached, and when a
 // `--timeout` ends the wait.
@@ -464,106 +535,116 @@ val TimedOutWaiting: int = 124
 // condition matches, prints that event as one JSON line and exits 0; 124 when the timeout comes
 // first, 2 for a condition that is not one, 1 when no daemon can be reached.
 waitUntil(args: Vector[string]) -> int
-    var text: Option[string] = None
-    var timeout: Option[long] = None
-    var since: Option[marshal.Since] = None
-    var i = 0
-    while i < args.length
+  var text: Option[string] = None
+  var timeout: Option[long] = None
+  var since: Option[marshal.Since] = None
+  var i = 0
+  while i < args.length
+    args(i) match
+      "--until" | "--timeout" | "--since" ->
+        if i + 1 >= args.length then return complain(s"marshal: ${args(i)} needs a value")
+        val value = args(i + 1)
         args(i) match
-            "--until" | "--timeout" | "--since" ->
-                if i + 1 >= args.length then return complain(s"marshal: ${args(i)} needs a value")
-                val value = args(i + 1)
-                args(i) match
-                    "--until" ->
-                        if text.isDefined then return complain("marshal: --until is given twice")
-                        text = Some(value)
-                    "--since" ->
-                        if since.isDefined then return complain("marshal: --since is given twice")
-                        since = marshal.parseSince(value, time.now().epochMillis) match
-                            Ok(s) -> Some(s)
-                            Err(e) -> return complain(s"marshal: $e")
-                    _ ->
-                        if timeout.isDefined then return complain("marshal: --timeout is given twice")
-                        timeout = marshal.parseDeadline(value) match
-                            Some(ms) -> Some(ms)
-                            None -> return complain(s"marshal: `--timeout $value`: a timeout is minutes, or a number with s, m or h, such as 90s")
-                i += 2
-            other -> return complain(s"marshal: wait --until takes --until, --timeout and --since, not `$other`")
-    val source = text.get
-    val cond = marshal.parseCondition(source) match
-        Ok(c) -> c
-        Err(e) -> return complain(s"marshal: bad condition: $e\n" + marshal.Grammar)
-    // A wait that restarts asks again for events since it began: what happened while the daemon
-    // handed over is in the log, and the daemon looks there first.
-    val began = time.now().epochMillis
-    val finished = Atomic(0)
-    timeout.foreach(ms -> spawn(() ->
-        threads.sleep(millis(ms))
-        if finished.compareAndSet(0, 1)
-            eprintln(s"marshal: timed out after ${marshal.formatMillis(ms)} waiting for $source")
-            process.exit(TimedOutWaiting)
-        ()))
-    val from = since.getOrElse(marshal.Since(None, None))
-    val first = Request.Watch(source, cond, Once, from.ms, from.id)
-    val again = Request.Watch(source, cond, Once, Some(from.ms.getOrElse(began)), from.id)
-    val code = watchLoop(first, () -> again, false, ev -> printWaited(finished, ev))
-    code.getOrElse(Unreachable)
+          "--until" ->
+            if text.isDefined then return complain("marshal: --until is given twice")
+            text = Some(value)
+          "--since" ->
+            if since.isDefined then return complain("marshal: --since is given twice")
+            since = marshal.parseSince(value, time.now().epochMillis) match
+              Ok(s) -> Some(s)
+              Err(e) -> return complain(s"marshal: $e")
+          _ ->
+            if timeout.isDefined then return complain("marshal: --timeout is given twice")
+            timeout = marshal.parseDeadline(value) match
+              Some(ms) -> Some(ms)
+              None -> return complain(
+                s"marshal: `--timeout $value`: a timeout is minutes, or a number with s, m or h, such as 90s"
+              )
+        i += 2
+      other -> return complain(s"marshal: wait --until takes --until, --timeout and --since, not `$other`")
+  val source = text.get
+  val cond = marshal.parseCondition(source) match
+    Ok(c) -> c
+    Err(e) -> return complain(s"marshal: bad condition: $e\n" + marshal.Grammar)
+  // A wait that restarts asks again for events since it began: what happened while the daemon
+  // handed over is in the log, and the daemon looks there first.
+  val began = time.now().epochMillis
+  val finished = Atomic(0)
+  timeout.foreach(ms -> spawn(() ->
+    threads.sleep(millis(ms))
+    if finished.compareAndSet(0, 1)
+      eprintln(s"marshal: timed out after ${marshal.formatMillis(ms)} waiting for $source")
+      process.exit(TimedOutWaiting)
+    ()))
+  val from = since.getOrElse(marshal.Since(None, None))
+  val first = Request.Watch(source, cond, Once, from.ms, from.id)
+  val again = Request.Watch(source, cond, Once, Some(from.ms.getOrElse(began)), from.id)
+  val code = watchLoop(first, () -> again, false, ev -> printWaited(finished, ev))
+  code.getOrElse(Unreachable)
 
 // The event a `wait --until` ends on, unless the timeout got in first and is ending the program.
 printWaited(finished: Atomic[int], ev: Json) -> bool
-    while !finished.compareAndSet(0, 1) do threads.sleep(millis(1000))
-    println(ev.render)
-    true
+  while !finished.compareAndSet(0, 1) do threads.sleep(millis(1000))
+  println(ev.render)
+  true
 
 // `events [--follow] [--since <t>] [<filter>]`: the events the daemon logged that the filter lets
 // through, one JSON object per line; with --follow, and those that come after, until killed.
 events(args: Vector[string]) -> int
-    var follow = false
-    var since = marshal.Since(None, None)
-    var filter: Option[string] = None
-    var i = 0
-    while i < args.length
-        args(i) match
-            "--follow" | "-f" ->
-                follow = true
-                i += 1
-            "--since" ->
-                if i + 1 >= args.length then return complain("marshal: --since needs a time")
-                since = marshal.parseSince(args(i + 1), time.now().epochMillis) match
-                    Ok(s) -> s
-                    Err(e) -> return complain(s"marshal: $e")
-                i += 2
-            word ->
-                if word.startsWith("--") || filter.isDefined then return complain(s"marshal: events takes --follow, --since and one filter, not `$word`")
-                filter = Some(word)
-                i += 1
-    val source = filter.getOrElse("any")
-    val cond = marshal.parseFilter(source) match
-        Ok(f) -> Condition.Matching(f)
-        Err(e) -> return complain(s"marshal: bad filter: $e\n" + marshal.Grammar)
-    val mode = if follow then Follow else Past
-    val first = Request.Watch(source, cond, mode, since.ms, since.id)
-    // After a restart the stream resumes from the last time it printed, and a line already
-    // printed at that very time is not printed again.
-    val lastTs: Atomic[long] = Atomic(0)
-    val printed = Buffer[string]()
-    val again = () -> Request.Watch(source, cond, mode, Some(if lastTs.load() > 0 then lastTs.load() else since.ms.getOrElse(0)), since.id)
-    val code = watchLoop(first, again, !follow, ev -> printEvent(lastTs, printed, ev))
-    code.getOrElse(Unreachable)
+  var follow = false
+  var since = marshal.Since(None, None)
+  var filter: Option[string] = None
+  var i = 0
+  while i < args.length
+    args(i) match
+      "--follow" | "-f" ->
+        follow = true
+        i += 1
+      "--since" ->
+        if i + 1 >= args.length then return complain("marshal: --since needs a time")
+        since = marshal.parseSince(args(i + 1), time.now().epochMillis) match
+          Ok(s) -> s
+          Err(e) -> return complain(s"marshal: $e")
+        i += 2
+      word ->
+        if word.startsWith("--") || filter.isDefined then return complain(
+          s"marshal: events takes --follow, --since and one filter, not `$word`"
+        )
+        filter = Some(word)
+        i += 1
+  val source = filter.getOrElse("any")
+  val cond = marshal.parseFilter(source) match
+    Ok(f) -> Condition.Matching(f)
+    Err(e) -> return complain(s"marshal: bad filter: $e\n" + marshal.Grammar)
+  val mode = if follow then Follow else Past
+  val first = Request.Watch(source, cond, mode, since.ms, since.id)
+  // After a restart the stream resumes from the last time it printed, and a line already
+  // printed at that very time is not printed again.
+  val lastTs: Atomic[long] = Atomic(0)
+  val printed = Buffer[string]()
+  val again = () -> Request.Watch(
+    source,
+    cond,
+    mode,
+    Some(if lastTs.load() > 0 then lastTs.load() else since.ms.getOrElse(0)),
+    since.id
+  )
+  val code = watchLoop(first, again, !follow, ev -> printEvent(lastTs, printed, ev))
+  code.getOrElse(Unreachable)
 
 // Prints an event of `events`, unless it is one already printed at the same time; never ends the
 // watch.
 printEvent(lastTs: Atomic[long], printed: Buffer[string], ev: Json) -> bool
-    val ts = ev.get("ts").flatMap(v -> v.asLong).getOrElse(0)
-    val line = ev.render
-    if ts == lastTs.load() && printed.contains(line) then return false
-    if ts > lastTs.load()
-        lastTs.store(ts)
-        printed.clear()
-    printed += line
-    println(line)
-    flush()
-    false
+  val ts = ev.get("ts").flatMap(v -> v.asLong).getOrElse(0)
+  val line = ev.render
+  if ts == lastTs.load() && printed.contains(line) then return false
+  if ts > lastTs.load()
+    lastTs.store(ts)
+    printed.clear()
+  printed += line
+  println(line)
+  flush()
+  false
 
 // Reads a watch's stream: asks for `first`, hands each event to `onEvent`, which answers whether
 // the watch is over, and ends with exit status 0 when it is, or, where `pastEnds`, when the daemon
@@ -571,349 +652,382 @@ printEvent(lastTs: Atomic[long], printed: Buffer[string], ev: Json) -> bool
 // daemon restarting: the client connects again, for up to 30 seconds, and asks for `again()`.
 // None, with the reason on standard error, when no daemon can be reached or the daemon refuses.
 watchLoop(first: Request, again: () -> Request, pastEnds: bool, onEvent: (Json) -> bool) -> Option[int]
-    var conn = connect(false) match
-        Ok(c) -> c
-        Err(e) ->
-            eprintln(e)
+  var conn = connect(false) match
+    Ok(c) -> c
+    Err(e) ->
+      eprintln(e)
+      return None
+  var request = first
+  loop
+    if conn.writeText(marshal.encodeRequest(request).render + "\n").isOk
+      loop
+        val line = conn.readLine() match
+          Ok(Some(l)) -> l
+          _ -> break
+        marshal.decodeReply(line) match
+          Ok(Streamed(ev)) ->
+            if onEvent(ev)
+              conn.close()
+              return Some(0)
+          Ok(Replayed(evs)) ->
+            for ev in evs
+              if onEvent(ev)
+                conn.close()
+                return Some(0)
+            if pastEnds
+              conn.close()
+              return Some(0)
+          Ok(Failed(e)) ->
+            conn.close()
+            eprintln(s"marshal: $e")
+            return Some(
+              if e.startsWith("the daemon") || e.startsWith("events were dropped") then Unreachable else Trouble
+            )
+          Ok(other) ->
+            conn.close()
+            eprintln(s"marshal: unexpected reply $other")
             return None
-    var request = first
-    loop
-        if conn.writeText(marshal.encodeRequest(request).render + "\n").isOk
-            loop
-                val line = conn.readLine() match
-                    Ok(Some(l)) -> l
-                    _ -> break
-                marshal.decodeReply(line) match
-                    Ok(Streamed(ev)) ->
-                        if onEvent(ev)
-                            conn.close()
-                            return Some(0)
-                    Ok(Replayed(evs)) ->
-                        for ev in evs
-                            if onEvent(ev)
-                                conn.close()
-                                return Some(0)
-                        if pastEnds
-                            conn.close()
-                            return Some(0)
-                    Ok(Failed(e)) ->
-                        conn.close()
-                        eprintln(s"marshal: $e")
-                        return Some(if e.startsWith("the daemon") || e.startsWith("events were dropped") then Unreachable else Trouble)
-                    Ok(other) ->
-                        conn.close()
-                        eprintln(s"marshal: unexpected reply $other")
-                        return None
-                    Err(e) ->
-                        conn.close()
-                        eprintln(s"marshal: the daemon's reply is not one: $e")
-                        return None
-        conn.close()
-        conn = reconnectExisting(time.monotonic() + Reconnecting) match
-            Ok(c) -> c
-            Err(e) ->
-                eprintln(e)
-                return None
-        request = again()
+          Err(e) ->
+            conn.close()
+            eprintln(s"marshal: the daemon's reply is not one: $e")
+            return None
+    conn.close()
+    conn = reconnectExisting(time.monotonic() + Reconnecting) match
+      Ok(c) -> c
+      Err(e) ->
+        eprintln(e)
+        return None
+    request = again()
 
 // A new connection to a daemon that is there or is coming back, never starting one: a watch
 // has nothing to ask of a daemon that was stopped.
 reconnectExisting(limit: time.Duration) -> Result[UnixStream, string]
-    var pause: long = 25
-    loop
-        threads.sleep(millis(pause))
-        if pause < 500 then pause *= 2
-        connect(false) match
-            Ok(c) -> return Ok(c)
-            Err(e) -> if time.monotonic() >= limit then return Err(s"marshal: the daemon went away and did not come back within ${Reconnecting.toMillis / 1000}s: $e")
+  var pause: long = 25
+  loop
+    threads.sleep(millis(pause))
+    if pause < 500 then pause *= 2
+    connect(false) match
+      Ok(c) -> return Ok(c)
+      Err(e) -> if time.monotonic() >= limit then return Err(
+        s"marshal: the daemon went away and did not come back within ${Reconnecting.toMillis / 1000}s: $e"
+      )
 
 simple(request: Request, said: string) -> int = askDaemon(request) match
-    Ok(Done) ->
-        println(said)
-        0
-    Ok(Failed(e)) -> complain(s"marshal: $e")
-    Ok(other) -> complain(s"marshal: unexpected reply $other")
-    Err(e) -> complain(e)
+  Ok(Done) ->
+    println(said)
+    0
+  Ok(Failed(e)) -> complain(s"marshal: $e")
+  Ok(other) -> complain(s"marshal: unexpected reply $other")
+  Err(e) -> complain(e)
 
 // Why each queued job among `jobs` waits, from the daemon's snapshot: (job id, reason). Empty when
 // nothing is queued, and when the daemon cannot say (a job that started since `jobs` was read has no
 // reason, and shows as it is).
 queuedWhys(jobs: Vector[JobInfo]) -> Vector[(long, marshal.Why)]
-    if !jobs.exists(j -> j.state == "queued") then return []
-    askDaemon(Request.Snapshot) match
-        Ok(marshal.Viewed(o)) -> o.queued.map(q -> (q.job.id, q.why))
-        _ -> []
+  if !jobs.exists(j -> j.state == "queued") then return []
+  askDaemon(Request.Snapshot) match
+    Ok(marshal.Viewed(o)) -> o.queued.map(q -> (q.job.id, q.why))
+    _ -> []
 
 list() -> int
-    askDaemon(Request.List) match
-        Ok(Jobs(jobs)) ->
-            println(marshal.listing(jobs, queuedWhys(jobs)))
-            0
-        Ok(Failed(e)) -> complain(s"marshal: $e")
-        Ok(other) -> complain(s"marshal: unexpected reply $other")
-        Err(e) -> complain(e)
+  askDaemon(Request.List) match
+    Ok(Jobs(jobs)) ->
+      println(marshal.listing(jobs, queuedWhys(jobs)))
+      0
+    Ok(Failed(e)) -> complain(s"marshal: $e")
+    Ok(other) -> complain(s"marshal: unexpected reply $other")
+    Err(e) -> complain(e)
 
 status() -> int
-    askDaemon(Request.Status) match
-        Ok(Using(u)) ->
-            println(marshal.usageLine(u))
-            0
-        Ok(Failed(e)) -> complain(s"marshal: $e")
-        Ok(other) -> complain(s"marshal: unexpected reply $other")
-        Err(e) -> complain(e)
+  askDaemon(Request.Status) match
+    Ok(Using(u)) ->
+      println(marshal.usageLine(u))
+      0
+    Ok(Failed(e)) -> complain(s"marshal: $e")
+    Ok(other) -> complain(s"marshal: unexpected reply $other")
+    Err(e) -> complain(e)
 
 // The budget in use and the running and queued jobs, as one JSON object on one line.
 statusJson() -> int
-    val usage = askDaemon(Request.Status) match
-        Ok(Using(u)) -> u
-        Ok(Failed(e)) -> return complain(s"marshal: $e")
-        Ok(other) -> return complain(s"marshal: unexpected reply $other")
-        Err(e) -> return complain(e)
-    askDaemon(Request.List) match
-        Ok(Jobs(jobs)) ->
-            println(marshal.statusJson(usage, jobs, queuedWhys(jobs)).render)
-            0
-        Ok(Failed(e)) -> complain(s"marshal: $e")
-        Ok(other) -> complain(s"marshal: unexpected reply $other")
-        Err(e) -> complain(e)
+  val usage = askDaemon(Request.Status) match
+    Ok(Using(u)) -> u
+    Ok(Failed(e)) -> return complain(s"marshal: $e")
+    Ok(other) -> return complain(s"marshal: unexpected reply $other")
+    Err(e) -> return complain(e)
+  askDaemon(Request.List) match
+    Ok(Jobs(jobs)) ->
+      println(marshal.statusJson(usage, jobs, queuedWhys(jobs)).render)
+      0
+    Ok(Failed(e)) -> complain(s"marshal: $e")
+    Ok(other) -> complain(s"marshal: unexpected reply $other")
+    Err(e) -> complain(e)
 
 stop(args: Vector[string]) -> int
-    val (force, drain) = args match
-        [] -> (false, false)
-        ["--force"] -> (true, false)
-        ["--wait"] -> (false, true)
-        _ -> return complain("marshal: stop takes --wait or --force")
-    val conn = connect(false) match
-        Ok(c) -> c
-        Err(_) ->
-            println("marshal: no daemon is running")
-            return 0
-    ask(conn, Request.Stop(force, drain)) match
-        Ok(Done) ->
-            println("marshal: the daemon has stopped")
-            0
-        Ok(Failed(e)) -> complain(s"marshal: $e")
-        Ok(other) -> complain(s"marshal: unexpected reply $other")
-        Err(e) -> complain(e)
+  val (force, drain) = args match
+    [] -> (false, false)
+    ["--force"] -> (true, false)
+    ["--wait"] -> (false, true)
+    _ -> return complain("marshal: stop takes --wait or --force")
+  val conn = connect(false) match
+    Ok(c) -> c
+    Err(_) ->
+      println("marshal: no daemon is running")
+      return 0
+  ask(conn, Request.Stop(force, drain)) match
+    Ok(Done) ->
+      println("marshal: the daemon has stopped")
+      0
+    Ok(Failed(e)) -> complain(s"marshal: $e")
+    Ok(other) -> complain(s"marshal: unexpected reply $other")
+    Err(e) -> complain(e)
 
 // The daemon's version and process id, over `conn`.
 hello(conn: UnixStream) -> Result[(string, long), string] = ask(conn, Request.Hello) match
-    Ok(Hi(v, pid)) -> Ok((v, pid))
-    Ok(Failed(e)) -> Err(s"marshal: the daemon does not say its version ($e): it is older than this marshal; `marshal stop --wait` and start it again")
-    Ok(other) -> Err(s"marshal: unexpected reply $other")
-    Err(e) -> Err(e)
+  Ok(Hi(v, pid)) -> Ok((v, pid))
+  Ok(Failed(e)) -> Err(
+    s"marshal: the daemon does not say its version ($e): it is older than this marshal; `marshal stop --wait` and start it again"
+  )
+  Ok(other) -> Err(s"marshal: unexpected reply $other")
+  Err(e) -> Err(e)
 
 // `restart`: the daemon becomes the marshal installed at its own path and keeps its jobs. It
 // answers only when it could not; otherwise its connection closes as it goes, and the new image is
 // asked who it is once it listens.
 restart() -> int
-    val conn = connect(false) match
-        Ok(c) -> c
-        Err(_) ->
-            println("marshal: no daemon is running")
-            return 0
-    val (old, pid) = hello(conn) match
-        Ok(h) -> h
-        Err(e) -> return complain(e)
-    exchange(conn, Request.Restart(process.executable())) match
-        Ok(Some(Failed(e))) -> return complain(s"marshal: $e")
-        Ok(Some(other)) -> return complain(s"marshal: unexpected reply $other")
-        Ok(None) -> ()
-        Err(e) -> return complain(e)
-    conn.close()
-    restartedHello() match
-        Ok((now, p)) if p == pid ->
-            println(s"marshal: daemon $pid restarted: version $old, now $now")
-            0
-        Ok((_, p)) -> complain(s"marshal: daemon $pid ended instead of restarting; daemon $p took its place, and its jobs were lost; see ${home()}/daemon.log")
-        Err(e) -> complain(e)
+  val conn = connect(false) match
+    Ok(c) -> c
+    Err(_) ->
+      println("marshal: no daemon is running")
+      return 0
+  val (old, pid) = hello(conn) match
+    Ok(h) -> h
+    Err(e) -> return complain(e)
+  exchange(conn, Request.Restart(process.executable())) match
+    Ok(Some(Failed(e))) -> return complain(s"marshal: $e")
+    Ok(Some(other)) -> return complain(s"marshal: unexpected reply $other")
+    Ok(None) -> ()
+    Err(e) -> return complain(e)
+  conn.close()
+  restartedHello() match
+    Ok((now, p)) if p == pid ->
+      println(s"marshal: daemon $pid restarted: version $old, now $now")
+      0
+    Ok((_, p)) -> complain(
+      s"marshal: daemon $pid ended instead of restarting; daemon $p took its place, and its jobs were lost; see ${home()}/daemon.log"
+    )
+    Err(e) -> complain(e)
 
 // The restarted daemon's version and process id, once it listens. A connection made while the
 // image before it still held the socket closes unanswered, and is made again.
 restartedHello() -> Result[(string, long), string]
-    val limit = time.monotonic() + Reconnecting
-    loop
-        val again = reconnect(limit)?
-        val answer = exchange(again, Request.Hello)
-        again.close()
-        answer? match
-            Some(Hi(v, p)) -> return Ok((v, p))
-            Some(Failed(e)) -> return Err(s"marshal: the daemon does not say its version ($e): it is older than this marshal; `marshal stop --wait` and start it again")
-            Some(other) -> return Err(s"marshal: unexpected reply $other")
-            None -> if time.monotonic() >= limit then return Err(s"marshal: the daemon went away and did not come back within ${Reconnecting.toMillis / 1000}s")
+  val limit = time.monotonic() + Reconnecting
+  loop
+    val again = reconnect(limit)?
+    val answer = exchange(again, Request.Hello)
+    again.close()
+    answer? match
+      Some(Hi(v, p)) -> return Ok((v, p))
+      Some(Failed(e)) -> return Err(
+        s"marshal: the daemon does not say its version ($e): it is older than this marshal; `marshal stop --wait` and start it again"
+      )
+      Some(other) -> return Err(s"marshal: unexpected reply $other")
+      None -> if time.monotonic() >= limit then return Err(
+        s"marshal: the daemon went away and did not come back within ${Reconnecting.toMillis / 1000}s"
+      )
 
 // `version`: this marshal's version, and the daemon's when one is running.
 version() -> int
-    println(s"marshal ${marshal.Version}")
-    UnixStream.connect(home() + "/sock") match
-        Ok(conn) -> hello(conn) match
-            Ok((v, pid)) -> println(s"daemon $pid: marshal $v")
-            Err(e) -> return complain(e)
-        Err(_) -> println("no daemon is running")
-    0
+  println(s"marshal ${marshal.Version}")
+  UnixStream.connect(home() + "/sock") match
+    Ok(conn) -> hello(conn) match
+      Ok((v, pid)) -> println(s"daemon $pid: marshal $v")
+      Err(e) -> return complain(e)
+    Err(_) -> println("no daemon is running")
+  0
 
 // `tail <id> [-f] [-n N]`: the last lines of a job's log, and with -f what it writes after them
 // until the job ends.
 tail(args: Vector[string]) -> int
-    var follow = false
-    var count = 20
-    var id: Option[long] = None
-    var i = 0
-    while i < args.length
-        args(i) match
-            "-f" -> follow = true
-            "-n" ->
-                i += 1
-                if i >= args.length then return complain("marshal: -n needs a number of lines")
-                args(i).toIntOption() match
-                    Some(n) if n >= 0 -> count = n
-                    _ -> return complain(s"marshal: `${args(i)}` is not a number of lines")
-            word -> word.toLongOption() match
-                Some(n) if id.isEmpty -> id = Some(n)
-                _ -> return complain(s"marshal: `$word`: tail takes one job id, -f and -n")
+  var follow = false
+  var count = 20
+  var id: Option[long] = None
+  var i = 0
+  while i < args.length
+    args(i) match
+      "-f" -> follow = true
+      "-n" ->
         i += 1
-    val job = id match
-        Some(n) -> n
-        None -> return complain("marshal: give a job id")
-    val log = s"${home()}/jobs/$job.log"
-    if !follow
-        return fs.readTailLines(log, count) match
-            Ok(lines) ->
-                for l in lines do println(l)
-                0
-            Err(IoError(ErrorKind.NotFound, _, _)) -> complain(s"marshal: job $job has no log yet")
-            Err(e) -> complain(s"marshal: $log: ${e.message}")
-    // Following: a second connection waits for the job, so the follower knows when to stop.
-    val code = Atomic(-1)
-    val waiter = spawn(() ->
-        val result = askDaemon(Request.Wait(job))
-        val status = result match
-            Ok(Ended(j)) -> j.outcome.map(marshal.exitCode).getOrElse(Trouble)
-            _ -> Trouble
-        code.store(status)
-        result)
-    // A queued job has no log yet: it is waited for.
-    while !fs.exists(log) && code.load() < 0 do threads.sleep(millis(100))
-    if !fs.exists(log)
-        return reportEnd(waiter.join())
-    fs.readTailLines(log, count).getOrElse([]).foreach(l -> println(l))
-    val f = fs.open(log) match
-        Ok(f) -> f
-        Err(e) -> return complain(s"marshal: $log: ${e.message}")
-    f.seekToEnd()
-    loop
-        val done = code.load() >= 0
-        f.readCompleteLine() match
-            Ok(Some(line)) -> println(line)
-            Ok(None) ->
-                if done
-                    f.readLine().getOrElse(None).foreach(l -> println(l))
-                    break
-                threads.sleep(millis(100))
-            Err(e) -> return complain(s"marshal: $log: ${e.message}")
-    f.close()
-    reportEnd(waiter.join())
+        if i >= args.length then return complain("marshal: -n needs a number of lines")
+        args(i).toIntOption() match
+          Some(n) if n >= 0 -> count = n
+          _ -> return complain(s"marshal: `${args(i)}` is not a number of lines")
+      word -> word.toLongOption() match
+        Some(n) if id.isEmpty -> id = Some(n)
+        _ -> return complain(s"marshal: `$word`: tail takes one job id, -f and -n")
+    i += 1
+  val job = id match
+    Some(n) -> n
+    None -> return complain("marshal: give a job id")
+  val log = s"${home()}/jobs/$job.log"
+  if !follow
+    return fs.readTailLines(log, count) match
+      Ok(lines) ->
+        for l in lines do println(l)
+        0
+      Err(IoError(ErrorKind.NotFound, _, _)) -> complain(s"marshal: job $job has no log yet")
+      Err(e) -> complain(s"marshal: $log: ${e.message}")
+  // Following: a second connection waits for the job, so the follower knows when to stop.
+  val code = Atomic(-1)
+  val waiter = spawn(() ->
+    val result = askDaemon(Request.Wait(job))
+    val status = result match
+      Ok(Ended(j)) -> j.outcome.map(marshal.exitCode).getOrElse(Trouble)
+      _ -> Trouble
+    code.store(status)
+    result)
+  // A queued job has no log yet: it is waited for.
+  while !fs.exists(log) && code.load() < 0 do threads.sleep(millis(100))
+  if !fs.exists(log)
+    return reportEnd(waiter.join())
+  fs.readTailLines(log, count).getOrElse([]).foreach(l -> println(l))
+  val f = fs.open(log) match
+    Ok(f) -> f
+    Err(e) -> return complain(s"marshal: $log: ${e.message}")
+  f.seekToEnd()
+  loop
+    val done = code.load() >= 0
+    f.readCompleteLine() match
+      Ok(Some(line)) -> println(line)
+      Ok(None) ->
+        if done
+          f.readLine().getOrElse(None).foreach(l -> println(l))
+          break
+        threads.sleep(millis(100))
+      Err(e) -> return complain(s"marshal: $log: ${e.message}")
+  f.close()
+  reportEnd(waiter.join())
 
 // `grep [options] <id> <pattern>`: the lines of a job's log that match, read straight from the log
 // as `tail` does, so a running job and an ended one are searched alike and no daemon is needed.
 // Exits as grep does: 0 when a line matched, 1 when none did, 2 when the search could not be made.
 grep(args: Vector[string]) -> int
-    var ignoreCase = false
-    var invert = false
-    var numbers = false
-    var countOnly = false
-    var fixed = false
-    var maxMatches: Option[long] = None
-    var before: Option[int] = None
-    var after: Option[int] = None
-    var context: Option[int] = None
-    var last: Option[long] = None
-    val words = Buffer[string]()
-    var i = 0
-    var optionsOver = false
-    while i < args.length
-        val word = args(i)
-        if optionsOver || !word.startsWith("-") || word == "-"
-            words.addOne(word)
-        else
-            word match
-                "--" -> optionsOver = true
-                "-i" -> ignoreCase = true
-                "-v" -> invert = true
-                "-n" -> numbers = true
-                "-c" -> countOnly = true
-                "-F" -> fixed = true
-                "-m" | "--last" ->
-                    i += 1
-                    if i >= args.length then return complain(s"marshal: grep: $word needs a number")
-                    args(i).toLongOption() match
-                        Some(n) if n >= 0 -> if word == "-m" then maxMatches = Some(n) else last = Some(n)
-                        _ -> return complain(s"marshal: grep: `${args(i)}` is not a number for $word")
-                "-A" | "-B" | "-C" ->
-                    i += 1
-                    if i >= args.length then return complain(s"marshal: grep: $word needs a number of lines")
-                    args(i).toIntOption() match
-                        Some(n) if n >= 0 -> if word == "-A" then after = Some(n) elif word == "-B" then before = Some(n) else context = Some(n)
-                        _ -> return complain(s"marshal: grep: `${args(i)}` is not a number of lines for $word")
-                _ -> return complain(s"marshal: grep: no option `$word`; use -- before a pattern that begins with -")
-        i += 1
-    if words.length != 2 then return complain("marshal: grep takes a job id and a pattern")
-    val job = words(0).toLongOption() match
-        Some(n) -> n
-        None -> return complain(s"marshal: `${words(0)}` is not a job id")
-    val hit = grepMatcher(words(1), fixed, ignoreCase) match
-        Ok(h) -> h
-        Err(e) -> return complain(s"marshal: grep: `${words(1)}` is not a pattern: $e")
-    val spec = GrepSpec(invert, numbers, countOnly, maxMatches, before.getOrElse(context.getOrElse(0)), after.getOrElse(context.getOrElse(0)))
-    val log = s"${home()}/jobs/$job.log"
-    val f = fs.open(log) match
-        Ok(f) -> f
-        Err(IoError(ErrorKind.NotFound, _, _)) -> return complain(s"marshal: job $job has no log")
-        Err(e) -> return complain(s"marshal: $log: ${e.message}")
-    // `--last N` skips all but the last N lines: one pass to count them, then the search.
-    var skip: long = 0
-    last match
-        Some(keep) ->
-            var total: long = 0
-            loop
-                f.readLine() match
-                    Ok(Some(_)) -> total += 1
-                    Ok(None) -> break
-                    Err(e) -> return complain(s"marshal: $log: ${e.message}")
-            skip = if total > keep then total - keep else 0
-            f.seek(0)
-        None -> ()
-    var n: long = 0
-    while n < skip
-        f.readLine()
-        n += 1
-    val result = grepLines(() -> f.readLine().mapErr(e -> s"marshal: $log: ${e.message}"), skip + 1, hit, spec, l -> println(l))
-    f.close()
-    result match
-        Ok(count) ->
-            if countOnly then println(count)
-            if count > 0 then 0 else 1
-        Err(e) -> complain(e)
+  var ignoreCase = false
+  var invert = false
+  var numbers = false
+  var countOnly = false
+  var fixed = false
+  var maxMatches: Option[long] = None
+  var before: Option[int] = None
+  var after: Option[int] = None
+  var context: Option[int] = None
+  var last: Option[long] = None
+  val words = Buffer[string]()
+  var i = 0
+  var optionsOver = false
+  while i < args.length
+    val word = args(i)
+    if optionsOver || !word.startsWith("-") || word == "-"
+      words.addOne(word)
+    else
+      word match
+        "--" -> optionsOver = true
+        "-i" -> ignoreCase = true
+        "-v" -> invert = true
+        "-n" -> numbers = true
+        "-c" -> countOnly = true
+        "-F" -> fixed = true
+        "-m" | "--last" ->
+          i += 1
+          if i >= args.length then return complain(s"marshal: grep: $word needs a number")
+          args(i).toLongOption() match
+            Some(n) if n >= 0 -> if word == "-m" then maxMatches = Some(n) else last = Some(n)
+            _ -> return complain(s"marshal: grep: `${args(i)}` is not a number for $word")
+        "-A" | "-B" | "-C" ->
+          i += 1
+          if i >= args.length then return complain(s"marshal: grep: $word needs a number of lines")
+          args(i).toIntOption() match
+            Some(
+              n
+            ) if n >= 0 -> if word == "-A" then after = Some(
+              n
+            ) elif word == "-B" then before = Some(n) else context = Some(n)
+            _ -> return complain(s"marshal: grep: `${args(i)}` is not a number of lines for $word")
+        _ -> return complain(s"marshal: grep: no option `$word`; use -- before a pattern that begins with -")
+    i += 1
+  if words.length != 2 then return complain("marshal: grep takes a job id and a pattern")
+  val job = words(0).toLongOption() match
+    Some(n) -> n
+    None -> return complain(s"marshal: `${words(0)}` is not a job id")
+  val hit = grepMatcher(words(1), fixed, ignoreCase) match
+    Ok(h) -> h
+    Err(e) -> return complain(s"marshal: grep: `${words(1)}` is not a pattern: $e")
+  val spec = GrepSpec(
+    invert,
+    numbers,
+    countOnly,
+    maxMatches,
+    before.getOrElse(context.getOrElse(0)),
+    after.getOrElse(context.getOrElse(0))
+  )
+  val log = s"${home()}/jobs/$job.log"
+  val f = fs.open(log) match
+    Ok(f) -> f
+    Err(IoError(ErrorKind.NotFound, _, _)) -> return complain(s"marshal: job $job has no log")
+    Err(e) -> return complain(s"marshal: $log: ${e.message}")
+  // `--last N` skips all but the last N lines: one pass to count them, then the search.
+  var skip: long = 0
+  last match
+    Some(keep) ->
+      var total: long = 0
+      loop
+        f.readLine() match
+          Ok(Some(_)) -> total += 1
+          Ok(None) -> break
+          Err(e) -> return complain(s"marshal: $log: ${e.message}")
+      skip = if total > keep then total - keep else 0
+      f.seek(0)
+    None -> ()
+  var n: long = 0
+  while n < skip
+    f.readLine()
+    n += 1
+  val result = grepLines(
+    () -> f.readLine().mapErr(e -> s"marshal: $log: ${e.message}"),
+    skip + 1,
+    hit,
+    spec,
+    l -> println(l)
+  )
+  f.close()
+  result match
+    Ok(count) ->
+      if countOnly then println(count)
+      if count > 0 then 0 else 1
+    Err(e) -> complain(e)
 
 reportEnd(result: Result[Reply, string]) -> int
+
 reportEnd(Ok(Ended(j))) =
-    println(marshal.resultLine(j))
-    j.outcome.map(marshal.exitCode).getOrElse(Trouble)
+  println(marshal.resultLine(j))
+  j.outcome.map(marshal.exitCode).getOrElse(Trouble)
+
 reportEnd(Ok(Failed(e))) = complain(s"marshal: $e")
 reportEnd(Ok(other)) = complain(s"marshal: unexpected reply $other")
 reportEnd(Err(e)) = complain(e)
 
 // One request and its reply.
 ask(conn: UnixStream, request: Request) -> Result[Reply, string] = exchange(conn, request)? match
-    Some(reply) -> Ok(reply)
-    None -> Err("marshal: the daemon closed the connection without a reply")
+  Some(reply) -> Ok(reply)
+  None -> Err("marshal: the daemon closed the connection without a reply")
 
 // One request and its reply, or None when the connection closed before a reply came.
 exchange(conn: UnixStream, request: Request) -> Result[Option[Reply], string]
-    if conn.writeText(marshal.encodeRequest(request).render + "\n").isErr then return Ok(None)
-    conn.readLine() match
-        Ok(Some(line)) -> marshal.decodeReply(line).map(r -> Some(r)).mapErr(e -> s"marshal: the daemon's reply is not one: $e")
-        _ -> Ok(None)
+  if conn.writeText(marshal.encodeRequest(request).render + "\n").isErr then return Ok(None)
+  conn.readLine() match
+    Ok(Some(line)) -> marshal.decodeReply(line).map(r -> Some(r)).mapErr(
+      e -> s"marshal: the daemon's reply is not one: $e"
+    )
+    _ -> Ok(None)
 
 // How long a command goes on trying to reach a daemon whose connection closed: long enough for it
 // to restart.
@@ -924,66 +1038,74 @@ val Reconnecting: time.Duration = millis(30000)
 // writes every reply it gives before it restarts, so a request left unanswered was not carried
 // out, and a `wait` goes on waiting across a restart.
 askDaemon(request: Request) -> Result[Reply, string]
-    var conn = connect(true)?
-    loop
-        exchange(conn, request)? match
-            Some(reply) ->
-                conn.close()
-                return Ok(reply)
-            None -> conn.close()
-        conn = reconnect(time.monotonic() + Reconnecting)?
+  var conn = connect(true)?
+  loop
+    exchange(conn, request)? match
+      Some(reply) ->
+        conn.close()
+        return Ok(reply)
+      None -> conn.close()
+    conn = reconnect(time.monotonic() + Reconnecting)?
 
 // A new connection to the daemon, looking with a growing pause until `limit`; a daemon is started
 // when none is starting.
 reconnect(limit: time.Duration) -> Result[UnixStream, string]
-    var pause: long = 25
-    loop
-        threads.sleep(millis(pause))
-        if pause < 1000 then pause *= 2
-        connect(true) match
-            Ok(c) -> return Ok(c)
-            Err(e) -> if time.monotonic() >= limit then return Err(s"marshal: the daemon went away and did not come back within ${Reconnecting.toMillis / 1000}s: $e")
+  var pause: long = 25
+  loop
+    threads.sleep(millis(pause))
+    if pause < 1000 then pause *= 2
+    connect(true) match
+      Ok(c) -> return Ok(c)
+      Err(e) -> if time.monotonic() >= limit then return Err(
+        s"marshal: the daemon went away and did not come back within ${Reconnecting.toMillis / 1000}s: $e"
+      )
 
 // A connection to the daemon, starting one when none listens and `start` allows it.
 connect(start: bool) -> Result[UnixStream, string]
-    val dir = home()
-    val sock = dir + "/sock"
+  val dir = home()
+  val sock = dir + "/sock"
+  UnixStream.connect(sock) match
+    Ok(c) -> return Ok(c)
+    Err(e) -> if !start then return Err(s"marshal: no daemon at $sock: ${e.message}")
+  launch(dir)?
+  // The daemon is listening once its socket answers.
+  val until = time.monotonic() + millis(10000)
+  while time.monotonic() < until
     UnixStream.connect(sock) match
-        Ok(c) -> return Ok(c)
-        Err(e) -> if !start then return Err(s"marshal: no daemon at $sock: ${e.message}")
-    launch(dir)?
-    // The daemon is listening once its socket answers.
-    val until = time.monotonic() + millis(10000)
-    while time.monotonic() < until
-        UnixStream.connect(sock) match
-            Ok(c) -> return Ok(c)
-            Err(_) -> threads.sleep(millis(50))
-    // A lock left with no pid, by a command that died between making it and writing one, goes.
-    if fs.isDir(dir + "/starting") && !fs.exists(dir + "/starting/pid") then fs.removeDirAll(dir + "/starting")
-    val tail = fs.readTailLines(dir + "/daemon.log", 5).getOrElse([]).mkString("\n")
-    Err(s"marshal: the daemon did not start; the end of $dir/daemon.log:\n$tail")
+      Ok(c) -> return Ok(c)
+      Err(_) -> threads.sleep(millis(50))
+  // A lock left with no pid, by a command that died between making it and writing one, goes.
+  if fs.isDir(dir + "/starting") && !fs.exists(dir + "/starting/pid") then fs.removeDirAll(dir + "/starting")
+  val tail = fs.readTailLines(dir + "/daemon.log", 5).getOrElse([]).mkString("\n")
+  Err(s"marshal: the daemon did not start; the end of $dir/daemon.log:\n$tail")
 
 // Starts a daemon in the background, unless another command is starting one already: the
 // directory `starting`, made by one command alone, says which, and holds that command's pid so a
 // command that died starting one does not block the next. The daemon removes it once it listens.
 launch(dir: string) -> Result[unit, string]
-    fs.createDirAll(dir).mapErr(e -> s"marshal: cannot make $dir: ${e.message}")?
-    val lock = dir + "/starting"
-    fs.createDir(lock) match
+  fs.createDirAll(dir).mapErr(e -> s"marshal: cannot make $dir: ${e.message}")?
+  val lock = dir + "/starting"
+  fs.createDir(lock) match
+    Ok(_) -> marshal.writeAtomic(lock + "/pid", process.pid().toString())
+    Err(IoError(ErrorKind.AlreadyExists, _, _)) ->
+      // No pid yet: the command that made it is about to write one.
+      val owner = fs.readText(lock + "/pid").ok.flatMap(t -> t.trim.toLongOption())
+      val alive = owner.forall(p -> process.signal(p, 0).isOk)
+      if alive then return Ok(())
+      fs.removeDirAll(lock)
+      fs.createDir(lock) match
         Ok(_) -> marshal.writeAtomic(lock + "/pid", process.pid().toString())
-        Err(IoError(ErrorKind.AlreadyExists, _, _)) ->
-            // No pid yet: the command that made it is about to write one.
-            val owner = fs.readText(lock + "/pid").ok.flatMap(t -> t.trim.toLongOption())
-            val alive = owner.forall(p -> process.signal(p, 0).isOk)
-            if alive then return Ok(())
-            fs.removeDirAll(lock)
-            fs.createDir(lock) match
-                Ok(_) -> marshal.writeAtomic(lock + "/pid", process.pid().toString())
-                Err(IoError(ErrorKind.AlreadyExists, _, _)) -> return Ok(())
-                Err(e) -> return Err(s"marshal: cannot start a daemon: ${e.message}")
+        Err(IoError(ErrorKind.AlreadyExists, _, _)) -> return Ok(())
         Err(e) -> return Err(s"marshal: cannot start a daemon: ${e.message}")
-    val exe = process.executable() match
-        Some(x) -> x
-        None -> return Err("marshal: cannot tell where this program is, to start the daemon")
-    Command("sh", "-c", "\"$0\" daemon </dev/null >>\"$1\" 2>&1 &", exe, dir + "/daemon.log").run().mapErr(e -> s"marshal: cannot start the daemon: ${e.message}")?
-    Ok(())
+    Err(e) -> return Err(s"marshal: cannot start a daemon: ${e.message}")
+  val exe = process.executable() match
+    Some(x) -> x
+    None -> return Err("marshal: cannot tell where this program is, to start the daemon")
+  Command(
+    "sh",
+    "-c",
+    "\"$0\" daemon </dev/null >>\"$1\" 2>&1 &",
+    exe,
+    dir + "/daemon.log"
+  ).run().mapErr(e -> s"marshal: cannot start the daemon: ${e.message}")?
+  Ok(())

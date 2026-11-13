@@ -7,245 +7,318 @@ import dev.avinlang.marshal
 import dev.avinlang.marshal.{GrepSpec, GrepPlain}
 import dev.avinlang.marshal.cli
 
-val log: Vector[string] = ["alpha", "ERR one", "beta", "gamma", "delta", "ERR two", "epsilon", "zeta", "eta", "ERR three"]
+val log: Vector[string] = [
+  "alpha",
+  "ERR one",
+  "beta",
+  "gamma",
+  "delta",
+  "ERR two",
+  "epsilon",
+  "zeta",
+  "eta",
+  "ERR three"
+]
 
 // The matches and the printed lines for `pattern` over `lines`.
-found(lines: Vector[string], pattern: string, spec: GrepSpec = GrepPlain, fixed: bool = false, ignoreCase: bool = false) -> (long, Vector[string])
-    val hit = marshal.grepMatcher(pattern, fixed, ignoreCase).ok.get
-    marshal.grepVector(lines, hit, spec)
+found(
+    lines: Vector[string],
+    pattern: string,
+    spec: GrepSpec = GrepPlain,
+    fixed: bool = false,
+    ignoreCase: bool = false
+) -> (long, Vector[string])
+  val hit = marshal.grepMatcher(pattern, fixed, ignoreCase).ok.get
+  marshal.grepVector(lines, hit, spec)
 
 @test("a plain search prints the matching lines and counts them")
 grepPlain()
-    assertEq(found(log, "ERR"), (3, ["ERR one", "ERR two", "ERR three"]))
-    assertEq(found(log, "^e"), (2, ["epsilon", "eta"]))
-    assertEq(found(log, "zzz"), (0, []))
+  assertEq(found(log, "ERR"), (3, ["ERR one", "ERR two", "ERR three"]))
+  assertEq(found(log, "^e"), (2, ["epsilon", "eta"]))
+  assertEq(found(log, "zzz"), (0, []))
 
 @test("the pattern is a regular expression, found anywhere in the line")
 grepRegex()
-    assertEq(found(log, "a$").0, 6)
-    assertEq(found(log, "^(alpha|beta)$").1, ["alpha", "beta"])
-    assertEq(found(log, "E.R\\s(one|two)").1, ["ERR one", "ERR two"])
-    assertEq(found(log, "").0, 10)
+  assertEq(found(log, "a$").0, 6)
+  assertEq(found(log, "^(alpha|beta)$").1, ["alpha", "beta"])
+  assertEq(found(log, "E.R\\s(one|two)").1, ["ERR one", "ERR two"])
+  assertEq(found(log, "").0, 10)
 
 @test("-F takes the pattern as literal text")
 grepFixed()
-    val lines = ["a.c", "abc", "a+c", "(x)"]
-    assertEq(found(lines, "a.c", fixed = true).1, ["a.c"])
-    assertEq(found(lines, "a.c").1, ["a.c", "abc", "a+c"])
-    assertEq(found(lines, "a[.]c").1, ["a.c"])
-    assertEq(found(lines, "a+c", fixed = true).1, ["a+c"])
-    assertEq(found(lines, "(x)", fixed = true).1, ["(x)"])
-    // a pattern that is not a regular expression is fine as text
-    assert(marshal.grepMatcher("(x", false, false).isErr)
-    assert(marshal.grepMatcher("(x", true, false).isOk)
-    assertEq(found(["a\\Eb", "ab"], "\\E", fixed = true).1, ["a\\Eb"])
+  val lines = ["a.c", "abc", "a+c", "(x)"]
+  assertEq(found(lines, "a.c", fixed = true).1, ["a.c"])
+  assertEq(found(lines, "a.c").1, ["a.c", "abc", "a+c"])
+  assertEq(found(lines, "a[.]c").1, ["a.c"])
+  assertEq(found(lines, "a+c", fixed = true).1, ["a+c"])
+  assertEq(found(lines, "(x)", fixed = true).1, ["(x)"])
+  // a pattern that is not a regular expression is fine as text
+  assert(marshal.grepMatcher("(x", false, false).isErr)
+  assert(marshal.grepMatcher("(x", true, false).isOk)
+  assertEq(found(["a\\Eb", "ab"], "\\E", fixed = true).1, ["a\\Eb"])
 
 @test("-i makes upper and lower case the same")
 grepIgnoreCase()
-    assertEq(found(log, "err", ignoreCase = false).0, 0)
-    assertEq(found(log, "err", ignoreCase = true).0, 3)
-    assertEq(found(["Straße", "STRASSE"], "straße", ignoreCase = true).1, ["Straße"])
-    assertEq(found(["ÉCOLE", "école"], "école", ignoreCase = true).0, 2)
-    assertEq(found(["ÉCOLE"], "école", ignoreCase = true).0, 1)
-    assertEq(found(["école"], "ÉCOLE", ignoreCase = true).0, 1)
-    assertEq(found(["ÉCOLE"], "école").0, 0)
-    // with -F too
-    assertEq(found(["A.B", "a.b", "axb"], "a.b", fixed = true, ignoreCase = true).1, ["A.B", "a.b"])
+  assertEq(found(log, "err", ignoreCase = false).0, 0)
+  assertEq(found(log, "err", ignoreCase = true).0, 3)
+  assertEq(found(["Straße", "STRASSE"], "straße", ignoreCase = true).1, ["Straße"])
+  assertEq(found(["ÉCOLE", "école"], "école", ignoreCase = true).0, 2)
+  assertEq(found(["ÉCOLE"], "école", ignoreCase = true).0, 1)
+  assertEq(found(["école"], "ÉCOLE", ignoreCase = true).0, 1)
+  assertEq(found(["ÉCOLE"], "école").0, 0)
+  // with -F too
+  assertEq(found(["A.B", "a.b", "axb"], "a.b", fixed = true, ignoreCase = true).1, ["A.B", "a.b"])
 
 @test("-v prints the lines that do not match")
 grepInvert()
-    val r = found(log, "ERR", GrepSpec(true, false, false, None, 0, 0))
-    assertEq(r.0, 7)
-    assertEq(r.1, ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta"])
-    assertEq(found(log, "", GrepSpec(true, false, false, None, 0, 0)), (0, []))
-    assertEq(found(log, "zzz", GrepSpec(true, false, false, None, 0, 0)).0, 10)
+  val r = found(log, "ERR", GrepSpec(true, false, false, None, 0, 0))
+  assertEq(r.0, 7)
+  assertEq(r.1, ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta"])
+  assertEq(found(log, "", GrepSpec(true, false, false, None, 0, 0)), (0, []))
+  assertEq(found(log, "zzz", GrepSpec(true, false, false, None, 0, 0)).0, 10)
 
 @test("-n puts the line's number and a colon before a match")
 grepNumbers()
-    assertEq(found(log, "ERR", GrepSpec(false, true, false, None, 0, 0)).1, ["2:ERR one", "6:ERR two", "10:ERR three"])
+  assertEq(found(log, "ERR", GrepSpec(false, true, false, None, 0, 0)).1, ["2:ERR one", "6:ERR two", "10:ERR three"])
 
 @test("-c prints nothing of its own: the count is all, whatever the context asks")
 grepCount()
-    assertEq(found(log, "ERR", GrepSpec(false, false, true, None, 0, 0)), (3, []))
-    assertEq(found(log, "ERR", GrepSpec(false, true, true, None, 2, 2)), (3, []))
-    assertEq(found(log, "zzz", GrepSpec(false, false, true, None, 0, 0)), (0, []))
+  assertEq(found(log, "ERR", GrepSpec(false, false, true, None, 0, 0)), (3, []))
+  assertEq(found(log, "ERR", GrepSpec(false, true, true, None, 2, 2)), (3, []))
+  assertEq(found(log, "zzz", GrepSpec(false, false, true, None, 0, 0)), (0, []))
 
 @test("-m stops after that many matching lines, and -m 0 reads nothing")
 grepMax()
-    assertEq(found(log, "ERR", GrepSpec(false, false, false, Some(2), 0, 0)), (2, ["ERR one", "ERR two"]))
-    assertEq(found(log, "ERR", GrepSpec(false, false, false, Some(1), 0, 0)), (1, ["ERR one"]))
-    assertEq(found(log, "ERR", GrepSpec(false, false, false, Some(0), 0, 0)), (0, []))
-    assertEq(found(log, "ERR", GrepSpec(false, false, false, Some(99), 0, 0)).0, 3)
+  assertEq(found(log, "ERR", GrepSpec(false, false, false, Some(2), 0, 0)), (2, ["ERR one", "ERR two"]))
+  assertEq(found(log, "ERR", GrepSpec(false, false, false, Some(1), 0, 0)), (1, ["ERR one"]))
+  assertEq(found(log, "ERR", GrepSpec(false, false, false, Some(0), 0, 0)), (0, []))
+  assertEq(found(log, "ERR", GrepSpec(false, false, false, Some(99), 0, 0)).0, 3)
 
 @test("-A prints the lines after a match, -B the lines before, and groups that do not touch are parted by --")
 grepContext()
-    val after = found(log, "ERR", GrepSpec(false, true, false, None, 0, 1)).1
-    assertEq(after, ["2:ERR one", "3-beta", "--", "6:ERR two", "7-epsilon", "--", "10:ERR three"])
-    val before = found(log, "ERR", GrepSpec(false, true, false, None, 1, 0)).1
-    assertEq(before, ["1-alpha", "2:ERR one", "--", "5-delta", "6:ERR two", "--", "9-eta", "10:ERR three"])
-    val both = found(log, "ERR", GrepSpec(false, true, false, None, 1, 1)).1
-    assertEq(both, ["1-alpha", "2:ERR one", "3-beta", "--", "5-delta", "6:ERR two", "7-epsilon", "--", "9-eta", "10:ERR three"])
+  val after = found(log, "ERR", GrepSpec(false, true, false, None, 0, 1)).1
+  assertEq(after, ["2:ERR one", "3-beta", "--", "6:ERR two", "7-epsilon", "--", "10:ERR three"])
+  val before = found(log, "ERR", GrepSpec(false, true, false, None, 1, 0)).1
+  assertEq(before, ["1-alpha", "2:ERR one", "--", "5-delta", "6:ERR two", "--", "9-eta", "10:ERR three"])
+  val both = found(log, "ERR", GrepSpec(false, true, false, None, 1, 1)).1
+  assertEq(
+    both,
+    ["1-alpha", "2:ERR one", "3-beta", "--", "5-delta", "6:ERR two", "7-epsilon", "--", "9-eta", "10:ERR three"]
+  )
 
 @test("context that meets the next group's runs on with no --, and a line is printed once")
 grepContextTouching()
-    val r = found(log, "ERR", GrepSpec(false, true, false, None, 2, 2)).1
-    assertEq(r, ["1-alpha", "2:ERR one", "3-beta", "4-gamma", "5-delta", "6:ERR two", "7-epsilon", "8-zeta", "9-eta", "10:ERR three"])
-    // groups exactly one line apart are adjacent: no --
-    assertEq(found(["a", "x", "b", "x", "c"], "x", GrepSpec(false, false, false, None, 0, 1)).1, ["x", "b", "x", "c"])
-    assertEq(found(["x", "a", "b", "x"], "x", GrepSpec(false, false, false, None, 1, 1)).1, ["x", "a", "b", "x"])
-    assertEq(found(["x", "a", "b", "c", "x"], "x", GrepSpec(false, false, false, None, 1, 1)).1, ["x", "a", "--", "c", "x"])
+  val r = found(log, "ERR", GrepSpec(false, true, false, None, 2, 2)).1
+  assertEq(
+    r,
+    [
+      "1-alpha",
+      "2:ERR one",
+      "3-beta",
+      "4-gamma",
+      "5-delta",
+      "6:ERR two",
+      "7-epsilon",
+      "8-zeta",
+      "9-eta",
+      "10:ERR three"
+    ]
+  )
+  // groups exactly one line apart are adjacent: no --
+  assertEq(found(["a", "x", "b", "x", "c"], "x", GrepSpec(false, false, false, None, 0, 1)).1, ["x", "b", "x", "c"])
+  assertEq(found(["x", "a", "b", "x"], "x", GrepSpec(false, false, false, None, 1, 1)).1, ["x", "a", "b", "x"])
+  assertEq(
+    found(["x", "a", "b", "c", "x"], "x", GrepSpec(false, false, false, None, 1, 1)).1,
+    ["x", "a", "--", "c", "x"]
+  )
 
 @test("context without -n prints bare lines, with -- still between groups")
 grepContextBare()
-    assertEq(found(log, "ERR", GrepSpec(false, false, false, None, 0, 1)).1, ["ERR one", "beta", "--", "ERR two", "epsilon", "--", "ERR three"])
-    // no context asked, no --
-    assertEq(found(log, "ERR").1.contains("--"), false)
+  assertEq(
+    found(log, "ERR", GrepSpec(false, false, false, None, 0, 1)).1,
+    ["ERR one", "beta", "--", "ERR two", "epsilon", "--", "ERR three"]
+  )
+  // no context asked, no --
+  assertEq(found(log, "ERR").1.contains("--"), false)
 
 @test("context at either end of the log is cut short there")
 grepContextEnds()
-    assertEq(found(["x", "a"], "x", GrepSpec(false, false, false, None, 5, 5)).1, ["x", "a"])
-    assertEq(found(["a", "x"], "x", GrepSpec(false, false, false, None, 5, 5)).1, ["a", "x"])
-    assertEq(found(["x"], "x", GrepSpec(false, true, false, None, 3, 3)).1, ["1:x"])
+  assertEq(found(["x", "a"], "x", GrepSpec(false, false, false, None, 5, 5)).1, ["x", "a"])
+  assertEq(found(["a", "x"], "x", GrepSpec(false, false, false, None, 5, 5)).1, ["a", "x"])
+  assertEq(found(["x"], "x", GrepSpec(false, true, false, None, 3, 3)).1, ["1:x"])
 
 @test("-n with -C: matches take a colon and context a dash")
 grepNumbersWithContext()
-    val r = found(["one", "two", "three", "four"], "three", GrepSpec(false, true, false, None, 1, 1)).1
-    assertEq(r, ["2-two", "3:three", "4-four"])
+  val r = found(["one", "two", "three", "four"], "three", GrepSpec(false, true, false, None, 1, 1)).1
+  assertEq(r, ["2-two", "3:three", "4-four"])
 
 @test("-v with -c counts the lines that do not match")
 grepInvertCount()
-    assertEq(found(log, "ERR", GrepSpec(true, false, true, None, 0, 0)), (7, []))
-    assertEq(found(log, "", GrepSpec(true, false, true, None, 0, 0)), (0, []))
+  assertEq(found(log, "ERR", GrepSpec(true, false, true, None, 0, 0)), (7, []))
+  assertEq(found(log, "", GrepSpec(true, false, true, None, 0, 0)), (0, []))
 
 @test("-v with context: the selected lines are those that do not match")
 grepInvertContext()
-    val r = found(["a", "ERR", "b", "ERR", "ERR", "c"], "ERR", GrepSpec(true, true, false, None, 1, 0)).1
-    assertEq(r, ["1:a", "2-ERR", "3:b", "--", "5-ERR", "6:c"])
-    assertEq(found(["a", "ERR", "b", "ERR", "ERR", "c"], "ERR", GrepSpec(true, true, false, None, 1, 0)).0, 3)
+  val r = found(["a", "ERR", "b", "ERR", "ERR", "c"], "ERR", GrepSpec(true, true, false, None, 1, 0)).1
+  assertEq(r, ["1:a", "2-ERR", "3:b", "--", "5-ERR", "6:c"])
+  assertEq(found(["a", "ERR", "b", "ERR", "ERR", "c"], "ERR", GrepSpec(true, true, false, None, 1, 0)).0, 3)
 
 @test("-m with context: the last match's trailing context is printed, then the search ends")
 grepMaxContext()
-    val r = found(log, "ERR", GrepSpec(false, true, false, Some(1), 1, 2))
-    assertEq(r, (1, ["1-alpha", "2:ERR one", "3-beta", "4-gamma"]))
-    val two = found(log, "ERR", GrepSpec(false, true, false, Some(2), 0, 1))
-    assertEq(two, (2, ["2:ERR one", "3-beta", "--", "6:ERR two", "7-epsilon"]))
-    // a matching line inside the trailing context of the last match is context there, and is not counted
-    val inside = found(["ERR a", "ERR b", "x"], "ERR", GrepSpec(false, true, false, Some(1), 0, 2))
-    assertEq(inside, (1, ["1:ERR a", "2-ERR b", "3-x"]))
+  val r = found(log, "ERR", GrepSpec(false, true, false, Some(1), 1, 2))
+  assertEq(r, (1, ["1-alpha", "2:ERR one", "3-beta", "4-gamma"]))
+  val two = found(log, "ERR", GrepSpec(false, true, false, Some(2), 0, 1))
+  assertEq(two, (2, ["2:ERR one", "3-beta", "--", "6:ERR two", "7-epsilon"]))
+  // a matching line inside the trailing context of the last match is context there, and is not counted
+  val inside = found(["ERR a", "ERR b", "x"], "ERR", GrepSpec(false, true, false, Some(1), 0, 2))
+  assertEq(inside, (1, ["1:ERR a", "2-ERR b", "3-x"]))
 
 @test("-m with -c stops counting at the limit")
 grepMaxCount()
-    assertEq(found(log, "ERR", GrepSpec(false, false, true, Some(2), 0, 0)), (2, []))
+  assertEq(found(log, "ERR", GrepSpec(false, false, true, Some(2), 0, 0)), (2, []))
 
 @test("an empty log has no lines to match, whatever the pattern or -v")
 grepEmptyLog()
-    assertEq(found([], "x"), (0, []))
-    assertEq(found([], "", GrepSpec(true, true, false, None, 2, 2)), (0, []))
-    assertEq(found([], "x", GrepSpec(false, false, true, None, 0, 0)), (0, []))
+  assertEq(found([], "x"), (0, []))
+  assertEq(found([], "", GrepSpec(true, true, false, None, 2, 2)), (0, []))
+  assertEq(found([], "x", GrepSpec(false, false, true, None, 0, 0)), (0, []))
 
 @test("a log of one empty line has one line, and an empty pattern matches it")
 grepEmptyLine()
-    assertEq(found([""], ""), (1, [""]))
-    assertEq(found(["", "a", ""], "^$", GrepSpec(false, true, false, None, 0, 0)).1, ["1:", "3:"])
+  assertEq(found([""], ""), (1, [""]))
+  assertEq(found(["", "a", ""], "^$", GrepSpec(false, true, false, None, 0, 0)).1, ["1:", "3:"])
 
 @test("Unicode lines are matched and printed whole")
 grepUnicode()
-    val lines = ["héllo wörld", "日本語のログ", "emoji 🙂 here", "plain"]
-    assertEq(found(lines, "ö").1, ["héllo wörld"])
-    assertEq(found(lines, "日本語").1, ["日本語のログ"])
-    assertEq(found(lines, "🙂", fixed = true).1, ["emoji 🙂 here"])
-    assertEq(found(lines, "^.{6}$").1, ["日本語のログ"])
-    assertEq(found(lines, "ö.l", GrepSpec(false, true, false, None, 0, 0)).1, ["1:héllo wörld"])
+  val lines = ["héllo wörld", "日本語のログ", "emoji 🙂 here", "plain"]
+  assertEq(found(lines, "ö").1, ["héllo wörld"])
+  assertEq(found(lines, "日本語").1, ["日本語のログ"])
+  assertEq(found(lines, "🙂", fixed = true).1, ["emoji 🙂 here"])
+  assertEq(found(lines, "^.{6}$").1, ["日本語のログ"])
+  assertEq(found(lines, "ö.l", GrepSpec(false, true, false, None, 0, 0)).1, ["1:héllo wörld"])
 
 // A source of `count` lines, line `k` being `line k`, made as they are asked for.
 generated(count: long) -> () -> Result[Option[string], string]
-    var k: long = 0
-    () ->
-        if k < count
-            k += 1
-            Ok(Some(s"line $k"))
-        else
-            Ok(None)
+  var k: long = 0
+  () ->
+    if k < count
+      k += 1
+      Ok(Some(s"line $k"))
+    else
+      Ok(None)
 
 @test("a log of millions of lines is searched as it is read, with context and a count")
 grepStreams()
-    val out = Buffer[string]()
-    val hit = marshal.grepMatcher("00000$", false, false).ok.get
-    val count = marshal.grepLines(generated(5_000_000), 1, hit, GrepSpec(false, true, false, None, 1, 1), l -> out.addOne(l)).ok.get
-    assertEq(count, 50)
-    // fifty matches, each with a line before and after but the last, which ends the log
-    assertEq(out.length, 50 * 3 - 1 + 49)
-    assertEq(out(0), "99999-line 99999")
-    assertEq(out(1), "100000:line 100000")
-    assertEq(out(2), "100001-line 100001")
-    assertEq(out(3), "--")
-    val counted = marshal.grepLines(generated(5_000_000), 1, hit, GrepSpec(false, false, true, None, 0, 0), l -> fail("printed")).ok.get
-    assertEq(counted, 50)
+  val out = Buffer[string]()
+  val hit = marshal.grepMatcher("00000$", false, false).ok.get
+  val count = marshal.grepLines(
+    generated(5_000_000),
+    1,
+    hit,
+    GrepSpec(false, true, false, None, 1, 1),
+    l -> out.addOne(l)
+  ).ok.get
+  assertEq(count, 50)
+  // fifty matches, each with a line before and after but the last, which ends the log
+  assertEq(out.length, 50 * 3 - 1 + 49)
+  assertEq(out(0), "99999-line 99999")
+  assertEq(out(1), "100000:line 100000")
+  assertEq(out(2), "100001-line 100001")
+  assertEq(out(3), "--")
+  val counted = marshal.grepLines(
+    generated(5_000_000),
+    1,
+    hit,
+    GrepSpec(false, false, true, None, 0, 0),
+    l -> fail("printed")
+  ).ok.get
+  assertEq(counted, 50)
 
 @test("a search with -m ends without reading the rest of a source that never ends")
 grepStopsEarly()
-    val out = Buffer[string]()
-    val hit = marshal.grepMatcher("7$", false, false).ok.get
-    val count = marshal.grepLines(generated(long.MaxValue), 1, hit, GrepSpec(false, false, false, Some(3), 0, 1), l -> out.addOne(l)).ok.get
-    assertEq(count, 3)
-    assertEq(out.toVector, ["line 7", "line 8", "--", "line 17", "line 18", "--", "line 27", "line 28"])
+  val out = Buffer[string]()
+  val hit = marshal.grepMatcher("7$", false, false).ok.get
+  val count = marshal.grepLines(
+    generated(long.MaxValue),
+    1,
+    hit,
+    GrepSpec(false, false, false, Some(3), 0, 1),
+    l -> out.addOne(l)
+  ).ok.get
+  assertEq(count, 3)
+  assertEq(out.toVector, ["line 7", "line 8", "--", "line 17", "line 18", "--", "line 27", "line 28"])
 
 @test("an error from the source ends the search with that error")
 grepSourceError()
-    var n = 0
-    val next = () ->
-        n += 1
-        if n < 3 then Ok(Some("x")) else Err("the read failed")
-    val out = Buffer[string]()
-    val hit = marshal.grepMatcher("x", false, false).ok.get
-    assertEq(marshal.grepLines(next, 1, hit, GrepPlain, l -> out.addOne(l)), Err("the read failed"))
-    assertEq(out.length, 2)
+  var n = 0
+  val next = () ->
+    n += 1
+    if n < 3 then Ok(Some("x")) else Err("the read failed")
+  val out = Buffer[string]()
+  val hit = marshal.grepMatcher("x", false, false).ok.get
+  assertEq(marshal.grepLines(next, 1, hit, GrepPlain, l -> out.addOne(l)), Err("the read failed"))
+  assertEq(out.length, 2)
 
 @test("line numbers begin at the number the source's first line is given")
 grepFirstNumber()
-    val out = Buffer[string]()
-    val hit = marshal.grepMatcher("2", false, false).ok.get
-    marshal.grepLines(generated(5), 100, hit, GrepSpec(false, true, false, None, 0, 0), l -> out.addOne(l)).ok.get
-    assertEq(out.toVector, ["101:line 2"])
+  val out = Buffer[string]()
+  val hit = marshal.grepMatcher("2", false, false).ok.get
+  marshal.grepLines(generated(5), 100, hit, GrepSpec(false, true, false, None, 0, 0), l -> out.addOne(l)).ok.get
+  assertEq(out.toVector, ["101:line 2"])
 
 @test("a pattern that is not a regular expression is an error that says why")
 grepBadPattern()
-    for p in ["(", "a)", "[a", "*a", "a{2", "\\"] do
-        assert(marshal.grepMatcher(p, false, false).isErr, p)
-    assert(marshal.grepMatcher("(", false, false).err.get.nonEmpty)
+  for p in ["(", "a)", "[a", "*a", "a{2", "\\"] do
+    assert(marshal.grepMatcher(p, false, false).isErr, p)
+  assert(marshal.grepMatcher("(", false, false).err.get.nonEmpty)
 
 @test("a line that spends the regex step budget ends grepLines with an error naming the pattern and the line")
 grepBudget()
-    val out = Buffer[string]()
-    val hit = marshal.grepMatcher("(a+)+?$", false, false).ok.get
-    val lines = ["aaa", "b", "a".repeat(60) + "b", "aaa"]
-    var i = 0
-    val next = () ->
-        i += 1
-        Ok(if i <= lines.length then Some(lines(i - 1)) else None)
-    val r = marshal.grepLines(next, 1, hit, GrepPlain, l -> out.addOne(l))
-    assert(r.isErr)
-    val message = r.err.get
-    assert(message.contains("line 3:"), message)
-    assert(message.contains("`(a+)+?$`"), message)
-    assertEq(out.toVector, ["aaa"])
-    assertEq(i, 3)
+  val out = Buffer[string]()
+  val hit = marshal.grepMatcher("(a+)+?$", false, false).ok.get
+  val lines = ["aaa", "b", "a".repeat(60) + "b", "aaa"]
+  var i = 0
+  val next = () ->
+    i += 1
+    Ok(if i <= lines.length then Some(lines(i - 1)) else None)
+  val r = marshal.grepLines(next, 1, hit, GrepPlain, l -> out.addOne(l))
+  assert(r.isErr)
+  val message = r.err.get
+  assert(message.contains("line 3:"), message)
+  assert(message.contains("`(a+)+?$`"), message)
+  assertEq(out.toVector, ["aaa"])
+  assertEq(i, 3)
 
 @test("the matcher answers Err for an over-budget line and Ok otherwise, with -F never over budget")
 grepBudgetMatcher()
-    val long = "a".repeat(60) + "b"
-    assert(marshal.grepMatcher("(a+)+?$", false, false).ok.get(long).isErr)
-    assertEq(marshal.grepMatcher("(a+)+?$", false, false).ok.get("aaa"), Ok(true))
-    assertEq(marshal.grepMatcher("(a+)+?$", true, false).ok.get(long), Ok(false))
-    assertEq(marshal.grepMatcher("a+b$", false, false).ok.get(long), Ok(true))
+  val long = "a".repeat(60) + "b"
+  assert(marshal.grepMatcher("(a+)+?$", false, false).ok.get(long).isErr)
+  assertEq(marshal.grepMatcher("(a+)+?$", false, false).ok.get("aaa"), Ok(true))
+  assertEq(marshal.grepMatcher("(a+)+?$", true, false).ok.get(long), Ok(false))
+  assertEq(marshal.grepMatcher("a+b$", false, false).ok.get(long), Ok(true))
 
 @test("grep is a command: its usage names every option and the exit codes, and the README has its line")
 grepHelp()
-    val help = cli.commandHelp("grep").get
-    assert(help.startsWith("usage: marshal grep <id> <pattern>"), help)
-    for option in ["-i", "-v", "-n", "-c", "-F", "-m <n>", "-A <n>", "-B <n>", "-C <n>", "--last <n>"] do assert(help.contains(option), option)
-    for words in ["Exits 0 when a line matched", "1 when none did", "2 on an error"] do assert(help.contains(words), words)
-    assert(cli.usage.contains("grep <id> <pattern>"))
-    assert(cli.asksHelp("grep", ["--help"]))
-    assert(cli.asksHelp("grep", ["7", "-h"]))
-    assert(!cli.asksHelp("grep", ["7", "--", "--help"]))
+  val help = cli.commandHelp("grep").get
+  assert(help.startsWith("usage: marshal grep <id> <pattern>"), help)
+  for option in [
+    "-i",
+    "-v",
+    "-n",
+    "-c",
+    "-F",
+    "-m <n>",
+    "-A <n>",
+    "-B <n>",
+    "-C <n>",
+    "--last <n>"
+  ] do assert(help.contains(option), option)
+  for words in [
+    "Exits 0 when a line matched",
+    "1 when none did",
+    "2 on an error"
+  ] do assert(help.contains(words), words)
+  assert(cli.usage.contains("grep <id> <pattern>"))
+  assert(cli.asksHelp("grep", ["--help"]))
+  assert(cli.asksHelp("grep", ["7", "-h"]))
+  assert(!cli.asksHelp("grep", ["7", "--", "--help"]))

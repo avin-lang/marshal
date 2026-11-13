@@ -15,11 +15,13 @@ val QuickCapMs: long = 2 * 60000
 // Why a job cannot go into the quick lane, or None when it can (or does not ask to): a landing job
 // has its own lane, and a deadline above the cap would not be quick.
 quickRefusal(spec: JobSpec) -> Option[string]
-    if !spec.quick then return None
-    if spec.landing then return Some("a job is quick or landing, not both")
-    for d in spec.deadlineMs
-        if d > QuickCapMs then return Some(s"a quick job's deadline is at most ${formatMillis(QuickCapMs)}, not ${formatMillis(d)}: drop --quick to give it longer")
-    None
+  if !spec.quick then return None
+  if spec.landing then return Some("a job is quick or landing, not both")
+  for d in spec.deadlineMs
+    if d > QuickCapMs then return Some(
+      s"a quick job's deadline is at most ${formatMillis(QuickCapMs)}, not ${formatMillis(d)}: drop --quick to give it longer"
+    )
+  None
 
 // The deadline of a quick job: the one it gave (at most the cap), else the cap.
 quickDeadlineMs(spec: JobSpec) -> long = spec.deadlineMs.getOrElse(QuickCapMs)
@@ -30,9 +32,9 @@ quickDeadlineMs(spec: JobSpec) -> long = spec.deadlineMs.getOrElse(QuickCapMs)
 // A landing job never gets one, nor an exclusive one; neither is it moved into the lane for the
 // submitter.
 quickHint(learning: Learning, spec: JobSpec, history: Vector[long]) -> string
-    if spec.quick || spec.landing || spec.exclusive then return ""
-    val runs = history.takeRight(learning.window)
-    if runs.length < learning.minRuns then return ""
-    val p90 = percentile(runs, 90)
-    if p90 >= QuickCapMs then return ""
-    s"marshal: hint: `${spec.kind}` jobs took ${formatMillis(p90)} or less at p90 (under the quick lane's ${formatMillis(QuickCapMs)} cap); --quick starts one at once"
+  if spec.quick || spec.landing || spec.exclusive then return ""
+  val runs = history.takeRight(learning.window)
+  if runs.length < learning.minRuns then return ""
+  val p90 = percentile(runs, 90)
+  if p90 >= QuickCapMs then return ""
+  s"marshal: hint: `${spec.kind}` jobs took ${formatMillis(p90)} or less at p90 (under the quick lane's ${formatMillis(QuickCapMs)} cap); --quick starts one at once"

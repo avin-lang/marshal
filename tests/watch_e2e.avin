@@ -17,7 +17,7 @@ import dev.avinlang.json.Json
 printedEvent(r: Ran) -> Json = printedEvents(r)(0)
 
 printedEvents(r: Ran) -> Vector[Json] =
-    r.out.lines.filter(l -> l.startsWith("{")).map(l -> json.parse(l).ok.get).toVector
+  r.out.lines.filter(l -> l.startsWith("{")).map(l -> json.parse(l).ok.get).toVector
 
 eventName(ev: Json) -> string = ev("event").asString.get
 
@@ -25,15 +25,15 @@ eventName(ev: Json) -> string = ev("event").asString.get
 data Background(pid: long, file: string)
 
 startM(home: string, env: Vector[(string, string)], args: string*) -> Background
-    val file = s"$home/bg.${outputs.add(1)}.out"
-    var command = homed(Command(bin(), args*), home).toFile(file).errorsToOutput()
-    for (k, v) in env do command = command.withEnv(k, v)
-    val child = command.start().ok.get
-    val code = Atomic(-1)
-    spawn(() ->
-        child.waitFor()
-        ())
-    Background(child.pid(), file)
+  val file = s"$home/bg.${outputs.add(1)}.out"
+  var command = homed(Command(bin(), args*), home).toFile(file).errorsToOutput()
+  for (k, v) in env do command = command.withEnv(k, v)
+  val child = command.start().ok.get
+  val code = Atomic(-1)
+  spawn(() ->
+    child.waitFor()
+    ())
+  Background(child.pid(), file)
 
 outputOf(b: Background) -> string = fs.readText(b.file).getOrElse("")
 
@@ -47,450 +47,504 @@ alive(pid: long) -> bool = process.signal(pid, 0).isOk
 
 // A home with its daemon already running: a wait never starts one.
 daemonHome(config: string = "") -> string
-    val home = newHome(config)
-    assertEq(m(home, "status").code, 0)
-    home
+  val home = newHome(config)
+  assertEq(m(home, "status").code, 0)
+  home
 
 // Gives a command that waits time to register with the daemon.
 settleWatch() = threads.sleep(millis(400))
 
 @test("wait --until idle answers at once when nothing runs, with a synthetic idle event")
 waitIdleAtOnce()
-    val home = daemonHome()
-    val r = m(home, "wait", "--until", "idle")
-    assertEq(r.code, 0)
-    val ev = printedEvent(r)
-    assertEq(eventName(ev), "idle")
-    assertEq(ev("running").asLong, Some(0))
-    assertEq(ev("queued").asLong, Some(0))
-    assert(ev("ts").asLong.get > 0)
-    cleanUp(home)
+  val home = daemonHome()
+  val r = m(home, "wait", "--until", "idle")
+  assertEq(r.code, 0)
+  val ev = printedEvent(r)
+  assertEq(eventName(ev), "idle")
+  assertEq(ev("running").asLong, Some(0))
+  assertEq(ev("queued").asLong, Some(0))
+  assert(ev("ts").asLong.get > 0)
+  cleanUp(home)
 
 @test("wait --until idle waits for what runs and what is queued behind it")
 waitIdleWaits()
-    val home = daemonHome("{\"units\": 1}")
-    submitted(home, "--", "sh", "-c", "sleep 0.8")
-    submitted(home, "--", "sh", "-c", "sleep 0.8")
-    val began = time.monotonic()
-    val waiter = spawn(() -> m(home, "wait", "--until", "idle"))
-    settleWatch()
-    val r = waiter.join()
-    assertEq(r.code, 0)
-    assertEq(eventName(printedEvent(r)), "idle")
-    assert((time.monotonic() - began).toMillis >= 1400, "answered before the queued job ended")
-    assertEq(eventsOf(home, 2), ["submitted", "started", "finished"])
-    cleanUp(home)
+  val home = daemonHome("{\"units\": 1}")
+  submitted(home, "--", "sh", "-c", "sleep 0.8")
+  submitted(home, "--", "sh", "-c", "sleep 0.8")
+  val began = time.monotonic()
+  val waiter = spawn(() -> m(home, "wait", "--until", "idle"))
+  settleWatch()
+  val r = waiter.join()
+  assertEq(r.code, 0)
+  assertEq(eventName(printedEvent(r)), "idle")
+  assert((time.monotonic() - began).toMillis >= 1400, "answered before the queued job ended")
+  assertEq(eventsOf(home, 2), ["submitted", "started", "finished"])
+  cleanUp(home)
 
 @test("wait --until job=ids answers once every one has ended, with the ending event of the last")
 waitJobs()
-    val home = daemonHome()
-    val first = submitted(home, "--", "sh", "-c", "exit 0")
-    val second = submitted(home, "--", "sh", "-c", "sleep 0.8; exit 3")
-    assertEq(m(home, "wait", first.toString()).code, 0)
-    val waiter = spawn(() -> m(home, "wait", "--until", s"job=$first,$second"))
-    settleWatch()
-    val r = waiter.join()
-    assertEq(r.code, 0)
-    val ev = printedEvent(r)
-    assertEq(eventName(ev), "finished")
-    assertEq(ev("id").asLong, Some(second))
-    assertEq(ev("exit").asLong, Some(3))
-    // all ended already: answered at once, with the one that ended last
-    val again = m(home, "wait", "--until", s"job=$second,$first")
-    assertEq(again.code, 0)
-    assertEq(printedEvent(again)("id").asLong, Some(second))
-    val single = m(home, "wait", "--until", s"job=$first")
-    assertEq(printedEvent(single)("id").asLong, Some(first))
-    cleanUp(home)
+  val home = daemonHome()
+  val first = submitted(home, "--", "sh", "-c", "exit 0")
+  val second = submitted(home, "--", "sh", "-c", "sleep 0.8; exit 3")
+  assertEq(m(home, "wait", first.toString()).code, 0)
+  val waiter = spawn(() -> m(home, "wait", "--until", s"job=$first,$second"))
+  settleWatch()
+  val r = waiter.join()
+  assertEq(r.code, 0)
+  val ev = printedEvent(r)
+  assertEq(eventName(ev), "finished")
+  assertEq(ev("id").asLong, Some(second))
+  assertEq(ev("exit").asLong, Some(3))
+  // all ended already: answered at once, with the one that ended last
+  val again = m(home, "wait", "--until", s"job=$second,$first")
+  assertEq(again.code, 0)
+  assertEq(printedEvent(again)("id").asLong, Some(second))
+  val single = m(home, "wait", "--until", s"job=$first")
+  assertEq(printedEvent(single)("id").asLong, Some(first))
+  cleanUp(home)
 
 @test("wait --until job= for a job nobody numbered, or a job that was cancelled, is answered")
 waitJobsEdges()
-    val home = daemonHome("{\"units\": 1}")
-    val r = m(home, "wait", "--until", "job=1")
-    assertEq(r.code, 2)
-    assert(r.out.contains("no job 1"), r.out)
-    val running = submitted(home, "--", "sleep", "30")
-    val queued = submitted(home, "--", "true")
-    val unknown = m(home, "wait", "--until", s"job=$running,${queued + 5}")
-    assertEq(unknown.code, 2)
-    assert(unknown.out.contains(s"no job ${queued + 5}"), unknown.out)
-    val waiter = spawn(() -> m(home, "wait", "--until", s"job=$running,$queued"))
-    settleWatch()
-    assertEq(m(home, "kill", queued.toString()).code, 0)
-    threads.sleep(millis(300))
-    assertEq(m(home, "kill", running.toString()).code, 0)
-    val done = waiter.join()
-    assertEq(done.code, 0)
-    assertEq(eventName(printedEvent(done)), "killed")
-    cleanUp(home)
+  val home = daemonHome("{\"units\": 1}")
+  val r = m(home, "wait", "--until", "job=1")
+  assertEq(r.code, 2)
+  assert(r.out.contains("no job 1"), r.out)
+  val running = submitted(home, "--", "sleep", "30")
+  val queued = submitted(home, "--", "true")
+  val unknown = m(home, "wait", "--until", s"job=$running,${queued + 5}")
+  assertEq(unknown.code, 2)
+  assert(unknown.out.contains(s"no job ${queued + 5}"), unknown.out)
+  val waiter = spawn(() -> m(home, "wait", "--until", s"job=$running,$queued"))
+  settleWatch()
+  assertEq(m(home, "kill", queued.toString()).code, 0)
+  threads.sleep(millis(300))
+  assertEq(m(home, "kill", running.toString()).code, 0)
+  val done = waiter.join()
+  assertEq(done.code, 0)
+  assertEq(eventName(printedEvent(done)), "killed")
+  cleanUp(home)
 
 @test("wait --until ended answers with the next ending, and the filters pick which")
 waitEndedFilters()
-    val home = daemonHome()
-    val byKind = spawn(() -> m(home, "wait", "--until", "ended:kind=slow"))
-    val byOutcome = spawn(() -> m(home, "wait", "--until", "ended:outcome=failed"))
-    val failed = spawn(() -> m(home, "wait", "--until", "failed"))
-    val both = spawn(() -> m(home, "wait", "--until", "ended:kind=slow,outcome=ok"))
-    val any = spawn(() -> m(home, "wait", "--until", "ended"))
-    settleWatch()
-    val quick = submitted(home, "--kind", "quick", "--", "sh", "-c", "exit 0")
-    val bad = submitted(home, "--kind", "quick", "--", "sh", "-c", "exit 9")
-    threads.sleep(millis(500))
-    val slow = submitted(home, "--kind", "slow", "--", "sh", "-c", "sleep 0.2")
-    val anyEv = printedEvent(any.join())
-    assertEq(anyEv("id").asLong, Some(quick))
-    val outcomeEv = printedEvent(byOutcome.join())
-    assertEq(outcomeEv("id").asLong, Some(bad))
-    assertEq(outcomeEv("exit").asLong, Some(9))
-    assertEq(printedEvent(failed.join())("id").asLong, Some(bad))
-    val kindEv = printedEvent(byKind.join())
-    assertEq(kindEv("id").asLong, Some(slow))
-    assertEq(kindEv("kind").asString, Some("slow"))
-    assertEq(printedEvent(both.join())("id").asLong, Some(slow))
-    cleanUp(home)
+  val home = daemonHome()
+  val byKind = spawn(() -> m(home, "wait", "--until", "ended:kind=slow"))
+  val byOutcome = spawn(() -> m(home, "wait", "--until", "ended:outcome=failed"))
+  val failed = spawn(() -> m(home, "wait", "--until", "failed"))
+  val both = spawn(() -> m(home, "wait", "--until", "ended:kind=slow,outcome=ok"))
+  val any = spawn(() -> m(home, "wait", "--until", "ended"))
+  settleWatch()
+  val quick = submitted(home, "--kind", "quick", "--", "sh", "-c", "exit 0")
+  val bad = submitted(home, "--kind", "quick", "--", "sh", "-c", "exit 9")
+  threads.sleep(millis(500))
+  val slow = submitted(home, "--kind", "slow", "--", "sh", "-c", "sleep 0.2")
+  val anyEv = printedEvent(any.join())
+  assertEq(anyEv("id").asLong, Some(quick))
+  val outcomeEv = printedEvent(byOutcome.join())
+  assertEq(outcomeEv("id").asLong, Some(bad))
+  assertEq(outcomeEv("exit").asLong, Some(9))
+  assertEq(printedEvent(failed.join())("id").asLong, Some(bad))
+  val kindEv = printedEvent(byKind.join())
+  assertEq(kindEv("id").asLong, Some(slow))
+  assertEq(kindEv("kind").asString, Some("slow"))
+  assertEq(printedEvent(both.join())("id").asLong, Some(slow))
+  cleanUp(home)
 
 @test("wait --until started, and landing-done, answer on those events only")
 waitStartedAndLanding()
-    val home = daemonHome()
-    val started = spawn(() -> m(home, "wait", "--until", "started:kind=probe"))
-    val landing = spawn(() -> m(home, "wait", "--until", "landing-done"))
-    val submittedEv = spawn(() -> m(home, "wait", "--until", "submitted:kind=probe"))
-    settleWatch()
-    val dev = submitted(home, "--kind", "other", "--", "true")
-    threads.sleep(millis(400))
-    val land = submitted(home, "--landing", "--kind", "probe", "--", "sh", "-c", "exit 0")
-    val probeStart = printedEvent(started.join())
-    assertEq(eventName(probeStart), "started")
-    assertEq(probeStart("id").asLong, Some(land))
-    val landEv = printedEvent(landing.join())
-    assertEq(eventName(landEv), "finished")
-    assertEq(landEv("id").asLong, Some(land))
-    assertEq(landEv("landing").asBool, Some(true))
-    val queuedEv = printedEvent(submittedEv.join())
-    assertEq(eventName(queuedEv), "submitted")
-    assertEq(queuedEv("id").asLong, Some(land))
-    assert(dev < land)
-    cleanUp(home)
+  val home = daemonHome()
+  val started = spawn(() -> m(home, "wait", "--until", "started:kind=probe"))
+  val landing = spawn(() -> m(home, "wait", "--until", "landing-done"))
+  val submittedEv = spawn(() -> m(home, "wait", "--until", "submitted:kind=probe"))
+  settleWatch()
+  val dev = submitted(home, "--kind", "other", "--", "true")
+  threads.sleep(millis(400))
+  val land = submitted(home, "--landing", "--kind", "probe", "--", "sh", "-c", "exit 0")
+  val probeStart = printedEvent(started.join())
+  assertEq(eventName(probeStart), "started")
+  assertEq(probeStart("id").asLong, Some(land))
+  val landEv = printedEvent(landing.join())
+  assertEq(eventName(landEv), "finished")
+  assertEq(landEv("id").asLong, Some(land))
+  assertEq(landEv("landing").asBool, Some(true))
+  val queuedEv = printedEvent(submittedEv.join())
+  assertEq(eventName(queuedEv), "submitted")
+  assertEq(queuedEv("id").asLong, Some(land))
+  assert(dev < land)
+  cleanUp(home)
 
 @test("a condition already true in the log is met at once with --since, for each event condition")
 waitSinceIsAlreadyTrue()
-    val home = daemonHome()
-    val ok = submitted(home, "--kind", "k", "--", "sh", "-c", "exit 0")
-    assertEq(m(home, "wait", ok.toString()).code, 0)
-    val bad = submitted(home, "--kind", "k", "--", "sh", "-c", "exit 4")
-    assertEq(m(home, "wait", bad.toString()).code, 4)
-    val land = submitted(home, "--landing", "--kind", "l", "--", "sh", "-c", "exit 0")
-    assertEq(m(home, "wait", land.toString()).code, 0)
-    val seen = [
-        ("ended", "finished", ok),
-        ("failed", "finished", bad),
-        ("landing-done", "finished", land),
-        ("started", "started", ok),
-        ("submitted", "submitted", ok),
-        ("ended:kind=l", "finished", land),
-        ("ended:outcome=failed", "finished", bad),
-        ("started:kind=l", "started", land)]
-    for (cond, name, id) in seen
-        val r = m(home, "wait", "--until", cond, "--since", "1", "--timeout", "10s")
-        assertEq(r.code, 0)
-        val ev = printedEvent(r)
-        assertEq((cond, eventName(ev), ev("id").asLong), (cond, name, Some(id)))
-    // without --since the same events are in the past, and the wait gives up
-    val late = m(home, "wait", "--until", "ended", "--timeout", "1s")
-    assertEq(late.code, 124)
-    // --since after the events does not see them either
-    val after = m(home, "wait", "--until", "failed", "--since", s"${land + 1}", "--timeout", "1s")
-    assertEq(after.code, 124)
-    val ago = m(home, "wait", "--until", "failed", "--since", "1h", "--timeout", "10s")
-    assertEq(ago.code, 0)
-    assertEq(printedEvent(ago)("id").asLong, Some(bad))
-    cleanUp(home)
+  val home = daemonHome()
+  val ok = submitted(home, "--kind", "k", "--", "sh", "-c", "exit 0")
+  assertEq(m(home, "wait", ok.toString()).code, 0)
+  val bad = submitted(home, "--kind", "k", "--", "sh", "-c", "exit 4")
+  assertEq(m(home, "wait", bad.toString()).code, 4)
+  val land = submitted(home, "--landing", "--kind", "l", "--", "sh", "-c", "exit 0")
+  assertEq(m(home, "wait", land.toString()).code, 0)
+  val seen = [
+    ("ended", "finished", ok),
+    ("failed", "finished", bad),
+    ("landing-done", "finished", land),
+    ("started", "started", ok),
+    ("submitted", "submitted", ok),
+    ("ended:kind=l", "finished", land),
+    ("ended:outcome=failed", "finished", bad),
+    ("started:kind=l", "started", land)
+  ]
+  for (cond, name, id) in seen
+    val r = m(home, "wait", "--until", cond, "--since", "1", "--timeout", "10s")
+    assertEq(r.code, 0)
+    val ev = printedEvent(r)
+    assertEq((cond, eventName(ev), ev("id").asLong), (cond, name, Some(id)))
+  // without --since the same events are in the past, and the wait gives up
+  val late = m(home, "wait", "--until", "ended", "--timeout", "1s")
+  assertEq(late.code, 124)
+  // --since after the events does not see them either
+  val after = m(home, "wait", "--until", "failed", "--since", s"${land + 1}", "--timeout", "1s")
+  assertEq(after.code, 124)
+  val ago = m(home, "wait", "--until", "failed", "--since", "1h", "--timeout", "10s")
+  assertEq(ago.code, 0)
+  assertEq(printedEvent(ago)("id").asLong, Some(bad))
+  cleanUp(home)
 
 @test("a job ending as the wait is asked for is never missed")
 waitRacesTheEnd()
-    val home = daemonHome()
-    val delays: Vector[long] = [0, 60, 120, 180, 240, 300, 360]
-    for delay in delays
-        val id = submitted(home, "--", "sh", "-c", "sleep 0.25")
-        threads.sleep(millis(delay))
-        val byId = spawn(() -> m(home, "wait", "--until", s"job=$id", "--timeout", "20s"))
-        val byEvent = spawn(() -> m(home, "wait", "--until", "ended", "--since", id.toString(), "--timeout", "20s"))
-        val r = byId.join()
-        assertEq(r.code, 0)
-        assertEq(printedEvent(r)("id").asLong, Some(id))
-        val e = byEvent.join()
-        assertEq(e.code, 0)
-        assertEq(eventName(printedEvent(e)), "finished")
-    cleanUp(home)
+  val home = daemonHome()
+  val delays: Vector[long] = [0, 60, 120, 180, 240, 300, 360]
+  for delay in delays
+    val id = submitted(home, "--", "sh", "-c", "sleep 0.25")
+    threads.sleep(millis(delay))
+    val byId = spawn(() -> m(home, "wait", "--until", s"job=$id", "--timeout", "20s"))
+    val byEvent = spawn(() -> m(home, "wait", "--until", "ended", "--since", id.toString(), "--timeout", "20s"))
+    val r = byId.join()
+    assertEq(r.code, 0)
+    assertEq(printedEvent(r)("id").asLong, Some(id))
+    val e = byEvent.join()
+    assertEq(e.code, 0)
+    assertEq(eventName(printedEvent(e)), "finished")
+  cleanUp(home)
 
 @test("--timeout ends the wait with 124 and leaves the daemon serving")
 waitTimeout()
-    val home = daemonHome()
-    val id = submitted(home, "--", "sleep", "30")
-    val began = time.monotonic()
-    val r = m(home, "wait", "--until", "idle", "--timeout", "1s")
-    assertEq(r.code, 124)
-    assert(r.out.contains("timed out after 1.0s waiting for idle"), r.out)
-    val took = (time.monotonic() - began).toMillis
-    assert(took >= 900 && took < 8000, s"took $took ms")
-    assertEq(m(home, "status").code, 0)
-    val ended = m(home, "wait", "--until", "ended", "--timeout", "1s")
-    assertEq(ended.code, 124)
-    // a timeout that does not come: the event wins
-    val killer = spawn(() ->
-        threads.sleep(millis(300))
-        m(home, "kill", id.toString()))
-    val won = m(home, "wait", "--until", "ended", "--timeout", "30s")
-    assertEq(won.code, 0)
-    assertEq(eventName(printedEvent(won)), "killed")
-    killer.join()
-    cleanUp(home)
+  val home = daemonHome()
+  val id = submitted(home, "--", "sleep", "30")
+  val began = time.monotonic()
+  val r = m(home, "wait", "--until", "idle", "--timeout", "1s")
+  assertEq(r.code, 124)
+  assert(r.out.contains("timed out after 1.0s waiting for idle"), r.out)
+  val took = (time.monotonic() - began).toMillis
+  assert(took >= 900 && took < 8000, s"took $took ms")
+  assertEq(m(home, "status").code, 0)
+  val ended = m(home, "wait", "--until", "ended", "--timeout", "1s")
+  assertEq(ended.code, 124)
+  // a timeout that does not come: the event wins
+  val killer = spawn(() ->
+    threads.sleep(millis(300))
+    m(home, "kill", id.toString()))
+  val won = m(home, "wait", "--until", "ended", "--timeout", "30s")
+  assertEq(won.code, 0)
+  assertEq(eventName(printedEvent(won)), "killed")
+  killer.join()
+  cleanUp(home)
 
 @test("several waiters on one event each get it")
 waitSeveral()
-    val home = daemonHome()
-    val id = submitted(home, "--", "sh", "-c", "sleep 0.8; exit 2")
-    val waiters = Vector.tabulate(9, i -> spawn(() -> m(home, "wait", "--until", if i % 3 == 0 then s"job=$id" elif i % 3 == 1 then "ended" else "failed", "--timeout", "30s")))
-    for w in waiters
-        val r = w.join()
-        assertEq(r.code, 0)
-        val ev = printedEvent(r)
-        assertEq(ev("id").asLong, Some(id))
-        assertEq(ev("exit").asLong, Some(2))
-    // and the daemon has let each go
-    assertEq(m(home, "status").code, 0)
-    assertEq(submitted(home, "--", "true"), id + 1)
-    cleanUp(home)
+  val home = daemonHome()
+  val id = submitted(home, "--", "sh", "-c", "sleep 0.8; exit 2")
+  val waiters = Vector.tabulate(
+    9,
+    i -> spawn(
+      () -> m(
+        home,
+        "wait",
+        "--until",
+        if i % 3 == 0 then s"job=$id" elif i % 3 == 1 then "ended" else "failed",
+        "--timeout",
+        "30s"
+      )
+    )
+  )
+  for w in waiters
+    val r = w.join()
+    assertEq(r.code, 0)
+    val ev = printedEvent(r)
+    assertEq(ev("id").asLong, Some(id))
+    assertEq(ev("exit").asLong, Some(2))
+  // and the daemon has let each go
+  assertEq(m(home, "status").code, 0)
+  assertEq(submitted(home, "--", "true"), id + 1)
+  cleanUp(home)
 
 @test("a wait for an event goes on across a restart, whenever the event comes")
 waitAcrossRestart2()
-    val home = daemonHome()
-    val leads: Vector[long] = [150, 450, 650]
-    for lead in leads
-        val id = submitted(home, "--", "sh", "-c", "sleep 0.7")
-        val byEvent = spawn(() -> m(home, "wait", "--until", "ended", "--timeout", "30s"))
-        val byJob = spawn(() -> m(home, "wait", "--until", s"job=$id", "--timeout", "30s"))
-        val byIdle = spawn(() -> m(home, "wait", "--until", "idle", "--timeout", "30s"))
-        threads.sleep(millis(lead))
-        restarted(home)
-        val e = byEvent.join()
-        assertEq(e.code, 0)
-        assertEq(printedEvent(e)("id").asLong, Some(id))
-        val j = byJob.join()
-        assertEq(j.code, 0)
-        assertEq(printedEvent(j)("id").asLong, Some(id))
-        val i = byIdle.join()
-        assertEq(i.code, 0)
-        assertEq(eventName(printedEvent(i)), "idle")
-    cleanUp(home)
+  val home = daemonHome()
+  val leads: Vector[long] = [150, 450, 650]
+  for lead in leads
+    val id = submitted(home, "--", "sh", "-c", "sleep 0.7")
+    val byEvent = spawn(() -> m(home, "wait", "--until", "ended", "--timeout", "30s"))
+    val byJob = spawn(() -> m(home, "wait", "--until", s"job=$id", "--timeout", "30s"))
+    val byIdle = spawn(() -> m(home, "wait", "--until", "idle", "--timeout", "30s"))
+    threads.sleep(millis(lead))
+    restarted(home)
+    val e = byEvent.join()
+    assertEq(e.code, 0)
+    assertEq(printedEvent(e)("id").asLong, Some(id))
+    val j = byJob.join()
+    assertEq(j.code, 0)
+    assertEq(printedEvent(j)("id").asLong, Some(id))
+    val i = byIdle.join()
+    assertEq(i.code, 0)
+    assertEq(eventName(printedEvent(i)), "idle")
+  cleanUp(home)
 
 @test("a wait whose job ended while the daemon handed over is answered from the log")
 waitSeesTheHandover()
-    val home = daemonHome()
-    val id = submitted(home, "--", "sh", "-c", "sleep 0.5")
-    // the restart is held up by nothing, so a waiter begun just before it and an event that falls
-    // in the gap between its two connections are both found by the replay
-    val waiter = spawn(() -> m(home, "wait", "--until", "ended", "--since", "@" + (time.now().epochMillis - 5000).toString(), "--timeout", "30s"))
-    threads.sleep(millis(100))
-    restarted(home)
-    val r = waiter.join()
-    assertEq(r.code, 0)
-    assertEq(printedEvent(r)("id").asLong, Some(id))
-    cleanUp(home)
+  val home = daemonHome()
+  val id = submitted(home, "--", "sh", "-c", "sleep 0.5")
+  // the restart is held up by nothing, so a waiter begun just before it and an event that falls
+  // in the gap between its two connections are both found by the replay
+  val waiter = spawn(
+    () -> m(
+      home,
+      "wait",
+      "--until",
+      "ended",
+      "--since",
+      "@" + (time.now().epochMillis - 5000).toString(),
+      "--timeout",
+      "30s"
+    )
+  )
+  threads.sleep(millis(100))
+  restarted(home)
+  val r = waiter.join()
+  assertEq(r.code, 0)
+  assertEq(printedEvent(r)("id").asLong, Some(id))
+  cleanUp(home)
 
 @test("a waiter learns that the daemon stopped, with status 1")
 waitDaemonStops()
-    val home = daemonHome()
-    assertEq(m(home, "version").code, 0)
-    submitted(home, "--", "true")
-    assertEq(m(home, "wait", "1").code, 0)
-    val waiter = spawn(() -> m(home, "wait", "--until", "started", "--timeout", "30s"))
-    val following = startM(home, [], "events", "--follow")
-    settleWatch()
-    assertEq(m(home, "stop").code, 0)
-    val r = waiter.join()
-    assertEq(r.code, 1)
-    assert(r.out.contains("the daemon stopped") || r.out.contains("no daemon"), r.out)
-    assert(within(5000, () -> !alive(following.pid)), "events --follow did not end when the daemon stopped")
-    assert(!fs.exists(home + "/sock"), "a waiter started a daemon")
-    fs.removeDirAll(home)
+  val home = daemonHome()
+  assertEq(m(home, "version").code, 0)
+  submitted(home, "--", "true")
+  assertEq(m(home, "wait", "1").code, 0)
+  val waiter = spawn(() -> m(home, "wait", "--until", "started", "--timeout", "30s"))
+  val following = startM(home, [], "events", "--follow")
+  settleWatch()
+  assertEq(m(home, "stop").code, 0)
+  val r = waiter.join()
+  assertEq(r.code, 1)
+  assert(r.out.contains("the daemon stopped") || r.out.contains("no daemon"), r.out)
+  assert(within(5000, () -> !alive(following.pid)), "events --follow did not end when the daemon stopped")
+  assert(!fs.exists(home + "/sock"), "a waiter started a daemon")
+  fs.removeDirAll(home)
 
 @test("a bad condition exits 2 with the grammar and starts no daemon")
 waitBadGrammar()
-    val home = newHome()
-    for cond in ["", "dance", "idle:kind=x", "job", "job=", "job=a", "ended:kind", "ended:outcome=great", "ended:kind=a,kind=b", "failed:outcome=ok", "started:outcome=ok"]
-        val r = m(home, "wait", "--until", cond)
-        assertEq(r.code, 2)
-        assert(r.out.contains("bad condition"), s"$cond: ${r.out}")
-        assert(r.out.contains("landing-done"), s"$cond: the grammar is not shown: ${r.out}")
-    assert(!fs.exists(home + "/sock"), "a bad condition started a daemon")
-    cleanUp(home)
+  val home = newHome()
+  for cond in [
+    "",
+    "dance",
+    "idle:kind=x",
+    "job",
+    "job=",
+    "job=a",
+    "ended:kind",
+    "ended:outcome=great",
+    "ended:kind=a,kind=b",
+    "failed:outcome=ok",
+    "started:outcome=ok"
+  ]
+    val r = m(home, "wait", "--until", cond)
+    assertEq(r.code, 2)
+    assert(r.out.contains("bad condition"), s"$cond: ${r.out}")
+    assert(r.out.contains("landing-done"), s"$cond: the grammar is not shown: ${r.out}")
+  assert(!fs.exists(home + "/sock"), "a bad condition started a daemon")
+  cleanUp(home)
 
 @test("wait --until refuses bad options with 2")
 waitBadOptions()
-    val home = newHome()
-    val cases = [
-        (["--until"], "--until needs a value"),
-        (["--until", "idle", "--timeout"], "--timeout needs a value"),
-        (["--until", "idle", "--since"], "--since needs a value"),
-        (["--until", "idle", "--timeout", "soon"], "a timeout is minutes"),
-        (["--until", "idle", "--timeout", "0"], "a timeout is minutes"),
-        (["--until", "idle", "--since", "yesterday"], "is not a time"),
-        (["--until", "idle", "--until", "idle"], "--until is given twice"),
-        (["--until", "idle", "--timeout", "1s", "--timeout", "2s"], "--timeout is given twice"),
-        (["--until", "idle", "--since", "1", "--since", "2"], "--since is given twice"),
-        (["--until", "idle", "extra"], "not `extra`"),
-        (["--until", "idle", "--kind", "x"], "not `--kind`")]
-    for (args, why) in cases
-        val r = m(home, (["wait"] ++ args)*)
-        assertEq((args, r.code), (args, 2))
-        assert(r.out.contains(why), s"$args: ${r.out}")
-    assert(!fs.exists(home + "/sock"))
-    cleanUp(home)
+  val home = newHome()
+  val cases = [
+    (["--until"], "--until needs a value"),
+    (["--until", "idle", "--timeout"], "--timeout needs a value"),
+    (["--until", "idle", "--since"], "--since needs a value"),
+    (["--until", "idle", "--timeout", "soon"], "a timeout is minutes"),
+    (["--until", "idle", "--timeout", "0"], "a timeout is minutes"),
+    (["--until", "idle", "--since", "yesterday"], "is not a time"),
+    (["--until", "idle", "--until", "idle"], "--until is given twice"),
+    (["--until", "idle", "--timeout", "1s", "--timeout", "2s"], "--timeout is given twice"),
+    (["--until", "idle", "--since", "1", "--since", "2"], "--since is given twice"),
+    (["--until", "idle", "extra"], "not `extra`"),
+    (["--until", "idle", "--kind", "x"], "not `--kind`")
+  ]
+  for (args, why) in cases
+    val r = m(home, (["wait"] ++ args)*)
+    assertEq((args, r.code), (args, 2))
+    assert(r.out.contains(why), s"$args: ${r.out}")
+  assert(!fs.exists(home + "/sock"))
+  cleanUp(home)
 
 @test("with no daemon running, wait --until and events exit 1 and start none")
 watchWithNoDaemon()
-    val home = newHome()
-    for args in [["wait", "--until", "idle"], ["wait", "--until", "job=1"], ["wait", "--until", "ended", "--timeout", "5s"], ["events"], ["events", "--follow"], ["events", "failed", "--since", "1"]]
-        val r = m(home, args*)
-        assertEq((args, r.code), (args, 1))
-        assert(r.out.contains("no daemon at"), s"$args: ${r.out}")
-    assert(!fs.exists(home + "/sock"), "a command started a daemon")
-    fs.removeDirAll(home)
+  val home = newHome()
+  for args in [
+    ["wait", "--until", "idle"],
+    ["wait", "--until", "job=1"],
+    ["wait", "--until", "ended", "--timeout", "5s"],
+    ["events"],
+    ["events", "--follow"],
+    ["events", "failed", "--since", "1"]
+  ]
+    val r = m(home, args*)
+    assertEq((args, r.code), (args, 1))
+    assert(r.out.contains("no daemon at"), s"$args: ${r.out}")
+  assert(!fs.exists(home + "/sock"), "a command started a daemon")
+  fs.removeDirAll(home)
 
 @test("events prints the logged events, in order, and exits")
 eventsPast()
-    val home = daemonHome()
-    assertEq(m(home, "events").out.trim, "")
-    assertEq(m(home, "events").code, 0)
-    val a = submitted(home, "--kind", "a", "--", "sh", "-c", "exit 0")
-    assertEq(m(home, "wait", a.toString()).code, 0)
-    val b = submitted(home, "--kind", "b", "--", "sh", "-c", "exit 5")
-    assertEq(m(home, "wait", b.toString()).code, 5)
-    val all = m(home, "events")
-    assertEq(all.code, 0)
-    val names = printedEvents(all).map(e -> (e("id").asLong.get, eventName(e)))
-    assertEq(names, [(a, "submitted"), (a, "started"), (a, "finished"), (b, "submitted"), (b, "started"), (b, "finished")])
-    // line for line what the log holds
-    assertEq(printedEvents(all).map(e -> e.render), fs.readText(home + "/events.jsonl").ok.get.lines.filter(l -> l.nonEmpty).toVector)
-    assertEq(printedEvents(m(home, "events", "any")).length, 6)
-    assertEq(printedEvents(m(home, "events", "ended")).map(e -> e("id").asLong.get), [a, b])
-    assertEq(printedEvents(m(home, "events", "failed")).map(e -> e("id").asLong.get), [b])
-    assertEq(printedEvents(m(home, "events", "ended:kind=a")).map(e -> e("id").asLong.get), [a])
-    assertEq(printedEvents(m(home, "events", "ended:outcome=ok")).map(e -> e("id").asLong.get), [a])
-    assertEq(printedEvents(m(home, "events", "started")).length, 2)
-    assertEq(printedEvents(m(home, "events", "submitted:kind=b")).length, 1)
-    assertEq(printedEvents(m(home, "events", "landing-done")).length, 0)
-    assertEq(printedEvents(m(home, "events", "--since", b.toString())).map(e -> e("id").asLong.get).distinct, [b])
-    assertEq(printedEvents(m(home, "events", "--since", b.toString(), "ended")).length, 1)
-    assertEq(printedEvents(m(home, "events", "--since", "1h")).length, 6)
-    assertEq(printedEvents(m(home, "events", "--since", "@" + (time.now().epochMillis + 60000).toString())).length, 0)
-    assertEq(printedEvents(m(home, "events", "ended", "--since", "1")).length, 2)
-    cleanUp(home)
+  val home = daemonHome()
+  assertEq(m(home, "events").out.trim, "")
+  assertEq(m(home, "events").code, 0)
+  val a = submitted(home, "--kind", "a", "--", "sh", "-c", "exit 0")
+  assertEq(m(home, "wait", a.toString()).code, 0)
+  val b = submitted(home, "--kind", "b", "--", "sh", "-c", "exit 5")
+  assertEq(m(home, "wait", b.toString()).code, 5)
+  val all = m(home, "events")
+  assertEq(all.code, 0)
+  val names = printedEvents(all).map(e -> (e("id").asLong.get, eventName(e)))
+  assertEq(
+    names,
+    [(a, "submitted"), (a, "started"), (a, "finished"), (b, "submitted"), (b, "started"), (b, "finished")]
+  )
+  // line for line what the log holds
+  assertEq(
+    printedEvents(all).map(e -> e.render),
+    fs.readText(home + "/events.jsonl").ok.get.lines.filter(l -> l.nonEmpty).toVector
+  )
+  assertEq(printedEvents(m(home, "events", "any")).length, 6)
+  assertEq(printedEvents(m(home, "events", "ended")).map(e -> e("id").asLong.get), [a, b])
+  assertEq(printedEvents(m(home, "events", "failed")).map(e -> e("id").asLong.get), [b])
+  assertEq(printedEvents(m(home, "events", "ended:kind=a")).map(e -> e("id").asLong.get), [a])
+  assertEq(printedEvents(m(home, "events", "ended:outcome=ok")).map(e -> e("id").asLong.get), [a])
+  assertEq(printedEvents(m(home, "events", "started")).length, 2)
+  assertEq(printedEvents(m(home, "events", "submitted:kind=b")).length, 1)
+  assertEq(printedEvents(m(home, "events", "landing-done")).length, 0)
+  assertEq(printedEvents(m(home, "events", "--since", b.toString())).map(e -> e("id").asLong.get).distinct, [b])
+  assertEq(printedEvents(m(home, "events", "--since", b.toString(), "ended")).length, 1)
+  assertEq(printedEvents(m(home, "events", "--since", "1h")).length, 6)
+  assertEq(printedEvents(m(home, "events", "--since", "@" + (time.now().epochMillis + 60000).toString())).length, 0)
+  assertEq(printedEvents(m(home, "events", "ended", "--since", "1")).length, 2)
+  cleanUp(home)
 
 @test("events refuses a bad filter, a bad time and stray words, with 2")
 eventsBad()
-    val home = newHome()
-    for (args, why) in [
-        (["dance"], "bad filter"),
-        (["idle"], "bad filter"),
-        (["job=1"], "bad filter"),
-        (["ended:kind"], "bad filter"),
-        (["--since"], "--since needs a time"),
-        (["--since", "never"], "is not a time"),
-        (["--bogus"], "events takes --follow"),
-        (["ended", "failed"], "events takes --follow")]
-        val r = m(home, (["events"] ++ args)*)
-        assertEq((args, r.code), (args, 2))
-        assert(r.out.contains(why), s"$args: ${r.out}")
-    assert(!fs.exists(home + "/sock"))
-    cleanUp(home)
+  val home = newHome()
+  for (args, why) in [
+    (["dance"], "bad filter"),
+    (["idle"], "bad filter"),
+    (["job=1"], "bad filter"),
+    (["ended:kind"], "bad filter"),
+    (["--since"], "--since needs a time"),
+    (["--since", "never"], "is not a time"),
+    (["--bogus"], "events takes --follow"),
+    (["ended", "failed"], "events takes --follow")
+  ]
+    val r = m(home, (["events"] ++ args)*)
+    assertEq((args, r.code), (args, 2))
+    assert(r.out.contains(why), s"$args: ${r.out}")
+  assert(!fs.exists(home + "/sock"))
+  cleanUp(home)
 
 @test("events --follow prints the past and then each event as it is logged, until killed")
 eventsFollow()
-    val home = daemonHome()
-    val first = submitted(home, "--kind", "a", "--", "true")
-    assertEq(m(home, "wait", first.toString()).code, 0)
-    val all = startM(home, [], "events", "--follow")
-    val ended = startM(home, [], "events", "--follow", "ended:kind=b")
-    val replay = startM(home, [], "events", "--follow", "--since", first.toString(), "started")
-    assert(within(5000, () -> linesOf(replay).length == 1), "the backlog was not printed")
-    assertEq(linesOf(all).length, 0)
-    settleWatch()
-    val second = submitted(home, "--kind", "b", "--", "sh", "-c", "exit 1")
-    assertEq(m(home, "wait", second.toString()).code, 1)
-    assert(within(5000, () -> linesOf(all).length == 3), s"saw ${linesOf(all).length} events")
-    assert(within(5000, () -> linesOf(ended).length == 1), s"saw ${linesOf(ended).length} ended events")
-    assert(within(5000, () -> linesOf(replay).length == 2), "the live event was not printed")
-    assertEq(linesOf(all).map(l -> eventName(json.parse(l).ok.get)), ["submitted", "started", "finished"])
-    val finished = json.parse(linesOf(ended)(0)).ok.get
-    assertEq(finished("id").asLong, Some(second))
-    assertEq(finished("exit").asLong, Some(1))
-    for b in [all, ended, replay] do stopBackground(b)
-    // a client that left is let go, and the daemon goes on
-    assertEq(submitted(home, "--", "true"), second + 1)
-    assertEq(m(home, "status").code, 0)
-    cleanUp(home)
+  val home = daemonHome()
+  val first = submitted(home, "--kind", "a", "--", "true")
+  assertEq(m(home, "wait", first.toString()).code, 0)
+  val all = startM(home, [], "events", "--follow")
+  val ended = startM(home, [], "events", "--follow", "ended:kind=b")
+  val replay = startM(home, [], "events", "--follow", "--since", first.toString(), "started")
+  assert(within(5000, () -> linesOf(replay).length == 1), "the backlog was not printed")
+  assertEq(linesOf(all).length, 0)
+  settleWatch()
+  val second = submitted(home, "--kind", "b", "--", "sh", "-c", "exit 1")
+  assertEq(m(home, "wait", second.toString()).code, 1)
+  assert(within(5000, () -> linesOf(all).length == 3), s"saw ${linesOf(all).length} events")
+  assert(within(5000, () -> linesOf(ended).length == 1), s"saw ${linesOf(ended).length} ended events")
+  assert(within(5000, () -> linesOf(replay).length == 2), "the live event was not printed")
+  assertEq(linesOf(all).map(l -> eventName(json.parse(l).ok.get)), ["submitted", "started", "finished"])
+  val finished = json.parse(linesOf(ended)(0)).ok.get
+  assertEq(finished("id").asLong, Some(second))
+  assertEq(finished("exit").asLong, Some(1))
+  for b in [all, ended, replay] do stopBackground(b)
+  // a client that left is let go, and the daemon goes on
+  assertEq(submitted(home, "--", "true"), second + 1)
+  assertEq(m(home, "status").code, 0)
+  cleanUp(home)
 
 @test("events --follow goes on across a restart and prints no event twice")
 eventsFollowRestart()
-    val home = daemonHome()
-    val following = startM(home, [], "events", "--follow")
-    settleWatch()
-    val first = submitted(home, "--", "sh", "-c", "sleep 0.3")
-    assertEq(m(home, "wait", first.toString()).code, 0)
-    assert(within(5000, () -> linesOf(following).length == 3), "the first job's events were not seen")
-    restarted(home)
-    val second = submitted(home, "--", "true")
-    assertEq(m(home, "wait", second.toString()).code, 0)
-    assert(within(10000, () -> linesOf(following).length >= 6), s"saw ${linesOf(following).length} events")
-    threads.sleep(millis(500))
-    val seen = linesOf(following)
-    assertEq(seen.length, 6)
-    assertEq(seen.distinct.length, 6)
-    assertEq(seen.map(l -> json.parse(l).ok.get("id").asLong.get), [first, first, first, second, second, second])
-    stopBackground(following)
-    cleanUp(home)
+  val home = daemonHome()
+  val following = startM(home, [], "events", "--follow")
+  settleWatch()
+  val first = submitted(home, "--", "sh", "-c", "sleep 0.3")
+  assertEq(m(home, "wait", first.toString()).code, 0)
+  assert(within(5000, () -> linesOf(following).length == 3), "the first job's events were not seen")
+  restarted(home)
+  val second = submitted(home, "--", "true")
+  assertEq(m(home, "wait", second.toString()).code, 0)
+  assert(within(10000, () -> linesOf(following).length >= 6), s"saw ${linesOf(following).length} events")
+  threads.sleep(millis(500))
+  val seen = linesOf(following)
+  assertEq(seen.length, 6)
+  assertEq(seen.distinct.length, 6)
+  assertEq(seen.map(l -> json.parse(l).ok.get("id").asLong.get), [first, first, first, second, second, second])
+  stopBackground(following)
+  cleanUp(home)
 
 @test("a reader that falls behind is dropped and told so, and the daemon never waits for it")
 eventsSlowReader()
-    val home = newHome()
-    assertEq(mWith(home, [("MARSHAL_TEST_WATCH_BUFFER", "12")], "status").code, 0)
-    // each event carries the whole command, so a few jobs fill a socket's buffer
-    val padding = "true # " + "x".repeat(20000)
-    val slow = startM(home, [], "events", "--follow")
-    val kept = startM(home, [], "events", "--follow", "ended")
-    settleWatch()
-    // the slow reader is stopped, so its socket fills and then its buffer in the daemon
-    assertEq(Command("kill", "-STOP", slow.pid.toString()).run().ok, Some(ExitStatus.Exited(0)))
-    val began = time.monotonic()
-    for _ in 0..<30
-        assertEq(m(home, "run", "--", "sh", "-c", padding).code, 0)
-    val took = (time.monotonic() - began).toMillis
-    assert(took < 60000, s"30 jobs took $took ms: the daemon waited for the reader")
-    assert(within(5000, () -> daemonLog(home).contains("fell behind and was dropped")), daemonLog(home))
-    assert(within(5000, () -> linesOf(kept).length == 30), s"${linesOf(kept).length} ended events reached the other reader")
-    // the stopped reader is let go again: it prints what reached it, says it was dropped, exits 1
-    assertEq(Command("kill", "-CONT", slow.pid.toString()).run().ok, Some(ExitStatus.Exited(0)))
-    assert(within(10000, () -> !alive(slow.pid)), "the dropped reader did not end")
-    val out = outputOf(slow)
-    assert(out.contains("events were dropped"), out)
-    assert(linesOf(slow).length < 90, s"${linesOf(slow).length} events reached it")
-    // and the dropped events are there for the asking
-    assertEq(printedEvents(m(home, "events", "ended")).length, 30)
-    stopBackground(kept)
-    cleanUp(home)
+  val home = newHome()
+  assertEq(mWith(home, [("MARSHAL_TEST_WATCH_BUFFER", "12")], "status").code, 0)
+  // each event carries the whole command, so a few jobs fill a socket's buffer
+  val padding = "true # " + "x".repeat(20000)
+  val slow = startM(home, [], "events", "--follow")
+  val kept = startM(home, [], "events", "--follow", "ended")
+  settleWatch()
+  // the slow reader is stopped, so its socket fills and then its buffer in the daemon
+  assertEq(Command("kill", "-STOP", slow.pid.toString()).run().ok, Some(ExitStatus.Exited(0)))
+  val began = time.monotonic()
+  for _ in 0 ..< 30
+    assertEq(m(home, "run", "--", "sh", "-c", padding).code, 0)
+  val took = (time.monotonic() - began).toMillis
+  assert(took < 60000, s"30 jobs took $took ms: the daemon waited for the reader")
+  assert(within(5000, () -> daemonLog(home).contains("fell behind and was dropped")), daemonLog(home))
+  assert(
+    within(5000, () -> linesOf(kept).length == 30),
+    s"${linesOf(kept).length} ended events reached the other reader"
+  )
+  // the stopped reader is let go again: it prints what reached it, says it was dropped, exits 1
+  assertEq(Command("kill", "-CONT", slow.pid.toString()).run().ok, Some(ExitStatus.Exited(0)))
+  assert(within(10000, () -> !alive(slow.pid)), "the dropped reader did not end")
+  val out = outputOf(slow)
+  assert(out.contains("events were dropped"), out)
+  assert(linesOf(slow).length < 90, s"${linesOf(slow).length} events reached it")
+  // and the dropped events are there for the asking
+  assertEq(printedEvents(m(home, "events", "ended")).length, 30)
+  stopBackground(kept)
+  cleanUp(home)
 
 @test("the help of wait and events shows the grammar, and the usage lists both")
 waitHelp()
-    val home = newHome()
-    val wait = m(home, "wait", "--help")
-    assertEq(wait.code, 0)
-    assert(wait.out.contains("landing-done") && wait.out.contains("--until"), wait.out)
-    val events = m(home, "events", "--help")
-    assertEq(events.code, 0)
-    assert(events.out.contains("usage: marshal events") && events.out.contains("outcome="), events.out)
-    val usage = m(home, "--help")
-    assert(usage.out.contains("marshal events") && usage.out.contains("wait <id> | --until"), usage.out)
-    assert(!fs.exists(home + "/sock"))
-    cleanUp(home)
+  val home = newHome()
+  val wait = m(home, "wait", "--help")
+  assertEq(wait.code, 0)
+  assert(wait.out.contains("landing-done") && wait.out.contains("--until"), wait.out)
+  val events = m(home, "events", "--help")
+  assertEq(events.code, 0)
+  assert(events.out.contains("usage: marshal events") && events.out.contains("outcome="), events.out)
+  val usage = m(home, "--help")
+  assert(usage.out.contains("marshal events") && usage.out.contains("wait <id> | --until"), usage.out)
+  assert(!fs.exists(home + "/sock"))
+  cleanUp(home)

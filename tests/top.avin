@@ -7,872 +7,1027 @@ import dev.avinlang.marshal
 import dev.avinlang.marshal.{JobInfo, Outcome, Overview, QueuedJob, TakeSlotUse, Usage, Why}
 import dev.avinlang.marshal.cli
 import dev.avinlang.marshal.top
-import dev.avinlang.marshal.top.{App, IdleHideMs,KillJob, Quit, StartDaemon, Stay, ShowAll, ShowRunning, ShowQueued, ShowFinished}
-import dev.avinlang.tui.{BrightBlack, Char, Ctrl, Down, End, Enter, Escape, Event, Green, Grid, Home, Key, KeyPress, Magenta,
-                         PageDown, PageUp, Red, Resize, Reverse, Stop, Up, Yellow, wrapChars}
+
+import dev.avinlang.marshal.top.{
+  App,
+  IdleHideMs,
+  KillJob,
+  Quit,
+  StartDaemon,
+  Stay,
+  ShowAll,
+  ShowRunning,
+  ShowQueued,
+  ShowFinished
+}
+
+import dev.avinlang.tui.{
+  BrightBlack,
+  Char,
+  Ctrl,
+  Down,
+  End,
+  Enter,
+  Escape,
+  Event,
+  Green,
+  Grid,
+  Home,
+  Key,
+  KeyPress,
+  Magenta,
+  PageDown,
+  PageUp,
+  Red,
+  Resize,
+  Reverse,
+  Stop,
+  Up,
+  Yellow,
+  wrapChars
+}
 
 val minuteMs: long = 60000
 
 @test("top opens the terminal without mouse reporting, so a drag selects text, and keeps bracketed paste")
 topLeavesTheMouseToTheTerminal()
-    assert(!cli.TopOptions.mouse)
-    assert(cli.TopOptions.paste)
-    assert(cli.TopOptions.colors.isEmpty)
+  assert(!cli.TopOptions.mouse)
+  assert(cli.TopOptions.paste)
+  assert(cli.TopOptions.colors.isEmpty)
 
 // A job as a snapshot gives it.
-snapJob(id: long, state: string = "running", outcome: Option[Outcome] = None, elapsed: long = minuteMs, deadline: long = 20 * minuteMs,
-     units: int = 1, landing: bool = false, killed: bool = false, cmd: Vector[string] = ["sleep", "30"], memory: long = 0,
-     rss: long = 0, peak: long = 0, started: long = 0) -> JobInfo =
-    JobInfo(id, if landing then "test" else "build", units, memory, landing, "/w", cmd, state, outcome, killed, 0, elapsed, deadline, s"/h/jobs/$id.log", None, rss, peak, started)
+snapJob(
+    id: long,
+    state: string = "running",
+    outcome: Option[Outcome] = None,
+    elapsed: long = minuteMs,
+    deadline: long = 20 * minuteMs,
+    units: int = 1,
+    landing: bool = false,
+    killed: bool = false,
+    cmd: Vector[string] = ["sleep", "30"],
+    memory: long = 0,
+    rss: long = 0,
+    peak: long = 0,
+    started: long = 0
+) -> JobInfo =
+  JobInfo(
+    id,
+    if landing then "test" else "build",
+    units,
+    memory,
+    landing,
+    "/w",
+    cmd,
+    state,
+    outcome,
+    killed,
+    0,
+    elapsed,
+    deadline,
+    s"/h/jobs/$id.log",
+    None,
+    rss,
+    peak,
+    started
+  )
 
-queued(id: long, position: int, why: Why) -> QueuedJob = QueuedJob(snapJob(id, "queued", deadline = 45 * minuteMs), position, why)
+queued(id: long, position: int, why: Why) -> QueuedJob = QueuedJob(
+  snapJob(id, "queued", deadline = 45 * minuteMs),
+  position,
+  why
+)
 
 // Two running jobs (one landing), three queued, and one ended each way.
 full() -> Overview
-    val running = [snapJob(1, units = 4, cmd = ["sysl", "test", "compiler"], memory = 1073741824), snapJob(4, units = 4, landing = true, elapsed = 19 * minuteMs)]
-    val queuedJobs = [queued(10, 1, Why.NoUnits), queued(11, 2, Why.Behind(10)), queued(12, 3, Why.ForTakeSlot)]
-    val recent = [
-        snapJob(9, "done", Some(Outcome.Exited(0))),
-        snapJob(8, "done", Some(Outcome.Exited(3))),
-        snapJob(7, "done", Some(Outcome.TimedOut)),
-        snapJob(6, "done", Some(Outcome.Signalled(15)), killed = true),
-        snapJob(5, "done", Some(Outcome.Lost)),
-        snapJob(3, "done", Some(Outcome.Cancelled))]
-    Overview(Usage(5, 12, 1073741824, 4294967296, 2, 3, Some(4), Some(TakeSlotUse("/s/.git", 4, 1, false))), 3723000, running, queuedJobs, recent)
+  val running = [
+    snapJob(1, units = 4, cmd = ["sysl", "test", "compiler"], memory = 1073741824),
+    snapJob(4, units = 4, landing = true, elapsed = 19 * minuteMs)
+  ]
+  val queuedJobs = [queued(10, 1, Why.NoUnits), queued(11, 2, Why.Behind(10)), queued(12, 3, Why.ForTakeSlot)]
+  val recent = [
+    snapJob(9, "done", Some(Outcome.Exited(0))),
+    snapJob(8, "done", Some(Outcome.Exited(3))),
+    snapJob(7, "done", Some(Outcome.TimedOut)),
+    snapJob(6, "done", Some(Outcome.Signalled(15)), killed = true),
+    snapJob(5, "done", Some(Outcome.Lost)),
+    snapJob(3, "done", Some(Outcome.Cancelled))
+  ]
+  Overview(
+    Usage(5, 12, 1073741824, 4294967296, 2, 3, Some(4), Some(TakeSlotUse("/s/.git", 4, 1, false))),
+    3723000,
+    running,
+    queuedJobs,
+    recent
+  )
 
 drawn(app: App, w: int, h: int, since: long = 0) -> Grid
-    val g = Grid(w, h)
-    app.draw(g, since)
-    g
+  val g = Grid(w, h)
+  app.draw(g, since)
+  g
 
 viewing(o: Overview) -> App
-    val app = App("/h/sock")
-    app.update(o)
-    app.touch(0)
-    app
+  val app = App("/h/sock")
+  app.update(o)
+  app.touch(0)
+  app
 
 key(c: char) -> Event = KeyPress(Char(c), 0)
 press(k: Key) -> Event = KeyPress(k, 0)
 
 // The row of `g` holding `text`, or -1.
 rowOf(g: Grid, text: string) -> int
-    for y in 0 ..< g.height
-        if g.rowText(y).contains(text) then return y
-    -1
+  for y in 0 ..< g.height
+    if g.rowText(y).contains(text) then return y
+  -1
 
 // The column of `text` in row `y` of `g`, counted in cells (every character here is one cell wide).
 columnOf(g: Grid, y: int, text: string) -> int = g.rowText(y).indexOf(text)
 
 @test("the header shows uptime, counts, the landing lane, the filter, the unit bar with take-slot's share, and memory")
 header()
-    val g = drawn(viewing(full()), 100, 30)
-    val top = g.rowText(0)
-    assert(top.startsWith("marshal  up 1:02:03   2 running  3 queued   landing: job 4 (4 units)"), top)
-    assert(top.trim.endsWith("filter: all"), top)
-    val units = g.rowText(1)
-    assert(units.startsWith("units ["), units)
-    assert(units.contains("] 5 + take-slot 4 / 12, 1 waiting"), units)
-    // 33 cells: 5 of 12 is 14 green, 9 of 12 is 25, so 11 magenta, 8 dotted
-    assertEq(units.count(c -> c == '█'), 25)
-    assertEq(units.count(c -> c == '·'), 8)
-    assertEq(g(7, 1).style.fg, Green)
-    assertEq(g(7 + 14, 1).style.fg, Magenta)
-    assertEq(g(7 + 25, 1).style.fg, BrightBlack)
-    assert(g.rowText(2).contains("] 1G / 4G"), g.rowText(2))
+  val g = drawn(viewing(full()), 100, 30)
+  val top = g.rowText(0)
+  assert(top.startsWith("marshal  up 1:02:03   2 running  3 queued   landing: job 4 (4 units)"), top)
+  assert(top.trim.endsWith("filter: all"), top)
+  val units = g.rowText(1)
+  assert(units.startsWith("units ["), units)
+  assert(units.contains("] 5 + take-slot 4 / 12, 1 waiting"), units)
+  // 33 cells: 5 of 12 is 14 green, 9 of 12 is 25, so 11 magenta, 8 dotted
+  assertEq(units.count(c -> c == '█'), 25)
+  assertEq(units.count(c -> c == '·'), 8)
+  assertEq(g(7, 1).style.fg, Green)
+  assertEq(g(7 + 14, 1).style.fg, Magenta)
+  assertEq(g(7 + 25, 1).style.fg, BrightBlack)
+  assert(g.rowText(2).contains("] 1G / 4G"), g.rowText(2))
 
 @test("the header says when the lane is free or take-slot's, and when nothing is shared with take-slot")
 headerLane()
-    val free = Overview(Usage(0, 12, 0, long.MaxValue, 0, 0, None, None), 0, [], [], [])
-    val g = drawn(viewing(free), 80, 10)
-    assert(g.rowText(0).contains("landing: free"), g.rowText(0))
-    assert(g.rowText(1).contains("] 0 / 12"), g.rowText(1))
-    assert(!g.rowText(1).contains("take-slot"))
-    assertEq(g.rowText(1).count(c -> c == '█'), 0)
-    // an unbounded memory budget shows what is used, and no bar
-    assert(g.rowText(2).trim.endsWith("] 0   rss 0"), g.rowText(2))
-    val theirs = Overview(Usage(0, 12, 0, 100, 0, 0, None, Some(TakeSlotUse("/s", 0, 0, true))), 0, [], [], [])
-    assert(drawn(viewing(theirs), 80, 10).rowText(0).contains("landing: take-slot"))
+  val free = Overview(Usage(0, 12, 0, long.MaxValue, 0, 0, None, None), 0, [], [], [])
+  val g = drawn(viewing(free), 80, 10)
+  assert(g.rowText(0).contains("landing: free"), g.rowText(0))
+  assert(g.rowText(1).contains("] 0 / 12"), g.rowText(1))
+  assert(!g.rowText(1).contains("take-slot"))
+  assertEq(g.rowText(1).count(c -> c == '█'), 0)
+  // an unbounded memory budget shows what is used, and no bar
+  assert(g.rowText(2).trim.endsWith("] 0   rss 0"), g.rowText(2))
+  val theirs = Overview(Usage(0, 12, 0, 100, 0, 0, None, Some(TakeSlotUse("/s", 0, 0, true))), 0, [], [], [])
+  assert(drawn(viewing(theirs), 80, 10).rowText(0).contains("landing: take-slot"))
 
 @test("the table lists running jobs, then queued ones with their place and reason, then ended ones, the latest first")
 table()
-    val g = drawn(viewing(full()), 120, 30)
-    val head = rowOf(g, "ID STATE")
-    assertEq(head, 4)
-    for word in ["ID", "STATE", "KIND", "UNITS", "RESV", "RSS", "PEAK", "STARTED", "ELAPSED", "DEADLINE", "COMMAND"]
-        assert(g.rowText(head).contains(word), word)
-    assert(!g.rowText(head).contains("MEM"), g.rowText(head))
-    val expected = [
-        ("1", "running"), ("4", "landing"), ("10", "#1 no units"), ("11", "#2 behind 10"), ("12", "#3 take-slot"),
-        ("9", "exit 0"), ("8", "exit 3"), ("7", "timeout"), ("6", "killed"), ("5", "lost"), ("3", "cancelled")]
-    for ((id, state), k) in expected.zipWithIndex
-        val row = g.rowText(head + 1 + k)
-        assertEq(row.slice(0, 5).trim, id)
-        assert(row.slice(6, 20).trim == state, s"$id: $row")
-    val first = g.rowText(head + 1)
-    assert(first.contains("1G"), first)
-    assert(first.trim.endsWith("sysl test compiler"), first)
-    // a landing job's kind is marked
-    assert(g.rowText(head + 2).contains("test*"), g.rowText(head + 2))
-    // elapsed, and the time left: 20 minutes less one; a queued job shows the deadline it will have
-    assert(first.contains("1:00") && first.contains("19:00"), first)
-    assert(g.rowText(head + 3).contains("45:00"), g.rowText(head + 3))
-    assertEq(g.rowText(head + 6).slice(76, 84).trim, "-")
-    assertEq(g.rowText(head + 1).slice(76, 84).trim, "19:00")
+  val g = drawn(viewing(full()), 120, 30)
+  val head = rowOf(g, "ID STATE")
+  assertEq(head, 4)
+  for word in ["ID", "STATE", "KIND", "UNITS", "RESV", "RSS", "PEAK", "STARTED", "ELAPSED", "DEADLINE", "COMMAND"]
+    assert(g.rowText(head).contains(word), word)
+  assert(!g.rowText(head).contains("MEM"), g.rowText(head))
+  val expected = [
+    ("1", "running"),
+    ("4", "landing"),
+    ("10", "#1 no units"),
+    ("11", "#2 behind 10"),
+    ("12", "#3 take-slot"),
+    ("9", "exit 0"),
+    ("8", "exit 3"),
+    ("7", "timeout"),
+    ("6", "killed"),
+    ("5", "lost"),
+    ("3", "cancelled")
+  ]
+  for ((id, state), k) in expected.zipWithIndex
+    val row = g.rowText(head + 1 + k)
+    assertEq(row.slice(0, 5).trim, id)
+    assert(row.slice(6, 20).trim == state, s"$id: $row")
+  val first = g.rowText(head + 1)
+  assert(first.contains("1G"), first)
+  assert(first.trim.endsWith("sysl test compiler"), first)
+  // a landing job's kind is marked
+  assert(g.rowText(head + 2).contains("test*"), g.rowText(head + 2))
+  // elapsed, and the time left: 20 minutes less one; a queued job shows the deadline it will have
+  assert(first.contains("1:00") && first.contains("19:00"), first)
+  assert(g.rowText(head + 3).contains("45:00"), g.rowText(head + 3))
+  assertEq(g.rowText(head + 6).slice(76, 84).trim, "-")
+  assertEq(g.rowText(head + 1).slice(76, 84).trim, "19:00")
 
 // The RESV, RSS and PEAK cells of row `y` of `g`, as the columns at 6, 5 and 5 cells place them.
 memoryCells(g: Grid, y: int) -> (string, string, string) =
-    val row = g.rowText(y)
-    (row.slice(36, 42).trim, row.slice(43, 48).trim, row.slice(49, 54).trim)
+  val row = g.rowText(y)
+  (row.slice(36, 42).trim, row.slice(43, 48).trim, row.slice(49, 54).trim)
 
-@test("RESV is what a job declared, RSS what a running job's tree holds and PEAK the most it held, each - where there is none")
+@test(
+  "RESV is what a job declared, RSS what a running job's tree holds and PEAK the most it held, each - where there is none"
+)
 memoryColumns()
-    val M: long = 1024 * 1024
-    val running = [
-        snapJob(1, memory = 1073741824, rss = 812 * M + 300 * 1024, peak = M * 9 * 1024 + 400 * M),
-        snapJob(2, memory = M * 29 * 1024),
-        snapJob(3, rss = 1023 * M + 600 * 1024, peak = M * 3 * 1024 * 1024)]
-    val recent = [
-        snapJob(9, "done", Some(Outcome.Exited(0)), peak = 512),
-        // an ended job holds nothing now, whatever was last measured
-        snapJob(8, "done", Some(Outcome.Exited(1)), rss = 100 * M, peak = 100 * M),
-        snapJob(7, "done", Some(Outcome.Cancelled))]
-    val o = Overview(Usage(3, 12, M * 30 * 1024, long.MaxValue, 3, 1, None, None), 0, running, [queued(10, 1, Why.NoUnits)], recent)
-    val g = drawn(viewing(o), 100, 30)
-    val head = rowOf(g, "ID STATE")
-    assertEq(g.rowText(head).slice(36, 54), "  RESV   RSS  PEAK")
-    assertEq(memoryCells(g, head + 1), ("1G", "812M", "9.4G"))
-    // measured before the first sample: nothing yet
-    assertEq(memoryCells(g, head + 2), ("29G", "-", "-"))
-    // large values round into the next unit and stay inside their columns
-    assertEq(memoryCells(g, head + 3), ("-", "1.0G", "3.0T"))
-    // a queued job has neither
-    assertEq(memoryCells(g, head + 4), ("-", "-", "-"))
-    assertEq(memoryCells(g, head + 5), ("-", "-", "512"))
-    assertEq(memoryCells(g, head + 6), ("-", "-", "100M"))
-    assertEq(memoryCells(g, head + 7), ("-", "-", "-"))
-    // the cells are right-aligned and the columns either side keep their places
-    assert(g.rowText(head + 1).slice(30, 35).trim == "1", g.rowText(head + 1))
-    assertEq(g.rowText(head + 1).slice(67, 75).trim, "1:00")
+  val M: long = 1024 * 1024
+  val running = [
+    snapJob(1, memory = 1073741824, rss = 812 * M + 300 * 1024, peak = M * 9 * 1024 + 400 * M),
+    snapJob(2, memory = M * 29 * 1024),
+    snapJob(3, rss = 1023 * M + 600 * 1024, peak = M * 3 * 1024 * 1024)
+  ]
+  val recent = [
+    snapJob(9, "done", Some(Outcome.Exited(0)), peak = 512),
+    // an ended job holds nothing now, whatever was last measured
+    snapJob(8, "done", Some(Outcome.Exited(1)), rss = 100 * M, peak = 100 * M),
+    snapJob(7, "done", Some(Outcome.Cancelled))]
+  val o = Overview(
+    Usage(3, 12, M * 30 * 1024, long.MaxValue, 3, 1, None, None),
+    0,
+    running,
+    [queued(10, 1, Why.NoUnits)],
+    recent
+  )
+  val g = drawn(viewing(o), 100, 30)
+  val head = rowOf(g, "ID STATE")
+  assertEq(g.rowText(head).slice(36, 54), "  RESV   RSS  PEAK")
+  assertEq(memoryCells(g, head + 1), ("1G", "812M", "9.4G"))
+  // measured before the first sample: nothing yet
+  assertEq(memoryCells(g, head + 2), ("29G", "-", "-"))
+  // large values round into the next unit and stay inside their columns
+  assertEq(memoryCells(g, head + 3), ("-", "1.0G", "3.0T"))
+  // a queued job has neither
+  assertEq(memoryCells(g, head + 4), ("-", "-", "-"))
+  assertEq(memoryCells(g, head + 5), ("-", "-", "512"))
+  assertEq(memoryCells(g, head + 6), ("-", "-", "100M"))
+  assertEq(memoryCells(g, head + 7), ("-", "-", "-"))
+  // the cells are right-aligned and the columns either side keep their places
+  assert(g.rowText(head + 1).slice(30, 35).trim == "1", g.rowText(head + 1))
+  assertEq(g.rowText(head + 1).slice(67, 75).trim, "1:00")
 
 @test("STARTED is the start in the host's zone to the minute, between PEAK and ELAPSED, and - for a queued job")
 startedCells()
-    val at: long = 1794058290000
-    val expected = time.epochMillis(at).atZone(time.localZone()).format("MM-DD hh:mm")
-    // another day, a year earlier
-    val before: long = at - 400 * 86400000
-    val earlier = time.epochMillis(before).atZone(time.localZone()).format("MM-DD hh:mm")
-    val o = Overview(Usage(2, 12, 0, long.MaxValue, 2, 1, None, None), 0,
-        [snapJob(1, started = at), snapJob(2, started = before)], [queued(10, 1, Why.NoUnits)],
-        [snapJob(9, "done", Some(Outcome.Exited(0)), started = at), snapJob(8, "done", Some(Outcome.Cancelled))])
-    val g = drawn(viewing(o), 100, 30)
-    val head = rowOf(g, "ID STATE")
-    assertEq(g.rowText(head).slice(55, 75), "STARTED      ELAPSED")
-    assertEq(g.rowText(head + 1).slice(55, 66).trim, expected)
-    assertEq(g.rowText(head + 2).slice(55, 66).trim, earlier)
-    assertEq(g.rowText(head + 3).slice(55, 66).trim, "-")
-    // ELAPSED: the run time of a running job, - for a queued one, the run time of an ended one
-    assertEq(g.rowText(head + 1).slice(68, 76).trim, "1:00")
-    assertEq(g.rowText(head + 3).slice(68, 76).trim, "-")
-    assertEq(g.rowText(head + 4).slice(68, 76).trim, "1:00")
-    assertEq(g.rowText(head + 4).slice(55, 66).trim, expected)
-    assertEq(g.rowText(head + 5).slice(55, 66).trim, "-")
-    // the cell is `MM-DD hh:mm` and nothing else
-    assertEq(expected.charCount, 11)
-    assertEq((expected.slice(2, 3), expected.slice(5, 6), expected.slice(8, 9)), ("-", " ", ":"))
-    // ELAPSED and DEADLINE keep their columns after it
-    assertEq(g.rowText(head + 1).slice(67, 75).trim, "1:00")
-    assertEq(g.rowText(head + 1).slice(76, 84).trim, "19:00")
+  val at: long = 1794058290000
+  val expected = time.epochMillis(at).atZone(time.localZone()).format("MM-DD hh:mm")
+  // another day, a year earlier
+  val before: long = at - 400 * 86400000
+  val earlier = time.epochMillis(before).atZone(time.localZone()).format("MM-DD hh:mm")
+  val o = Overview(
+    Usage(2, 12, 0, long.MaxValue, 2, 1, None, None),
+    0,
+    [snapJob(1, started = at), snapJob(2, started = before)],
+    [queued(10, 1, Why.NoUnits)],
+    [snapJob(9, "done", Some(Outcome.Exited(0)), started = at), snapJob(8, "done", Some(Outcome.Cancelled))]
+  )
+  val g = drawn(viewing(o), 100, 30)
+  val head = rowOf(g, "ID STATE")
+  assertEq(g.rowText(head).slice(55, 75), "STARTED      ELAPSED")
+  assertEq(g.rowText(head + 1).slice(55, 66).trim, expected)
+  assertEq(g.rowText(head + 2).slice(55, 66).trim, earlier)
+  assertEq(g.rowText(head + 3).slice(55, 66).trim, "-")
+  // ELAPSED: the run time of a running job, - for a queued one, the run time of an ended one
+  assertEq(g.rowText(head + 1).slice(68, 76).trim, "1:00")
+  assertEq(g.rowText(head + 3).slice(68, 76).trim, "-")
+  assertEq(g.rowText(head + 4).slice(68, 76).trim, "1:00")
+  assertEq(g.rowText(head + 4).slice(55, 66).trim, expected)
+  assertEq(g.rowText(head + 5).slice(55, 66).trim, "-")
+  // the cell is `MM-DD hh:mm` and nothing else
+  assertEq(expected.charCount, 11)
+  assertEq((expected.slice(2, 3), expected.slice(5, 6), expected.slice(8, 9)), ("-", " ", ":"))
+  // ELAPSED and DEADLINE keep their columns after it
+  assertEq(g.rowText(head + 1).slice(67, 75).trim, "1:00")
+  assertEq(g.rowText(head + 1).slice(76, 84).trim, "19:00")
 
-@test("a screen under 90 cells draws no PEAK column and keeps STARTED and every other column, the selection and the deadline's colour")
+@test(
+  "a screen under 90 cells draws no PEAK column and keeps STARTED and every other column, the selection and the deadline's colour"
+)
 peakLeftOutWhenNarrow()
-    val o = full()
-    val app = viewing(o)
-    for w in [80, 89]
-        val g = drawn(app, w, 30)
-        val head = rowOf(g, "ID STATE")
-        assert(!g.rowText(head).contains("PEAK"), g.rowText(head))
-        for word in ["ID", "STATE", "KIND", "UNITS", "RESV", "RSS", "STARTED", "ELAPSED", "DEADLINE", "COMM"]
-            assert(g.rowText(head).contains(word), s"$w: $word")
-        assert(g.rowText(head + 1).contains("1:00") && g.rowText(head + 1).contains("19:00"), g.rowText(head + 1))
-    for w in [90, 100]
-        val g = drawn(app, w, 30)
-        val head = rowOf(g, "ID STATE")
-        for word in ["RSS", "PEAK", "STARTED", "ELAPSED", "DEADLINE"]
-            assert(g.rowText(head).contains(word), s"$w: $word")
-    // at 80 the command keeps five cells: the heading is cut to COMM and an ellipsis
-    val eighty = drawn(app, 80, 30)
-    assert(eighty.rowText(rowOf(eighty, "ID STATE")).trim.endsWith("DEADLINE COMM…"), eighty.rowText(rowOf(eighty, "ID STATE")))
-    // a running job's start is on a narrow screen as on a wide one
-    val at: long = 1794058290000 - 400 * 86400000
-    val started = Overview(Usage(1, 12, 0, long.MaxValue, 1, 0, None, None), 0, [snapJob(1, started = at)], [], [])
-    val expected = time.epochMillis(at).atZone(time.localZone()).format("MM-DD hh:mm")
-    for w in [80, 89, 90, 100]
-        val g = drawn(viewing(started), w, 30)
-        assert(g.rowText(rowOf(g, "ID STATE") + 1).contains(expected), s"$w: ${g.rowText(rowOf(g, "ID STATE") + 1)}")
-    // the colour of a deadline stays on it, on the first row and, after moving the selection, on the second
-    app.handle(press(Down))
-    val g = drawn(app, 80, 30)
+  val o = full()
+  val app = viewing(o)
+  for w in [80, 89]
+    val g = drawn(app, w, 30)
     val head = rowOf(g, "ID STATE")
-    val landing = g.rowText(head + 2)
-    assertEq(landing.slice(columnOf(g, head + 2, "19:00") + 10, columnOf(g, head + 2, "19:00") + 14), "1:00")
-    assertEq(g(columnOf(g, head + 2, "19:00") + 10, head + 2).style.fg, Red)
+    assert(!g.rowText(head).contains("PEAK"), g.rowText(head))
+    for word in ["ID", "STATE", "KIND", "UNITS", "RESV", "RSS", "STARTED", "ELAPSED", "DEADLINE", "COMM"]
+      assert(g.rowText(head).contains(word), s"$w: $word")
+    assert(g.rowText(head + 1).contains("1:00") && g.rowText(head + 1).contains("19:00"), g.rowText(head + 1))
+  for w in [90, 100]
+    val g = drawn(app, w, 30)
+    val head = rowOf(g, "ID STATE")
+    for word in ["RSS", "PEAK", "STARTED", "ELAPSED", "DEADLINE"]
+      assert(g.rowText(head).contains(word), s"$w: $word")
+  // at 80 the command keeps five cells: the heading is cut to COMM and an ellipsis
+  val eighty = drawn(app, 80, 30)
+  assert(
+    eighty.rowText(rowOf(eighty, "ID STATE")).trim.endsWith("DEADLINE COMM…"),
+    eighty.rowText(rowOf(eighty, "ID STATE"))
+  )
+  // a running job's start is on a narrow screen as on a wide one
+  val at: long = 1794058290000 - 400 * 86400000
+  val started = Overview(Usage(1, 12, 0, long.MaxValue, 1, 0, None, None), 0, [snapJob(1, started = at)], [], [])
+  val expected = time.epochMillis(at).atZone(time.localZone()).format("MM-DD hh:mm")
+  for w in [80, 89, 90, 100]
+    val g = drawn(viewing(started), w, 30)
+    assert(g.rowText(rowOf(g, "ID STATE") + 1).contains(expected), s"$w: ${g.rowText(rowOf(g, "ID STATE") + 1)}")
+  // the colour of a deadline stays on it, on the first row and, after moving the selection, on the second
+  app.handle(press(Down))
+  val g = drawn(app, 80, 30)
+  val head = rowOf(g, "ID STATE")
+  val landing = g.rowText(head + 2)
+  assertEq(landing.slice(columnOf(g, head + 2, "19:00") + 10, columnOf(g, head + 2, "19:00") + 14), "1:00")
+  assertEq(g(columnOf(g, head + 2, "19:00") + 10, head + 2).style.fg, Red)
 
 @test("the header adds what the running jobs hold and the machine's memory, which is left out where unknown")
 headerMemory()
-    val known = Overview(Usage(5, 12, G, 4 * G, 1, 0, None, None, 9 * G + 400 * 1024 * 1024, 64 * G), 0, [], [], [])
-    assert(drawn(viewing(known), 100, 10).rowText(2).trim.endsWith("] 1G / 4G   rss 9.4G   machine 64G"), drawn(viewing(known), 100, 10).rowText(2))
-    val unknown = Overview(Usage(5, 12, G, 4 * G, 1, 0, None, None, 1536, 0), 0, [], [], [])
-    assert(drawn(viewing(unknown), 100, 10).rowText(2).trim.endsWith("] 1G / 4G   rss 1.5K"), drawn(viewing(unknown), 100, 10).rowText(2))
-    // the memory line is cut at a narrow screen, not wrapped
-    val narrow = drawn(viewing(known), 40, 10)
-    assertEq(narrow.rowText(2).charCount, 40)
+  val known = Overview(Usage(5, 12, G, 4 * G, 1, 0, None, None, 9 * G + 400 * 1024 * 1024, 64 * G), 0, [], [], [])
+  assert(
+    drawn(viewing(known), 100, 10).rowText(2).trim.endsWith("] 1G / 4G   rss 9.4G   machine 64G"),
+    drawn(viewing(known), 100, 10).rowText(2)
+  )
+  val unknown = Overview(Usage(5, 12, G, 4 * G, 1, 0, None, None, 1536, 0), 0, [], [], [])
+  assert(
+    drawn(viewing(unknown), 100, 10).rowText(2).trim.endsWith("] 1G / 4G   rss 1.5K"),
+    drawn(viewing(unknown), 100, 10).rowText(2)
+  )
+  // the memory line is cut at a narrow screen, not wrapped
+  val narrow = drawn(viewing(known), 40, 10)
+  assertEq(narrow.rowText(2).charCount, 40)
 
 @test("states and deadlines are coloured, and the selected row keeps its colours reversed")
 colours()
-    val app = viewing(full())
-    val g = drawn(app, 100, 30)
-    val at = (id: string) -> g(6, 5 + full().running.length + full().queued.length + full().recent.indexWhere(j -> j.id.toString() == id))
-    assertEq(g(6, 5).style.fg, Green)
-    assert(g(6, 5).style.has(Reverse), "row 1 is selected")
-    assertEq(g(6, 7).style.fg, Yellow)
-    assert(!g(6, 7).style.has(Reverse))
-    assertEq(at("9").style.fg, Green)
-    assertEq(at("8").style.fg, Red)
-    assertEq(at("7").style.fg, Red)
-    assertEq(at("6").style.fg, Magenta)
-    assertEq(at("5").style.fg, Magenta)
-    assertEq(at("3").style.fg, BrightBlack)
-    // the landing job has one minuteMs left of twenty: red
-    val x = columnOf(g, 6, "1:00") + 1
-    assertEq(g(x, 6).style.fg, Red)
+  val app = viewing(full())
+  val g = drawn(app, 100, 30)
+  val at = (id: string) -> g(
+    6,
+    5 + full().running.length + full().queued.length + full().recent.indexWhere(j -> j.id.toString() == id)
+  )
+  assertEq(g(6, 5).style.fg, Green)
+  assert(g(6, 5).style.has(Reverse), "row 1 is selected")
+  assertEq(g(6, 7).style.fg, Yellow)
+  assert(!g(6, 7).style.has(Reverse))
+  assertEq(at("9").style.fg, Green)
+  assertEq(at("8").style.fg, Red)
+  assertEq(at("7").style.fg, Red)
+  assertEq(at("6").style.fg, Magenta)
+  assertEq(at("5").style.fg, Magenta)
+  assertEq(at("3").style.fg, BrightBlack)
+  // the landing job has one minuteMs left of twenty: red
+  val x = columnOf(g, 6, "1:00") + 1
+  assertEq(g(x, 6).style.fg, Red)
 
-@test("the time left is plain far from the deadline, yellow under a quarter or five minutes, red under a tenth or a minuteMs")
+@test(
+  "the time left is plain far from the deadline, yellow under a quarter or five minutes, red under a tenth or a minuteMs"
+)
 leftStyles()
-    val hour: long = 60 * minuteMs
-    assertEq(top.leftStyle(30 * minuteMs, hour).fg, top.leftStyle(hour, hour).fg)
-    assertEq(top.leftStyle(14 * minuteMs, hour).fg, Yellow)
-    assertEq(top.leftStyle(4 * minuteMs, 10 * hour).fg, Red)
-    assertEq(top.leftStyle(299999, 6 * minuteMs).fg, Yellow)
-    assertEq(top.leftStyle(5 * minuteMs, 6 * minuteMs).fg, top.leftStyle(hour, hour).fg)
-    assertEq(top.leftStyle(59000, 2 * minuteMs).fg, Red)
-    assertEq(top.leftStyle(0, hour).fg, Red)
-    assertEq(top.leftStyle(-1, hour).fg, Red)
+  val hour: long = 60 * minuteMs
+  assertEq(top.leftStyle(30 * minuteMs, hour).fg, top.leftStyle(hour, hour).fg)
+  assertEq(top.leftStyle(14 * minuteMs, hour).fg, Yellow)
+  assertEq(top.leftStyle(4 * minuteMs, 10 * hour).fg, Red)
+  assertEq(top.leftStyle(299999, 6 * minuteMs).fg, Yellow)
+  assertEq(top.leftStyle(5 * minuteMs, 6 * minuteMs).fg, top.leftStyle(hour, hour).fg)
+  assertEq(top.leftStyle(59000, 2 * minuteMs).fg, Red)
+  assertEq(top.leftStyle(0, hour).fg, Red)
+  assertEq(top.leftStyle(-1, hour).fg, Red)
 
 @test("time goes on between snapshots: uptime and elapsed grow, the time left shrinks, and past the deadline is over")
 live()
-    val app = viewing(full())
-    val g = drawn(app, 100, 30, 61000)
-    assert(g.rowText(0).contains("up 1:03:04"), g.rowText(0))
-    val first = g.rowText(5)
-    assert(first.contains("2:01") && first.contains("17:59"), first)
-    // the landing job had a minuteMs left
-    assert(g.rowText(6).contains("over"), g.rowText(6))
-    // ended jobs do not move
-    assert(g.rowText(10).contains("1:00"), g.rowText(10))
+  val app = viewing(full())
+  val g = drawn(app, 100, 30, 61000)
+  assert(g.rowText(0).contains("up 1:03:04"), g.rowText(0))
+  val first = g.rowText(5)
+  assert(first.contains("2:01") && first.contains("17:59"), first)
+  // the landing job had a minuteMs left
+  assert(g.rowText(6).contains("over"), g.rowText(6))
+  // ended jobs do not move
+  assert(g.rowText(10).contains("1:00"), g.rowText(10))
 
 @test("clocks read m:ss under an hour and h:mm:ss from there")
 clocks()
-    assertEq(top.clock(0), "0:00")
-    assertEq(top.clock(999), "0:00")
-    assertEq(top.clock(7000), "0:07")
-    assertEq(top.clock(18 * minuteMs + 12000), "18:12")
-    assertEq(top.clock(3599999), "59:59")
-    assertEq(top.clock(3600000), "1:00:00")
-    assertEq(top.clock(3723000), "1:02:03")
-    assertEq(top.clock(100 * 3600000), "100:00:00")
-    assertEq(top.clock(-5), "0:00")
+  assertEq(top.clock(0), "0:00")
+  assertEq(top.clock(999), "0:00")
+  assertEq(top.clock(7000), "0:07")
+  assertEq(top.clock(18 * minuteMs + 12000), "18:12")
+  assertEq(top.clock(3599999), "59:59")
+  assertEq(top.clock(3600000), "1:00:00")
+  assertEq(top.clock(3723000), "1:02:03")
+  assertEq(top.clock(100 * 3600000), "100:00:00")
+  assertEq(top.clock(-5), "0:00")
 
 @test("each reason to wait has its words")
 whyWords()
-    assertEq(top.whyText(Why.NoUnits), "no units")
-    assertEq(top.whyText(Why.NoMemory), "no memory")
-    assertEq(top.whyText(Why.LaneBusy), "lane busy")
-    assertEq(top.whyText(Why.Draining), "draining")
-    assertEq(top.whyText(Why.ForTakeSlot), "take-slot")
-    assertEq(top.whyText(Why.Behind(42)), "behind 42")
-    assertEq(top.whyText(Why.DrainingFor(42)), "draining for 42")
-    assertEq(top.whyText(Why.Starting), "starting")
+  assertEq(top.whyText(Why.NoUnits), "no units")
+  assertEq(top.whyText(Why.NoMemory), "no memory")
+  assertEq(top.whyText(Why.LaneBusy), "lane busy")
+  assertEq(top.whyText(Why.Draining), "draining")
+  assertEq(top.whyText(Why.ForTakeSlot), "take-slot")
+  assertEq(top.whyText(Why.Behind(42)), "behind 42")
+  assertEq(top.whyText(Why.DrainingFor(42)), "draining for 42")
+  assertEq(top.whyText(Why.Starting), "starting")
 
 @test("the screen draws at every size without failing, and small ones keep the header and the keys")
 allSizes()
-    for (w, h) in [(1, 1), (2, 2), (10, 3), (20, 5), (40, 10), (80, 24), (120, 40), (200, 60)]
-        val app = viewing(full())
-        app.handle(press(Enter))
-        app.logLines = ["one", "two"]
-        val g = drawn(app, w, h)
-        assertEq(g.width, w)
-        if h >= 3 then assert(g.rowText(0).startsWith("marshal".slice(0, minOf(w, 7))), s"$w x $h: ${g.rowText(0)}")
-        app.handle(key('h'))
-        drawn(app, w, h)
-    val small = drawn(viewing(full()), 40, 10)
-    assert(small.rowText(9).startsWith("hHelp EnterLog kKill fFilter qQuit"), small.rowText(9))
-    // the table shows what fits and keeps the selected row in view
+  for (w, h) in [(1, 1), (2, 2), (10, 3), (20, 5), (40, 10), (80, 24), (120, 40), (200, 60)]
     val app = viewing(full())
-    for _ in 0 ..< 10 do app.handle(press(Down))
-    val g = drawn(app, 60, 10)
-    assert(rowOf(g, "cancelled") > 0, "the last row is scrolled into view")
+    app.handle(press(Enter))
+    app.logLines = ["one", "two"]
+    val g = drawn(app, w, h)
+    assertEq(g.width, w)
+    if h >= 3 then assert(g.rowText(0).startsWith("marshal".slice(0, minOf(w, 7))), s"$w x $h: ${g.rowText(0)}")
+    app.handle(key('h'))
+    drawn(app, w, h)
+  val small = drawn(viewing(full()), 40, 10)
+  assert(small.rowText(9).startsWith("hHelp EnterLog kKill fFilter qQuit"), small.rowText(9))
+  // the table shows what fits and keeps the selected row in view
+  val app = viewing(full())
+  for _ in 0 ..< 10 do app.handle(press(Down))
+  val g = drawn(app, 60, 10)
+  assert(rowOf(g, "cancelled") > 0, "the last row is scrolled into view")
 
 private minOf(a: int, b: int) -> int = if a < b then a else b
 
 @test("arrows and pages move the selection, which stays on its job when a new snapshot reorders the rows")
 selection()
-    val app = viewing(full())
-    assertEq(app.selected().map(j -> j.id), Some(long(1)))
-    app.handle(press(Down))
-    app.handle(press(Down))
-    assertEq(app.selected().map(j -> j.id), Some(long(10)))
-    app.handle(press(Up))
-    assertEq(app.selected().map(j -> j.id), Some(long(4)))
-    app.handle(press(Up))
-    app.handle(press(Up))
-    assertEq(app.selected().map(j -> j.id), Some(long(1)))
-    app.handle(press(End))
-    assertEq(app.selected().map(j -> j.id), Some(long(3)))
-    app.handle(press(Home))
-    assertEq(app.selected().map(j -> j.id), Some(long(1)))
-    drawn(app, 80, 10)
-    app.handle(press(PageDown))
-    assert(app.selected().map(j -> j.id) != Some(long(1)))
-    app.handle(press(PageUp))
-    assertEq(app.selected().map(j -> j.id), Some(long(1)))
-    // job 10 selected; the next snapshot has job 1 gone and job 10 running
-    app.handle(press(Down))
-    app.handle(press(Down))
-    val o = full()
-    app.update(Overview(o.usage, o.uptimeMs, [snapJob(10)], [], o.recent))
-    assertEq(app.selected().map(j -> j.id), Some(long(10)))
-    // a job that has gone leaves the selection where it was, held to the rows there are
-    app.update(Overview(o.usage, o.uptimeMs, [], [], []))
-    assertEq(app.selected(), None)
+  val app = viewing(full())
+  assertEq(app.selected().map(j -> j.id), Some(long(1)))
+  app.handle(press(Down))
+  app.handle(press(Down))
+  assertEq(app.selected().map(j -> j.id), Some(long(10)))
+  app.handle(press(Up))
+  assertEq(app.selected().map(j -> j.id), Some(long(4)))
+  app.handle(press(Up))
+  app.handle(press(Up))
+  assertEq(app.selected().map(j -> j.id), Some(long(1)))
+  app.handle(press(End))
+  assertEq(app.selected().map(j -> j.id), Some(long(3)))
+  app.handle(press(Home))
+  assertEq(app.selected().map(j -> j.id), Some(long(1)))
+  drawn(app, 80, 10)
+  app.handle(press(PageDown))
+  assert(app.selected().map(j -> j.id) != Some(long(1)))
+  app.handle(press(PageUp))
+  assertEq(app.selected().map(j -> j.id), Some(long(1)))
+  // job 10 selected; the next snapshot has job 1 gone and job 10 running
+  app.handle(press(Down))
+  app.handle(press(Down))
+  val o = full()
+  app.update(Overview(o.usage, o.uptimeMs, [snapJob(10)], [], o.recent))
+  assertEq(app.selected().map(j -> j.id), Some(long(10)))
+  // a job that has gone leaves the selection where it was, held to the rows there are
+  app.update(Overview(o.usage, o.uptimeMs, [], [], []))
+  assertEq(app.selected(), None)
 
 @test("f cycles the filter through running, queued, finished and back to all")
 filters()
-    val app = viewing(full())
-    val ids = () -> app.shown.map(l -> l.job.id)
-    assertEq(app.filter, ShowAll)
-    assertEq(ids().length, 11)
-    app.handle(key('f'))
-    assertEq(app.filter, ShowRunning)
-    assertEq(ids(), [long(1), long(4)])
-    assert(drawn(app, 100, 30).rowText(0).contains("filter: running"))
-    app.handle(key('f'))
-    assertEq(ids(), [long(10), long(11), long(12)])
-    app.handle(key('f'))
-    assertEq(app.filter, ShowFinished)
-    assertEq(ids(), [long(9), long(8), long(7), long(6), long(5), long(3)])
-    app.handle(key('f'))
-    assertEq(app.filter, ShowAll)
+  val app = viewing(full())
+  val ids = () -> app.shown.map(l -> l.job.id)
+  assertEq(app.filter, ShowAll)
+  assertEq(ids().length, 11)
+  app.handle(key('f'))
+  assertEq(app.filter, ShowRunning)
+  assertEq(ids(), [long(1), long(4)])
+  assert(drawn(app, 100, 30).rowText(0).contains("filter: running"))
+  app.handle(key('f'))
+  assertEq(ids(), [long(10), long(11), long(12)])
+  app.handle(key('f'))
+  assertEq(app.filter, ShowFinished)
+  assertEq(ids(), [long(9), long(8), long(7), long(6), long(5), long(3)])
+  app.handle(key('f'))
+  assertEq(app.filter, ShowAll)
 
 @test("k asks before killing: y kills the selected job, anything else does not, and an ended job cannot be")
 kill()
-    val app = viewing(full())
-    app.handle(press(Down))
-    assertEq(app.handle(key('k')), Stay)
-    val g = drawn(app, 100, 30)
-    assert(g.rowText(29).startsWith("Kill job 4 (sleep 30)? y/n"), g.rowText(29))
-    assertEq(app.handle(key('y')), KillJob(4))
-    app.handle(key('k'))
-    assertEq(app.handle(key('Y')), KillJob(4))
-    app.handle(key('k'))
-    assertEq(app.handle(key('n')), Stay)
-    assertEq(app.message, "not killed")
-    assert(drawn(app, 100, 30).rowText(29).contains("not killed"))
-    app.handle(key('k'))
-    assertEq(app.handle(Stop(15)), Quit)
-    // a queued job may be killed, which cancels it
-    app.handle(press(Down))
-    app.handle(key('k'))
-    assertEq(app.handle(key('y')), KillJob(10))
-    app.handle(press(End))
-    app.handle(key('k'))
-    assertEq(app.confirming, None)
-    assertEq(app.message, "job 3 has already ended")
-    // with no jobs there is nothing to kill
-    val empty = viewing(Overview(full().usage, 0, [], [], []))
-    empty.handle(key('k'))
-    assertEq(empty.message, "no job selected")
+  val app = viewing(full())
+  app.handle(press(Down))
+  assertEq(app.handle(key('k')), Stay)
+  val g = drawn(app, 100, 30)
+  assert(g.rowText(29).startsWith("Kill job 4 (sleep 30)? y/n"), g.rowText(29))
+  assertEq(app.handle(key('y')), KillJob(4))
+  app.handle(key('k'))
+  assertEq(app.handle(key('Y')), KillJob(4))
+  app.handle(key('k'))
+  assertEq(app.handle(key('n')), Stay)
+  assertEq(app.message, "not killed")
+  assert(drawn(app, 100, 30).rowText(29).contains("not killed"))
+  app.handle(key('k'))
+  assertEq(app.handle(Stop(15)), Quit)
+  // a queued job may be killed, which cancels it
+  app.handle(press(Down))
+  app.handle(key('k'))
+  assertEq(app.handle(key('y')), KillJob(10))
+  app.handle(press(End))
+  app.handle(key('k'))
+  assertEq(app.confirming, None)
+  assertEq(app.message, "job 3 has already ended")
+  // with no jobs there is nothing to kill
+  val empty = viewing(Overview(full().usage, 0, [], [], []))
+  empty.handle(key('k'))
+  assertEq(empty.message, "no job selected")
 
 @test("Enter and l open the selected job's log, which follows the selection; Esc and a second press close it")
 logPane()
-    val app = viewing(full())
-    assertEq(app.logWanted(), None)
-    app.handle(press(Enter))
-    assertEq(app.logWanted().map(w -> w.0), Some("/h/jobs/1.log"))
-    app.logLines = (1 .. 40).map(i -> s"line $i").toVector
-    val g = drawn(app, 80, 30)
-    val title = rowOf(g, "job 1 log, following")
-    assert(title > 4, "the pane is under the table")
-    // the box's header (kind, command, rule) takes three rows of the pane's inside
-    assertEq(app.logRows, 30 - 1 - title - 2 - 3)
-    // the pane's last row holds the log's last line
-    assert(g.rowText(27).contains("line 40"), g.rowText(27))
-    assert(g.rowText(28).startsWith("╰"), g.rowText(28))
-    assertEq(app.logWanted().map(w -> w.1), Some(app.logRows))
-    app.handle(press(Down))
-    assertEq(app.logWanted().map(w -> w.0), Some("/h/jobs/4.log"))
-    app.handle(press(Escape))
-    assertEq(app.logWanted(), None)
-    app.handle(key('l'))
-    assertEq(app.logWanted().map(w -> w.0), Some("/h/jobs/4.log"))
-    app.handle(key('l'))
-    assertEq(app.logWanted(), None)
-    // a log with nothing in it says so
-    app.handle(press(Enter))
-    assert(rowOf(drawn(app, 80, 30), "(nothing in the log yet)") > 0)
+  val app = viewing(full())
+  assertEq(app.logWanted(), None)
+  app.handle(press(Enter))
+  assertEq(app.logWanted().map(w -> w.0), Some("/h/jobs/1.log"))
+  app.logLines = (1 .. 40).map(i -> s"line $i").toVector
+  val g = drawn(app, 80, 30)
+  val title = rowOf(g, "job 1 log, following")
+  assert(title > 4, "the pane is under the table")
+  // the box's header (kind, command, rule) takes three rows of the pane's inside
+  assertEq(app.logRows, 30 - 1 - title - 2 - 3)
+  // the pane's last row holds the log's last line
+  assert(g.rowText(27).contains("line 40"), g.rowText(27))
+  assert(g.rowText(28).startsWith("╰"), g.rowText(28))
+  assertEq(app.logWanted().map(w -> w.1), Some(app.logRows))
+  app.handle(press(Down))
+  assertEq(app.logWanted().map(w -> w.0), Some("/h/jobs/4.log"))
+  app.handle(press(Escape))
+  assertEq(app.logWanted(), None)
+  app.handle(key('l'))
+  assertEq(app.logWanted().map(w -> w.0), Some("/h/jobs/4.log"))
+  app.handle(key('l'))
+  assertEq(app.logWanted(), None)
+  // a log with nothing in it says so
+  app.handle(press(Enter))
+  assert(rowOf(drawn(app, 80, 30), "(nothing in the log yet)") > 0)
 
 @test("with the log open, page keys scroll it back and forward, Home to its start and End to following again")
 logScroll()
-    val app = viewing(full())
-    app.handle(press(Enter))
-    drawn(app, 80, 30)
-    val rows = app.logRows
-    app.handle(press(PageUp))
-    assertEq(app.logBack(), rows)
-    assertEq(app.logWanted().map(w -> w.1), Some(2 * rows))
-    app.logLines = (1 .. 2 * rows).map(i -> s"line $i").toVector
-    val g = drawn(app, 80, 30)
-    assert(rowOf(g, s"job 1 log, $rows lines back") > 0)
-    assert(rowOf(g, "line 1 ") > 0 || rowOf(g, "line 1│") > 0, "the first line is shown")
-    assertEq(rowOf(g, s"line ${2 * rows}"), -1)
-    app.handle(press(PageDown))
-    assertEq(app.logBack(), 0)
-    app.handle(press(PageDown))
-    assertEq(app.logBack(), 0)
-    app.handle(press(Home))
-    assertEq(app.logBack(), top.MaxBack)
-    // a log shorter than the scroll shows its start
-    app.logLines = ["only"]
-    assert(rowOf(drawn(app, 80, 30), "only") > 0)
-    app.handle(press(End))
-    assertEq(app.logBack(), 0)
-    // the selection does not move while the pane scrolls
-    assertEq(app.selected().map(j -> j.id), Some(long(1)))
+  val app = viewing(full())
+  app.handle(press(Enter))
+  drawn(app, 80, 30)
+  val rows = app.logRows
+  app.handle(press(PageUp))
+  assertEq(app.logBack(), rows)
+  assertEq(app.logWanted().map(w -> w.1), Some(2 * rows))
+  app.logLines = (1 .. 2 * rows).map(i -> s"line $i").toVector
+  val g = drawn(app, 80, 30)
+  assert(rowOf(g, s"job 1 log, $rows lines back") > 0)
+  assert(rowOf(g, "line 1 ") > 0 || rowOf(g, "line 1│") > 0, "the first line is shown")
+  assertEq(rowOf(g, s"line ${2 * rows}"), -1)
+  app.handle(press(PageDown))
+  assertEq(app.logBack(), 0)
+  app.handle(press(PageDown))
+  assertEq(app.logBack(), 0)
+  app.handle(press(Home))
+  assertEq(app.logBack(), top.MaxBack)
+  // a log shorter than the scroll shows its start
+  app.logLines = ["only"]
+  assert(rowOf(drawn(app, 80, 30), "only") > 0)
+  app.handle(press(End))
+  assertEq(app.logBack(), 0)
+  // the selection does not move while the pane scrolls
+  assertEq(app.selected().map(j -> j.id), Some(long(1)))
 
 @test("h shows the help over everything and any key closes it; q, Ctrl-C and a stop signal quit")
 helpAndQuit()
-    val app = viewing(full())
-    assertEq(app.handle(key('h')), Stay)
-    assert(rowOf(drawn(app, 100, 30), "help; any key closes") > 0)
-    assertEq(app.handle(key('q')), Stay)
-    assert(!app.helpShown())
-    app.handle(key('?'))
-    assert(app.helpShown())
-    assertEq(app.handle(Stop(1)), Quit)
-    // the stop closed the help too, as any event does
-    assert(!app.helpShown())
-    app.handle(key('h'))
-    assertEq(app.handle(Resize(100, 30)), Stay)
-    assert(!app.helpShown())
-    assertEq(app.handle(key('q')), Quit)
-    assertEq(app.handle(KeyPress(Char('c'), Ctrl)), Quit)
-    assertEq(app.handle(Stop(15)), Quit)
-    assertEq(app.handle(Resize(100, 30)), Stay)
-    assertEq(app.handle(key('x')), Stay)
-    assertEq(app.handle(key('c')), Stay)
+  val app = viewing(full())
+  assertEq(app.handle(key('h')), Stay)
+  assert(rowOf(drawn(app, 100, 30), "help; any key closes") > 0)
+  assertEq(app.handle(key('q')), Stay)
+  assert(!app.helpShown())
+  app.handle(key('?'))
+  assert(app.helpShown())
+  assertEq(app.handle(Stop(1)), Quit)
+  // the stop closed the help too, as any event does
+  assert(!app.helpShown())
+  app.handle(key('h'))
+  assertEq(app.handle(Resize(100, 30)), Stay)
+  assert(!app.helpShown())
+  assertEq(app.handle(key('q')), Quit)
+  assertEq(app.handle(KeyPress(Char('c'), Ctrl)), Quit)
+  assertEq(app.handle(Stop(15)), Quit)
+  assertEq(app.handle(Resize(100, 30)), Stay)
+  assertEq(app.handle(key('x')), Stay)
+  assertEq(app.handle(key('c')), Stay)
 
 @test("with no daemon it says so and s starts one; s does nothing while a daemon answers")
 noDaemon()
-    val app = App("/h/sock")
-    app.lost("no daemon at /h/sock (connection refused)", true)
-    val g = drawn(app, 80, 10)
-    assertEq(g.rowText(0).trim, "marshal top")
-    assert(g.rowText(2).contains("no daemon at /h/sock"), g.rowText(2))
-    assert(g.rowText(3).contains("s starts one"), g.rowText(3))
-    assert(g.rowText(9).startsWith("hHelp EnterLog kKill fFilter qQuit"))
-    assertEq(app.handle(key('s')), StartDaemon)
-    assertEq(app.handle(key('k')), Stay)
-    assertEq(app.message, "no job selected")
-    // a daemon that cannot give a snapshot: s cannot help
-    app.lost("the daemon cannot give a snapshot", false)
-    assert(!drawn(app, 80, 10).rowText(3).contains("s starts one"))
-    assertEq(app.handle(key('s')), Stay)
-    app.update(full())
-    assertEq(app.handle(key('s')), Stay)
-    assertEq(app.problem, None)
-    // before the first answer
-    assert(drawn(App("/h/sock"), 80, 10).rowText(2).contains("asking the daemon"))
+  val app = App("/h/sock")
+  app.lost("no daemon at /h/sock (connection refused)", true)
+  val g = drawn(app, 80, 10)
+  assertEq(g.rowText(0).trim, "marshal top")
+  assert(g.rowText(2).contains("no daemon at /h/sock"), g.rowText(2))
+  assert(g.rowText(3).contains("s starts one"), g.rowText(3))
+  assert(g.rowText(9).startsWith("hHelp EnterLog kKill fFilter qQuit"))
+  assertEq(app.handle(key('s')), StartDaemon)
+  assertEq(app.handle(key('k')), Stay)
+  assertEq(app.message, "no job selected")
+  // a daemon that cannot give a snapshot: s cannot help
+  app.lost("the daemon cannot give a snapshot", false)
+  assert(!drawn(app, 80, 10).rowText(3).contains("s starts one"))
+  assertEq(app.handle(key('s')), Stay)
+  app.update(full())
+  assertEq(app.handle(key('s')), Stay)
+  assertEq(app.problem, None)
+  // before the first answer
+  assert(drawn(App("/h/sock"), 80, 10).rowText(2).contains("asking the daemon"))
 
 @test("the lines under each filter, in order")
 linesOf()
-    val o = full()
-    assertEq(top.lines(o, ShowAll).map(l -> l.job.id), [long(1), long(4), long(10), long(11), long(12), long(9), long(8), long(7), long(6), long(5), long(3)])
-    assertEq(top.lines(o, ShowQueued).map(l -> l.queued.map(q -> q.0)), [Some(1), Some(2), Some(3)])
-    assertEq(top.lines(Overview(o.usage, 0, [], [], []), ShowAll), [])
-    assertEq(top.nextFilter(ShowFinished), ShowAll)
+  val o = full()
+  assertEq(
+    top.lines(o, ShowAll).map(l -> l.job.id),
+    [long(1), long(4), long(10), long(11), long(12), long(9), long(8), long(7), long(6), long(5), long(3)]
+  )
+  assertEq(top.lines(o, ShowQueued).map(l -> l.queued.map(q -> q.0)), [Some(1), Some(2), Some(3)])
+  assertEq(top.lines(Overview(o.usage, 0, [], [], []), ShowAll), [])
+  assertEq(top.nextFilter(ShowFinished), ShowAll)
 
-@test("under 90 cells a job that started today shows hh:mm and STARTED narrows to 7; another day keeps MM-DD hh:mm at 11")
+@test(
+  "under 90 cells a job that started today shows hh:mm and STARTED narrows to 7; another day keeps MM-DD hh:mm at 11"
+)
 startedShortToday()
-    val now = time.now().epochMillis
-    val here = time.localZone()
-    val todayText = time.epochMillis(now).atZone(here).format("hh:mm")
-    val old: long = now - 3 * 86400000
-    val oldText = time.epochMillis(old).atZone(here).format("MM-DD hh:mm")
-    val onlyToday = Overview(Usage(1, 12, 0, long.MaxValue, 1, 0, None, None), 0, [snapJob(1, started = now)], [], [])
-    val g = drawn(viewing(onlyToday), 80, 30)
-    val head = rowOf(g, "ID STATE")
-    assertEq(g.rowText(head).slice(49, 65), "STARTED  ELAPSED")
-    assertEq(g.rowText(head + 1).slice(49, 56).trim, todayText)
-    val mixed = Overview(Usage(2, 12, 0, long.MaxValue, 2, 0, None, None), 0, [snapJob(1, started = now), snapJob(2, started = old)], [], [])
-    val h = drawn(viewing(mixed), 80, 30)
-    assertEq(h.rowText(head + 1).slice(49, 60).trim, todayText)
-    assertEq(h.rowText(head + 2).slice(49, 60).trim, oldText)
-    // a wide screen always shows the date
-    val wide = drawn(viewing(onlyToday), 100, 30)
-    assert(wide.rowText(head + 1).contains(time.epochMillis(now).atZone(here).format("MM-DD hh:mm")), wide.rowText(head + 1))
+  val now = time.now().epochMillis
+  val here = time.localZone()
+  val todayText = time.epochMillis(now).atZone(here).format("hh:mm")
+  val old: long = now - 3 * 86400000
+  val oldText = time.epochMillis(old).atZone(here).format("MM-DD hh:mm")
+  val onlyToday = Overview(Usage(1, 12, 0, long.MaxValue, 1, 0, None, None), 0, [snapJob(1, started = now)], [], [])
+  val g = drawn(viewing(onlyToday), 80, 30)
+  val head = rowOf(g, "ID STATE")
+  assertEq(g.rowText(head).slice(49, 65), "STARTED  ELAPSED")
+  assertEq(g.rowText(head + 1).slice(49, 56).trim, todayText)
+  val mixed = Overview(
+    Usage(2, 12, 0, long.MaxValue, 2, 0, None, None),
+    0,
+    [snapJob(1, started = now), snapJob(2, started = old)],
+    [],
+    []
+  )
+  val h = drawn(viewing(mixed), 80, 30)
+  assertEq(h.rowText(head + 1).slice(49, 60).trim, todayText)
+  assertEq(h.rowText(head + 2).slice(49, 60).trim, oldText)
+  // a wide screen always shows the date
+  val wide = drawn(viewing(onlyToday), 100, 30)
+  assert(
+    wide.rowText(head + 1).contains(time.epochMillis(now).atZone(here).format("MM-DD hh:mm")),
+    wide.rowText(head + 1)
+  )
 
 // The first table row (screen row 5 on) whose STATE cell is reversed, or -1 where none is: the
 // highlighted row.
 litRow(g: Grid) -> int
-    for y in 5 ..< 20
-        if g(1, y).style.has(Reverse) then return y
-    -1
+  for y in 5 ..< 20
+    if g(1, y).style.has(Reverse) then return y
+  -1
 
 // `app` drawn at time `now`, and the highlighted row of that.
 drawnAt(app: App, now: long) -> Grid
-    val g = Grid(100, 30)
-    app.draw(g, 0, now)
-    g
+  val g = Grid(100, 30)
+  app.draw(g, 0, now)
+  g
 
 litAt(app: App, now: long) -> int = litRow(drawnAt(app, now))
 
 // An app that has a snapshot and has seen no key yet.
 fresh() -> App
-    val app = App("/h/sock")
-    app.update(full())
-    app
+  val app = App("/h/sock")
+  app.update(full())
+  app
 
 @test("the highlight is hidden until the first key, shown for the delay after each key, and hidden after it")
 highlightHidesWhenIdle()
-    val app = fresh()
-    assertEq(litRow(drawn(app, 100, 30)), -1)
-    assertEq(app.handle(key('x'), 1000), Stay)
-    assertEq(litAt(app, 1000), 5)
-    assertEq(litAt(app, 1000 + IdleHideMs - 1), 5)
-    assertEq(litAt(app, 1000 + IdleHideMs), -1)
-    assertEq(litAt(app, 1000 + 100 * IdleHideMs), -1)
-    // another key starts the delay again
-    app.handle(key('x'), 1000 + IdleHideMs - 1)
-    assertEq(litAt(app, 1000 + 2 * IdleHideMs - 2), 5)
-    assertEq(litAt(app, 1000 + 2 * IdleHideMs - 1), -1)
-    assertEq(IdleHideMs, long(5000))
+  val app = fresh()
+  assertEq(litRow(drawn(app, 100, 30)), -1)
+  assertEq(app.handle(key('x'), 1000), Stay)
+  assertEq(litAt(app, 1000), 5)
+  assertEq(litAt(app, 1000 + IdleHideMs - 1), 5)
+  assertEq(litAt(app, 1000 + IdleHideMs), -1)
+  assertEq(litAt(app, 1000 + 100 * IdleHideMs), -1)
+  // another key starts the delay again
+  app.handle(key('x'), 1000 + IdleHideMs - 1)
+  assertEq(litAt(app, 1000 + 2 * IdleHideMs - 2), 5)
+  assertEq(litAt(app, 1000 + 2 * IdleHideMs - 1), -1)
+  assertEq(IdleHideMs, long(5000))
 
 @test("the delay is the app's to set")
 highlightDelayInjected()
-    val app = fresh()
-    app.hideAfter = 10
-    app.handle(key('x'), 0)
-    assertEq(litAt(app, 9), 5)
-    assertEq(litAt(app, 10), -1)
+  val app = fresh()
+  app.hideAfter = 10
+  app.handle(key('x'), 0)
+  assertEq(litAt(app, 9), 5)
+  assertEq(litAt(app, 10), -1)
 
 @test("hiding the highlight changes nothing else on the screen but the reversed cells")
 highlightHidingKeepsTheLook()
-    val app = fresh()
-    app.handle(key('x'), 0)
-    val on = drawnAt(app, 0)
-    val off = drawnAt(app, IdleHideMs)
-    for y in 0 ..< 30
-        assertEq(off.rowText(y), on.rowText(y))
-        for x in 0 ..< 100
-            assertEq(off(x, y).style.fg, on(x, y).style.fg)
-            // the headings and the STATE of a timed-out or lost job are reversed in any case
-            assert(!off(x, y).style.has(Reverse) || y == 4 || x >= 6, s"reversed cell at $x,$y")
-            assert(y != 5 || !off(x, y).style.has(Reverse), s"row 5 is still highlighted at $x")
-            assert(y != 5 || on(x, y).style.has(Reverse), s"row 5 is not highlighted when shown at $x")
+  val app = fresh()
+  app.handle(key('x'), 0)
+  val on = drawnAt(app, 0)
+  val off = drawnAt(app, IdleHideMs)
+  for y in 0 ..< 30
+    assertEq(off.rowText(y), on.rowText(y))
+    for x in 0 ..< 100
+      assertEq(off(x, y).style.fg, on(x, y).style.fg)
+      // the headings and the STATE of a timed-out or lost job are reversed in any case
+      assert(!off(x, y).style.has(Reverse) || y == 4 || x >= 6, s"reversed cell at $x,$y")
+      assert(y != 5 || !off(x, y).style.has(Reverse), s"row 5 is still highlighted at $x")
+      assert(y != 5 || on(x, y).style.has(Reverse), s"row 5 is not highlighted when shown at $x")
 
 @test("while hidden, the first selecting key only shows the highlight on the job that was selected, and the next moves")
 highlightFirstKeyOnlyReveals()
-    for k in [press(Up), press(Down), press(PageUp), press(PageDown), press(Home), press(End), press(Enter), key('l')]
-        val app = fresh()
-        app.handle(key('x'), 0)
-        app.handle(press(Down), 0)
-        app.handle(press(Down), 0)
-        val job = app.selected().map(j -> j.id)
-        assertEq(job, Some(long(10)))
-        val later = 10 * IdleHideMs
-        assertEq(litAt(app, later), -1)
-        assertEq(app.handle(k, later), Stay)
-        assertEq(app.selected().map(j -> j.id), job)
-        assert(app.logOf.isEmpty, "no log opens blind")
-        assertEq(litAt(app, later), 7)
-    // and the next key moves as usual
+  for k in [press(Up), press(Down), press(PageUp), press(PageDown), press(Home), press(End), press(Enter), key('l')]
     val app = fresh()
     app.handle(key('x'), 0)
     app.handle(press(Down), 0)
+    app.handle(press(Down), 0)
+    val job = app.selected().map(j -> j.id)
+    assertEq(job, Some(long(10)))
     val later = 10 * IdleHideMs
-    app.handle(press(Down), later)
-    assertEq(app.selected().map(j -> j.id), Some(long(4)))
-    app.handle(press(Down), later + 1)
-    assertEq(app.selected().map(j -> j.id), Some(long(10)))
-    assertEq(litAt(app, later + 1), 7)
+    assertEq(litAt(app, later), -1)
+    assertEq(app.handle(k, later), Stay)
+    assertEq(app.selected().map(j -> j.id), job)
+    assert(app.logOf.isEmpty, "no log opens blind")
+    assertEq(litAt(app, later), 7)
+  // and the next key moves as usual
+  val app = fresh()
+  app.handle(key('x'), 0)
+  app.handle(press(Down), 0)
+  val later = 10 * IdleHideMs
+  app.handle(press(Down), later)
+  assertEq(app.selected().map(j -> j.id), Some(long(4)))
+  app.handle(press(Down), later + 1)
+  assertEq(app.selected().map(j -> j.id), Some(long(10)))
+  assertEq(litAt(app, later + 1), 7)
 
 @test("Enter while hidden shows the highlight without opening the log; the next Enter opens it")
 highlightEnterOpensOnlyWhenShown()
-    val app = fresh()
-    app.handle(key('x'), 0)
-    assertEq(app.handle(press(Enter), 10 * IdleHideMs), Stay)
-    assert(app.logOf.isEmpty)
-    app.handle(press(Enter), 10 * IdleHideMs)
-    assertEq(app.logOf.map(j -> j.id), Some(long(1)))
+  val app = fresh()
+  app.handle(key('x'), 0)
+  assertEq(app.handle(press(Enter), 10 * IdleHideMs), Stay)
+  assert(app.logOf.isEmpty)
+  app.handle(press(Enter), 10 * IdleHideMs)
+  assertEq(app.logOf.map(j -> j.id), Some(long(1)))
 
 @test("other keys act as they do and count as activity while the highlight is hidden")
 highlightOtherKeysActAndCount()
-    val later = 10 * IdleHideMs
-    val filtered = fresh()
-    filtered.handle(key('x'), 0)
-    assertEq(filtered.handle(key('f'), later), Stay)
-    assertEq(filtered.filter, ShowRunning)
-    assertEq(litAt(filtered, later), 5)
-    val helped = fresh()
-    assertEq(helped.handle(key('h'), later), Stay)
-    assert(helped.helpShown())
-    val quit = fresh()
-    assertEq(quit.handle(key('q'), later), Quit)
-    val killing = fresh()
-    assertEq(killing.handle(key('k'), later), Stay)
-    assertEq(killing.confirming.map(j -> j.id), Some(long(1)))
-    // a resize is not a key
-    val resized = fresh()
-    resized.handle(key('x'), 0)
-    resized.handle(Resize(100, 30), later - 1)
-    assertEq(litAt(resized, later), -1)
+  val later = 10 * IdleHideMs
+  val filtered = fresh()
+  filtered.handle(key('x'), 0)
+  assertEq(filtered.handle(key('f'), later), Stay)
+  assertEq(filtered.filter, ShowRunning)
+  assertEq(litAt(filtered, later), 5)
+  val helped = fresh()
+  assertEq(helped.handle(key('h'), later), Stay)
+  assert(helped.helpShown())
+  val quit = fresh()
+  assertEq(quit.handle(key('q'), later), Quit)
+  val killing = fresh()
+  assertEq(killing.handle(key('k'), later), Stay)
+  assertEq(killing.confirming.map(j -> j.id), Some(long(1)))
+  // a resize is not a key
+  val resized = fresh()
+  resized.handle(key('x'), 0)
+  resized.handle(Resize(100, 30), later - 1)
+  assertEq(litAt(resized, later), -1)
 
 @test("the selected job is kept while the highlight is hidden, as jobs come and go")
 highlightHiddenKeepsSelection()
-    val app = fresh()
-    app.handle(key('x'), 0)
-    app.handle(press(Down), 0)
-    assertEq(app.selected().map(j -> j.id), Some(long(4)))
-    assertEq(litAt(app, IdleHideMs), -1)
-    val without = Overview(Usage(5, 12, 1073741824, 4294967296, 1, 1, Some(4), None), 0, [snapJob(4, units = 4, landing = true)], [queued(13, 1, Why.NoUnits)], [])
-    app.update(without)
-    assertEq(app.selected().map(j -> j.id), Some(long(4)))
-    app.update(Overview(Usage(5, 12, 1073741824, 4294967296, 2, 0, None, None), 0, [snapJob(2), snapJob(3), snapJob(4, units = 4)], [], []))
-    assertEq(app.selected().map(j -> j.id), Some(long(4)))
-    assertEq(app.handle(press(Up), 2 * IdleHideMs), Stay)
-    assertEq(app.selected().map(j -> j.id), Some(long(4)))
-    assertEq(litAt(app, 2 * IdleHideMs), 7)
+  val app = fresh()
+  app.handle(key('x'), 0)
+  app.handle(press(Down), 0)
+  assertEq(app.selected().map(j -> j.id), Some(long(4)))
+  assertEq(litAt(app, IdleHideMs), -1)
+  val without = Overview(
+    Usage(5, 12, 1073741824, 4294967296, 1, 1, Some(4), None),
+    0,
+    [snapJob(4, units = 4, landing = true)],
+    [queued(13, 1, Why.NoUnits)],
+    []
+  )
+  app.update(without)
+  assertEq(app.selected().map(j -> j.id), Some(long(4)))
+  app.update(
+    Overview(
+      Usage(5, 12, 1073741824, 4294967296, 2, 0, None, None),
+      0,
+      [snapJob(2), snapJob(3), snapJob(4, units = 4)],
+      [],
+      []
+    )
+  )
+  assertEq(app.selected().map(j -> j.id), Some(long(4)))
+  assertEq(app.handle(press(Up), 2 * IdleHideMs), Stay)
+  assertEq(app.selected().map(j -> j.id), Some(long(4)))
+  assertEq(litAt(app, 2 * IdleHideMs), 7)
 
 @test("the highlight never hides while the log pane, the kill prompt or the help is showing")
 highlightStaysForPanesAndPrompts()
-    val later = 10 * IdleHideMs
-    val logging = fresh()
-    logging.handle(key('x'), 0)
-    logging.handle(press(Enter), 0)
-    assert(logging.logOf.isDefined)
-    assertEq(litAt(logging, later), 5)
-    // a key in the pane moves as usual, the highlight never having hidden
-    logging.handle(press(Down), later)
-    assertEq(logging.selected().map(j -> j.id), Some(long(4)))
-    // closing it at a time that is long past starts the delay from that key
-    logging.handle(press(Escape), 2 * later)
-    assertEq(litAt(logging, 2 * later), 6)
-    assertEq(litAt(logging, 2 * later + IdleHideMs), -1)
-    val asking = fresh()
-    asking.handle(key('k'), 0)
-    assert(asking.confirming.isDefined)
-    assertEq(litAt(asking, later), 5)
-    val helping = fresh()
-    helping.handle(key('h'), 0)
-    assertEq(litAt(helping, later), 5)
-    // the prompt answered or the help closed, the delay starts from that key
-    helping.handle(key('x'), later)
-    assertEq(litAt(helping, later + IdleHideMs), -1)
+  val later = 10 * IdleHideMs
+  val logging = fresh()
+  logging.handle(key('x'), 0)
+  logging.handle(press(Enter), 0)
+  assert(logging.logOf.isDefined)
+  assertEq(litAt(logging, later), 5)
+  // a key in the pane moves as usual, the highlight never having hidden
+  logging.handle(press(Down), later)
+  assertEq(logging.selected().map(j -> j.id), Some(long(4)))
+  // closing it at a time that is long past starts the delay from that key
+  logging.handle(press(Escape), 2 * later)
+  assertEq(litAt(logging, 2 * later), 6)
+  assertEq(litAt(logging, 2 * later + IdleHideMs), -1)
+  val asking = fresh()
+  asking.handle(key('k'), 0)
+  assert(asking.confirming.isDefined)
+  assertEq(litAt(asking, later), 5)
+  val helping = fresh()
+  helping.handle(key('h'), 0)
+  assertEq(litAt(helping, later), 5)
+  // the prompt answered or the help closed, the delay starts from that key
+  helping.handle(key('x'), later)
+  assertEq(litAt(helping, later + IdleHideMs), -1)
 
 @test("with no jobs, or no snapshot, a hidden highlight draws and keys do no harm")
 highlightWithNothingToSelect()
-    val empty = App("/h/sock")
-    empty.update(Overview(Usage(0, 12, 0, 4294967296, 0, 0, None, None), 0, [], [], []))
-    assertEq(empty.handle(press(Down), 100 * IdleHideMs), Stay)
-    assertEq(empty.handle(press(Down), 100 * IdleHideMs), Stay)
-    assertEq(empty.handle(press(Enter), 100 * IdleHideMs), Stay)
-    assert(empty.logOf.isEmpty)
-    val lost = App("/h/sock")
-    lost.lost("no daemon", true)
-    assertEq(lost.handle(press(Up), 5), Stay)
-    drawn(lost, 100, 30)
+  val empty = App("/h/sock")
+  empty.update(Overview(Usage(0, 12, 0, 4294967296, 0, 0, None, None), 0, [], [], []))
+  assertEq(empty.handle(press(Down), 100 * IdleHideMs), Stay)
+  assertEq(empty.handle(press(Down), 100 * IdleHideMs), Stay)
+  assertEq(empty.handle(press(Enter), 100 * IdleHideMs), Stay)
+  assert(empty.logOf.isEmpty)
+  val lost = App("/h/sock")
+  lost.lost("no daemon", true)
+  assertEq(lost.handle(press(Up), 5), Stay)
+  drawn(lost, 100, 30)
 
 @test("the log pane opens with a fixed header of the job's kind and whole command, ruled off from the log")
 logHeader()
-    val app = viewing(full())
-    app.handle(press(Enter))
-    app.logLines = (1 .. 40).map(i -> s"line $i").toVector
-    val g = drawn(app, 80, 30)
-    val title = rowOf(g, "job 1 log, following")
-    assert(g.rowText(title + 1).contains("kind"), g.rowText(title + 1))
-    assert(g.rowText(title + 1).contains("build"), g.rowText(title + 1))
-    assert(g.rowText(title + 2).contains("command"), g.rowText(title + 2))
-    assert(g.rowText(title + 2).contains("sysl test compiler"), g.rowText(title + 2))
-    assert(g.rowText(title + 3).contains("──────"), g.rowText(title + 3))
-    assert(!g.rowText(title + 4).contains("command"))
-    assert(g.rowText(title + 4).contains("line "), g.rowText(title + 4))
-    // the rule row holds nothing but the rule
-    assertEq(g.rowText(title + 3).replace("│", "").replace("─", "").trim, "")
-    // scrolling the log leaves the header where it is
-    app.handle(press(PageUp))
-    app.logLines = (1 .. 80).map(i -> s"line $i").toVector
-    val back = drawn(app, 80, 30)
-    assert(back.rowText(title + 2).contains("sysl test compiler"))
-    assert(back.rowText(title + 3).contains("──────"))
+  val app = viewing(full())
+  app.handle(press(Enter))
+  app.logLines = (1 .. 40).map(i -> s"line $i").toVector
+  val g = drawn(app, 80, 30)
+  val title = rowOf(g, "job 1 log, following")
+  assert(g.rowText(title + 1).contains("kind"), g.rowText(title + 1))
+  assert(g.rowText(title + 1).contains("build"), g.rowText(title + 1))
+  assert(g.rowText(title + 2).contains("command"), g.rowText(title + 2))
+  assert(g.rowText(title + 2).contains("sysl test compiler"), g.rowText(title + 2))
+  assert(g.rowText(title + 3).contains("──────"), g.rowText(title + 3))
+  assert(!g.rowText(title + 4).contains("command"))
+  assert(g.rowText(title + 4).contains("line "), g.rowText(title + 4))
+  // the rule row holds nothing but the rule
+  assertEq(g.rowText(title + 3).replace("│", "").replace("─", "").trim, "")
+  // scrolling the log leaves the header where it is
+  app.handle(press(PageUp))
+  app.logLines = (1 .. 80).map(i -> s"line $i").toVector
+  val back = drawn(app, 80, 30)
+  assert(back.rowText(title + 2).contains("sysl test compiler"))
+  assert(back.rowText(title + 3).contains("──────"))
 
 @test("a long command wraps inside the pane, whole, and the log keeps at least a row")
 logHeaderWraps()
-    val long = ["sh", "-c", (0 ..< 12).map(i -> "abcdefghij").mkString("")]
-    val o = Overview(full().usage, 0, [snapJob(1, cmd = long)], [], [])
-    val app = viewing(o)
-    app.handle(press(Enter))
-    app.logLines = ["first", "last"]
-    val g = drawn(app, 60, 30)
-    val whole = long.mkString(" ")
-    val title = rowOf(g, "job 1 log")
-    // the wrapped lines under `command` have no label and carry the rest of the text
-    var joined = ""
-    var y = title + 2
-    while !g.rowText(y).contains("──────")
-        joined = joined + g.rowText(y).drop(1 + 8).dropRight(1).trim
-        y = y + 1
-    assertEq(joined, whole)
-    assert(g.rowText(y + 1).contains("first") || g.rowText(y + 2).contains("first"))
-    // a pane too short for the whole command ends it in an ellipsis and still shows a log row
-    val small = drawn(app, 60, 14)
-    assert(rowOf(small, "…") > 0)
-    assert(rowOf(small, "last") > 0)
+  val long = ["sh", "-c", (0 ..< 12).map(i -> "abcdefghij").mkString("")]
+  val o = Overview(full().usage, 0, [snapJob(1, cmd = long)], [], [])
+  val app = viewing(o)
+  app.handle(press(Enter))
+  app.logLines = ["first", "last"]
+  val g = drawn(app, 60, 30)
+  val whole = long.mkString(" ")
+  val title = rowOf(g, "job 1 log")
+  // the wrapped lines under `command` have no label and carry the rest of the text
+  var joined = ""
+  var y = title + 2
+  while !g.rowText(y).contains("──────")
+    joined = joined + g.rowText(y).drop(1 + 8).dropRight(1).trim
+    y = y + 1
+  assertEq(joined, whole)
+  assert(g.rowText(y + 1).contains("first") || g.rowText(y + 2).contains("first"))
+  // a pane too short for the whole command ends it in an ellipsis and still shows a log row
+  val small = drawn(app, 60, 14)
+  assert(rowOf(small, "…") > 0)
+  assert(rowOf(small, "last") > 0)
 
 @test("the log header's command is cut exactly at the width: every character kept, spaces too")
 wrapping()
-    assertEq(wrapChars("", 5), [""])
-    assertEq(wrapChars("abc", 5), ["abc"])
-    assertEq(wrapChars("abcde", 5), ["abcde"])
-    assertEq(wrapChars("abcdef", 5), ["abcde", "f"])
-    assertEq(wrapChars("abcd", 2), ["ab", "cd"])
-    assertEq(wrapChars("a b c d", 3), ["a b", " c ", "d"])
-    assertEq(wrapChars("héllo wörld", 4).mkString(""), "héllo wörld")
+  assertEq(wrapChars("", 5), [""])
+  assertEq(wrapChars("abc", 5), ["abc"])
+  assertEq(wrapChars("abcde", 5), ["abcde"])
+  assertEq(wrapChars("abcdef", 5), ["abcde", "f"])
+  assertEq(wrapChars("abcd", 2), ["ab", "cd"])
+  assertEq(wrapChars("a b c d", 3), ["a b", " c ", "d"])
+  assertEq(wrapChars("héllo wörld", 4).mkString(""), "héllo wörld")
 
 @test("a job with an empty log still shows the header, and a narrow terminal draws it without failing")
 logHeaderEdges()
-    val app = viewing(full())
-    app.handle(press(Enter))
-    val g = drawn(app, 80, 30)
-    assert(rowOf(g, "kind") > 0)
-    assert(rowOf(g, "command") > 0)
-    assert(rowOf(g, "(nothing in the log yet)") > rowOf(g, "command"))
-    // narrow and short terminals: every size draws
-    for w in [1, 2, 5, 9, 12, 20, 30]
-        for h in [1, 3, 5, 8, 12, 20]
-            drawn(app, w, h)
-    val tight = drawn(app, 20, 30)
-    assert(rowOf(tight, "kind") > 0)
-    assert(rowOf(tight, "(nothing") > 0 || rowOf(tight, "(nothin") > 0 || rowOf(tight, "(not") > 0)
-    // closing the log removes the header
-    app.handle(press(Escape))
-    assertEq(rowOf(drawn(app, 80, 30), "command"), -1)
+  val app = viewing(full())
+  app.handle(press(Enter))
+  val g = drawn(app, 80, 30)
+  assert(rowOf(g, "kind") > 0)
+  assert(rowOf(g, "command") > 0)
+  assert(rowOf(g, "(nothing in the log yet)") > rowOf(g, "command"))
+  // narrow and short terminals: every size draws
+  for w in [1, 2, 5, 9, 12, 20, 30]
+    for h in [1, 3, 5, 8, 12, 20]
+      drawn(app, w, h)
+  val tight = drawn(app, 20, 30)
+  assert(rowOf(tight, "kind") > 0)
+  assert(rowOf(tight, "(nothing") > 0 || rowOf(tight, "(nothin") > 0 || rowOf(tight, "(not") > 0)
+  // closing the log removes the header
+  app.handle(press(Escape))
+  assertEq(rowOf(drawn(app, 80, 30), "command"), -1)
 
 // A snapshot with job `run` running and the ended jobs `from` down to `from - count + 1` listed
 // latest first, each named by its command `done<id>`.
 endedRun(run: long, from: long, count: int) -> Overview
-    val o = full()
-    val recent = (0 ..< count).map(i -> snapJob(from - long(i), "done", Some(Outcome.Exited(0)), cmd = [s"done${from - long(i)}"])).toVector
-    Overview(o.usage, o.uptimeMs, [snapJob(run, cmd = [s"run$run"])], [], recent)
+  val o = full()
+  val recent = (0 ..< count).map(
+    i -> snapJob(from - long(i), "done", Some(Outcome.Exited(0)), cmd = [s"done${from - long(i)}"])
+  ).toVector
+  Overview(o.usage, o.uptimeMs, [snapJob(run, cmd = [s"run$run"])], [], recent)
 
 @test("a table left at the top stays at the top as newer jobs arrive above its first job")
 topFollowsNewJobsWhenLeftAtTop()
-    val app = App("/h/sock")
-    app.update(endedRun(1, 40, 40))
-    var from: long = 40
-    for step in 0 ..< 30
-        from = from + 3
-        app.update(endedRun(1, from, 40))
-        val g = drawn(app, 80, 10)
-        assert(rowOf(g, "run1") >= 0)
-        assert(rowOf(g, s" $from ") >= 0)
-        assertEq(app.selected().map(j -> j.id), Some(long(1)))
+  val app = App("/h/sock")
+  app.update(endedRun(1, 40, 40))
+  var from: long = 40
+  for step in 0 ..< 30
+    from = from + 3
+    app.update(endedRun(1, from, 40))
+    val g = drawn(app, 80, 10)
+    assert(rowOf(g, "run1") >= 0)
+    assert(rowOf(g, s" $from ") >= 0)
+    assertEq(app.selected().map(j -> j.id), Some(long(1)))
 
 @test("after Home the table follows the top again")
 topFollowsAfterHome()
-    val app = viewing(endedRun(1, 40, 40))
-    drawn(app, 80, 10)
-    app.handle(press(End))
-    drawn(app, 80, 10)
-    app.handle(press(Home))
-    drawn(app, 80, 10)
-    app.update(endedRun(1, 60, 40))
-    assert(rowOf(drawn(app, 80, 10), "run1") >= 0)
+  val app = viewing(endedRun(1, 40, 40))
+  drawn(app, 80, 10)
+  app.handle(press(End))
+  drawn(app, 80, 10)
+  app.handle(press(Home))
+  drawn(app, 80, 10)
+  app.update(endedRun(1, 60, 40))
+  assert(rowOf(drawn(app, 80, 10), "run1") >= 0)
 
 @test("a view the user scrolled down keeps its selected job on screen as newer jobs arrive")
 scrolledViewKeepsItsJob()
-    val app = viewing(endedRun(1, 40, 40))
-    drawn(app, 80, 10)
-    for i in 0 ..< 20
-        app.handle(press(Down))
-    drawn(app, 80, 10)
-    val id = app.selected().map(j -> j.id)
-    var from: long = 40
-    for step in 0 ..< 5
-        from = from + 4
-        app.update(endedRun(1, from, 60))
-        val g = drawn(app, 80, 10)
-        assertEq(app.selected().map(j -> j.id), id)
-        assert(rowOf(g, s" ${id.getOrElse(0)} ") >= 0)
+  val app = viewing(endedRun(1, 40, 40))
+  drawn(app, 80, 10)
+  for i in 0 ..< 20
+    app.handle(press(Down))
+  drawn(app, 80, 10)
+  val id = app.selected().map(j -> j.id)
+  var from: long = 40
+  for step in 0 ..< 5
+    from = from + 4
+    app.update(endedRun(1, from, 60))
+    val g = drawn(app, 80, 10)
+    assertEq(app.selected().map(j -> j.id), id)
+    assert(rowOf(g, s" ${id.getOrElse(0)} ") >= 0)
 
 @test("a selected job that ends moves into the ended section and stays selected")
 selectedJobThatEnds()
-    val app = viewing(endedRun(1, 40, 10))
-    drawn(app, 80, 20)
-    app.handle(press(Down))
-    app.handle(press(Down))
-    val id = app.selected().map(j -> j.id)
-    assertEq(id, Some(long(39)))
-    // job 40 is the second ended job here; a newer one arrives and job 1 ends, so both rows move
-    val ended = [snapJob(1, "done", Some(Outcome.Exited(0)), cmd = ["run1"]), snapJob(41, "done", Some(Outcome.Exited(0)), cmd = ["done41"])] ++ endedRun(1, 40, 10).recent
-    val o = full()
-    app.update(Overview(o.usage, o.uptimeMs, [], [], ended))
-    assertEq(app.selected().map(j -> j.id), Some(long(39)))
-    assert(rowOf(drawn(app, 80, 20), " 39 ") >= 0)
+  val app = viewing(endedRun(1, 40, 10))
+  drawn(app, 80, 20)
+  app.handle(press(Down))
+  app.handle(press(Down))
+  val id = app.selected().map(j -> j.id)
+  assertEq(id, Some(long(39)))
+  // job 40 is the second ended job here; a newer one arrives and job 1 ends, so both rows move
+  val ended = [
+    snapJob(1, "done", Some(Outcome.Exited(0)), cmd = ["run1"]),
+    snapJob(41, "done", Some(Outcome.Exited(0)), cmd = ["done41"])
+  ] ++ endedRun(1, 40, 10).recent
+  val o = full()
+  app.update(Overview(o.usage, o.uptimeMs, [], [], ended))
+  assertEq(app.selected().map(j -> j.id), Some(long(39)))
+  assert(rowOf(drawn(app, 80, 20), " 39 ") >= 0)
 
 @test("earlier jobs loaded from history do not move a view left at the top, and a scrolled one keeps its job")
 topWithHistoryLoaded()
-    val all = (0 ..< 60).map(i -> snapJob(long(500) - long(i), "done", Some(Outcome.Exited(0)), cmd = [s"old${500 - i}"])).toVector
-    val app = viewing(endedRun(1, 900, 10))
-    app.history = Some((before, limit) -> Ok(top.pageOf(all, before, limit)))
-    drawn(app, 80, 10)
-    app.handle(press(End))
-    drawn(app, 80, 10)
-    assert(app.shown.length > 20)
-    // scrolled to the oldest job: new snapshots keep it
-    val oldest = app.selected().map(j -> j.id)
-    app.update(endedRun(1, 905, 10))
-    assertEq(app.selected().map(j -> j.id), oldest)
-    app.handle(press(Home))
-    drawn(app, 80, 10)
-    app.update(endedRun(1, 910, 10))
-    app.update(endedRun(1, 915, 10))
-    val g = drawn(app, 80, 10)
-    assert(rowOf(g, "run1") >= 0)
-    assert(rowOf(g, " 915 ") >= 0)
+  val all = (0 ..< 60).map(
+    i -> snapJob(long(500) - long(i), "done", Some(Outcome.Exited(0)), cmd = [s"old${500 - i}"])
+  ).toVector
+  val app = viewing(endedRun(1, 900, 10))
+  app.history = Some((before, limit) -> Ok(top.pageOf(all, before, limit)))
+  drawn(app, 80, 10)
+  app.handle(press(End))
+  drawn(app, 80, 10)
+  assert(app.shown.length > 20)
+  // scrolled to the oldest job: new snapshots keep it
+  val oldest = app.selected().map(j -> j.id)
+  app.update(endedRun(1, 905, 10))
+  assertEq(app.selected().map(j -> j.id), oldest)
+  app.handle(press(Home))
+  drawn(app, 80, 10)
+  app.update(endedRun(1, 910, 10))
+  app.update(endedRun(1, 915, 10))
+  val g = drawn(app, 80, 10)
+  assert(rowOf(g, "run1") >= 0)
+  assert(rowOf(g, " 915 ") >= 0)
 
 @test("a filter change keeps a view that was at the top at the top")
 topAcrossFilterChange()
-    val app = viewing(endedRun(1, 40, 40))
-    drawn(app, 80, 10)
-    app.handle(key('f'))
-    app.update(endedRun(1, 44, 40))
-    assert(rowOf(drawn(app, 80, 10), "run1") >= 0)
-    app.handle(key('f'))
-    app.handle(key('f'))
-    app.handle(key('f'))
-    app.update(endedRun(1, 50, 40))
-    // the finished filter put the first ended job on row 0; back on all, the selection stays on that job
-    assertEq(app.selected().map(j -> j.id), Some(long(44)))
-    assert(rowOf(drawn(app, 80, 10), " 44 ") >= 0)
-    app.handle(press(Home))
-    app.update(endedRun(1, 55, 40))
-    assertEq(app.selected().map(j -> j.id), Some(long(1)))
-    assert(rowOf(drawn(app, 80, 10), " 55 ") >= 0)
+  val app = viewing(endedRun(1, 40, 40))
+  drawn(app, 80, 10)
+  app.handle(key('f'))
+  app.update(endedRun(1, 44, 40))
+  assert(rowOf(drawn(app, 80, 10), "run1") >= 0)
+  app.handle(key('f'))
+  app.handle(key('f'))
+  app.handle(key('f'))
+  app.update(endedRun(1, 50, 40))
+  // the finished filter put the first ended job on row 0; back on all, the selection stays on that job
+  assertEq(app.selected().map(j -> j.id), Some(long(44)))
+  assert(rowOf(drawn(app, 80, 10), " 44 ") >= 0)
+  app.handle(press(Home))
+  app.update(endedRun(1, 55, 40))
+  assertEq(app.selected().map(j -> j.id), Some(long(1)))
+  assert(rowOf(drawn(app, 80, 10), " 55 ") >= 0)
 
 @test("more new jobs in one snapshot than the page holds leave a top view on its first rows")
 topWithMoreNewJobsThanRows()
-    val app = viewing(endedRun(1, 40, 40))
-    drawn(app, 80, 8)
-    app.update(endedRun(1, 90, 40))
-    val g = drawn(app, 80, 8)
-    assert(rowOf(g, "run1") >= 0)
-    assert(rowOf(g, " 90 ") >= 0)
+  val app = viewing(endedRun(1, 40, 40))
+  drawn(app, 80, 8)
+  app.update(endedRun(1, 90, 40))
+  val g = drawn(app, 80, 8)
+  assert(rowOf(g, "run1") >= 0)
+  assert(rowOf(g, " 90 ") >= 0)
