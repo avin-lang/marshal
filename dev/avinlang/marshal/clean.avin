@@ -20,8 +20,8 @@ module dev.avinlang.marshal
 import avin.collections.mutable.{Map as MutableMap}
 import avin.fs
 import avin.time
-import json
-import json.Json
+import avin.json
+import avin.json.Json
 
 // How long each kind of file is kept, by the daemon's sweep and by `marshal clean`. None keeps it
 // for ever: `logsMs` is the age of an ended job's files, `jobs` how many ended jobs' files are
@@ -36,8 +36,8 @@ val defaultRetention: Retention = Retention(Some(30 * Day), Some(1000), Some(365
 // A length of time as `clean` and config.json write it: a whole number and a unit, `s`, `m`, `h`,
 // `d` or `w`. Milliseconds; zero, a number with no unit and anything else is None.
 parseAge(text: string) -> Option[long]
-    if text.byteLength() < 2 then return None
-    val scale: long = text.last() match
+    if text.byteLength < 2 then return None
+    val scale: long = text.last match
         's' -> 1000
         'm' -> 60000
         'h' -> 3600000
@@ -45,7 +45,7 @@ parseAge(text: string) -> Option[long]
         'w' -> 7 * Day
         _ -> 0
     val digits = text.dropRight(1)
-    if scale == 0 || !digits.chars().forall(c -> '0' <= c <= '9') then return None
+    if scale == 0 || !digits.chars.forall(c -> '0' <= c <= '9') then return None
     digits.toLongOption() match
         Some(n) if 0 < n <= long.MaxValue / scale -> Some(n * scale)
         _ -> None
@@ -71,12 +71,12 @@ parseCleanArgs(args: Vector[string]) -> Result[CleanRule, string]
             if i + 1 >= args.length then return Err(s"$a needs a value")
             val value = args(i + 1)
             if a == "--older-than"
-                if older.isDefined() then return Err("--older-than is given twice")
+                if older.isDefined then return Err("--older-than is given twice")
                 older = parseAge(value) match
                     Some(ms) -> Some(ms)
                     None -> return Err(s"`$value` is not an age: a whole number and s, m, h, d or w, such as 12h or 7d")
             else
-                if keep.isDefined() then return Err("--keep is given twice")
+                if keep.isDefined then return Err("--keep is given twice")
                 keep = value.toIntOption().filter(n -> n >= 0) match
                     Some(n) -> Some(n)
                     None -> return Err(s"`$value` is not a count: a whole number, 0 or more")
@@ -120,17 +120,17 @@ logView(lines: Iterable[string]) -> LogView
     val last = MutableMap[long, (long, bool)]()
     val order = Buffer[long]()
     for line in lines
-        if line.trim().isEmpty() then continue
+        if line.trim.isEmpty then continue
         val ev = json.parse(line) match
             Ok(j) -> j
             Err(_) -> continue
-        val id = ev.get("id").flatMap(v -> v.asLong()) match
+        val id = ev.get("id").flatMap(v -> v.asLong) match
             Some(i) -> i
             None -> continue
-        if ev.get("event").flatMap(v -> v.asString()).isEmpty() then continue
+        if ev.get("event").flatMap(v -> v.asString).isEmpty then continue
         if id > maxId then maxId = id
         if !last.contains(id) then order += id
-        last(id) = (ev.get("ts").flatMap(v -> v.asLong()).getOrElse(0), endsJob(ev))
+        last(id) = (ev.get("ts").flatMap(v -> v.asLong).getOrElse(0), endsJob(ev))
     val ended = order.filter(id -> last(id).1).map(id -> LogEnded(id, last(id).0))
     LogView(ended.toVector, maxId)
 
@@ -140,7 +140,7 @@ selectJobs(ended: Vector[LogEnded], active: Set[long], now: long, olderMs: Optio
     val candidates = ended.filter(e -> !active.contains(e.id)).sortBy(e -> (e.endedAt, e.id))
     val skip = keep.map(n -> candidates.length - n).getOrElse(0)
     val beyond = if skip > 0 then candidates.take(skip) else []
-    val pool = if keep.isDefined() then beyond else candidates
+    val pool = if keep.isDefined then beyond else candidates
     pool.filter(e -> olderMs.forall(o -> e.endedAt <= now - o)).map(e -> e.id)
 
 // The jobs the automatic retention removes: those older than the log age, and those beyond the
@@ -162,16 +162,16 @@ selectEvents(view: LogView, now: long, eventsMs: Option[long]) -> Set[long] = ev
 withoutEvents(text: string, drop: Set[long]) -> (string, int)
     val kept = Buffer[string]()
     var gone = 0
-    for line in text.lines()
-        val id = json.parse(line).ok().flatMap(ev -> ev.get("id")).flatMap(v -> v.asLong())
+    for line in text.lines
+        val id = json.parse(line).ok.flatMap(ev -> ev.get("id")).flatMap(v -> v.asLong)
         if id.exists(i -> drop.contains(i)) then gone += 1 else kept += line
     (kept.mkString("\n") + (if kept.isEmpty then "" else "\n"), gone)
 
 // Whether `name` is a compiled step's cache name: `<base>-<32 lowercase hexadecimal digits>`.
 isStepName(name: string) -> bool
-    val n = name.byteLength()
+    val n = name.byteLength
     if n < 34 then return false
-    name.slice(n - 33, n - 32) == "-" && name.drop(n - 32).chars().forall(c -> '0' <= c <= '9' || 'a' <= c <= 'f')
+    name.slice(n - 33, n - 32) == "-" && name.drop(n - 32).chars.forall(c -> '0' <= c <= '9' || 'a' <= c <= 'f')
 
 // Records that the compiled step `program` is in use at `now` (milliseconds): the executable's own
 // modification time is set to it. A step that is gone is not recorded.
@@ -180,7 +180,7 @@ touchStep(program: string, now: long)
 
 // When the compiled step `program` was last used (milliseconds): its modification time, which
 // compiling it sets and every later use moves forward. None where it cannot be read.
-private lastUsed(program: string) -> Option[long] = fs.modified(program).ok().map(t -> t.epochMillis())
+private lastUsed(program: string) -> Option[long] = fs.modified(program).ok.map(t -> t.epochMillis)
 
 // The bytes in the file `file`, or in every file under the directory `file`; zero for what is not
 // there (a file another process removed meanwhile) or cannot be read.
@@ -193,7 +193,7 @@ private treeBytes(file: string, depth: int) -> long
     if meta.isFile then return meta.size
     if !meta.isDir || depth >= 64 then return 0
     var total: long = 0
-    for name in fs.listDir(file).ok().getOrElse([]) do total += treeBytes(s"$file/$name", depth + 1)
+    for name in fs.listDir(file).ok.getOrElse([]) do total += treeBytes(s"$file/$name", depth + 1)
     total
 
 // Removes (unless `dry`) the leftovers of the record older versions kept beside each compiled step,
@@ -210,7 +210,7 @@ cleanSteps(home: string, now: long, ageMs: Option[long], dry: bool) -> Vector[st
 // `cleanSteps`, and the bytes the steps it removed (or would remove) held with their build logs.
 sweepSteps(home: string, now: long, ageMs: Option[long], dry: bool) -> (Vector[string], long)
     val dir = home + "/steps"
-    val all = fs.listDir(dir).ok().getOrElse([])
+    val all = fs.listDir(dir).ok.getOrElse([])
     dropUsedRecords(dir, all, dry)
     val age = ageMs match
         Some(a) -> a
@@ -240,7 +240,7 @@ sweepRuns(home: string, active: Set[long], inLog: Set[long], gone: Set[long], dr
     val dir = home + "/runs"
     val removed = Buffer[string]()
     var bytes: long = 0
-    for name in fs.listDir(dir).ok().getOrElse([])
+    for name in fs.listDir(dir).ok.getOrElse([])
         val id = name.toLongOption() match
             Some(i) -> i
             None -> continue
@@ -256,8 +256,8 @@ sweepRuns(home: string, active: Set[long], inLog: Set[long], gone: Set[long], dr
 // what would be), the job ids first; the caller makes the daemon forget those jobs.
 sweepHome(home: string, active: Set[long], now: long, retention: Retention, stepsMs: Option[long], dry: bool, jobs: (LogView) -> Vector[long]) -> CleanReport
     val log = home + "/events.jsonl"
-    val text = fs.readText(log).ok().getOrElse("")
-    val view = logView(text.lines())
+    val text = fs.readText(log).ok.getOrElse("")
+    val view = logView(text.lines)
     // a job whose files an earlier clean removed is not picked, reported or counted again
     val withFiles = LogView(view.ended.filter(e -> fs.exists(s"$home/jobs/${e.id}.log") || fs.exists(s"$home/jobs/${e.id}.sample.txt")), view.maxId)
     val chosen = jobs(withFiles).filter(id -> !active.contains(id))
@@ -280,7 +280,7 @@ sweepHome(home: string, active: Set[long], now: long, retention: Retention, step
         val (trimmed, n) = withoutEvents(text, drop)
         events = n
         if n > 0
-            bytes += long(text.byteLength() - trimmed.byteLength())
+            bytes += long(text.byteLength - trimmed.byteLength)
             if !dry then writeAtomic(log, trimmed)
     CleanReport(dry, chosen, runs, steps, events, if events > 0 then drop.size else 0, bytes + runBytes + stepBytes)
 
@@ -302,9 +302,9 @@ encodeReport(r: CleanReport) -> Json = Json.obj(
     ("bytes", Json.num(r.bytes)))
 
 decodeReport(j: Json) -> Result[CleanReport, string]
-    val jobs = j.get("jobs").flatMap(v -> v.asVector()).map(xs -> xs.flatMap(x -> x.asLong().toVector()))
-    val runs = j.get("runs").flatMap(v -> v.asVector()).map(xs -> xs.flatMap(x -> x.asString().toVector()))
-    val steps = j.get("steps").flatMap(v -> v.asVector()).map(xs -> xs.flatMap(x -> x.asString().toVector()))
-    (jobs, runs, steps, j.get("dry_run").flatMap(v -> v.asBool()), j.get("events").flatMap(v -> v.asInt()), j.get("event_jobs").flatMap(v -> v.asInt())) match
-        (Some(a), Some(b), Some(c), Some(d), Some(e), Some(f)) -> Ok(CleanReport(d, a, b, c, e, f, j.get("bytes").flatMap(v -> v.asLong()).getOrElse(0)))
+    val jobs = j.get("jobs").flatMap(v -> v.asVector).map(xs -> xs.flatMap(x -> x.asLong.toVector))
+    val runs = j.get("runs").flatMap(v -> v.asVector).map(xs -> xs.flatMap(x -> x.asString.toVector))
+    val steps = j.get("steps").flatMap(v -> v.asVector).map(xs -> xs.flatMap(x -> x.asString.toVector))
+    (jobs, runs, steps, j.get("dry_run").flatMap(v -> v.asBool), j.get("events").flatMap(v -> v.asInt), j.get("event_jobs").flatMap(v -> v.asInt)) match
+        (Some(a), Some(b), Some(c), Some(d), Some(e), Some(f)) -> Ok(CleanReport(d, a, b, c, e, f, j.get("bytes").flatMap(v -> v.asLong).getOrElse(0)))
         _ -> Err("a clean report is malformed")

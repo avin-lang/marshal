@@ -36,11 +36,11 @@ screenText(g: Grid) -> string
 golden(name: string, g: Grid)
     val file = s"$GoldenDir/$name.txt"
     val got = screenText(g)
-    if process.env("MARSHAL_GOLDEN_WRITE").isDefined()
-        fs.createDirAll(GoldenDir).ok().get()
-        fs.writeText(file, got).ok().get()
+    if process.env("MARSHAL_GOLDEN_WRITE").isDefined
+        fs.createDirAll(GoldenDir).ok.get
+        fs.writeText(file, got).ok.get
         return
-    val want = fs.readText(file).ok().getOrElse(s"(no golden file $file)")
+    val want = fs.readText(file).ok.getOrElse(s"(no golden file $file)")
     if got != want then println(s"the screen differs from $file")
     assertEq(got, want)
 

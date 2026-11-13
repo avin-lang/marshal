@@ -47,18 +47,18 @@ streamOfUrgentJobs()
     var t: long = 0
     var bigStarted: Option[long] = None
     val big = dj(1, 12, 0)
-    while bigStarted.isEmpty() && t <= 30 * minute
+    while bigStarted.isEmpty && t <= 30 * minute
         val q = [dj(1000 + t / minute, 1, t, expected = 2 * minute), big]
         val go = startsAt(running, q, t)
         if go.contains(1) then bigStarted = Some(t)
         // what starts runs on; past the bound nothing starts, so the running jobs end one by one
         running = if t >= waitBound then running.drop(1) else running ++ go.map(id -> dr(id, 1))
         t += minute
-    assert(bigStarted.isDefined(), "the big job never started")
+    assert(bigStarted.isDefined, "the big job never started")
     // at most 12 jobs run at the bound, and one ends each minute after it
-    assert(bigStarted.get() <= waitBound + 12 * minute, s"started at ${bigStarted.get()}")
+    assert(bigStarted.get <= waitBound + 12 * minute, s"started at ${bigStarted.get}")
     // and not before the bound: before it the urgent jobs kept units busy
-    assert(bigStarted.get() >= waitBound)
+    assert(bigStarted.get >= waitBound)
 
 @test("past the bound a short job that ends before the big one can start backfills; a long one waits")
 backfillWhileDraining()
@@ -116,7 +116,7 @@ drainerStartsOnTime()
     var t: long = 0
     var started: Option[long] = None
     var backfilled = 0
-    while started.isEmpty() && t <= 40 * minute
+    while started.isEmpty && t <= 40 * minute
         // jobs end exactly when expected
         running = running.filter(r -> r.startedMs + r.expectedMs > t)
         val q = [lj(100 + t / minute, 2, t + 1, 3 * minute), dj(1680, 12, 0)]
@@ -339,12 +339,12 @@ unboundedNeverDrains()
 @test("drain_after in config.json: ten minutes by default, a wait such as 90s, or never; anything else is refused")
 drainAfterConfig()
     val G: long = 1024 * 1024 * 1024
-    assertEq(marshal.readConfig("", 64 * G).ok().get().drainAfterMs, Some(10 * minute))
-    assertEq(marshal.readConfig("{\"drain_after\": \"90s\"}", 64 * G).ok().get().drainAfterMs, Some(long(90000)))
-    assertEq(marshal.readConfig("{\"drain_after\": \"2h\"}", 64 * G).ok().get().drainAfterMs, Some(120 * minute))
-    assertEq(marshal.readConfig("{\"drain_after\": \"never\"}", 64 * G).ok().get().drainAfterMs, None)
+    assertEq(marshal.readConfig("", 64 * G).ok.get.drainAfterMs, Some(10 * minute))
+    assertEq(marshal.readConfig("{\"drain_after\": \"90s\"}", 64 * G).ok.get.drainAfterMs, Some(long(90000)))
+    assertEq(marshal.readConfig("{\"drain_after\": \"2h\"}", 64 * G).ok.get.drainAfterMs, Some(120 * minute))
+    assertEq(marshal.readConfig("{\"drain_after\": \"never\"}", 64 * G).ok.get.drainAfterMs, None)
     for bad in ["{\"drain_after\": \"soon\"}", "{\"drain_after\": \"0m\"}", "{\"drain_after\": 5}", "{\"drain_after\": \"\"}"]
-        assert(marshal.readConfig(bad, 64 * G).isErr(), bad)
-    val never = marshal.readConfig("{\"drain_after\": \"never\"}", 64 * G).ok().get()
+        assert(marshal.readConfig(bad, 64 * G).isErr, bad)
+    val never = marshal.readConfig("{\"drain_after\": \"never\"}", 64 * G).ok.get
     assertEq(marshal.fairness(never, 123), marshal.Unbounded)
-    assertEq(marshal.fairness(marshal.readConfig("", 64 * G).ok().get(), 123), Fairness(10 * minute, 123))
+    assertEq(marshal.fairness(marshal.readConfig("", 64 * G).ok.get, 123), Fairness(10 * minute, 123))

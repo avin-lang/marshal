@@ -85,7 +85,7 @@ runType(args: Vector[string], typeName: Option[string]) -> int
         None -> line.rest match
             [] ->
                 if line.help
-                    println(commandHelp("run-type").get())
+                    println(commandHelp("run-type").get)
                     return 0
                 return complain("marshal: give the type to run: marshal run-type <type> [parameters]")
             words -> (words(0), words.drop(1))
@@ -123,7 +123,7 @@ runType(args: Vector[string], typeName: Option[string]) -> int
         line.deadline.orElse(typeDeadline), [program, "run-steps", typeFile] ++ params, env, false, [], false, 0, 0, false, line.label, line.quietMs, quick = line.quick)
     val (id, log) = askDaemon(Request.Submit(spec)) match
         Ok(Submitted(id, log, hint)) ->
-            if hint.nonEmpty() then eprintln(hint)
+            if hint.nonEmpty then eprintln(hint)
             (id, log)
         Ok(Failed(e)) -> return complain(s"marshal: $e")
         Ok(other) -> return complain(s"marshal: unexpected reply $other")
@@ -135,7 +135,7 @@ runType(args: Vector[string], typeName: Option[string]) -> int
     askDaemon(Request.Wait(id)) match
         Ok(Ended(job)) ->
             println(marshal.resultLine(job))
-            for text in fs.readText(s"${home()}/runs/$id/report.txt").ok() do print(text)
+            for text in fs.readText(s"${home()}/runs/$id/report.txt").ok do print(text)
             job.outcome.map(marshal.exitCode).getOrElse(Trouble)
         Ok(Failed(e)) -> complain(s"marshal: $e")
         Ok(other) -> complain(s"marshal: unexpected reply $other")

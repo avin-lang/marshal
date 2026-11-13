@@ -22,9 +22,9 @@ grepMatcher(pattern: string, fixed: bool, ignoreCase: bool) -> Result[(string) -
     val written = if ignoreCase then "(?iu)" + source else source
     Regex.compile(written) match
         Ok(r) ->
-            val any = r.unanchored()
+            val any = r.unanchored
             Ok(line -> any.tryMatches(line))
-        Err(e) -> Err(e.message())
+        Err(e) -> Err(e.message)
 
 // The state of one search: which lines still to print around the matches found so far.
 private class Grepper(private val spec: GrepSpec, private val hit: (string) -> Result[bool, MatchError], private val emit: (string) -> unit)
@@ -87,7 +87,7 @@ grepLines(next: () -> Result[Option[string], string], first: long, hit: (string)
             Some(line) ->
                 g.feed(n, line) match
                     Ok(_) -> ()
-                    Err(e) -> return Err(s"marshal: grep: line $n: ${e.message()}")
+                    Err(e) -> return Err(s"marshal: grep: line $n: ${e.message}")
                 n += 1
             None -> break
     Ok(g.matches)

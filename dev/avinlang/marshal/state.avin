@@ -4,8 +4,8 @@ module dev.avinlang.marshal
 // before the daemon replaces itself and read by the new image, which takes its jobs over. Times are
 // on the wall clock, in milliseconds since 1970, so they mean the same to both images; a time that
 // has not come yet (a queued job's start, a running job's end) is 0.
-import json
-import json.Json
+import avin.json
+import avin.json.Json
 
 // One job as the daemon holds it. `arrived` is its arrival on the wall clock in microseconds, which
 // orders it against take-slot's waiters; `pid` and `pgid` are 0 until it starts. `held`,
@@ -106,7 +106,7 @@ encodeSavedJob(j: SavedJob) -> Json = Json.obj(
     ("reserved_from", Json.str(j.reservedFrom)),
     ("duration_learned", Json.Bool(j.durationLearned)))
 
-private whole(j: Json, key: string) -> Result[long, string] = j.get(key).flatMap(v -> v.asLong()) match
+private whole(j: Json, key: string) -> Result[long, string] = j.get(key).flatMap(v -> v.asLong) match
     Some(n) -> Ok(n)
     None -> Err(s"`$key` is not a whole number")
 
@@ -120,11 +120,11 @@ private wholeOr(j: Json, key: string, absent: long) -> Result[long, string] = j.
     None | Some(Json.Null) -> Ok(absent)
     Some(_) -> whole(j, key)
 
-private text(j: Json, key: string) -> Result[string, string] = j.get(key).flatMap(v -> v.asString()) match
+private text(j: Json, key: string) -> Result[string, string] = j.get(key).flatMap(v -> v.asString) match
     Some(s) -> Ok(s)
     None -> Err(s"`$key` is not a string")
 
-private truth(j: Json, key: string) -> Result[bool, string] = j.get(key).flatMap(v -> v.asBool()) match
+private truth(j: Json, key: string) -> Result[bool, string] = j.get(key).flatMap(v -> v.asBool) match
     Some(b) -> Ok(b)
     None -> Err(s"`$key` is not a bool")
 
@@ -135,13 +135,13 @@ private truthOr(j: Json, key: string, absent: bool) -> Result[bool, string] = j.
 
 private intOr(j: Json, key: string, absent: int) -> Result[int, string] = j.get(key) match
     None | Some(Json.Null) -> Ok(absent)
-    Some(v) -> v.asInt() match
+    Some(v) -> v.asInt match
         Some(n) -> Ok(n)
         None -> Err(s"`$key` is not an int")
 
 private maybeText(j: Json, key: string) -> Result[Option[string], string] = j.get(key) match
     None | Some(Json.Null) -> Ok(None)
-    Some(v) -> v.asString() match
+    Some(v) -> v.asString match
         Some(s) -> Ok(Some(s))
         None -> Err(s"`$key` is not a string")
 
@@ -197,7 +197,7 @@ encodeState(s: SavedState) -> Json = Json.obj(
     ("waiting", Json.Arr(s.waiting.map(encodeSavedJob))))
 
 private savedJobs(j: Json, key: string) -> Result[Vector[SavedJob], string]
-    val items = j.get(key).flatMap(v -> v.asVector()) match
+    val items = j.get(key).flatMap(v -> v.asVector) match
         Some(xs) -> xs
         None -> return Err(s"`$key` is not an array")
     val out = Buffer[SavedJob]()
@@ -209,7 +209,7 @@ decodeState(saved: string) -> Result[SavedState, string]
     val j = json.parse(saved) match
         Ok(v) -> v
         Err(e) -> return Err(s"not JSON: $e")
-    if j.asMembers().isEmpty() then return Err("the state is not a JSON object")
+    if j.asMembers.isEmpty then return Err("the state is not a JSON object")
     Ok(SavedState(
         text(j, "version")?,
         whole(j, "pid")?,

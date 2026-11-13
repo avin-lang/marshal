@@ -25,7 +25,7 @@ val TicketMark: string = "marshal"
 // `take_slot` (`configured`); empty text in either turns sharing off, and with neither nothing is
 // shared: sharing is off unless it is configured.
 takeSlotDir(env: Option[string], configured: Option[string]) -> Option[string] =
-    env.orElse(configured).filter(dir -> dir.nonEmpty())
+    env.orElse(configured).filter(dir -> dir.nonEmpty)
 
 // A waiter's ticket name as take-slot writes it: `<seconds>.<six digits>-<pid>`.
 ticketName(arrivedMicros: long, pid: long) -> string =
@@ -38,21 +38,21 @@ parseTicket(name: string) -> Option[(long, long)]
     if dash < 1 then return None
     val time = name.slice(0, dash)
     val dot = time.indexOf(".")
-    val (whole, fraction) = if dot < 0 then (time, "") else (time.slice(0, dot), time.slice(dot + 1, time.byteLength()))
-    if dot >= 0 && fraction.isEmpty() then return None
-    val micros = if fraction.isEmpty() then Some(long(0)) else digits(fraction).flatMap(_ -> digits((fraction + "000000").take(6)))
-    (digits(whole), micros, digits(name.slice(dash + 1, name.byteLength()))) match
+    val (whole, fraction) = if dot < 0 then (time, "") else (time.slice(0, dot), time.slice(dot + 1, time.byteLength))
+    if dot >= 0 && fraction.isEmpty then return None
+    val micros = if fraction.isEmpty then Some(long(0)) else digits(fraction).flatMap(_ -> digits((fraction + "000000").take(6)))
+    (digits(whole), micros, digits(name.slice(dash + 1, name.byteLength))) match
         (Some(seconds), Some(us), Some(pid)) -> Some((seconds * 1000000 + us, pid))
         _ -> None
 
 private digits(text: string) -> Option[long] =
-    if text.nonEmpty() && text.chars().forall(c -> '0' <= c <= '9') then text.toLongOption() else None
+    if text.nonEmpty && text.chars.forall(c -> '0' <= c <= '9') then text.toLongOption() else None
 
 // Whether `pid` is a live process this program may signal: take-slot's `kill -0`.
-alive(pid: long) -> bool = pid > 0 && process.signal(pid, 0).isOk()
+alive(pid: long) -> bool = pid > 0 && process.signal(pid, 0).isOk
 
 // The pid a file holds, or None when it is missing, empty or not a number.
-private pidIn(file: string) -> Option[long] = fs.readText(file).ok().flatMap(t -> t.trim().toLongOption())
+private pidIn(file: string) -> Option[long] = fs.readText(file).ok.flatMap(t -> t.trim.toLongOption())
 
 // take-slot's directory `dir`, used by the process `me` (the daemon).
 class TakeSlot(val dir: string, val me: long)
@@ -98,7 +98,7 @@ class TakeSlot(val dir: string, val me: long)
             if !alive(pid)
                 fs.remove(held() + "/" + name)
             elif !ours.contains(pid)
-                units += fs.readText(held() + "/" + name).ok().flatMap(t -> t.trim().toIntOption()).getOrElse(0)
+                units += fs.readText(held() + "/" + name).ok.flatMap(t -> t.trim.toIntOption()).getOrElse(0)
         for name in ["build.lock", "build2.lock", "build3.lock", "build4.lock", "build5.lock"]
             val lock = dir + "/" + name
             if !fs.isDir(lock) then continue
@@ -113,7 +113,7 @@ class TakeSlot(val dir: string, val me: long)
             parseTicket(name) match
                 Some((arrived, pid)) if alive(pid) ->
                     if pid != me
-                        val wants = fs.readText(file).ok().flatMap(t -> t.lines().headOption).flatMap(l -> l.trim().toIntOption()).getOrElse(1)
+                        val wants = fs.readText(file).ok.flatMap(t -> t.lines.headOption).flatMap(l -> l.trim.toIntOption()).getOrElse(1)
                         tickets += Ticket(arrived, if wants > budget then budget else wants)
                 // take-slot removes a ticket of a dead pid; a name it cannot read it never made
                 Some(_) -> fs.remove(file)
@@ -124,8 +124,8 @@ class TakeSlot(val dir: string, val me: long)
     // being taken; one whose holder has died is removed.
     landingHeld(ours: Vector[long]) -> bool
         if !fs.isDir(landLock()) then return false
-        val holder = fs.readText(landLock() + "/pid").getOrElse("").trim()
-        if holder.isEmpty() then return true
+        val holder = fs.readText(landLock() + "/pid").getOrElse("").trim
+        if holder.isEmpty then return true
         val pid = holder.toLongOption().getOrElse(0)
         if alive(pid) then return !ours.contains(pid)
         fs.remove(landLock() + "/pid")
@@ -141,9 +141,9 @@ class TakeSlot(val dir: string, val me: long)
 
     // Makes the landing lock, removing a stale one first; false while a live run holds it.
     takeLanding() -> bool
-        if fs.createDir(landLock()).isOk() then return true
+        if fs.createDir(landLock()).isOk then return true
         if landingHeld([]) then return false
-        fs.createDir(landLock()).isOk()
+        fs.createDir(landLock()).isOk
 
     // Names the landing job `pid` as the lock's holder.
     landed(pid: long)
@@ -153,7 +153,7 @@ class TakeSlot(val dir: string, val me: long)
     // could not be started).
     releaseLanding(pid: long)
         val holder = pidIn(landLock() + "/pid")
-        if holder == Some(pid) || (pid == 0 && holder.isEmpty())
+        if holder == Some(pid) || (pid == 0 && holder.isEmpty)
             fs.remove(landLock() + "/pid")
             fs.removeDir(landLock())
 

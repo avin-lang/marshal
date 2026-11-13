@@ -3,7 +3,7 @@ module tests
 // Holding and ordering the queue, below the daemon: the requests on the wire, how priorities order
 // jobs, what `--urgent` gives, why a held or queue-held job waits, and how the command line and
 // `ls`, `status` and `top` say it.
-import json
+import avin.json
 import dev.avinlang.marshal
 import dev.avinlang.marshal.{JobInfo, Overview, QueuedJob, Reply, Request, Started, Usage, Waiting, Why}
 import dev.avinlang.marshal.{Held, QueueHeld, NoUnits, Behind, Starting, LaneBusy}
@@ -34,14 +34,14 @@ controlRequests()
 
 @test("the control requests' wire text: op alone for the queue, id for a job, a number or \"urgent\" for a priority")
 controlWire()
-    assertEq(marshal.encodeRequest(Request.PauseQueue).render(), "{\"op\":\"pause\"}")
-    assertEq(marshal.encodeRequest(Request.ResumeQueue).render(), "{\"op\":\"resume\"}")
-    assertEq(marshal.encodeRequest(Request.PauseJob(4)).render(), "{\"op\":\"pause\",\"id\":4}")
-    assertEq(marshal.encodeRequest(Request.ResumeJob(4)).render(), "{\"op\":\"resume\",\"id\":4}")
-    assertEq(marshal.encodeRequest(Request.Hold(4)).render(), "{\"op\":\"hold\",\"id\":4}")
-    assertEq(marshal.encodeRequest(Request.Release(4)).render(), "{\"op\":\"release\",\"id\":4}")
-    assertEq(marshal.encodeRequest(Request.Prioritize(4, marshal.Level(-2))).render(), "{\"op\":\"priority\",\"id\":4,\"priority\":-2}")
-    assertEq(marshal.encodeRequest(Request.Prioritize(4, marshal.Urgent)).render(), "{\"op\":\"priority\",\"id\":4,\"priority\":\"urgent\"}")
+    assertEq(marshal.encodeRequest(Request.PauseQueue).render, "{\"op\":\"pause\"}")
+    assertEq(marshal.encodeRequest(Request.ResumeQueue).render, "{\"op\":\"resume\"}")
+    assertEq(marshal.encodeRequest(Request.PauseJob(4)).render, "{\"op\":\"pause\",\"id\":4}")
+    assertEq(marshal.encodeRequest(Request.ResumeJob(4)).render, "{\"op\":\"resume\",\"id\":4}")
+    assertEq(marshal.encodeRequest(Request.Hold(4)).render, "{\"op\":\"hold\",\"id\":4}")
+    assertEq(marshal.encodeRequest(Request.Release(4)).render, "{\"op\":\"release\",\"id\":4}")
+    assertEq(marshal.encodeRequest(Request.Prioritize(4, marshal.Level(-2))).render, "{\"op\":\"priority\",\"id\":4,\"priority\":-2}")
+    assertEq(marshal.encodeRequest(Request.Prioritize(4, marshal.Urgent)).render, "{\"op\":\"priority\",\"id\":4,\"priority\":\"urgent\"}")
 
 @test("a control request that is not one is refused with a reason")
 badControlRequests()
@@ -61,18 +61,18 @@ badControlRequests()
 jobFields()
     for j in [infoOf(1), infoOf(2, true, 5), infoOf(3, false, int.MinValue), infoOf(4, true, int.MaxValue)]
         assertEq(marshal.decodeJob(marshal.encodeJob(j)), Ok(j))
-    val old = marshal.encodeJob(infoOf(1, true, 9)).render().replace(",\"held\":true,\"priority\":9", "")
-    assertEq(marshal.decodeJob(json.parse(old).ok().get()), Ok(infoOf(1)))
-    assert(marshal.decodeJob(json.parse(old.replace("}", ",\"held\":\"yes\"}")).ok().get()).isErr())
+    val old = marshal.encodeJob(infoOf(1, true, 9)).render.replace(",\"held\":true,\"priority\":9", "")
+    assertEq(marshal.decodeJob(json.parse(old).ok.get), Ok(infoOf(1)))
+    assert(marshal.decodeJob(json.parse(old.replace("}", ",\"held\":\"yes\"}")).ok.get).isErr)
 
 @test("status and snapshot replies say whether the queue is held, and an older reply reads as not held")
 usageQueueHeld()
     for held in [true, false]
         val u = Usage(1, 12, 0, 64, 1, 2, None, None, queueHeld = held)
-        assertEq(marshal.decodeReply(marshal.encodeReply(Reply.Using(u)).render()), Ok(Reply.Using(u)))
+        assertEq(marshal.decodeReply(marshal.encodeReply(Reply.Using(u)).render), Ok(Reply.Using(u)))
         val o = Overview(Usage(1, 12, 0, 64, 0, 1, None, None, queueHeld = held), 5, [], [QueuedJob(infoOf(1), 1, if held then QueueHeld else Starting)], [])
-        assertEq(marshal.decodeReply(marshal.encodeReply(Reply.Viewed(o)).render()), Ok(Reply.Viewed(o)))
-        assertEq(marshal.statusJson(u, [])("queue_held").asBool(), Some(held))
+        assertEq(marshal.decodeReply(marshal.encodeReply(Reply.Viewed(o)).render), Ok(Reply.Viewed(o)))
+        assertEq(marshal.statusJson(u, [])("queue_held").asBool, Some(held))
     assertEq(marshal.decodeReply("{\"ok\":true,\"units\":0,\"unit_budget\":12,\"mem\":0,\"mem_budget\":0,\"running\":0,\"queued\":0,\"landing\":null,\"take_slot\":null}"),
         Ok(Reply.Using(Usage(0, 12, 0, 0, 0, 0, None, None))))
 
@@ -123,8 +123,8 @@ urgentOption()
     assertEq(marshal.decodeJob(marshal.encodeJob(urgentJob)), Ok(urgentJob))
     val sj = marshal.SavedJob(9, marshal.JobSpec("k", 1, 0, false, "/", None, ["a"], [], true), "queued", 1, 2, 0, 0, 5, 6, "/l", 0, 0, None, false, false, None, 0, 0, false, 0, 1_762_000_000_000_123)
     assertEq(marshal.decodeSavedJob(marshal.encodeSavedJob(sj)), Ok(sj))
-    val old = marshal.encodeSavedJob(sj).render().replace(",\"urgent_at\":1762000000000123", "")
-    assertEq(marshal.decodeSavedJob(json.parse(old).ok().get()).map(j -> j.urgentAt), Ok(long(0)))
+    val old = marshal.encodeSavedJob(sj).render.replace(",\"urgent_at\":1762000000000123", "")
+    assertEq(marshal.decodeSavedJob(json.parse(old).ok.get).map(j -> j.urgentAt), Ok(long(0)))
 
 @test("a job joining the urgent band goes behind every urgent job queued, even when the clock has stepped back")
 urgentMarks()
@@ -177,9 +177,9 @@ private runningInfo(paused: bool) -> JobInfo =
 pausedOnTheWire()
     for p in [true, false]
         assertEq(marshal.decodeJob(marshal.encodeJob(runningInfo(p))), Ok(runningInfo(p)))
-    val old = marshal.encodeJob(runningInfo(true)).render().replace(",\"paused\":true", "")
-    assertEq(marshal.decodeJob(json.parse(old).ok().get()), Ok(runningInfo(false)))
-    assert(marshal.decodeJob(json.parse(old.replace("}", ",\"paused\":0}")).ok().get()).isErr())
+    val old = marshal.encodeJob(runningInfo(true)).render.replace(",\"paused\":true", "")
+    assertEq(marshal.decodeJob(json.parse(old).ok.get), Ok(runningInfo(false)))
+    assert(marshal.decodeJob(json.parse(old.replace("}", ",\"paused\":0}")).ok.get).isErr)
 
 @test("a paused job's pauses and the start of its current one read back from state.json, and older state reads as never paused")
 pausedSaved()
@@ -188,9 +188,9 @@ pausedSaved()
         val sj = marshal.SavedJob(9, spec, "running", 1, 2, 3, 0, 5, 6, "/l", 70, 70, None, false, false, None, 0, 0, pausedMs = ms, pausedAt = at)
         assertEq(marshal.decodeSavedJob(marshal.encodeSavedJob(sj)), Ok(sj))
     val sj = marshal.SavedJob(9, spec, "running", 1, 2, 3, 0, 5, 6, "/l", 70, 70, None, false, false, None, 0, 0, pausedMs = 7, pausedAt = 8)
-    val old = marshal.encodeSavedJob(sj).render().replace(",\"paused_ms\":7,\"paused_at\":8", "")
-    assertEq(marshal.decodeSavedJob(json.parse(old).ok().get()).map(j -> (j.pausedMs, j.pausedAt)), Ok((long(0), long(0))))
-    assert(marshal.decodeSavedJob(json.parse(old.replace("\"urgent_at\":0", "\"urgent_at\":0,\"paused_at\":\"x\"")).ok().get()).isErr())
+    val old = marshal.encodeSavedJob(sj).render.replace(",\"paused_ms\":7,\"paused_at\":8", "")
+    assertEq(marshal.decodeSavedJob(json.parse(old).ok.get).map(j -> (j.pausedMs, j.pausedAt)), Ok((long(0), long(0))))
+    assert(marshal.decodeSavedJob(json.parse(old.replace("\"urgent_at\":0", "\"urgent_at\":0,\"paused_at\":\"x\"")).ok.get).isErr)
 
 @test("ls and top show a paused job as paused, and top's clocks for it stand still")
 shownPaused()
@@ -215,6 +215,6 @@ shownHeld()
 @test("hold, release, priority, pause and resume each have their usage, and pause and resume take no arguments")
 controlUsage()
     for name in ["hold", "release", "priority", "pause", "resume"]
-        assert(cli.commandHelp(name).isDefined(), name)
+        assert(cli.commandHelp(name).isDefined, name)
         assert(cli.asksHelp(name, ["--help"]), name)
-    assert(cli.commandHelp("priority").get().contains("--urgent"))
+    assert(cli.commandHelp("priority").get.contains("--urgent"))

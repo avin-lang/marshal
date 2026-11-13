@@ -3,8 +3,8 @@ module tests
 // Job labels against a real daemon: submitted with --label they show in ls, status --json, history
 // and the events, rerun keeps them, a restart keeps them, and a bad label is refused.
 import avin.fs
-import json
-import json.Json
+import avin.json
+import avin.json.Json
 import dev.avinlang.marshal
 
 @test("a label shows in ls, status --json, history (text and --json) and the submitted and ending events")
@@ -16,20 +16,20 @@ labelShowsEverywhere()
     assertEq(m(home, "wait", plainId.toString()).code, 0)
     val ls = m(home, "ls")
     assert(ls.out.contains("LABEL") && ls.out.contains("train 209"), ls.out)
-    val rows = ls.out.lines().toVector
+    val rows = ls.out.lines.toVector
     assert(rows(0).indexOf("LABEL") < rows(0).indexOf("COMMAND"), rows(0))
     val history = m(home, "history")
     assert(history.out.contains("LABEL") && history.out.contains("train 209"), history.out)
     val historyJson = m(home, "history", "--json").out
     assert(historyJson.contains("\"label\":\"train 209\""), historyJson)
-    val submittedEvent = events(home).find(e -> e("id").asLong() == Some(id) && e("event").asString() == Some("submitted")).get()
-    assertEq(submittedEvent("label").asString(), Some("train 209"))
-    assertEq(submittedEvent("spec")("label").asString(), Some("train 209"))
-    val finishedEvent = events(home).find(e -> e("id").asLong() == Some(id) && e("event").asString() == Some("finished")).get()
-    assertEq(finishedEvent("label").asString(), Some("train 209"))
+    val submittedEvent = events(home).find(e -> e("id").asLong == Some(id) && e("event").asString == Some("submitted")).get
+    assertEq(submittedEvent("label").asString, Some("train 209"))
+    assertEq(submittedEvent("spec")("label").asString, Some("train 209"))
+    val finishedEvent = events(home).find(e -> e("id").asLong == Some(id) && e("event").asString == Some("finished")).get
+    assertEq(finishedEvent("label").asString, Some("train 209"))
     // the job without a label has no label in any event
-    for e in events(home).filter(e -> e("id").asLong() == Some(plainId))
-        assert(!e.render().contains("\"label\""), e.render())
+    for e in events(home).filter(e -> e("id").asLong == Some(plainId))
+        assert(!e.render.contains("\"label\""), e.render)
     cleanUp(home)
 
 @test("ls and history have a LABEL column, with empty cells, while no listed job has a label")
@@ -37,11 +37,11 @@ labelNoColumn()
     val home = newHome()
     val id = submitted(home, "--", "sh", "-c", "exit 0")
     assertEq(m(home, "wait", id.toString()).code, 0)
-    val history = m(home, "history").out.lines().toVector
+    val history = m(home, "history").out.lines.toVector
     assert(history(0).endsWith("LABEL"), history(0))
     assertEq(history.length, 2)
     submitted(home, "--", "sleep", "30")
-    val ls = m(home, "ls").out.lines().toVector
+    val ls = m(home, "ls").out.lines.toVector
     assert(ls(0).contains("LABEL") && ls(0).indexOf("LABEL") < ls(0).indexOf("COMMAND"), ls(0))
     assertEq(ls(1).indexOf("sleep 30"), ls(0).indexOf("COMMAND"))
     assert(!m(home, "status", "--json").out.contains("\"label\""), m(home, "status", "--json").out)
@@ -82,11 +82,11 @@ labelRerun()
     assertEq(m(home, "wait", id.toString()).code, 0)
     val r = m(home, "rerun", id.toString())
     assertEq(r.code, 0)
-    val again = r.out.trim().toLong()
+    val again = r.out.trim.toLong()
     assertEq(m(home, "wait", again.toString()).code, 0)
-    val e = events(home).find(e -> e("id").asLong() == Some(again) && e("event").asString() == Some("submitted")).get()
-    assertEq(e("label").asString(), Some("train 209"))
-    assert(m(home, "history", "--label", "train").out.lines().toVector.length == 3, m(home, "history", "--label", "train").out)
+    val e = events(home).find(e -> e("id").asLong == Some(again) && e("event").asString == Some("submitted")).get
+    assertEq(e("label").asString, Some("train 209"))
+    assert(m(home, "history", "--label", "train").out.lines.toVector.length == 3, m(home, "history", "--label", "train").out)
     cleanUp(home)
 
 @test("a label survives a restart, on a running job and a queued one")
@@ -101,8 +101,8 @@ labelRestart()
     assert(ls.contains("running one") && ls.contains("queued one"), ls)
     assertEq(m(home, "kill", a.toString()).code, 0)
     assertEq(m(home, "wait", b.toString()).code, 0)
-    val ended = events(home).find(e -> e("id").asLong() == Some(b) && e("event").asString() == Some("finished")).get()
-    assertEq(ended("label").asString(), Some("queued one"))
+    val ended = events(home).find(e -> e("id").asLong == Some(b) && e("event").asString == Some("finished")).get
+    assertEq(ended("label").asString, Some("queued one"))
     cleanUp(home)
 
 @test("a bad label is refused with a clear message, and nothing is submitted")
@@ -133,4 +133,4 @@ labelRefused()
 @test("a request with a newline in its label is refused by the daemon's decoder, whatever client sent it")
 labelBadRequestOnWire()
     val bad = "{\"op\":\"submit\",\"kind\":\"build\",\"units\":1,\"mem\":0,\"dir\":\"/w\",\"cmd\":[\"make\"],\"label\":\"a\\nb\"}"
-    assert(marshal.decodeRequest(bad).isErr(), bad)
+    assert(marshal.decodeRequest(bad).isErr, bad)

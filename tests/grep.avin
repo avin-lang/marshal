@@ -11,7 +11,7 @@ val log: Vector[string] = ["alpha", "ERR one", "beta", "gamma", "delta", "ERR tw
 
 // The matches and the printed lines for `pattern` over `lines`.
 found(lines: Vector[string], pattern: string, spec: GrepSpec = GrepPlain, fixed: bool = false, ignoreCase: bool = false) -> (long, Vector[string])
-    val hit = marshal.grepMatcher(pattern, fixed, ignoreCase).ok().get()
+    val hit = marshal.grepMatcher(pattern, fixed, ignoreCase).ok.get
     marshal.grepVector(lines, hit, spec)
 
 @test("a plain search prints the matching lines and counts them")
@@ -36,8 +36,8 @@ grepFixed()
     assertEq(found(lines, "a+c", fixed = true).1, ["a+c"])
     assertEq(found(lines, "(x)", fixed = true).1, ["(x)"])
     // a pattern that is not a regular expression is fine as text
-    assert(marshal.grepMatcher("(x", false, false).isErr())
-    assert(marshal.grepMatcher("(x", true, false).isOk())
+    assert(marshal.grepMatcher("(x", false, false).isErr)
+    assert(marshal.grepMatcher("(x", true, false).isOk)
     assertEq(found(["a\\Eb", "ab"], "\\E", fixed = true).1, ["a\\Eb"])
 
 @test("-i makes upper and lower case the same")
@@ -170,8 +170,8 @@ generated(count: long) -> () -> Result[Option[string], string]
 @test("a log of millions of lines is searched as it is read, with context and a count")
 grepStreams()
     val out = Buffer[string]()
-    val hit = marshal.grepMatcher("00000$", false, false).ok().get()
-    val count = marshal.grepLines(generated(5_000_000), 1, hit, GrepSpec(false, true, false, None, 1, 1), l -> out.addOne(l)).ok().get()
+    val hit = marshal.grepMatcher("00000$", false, false).ok.get
+    val count = marshal.grepLines(generated(5_000_000), 1, hit, GrepSpec(false, true, false, None, 1, 1), l -> out.addOne(l)).ok.get
     assertEq(count, 50)
     // fifty matches, each with a line before and after but the last, which ends the log
     assertEq(out.length, 50 * 3 - 1 + 49)
@@ -179,14 +179,14 @@ grepStreams()
     assertEq(out(1), "100000:line 100000")
     assertEq(out(2), "100001-line 100001")
     assertEq(out(3), "--")
-    val counted = marshal.grepLines(generated(5_000_000), 1, hit, GrepSpec(false, false, true, None, 0, 0), l -> fail("printed")).ok().get()
+    val counted = marshal.grepLines(generated(5_000_000), 1, hit, GrepSpec(false, false, true, None, 0, 0), l -> fail("printed")).ok.get
     assertEq(counted, 50)
 
 @test("a search with -m ends without reading the rest of a source that never ends")
 grepStopsEarly()
     val out = Buffer[string]()
-    val hit = marshal.grepMatcher("7$", false, false).ok().get()
-    val count = marshal.grepLines(generated(long.MaxValue), 1, hit, GrepSpec(false, false, false, Some(3), 0, 1), l -> out.addOne(l)).ok().get()
+    val hit = marshal.grepMatcher("7$", false, false).ok.get()
+    val count = marshal.grepLines(generated(long.MaxValue), 1, hit, GrepSpec(false, false, false, Some(3), 0, 1), l -> out.addOne(l)).ok.get
     assertEq(count, 3)
     assertEq(out.toVector, ["line 7", "line 8", "--", "line 17", "line 18", "--", "line 27", "line 28"])
 
@@ -197,15 +197,15 @@ grepSourceError()
         n += 1
         if n < 3 then Ok(Some("x")) else Err("the read failed")
     val out = Buffer[string]()
-    val hit = marshal.grepMatcher("x", false, false).ok().get()
+    val hit = marshal.grepMatcher("x", false, false).ok.get()
     assertEq(marshal.grepLines(next, 1, hit, GrepPlain, l -> out.addOne(l)), Err("the read failed"))
     assertEq(out.length, 2)
 
 @test("line numbers begin at the number the source's first line is given")
 grepFirstNumber()
     val out = Buffer[string]()
-    val hit = marshal.grepMatcher("2", false, false).ok().get()
-    marshal.grepLines(generated(5), 100, hit, GrepSpec(false, true, false, None, 0, 0), l -> out.addOne(l)).ok().get()
+    val hit = marshal.grepMatcher("2", false, false).ok.get()
+    marshal.grepLines(generated(5), 100, hit, GrepSpec(false, true, false, None, 0, 0), l -> out.addOne(l)).ok.get()
     assertEq(out.toVector, ["101:line 2"])
 
 @test("a pattern that is not a regular expression is an error that says why")

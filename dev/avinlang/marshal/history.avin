@@ -5,8 +5,8 @@ module dev.avinlang.marshal
 // held whole; it keeps one small `EndedJob` per job the log saw end.
 import avin.collections.mutable.{Map as MutableMap}
 import avin.time
-import json
-import json.Json
+import avin.json
+import avin.json.Json
 
 // One job the log saw end, as its last ending event describes it.
 // - `how`: `ok` (exit 0), `failed` (any other exit), `signal`, `killed` (stopped by `kill`),
@@ -41,13 +41,13 @@ class Ledger()
     // event that does not describe a job, is counted unreadable; other events are ignored, and so is
     // the ending of an attempt that runs again. A job's last ending event stands.
     add(line: string)
-        if line.trim().isEmpty() then return
+        if line.trim.isEmpty then return
         val ev = json.parse(line) match
             Ok(j) -> j
             Err(_) ->
                 unreadable += 1
                 return
-        val named = (ev.get("ts").flatMap(v -> v.asLong()), ev.get("event").flatMap(v -> v.asString()))
+        val named = (ev.get("ts").flatMap(v -> v.asLong), ev.get("event").flatMap(v -> v.asString))
         val (ts, name) = named match
             (Some(t), Some(n)) -> (t, n)
             _ ->
@@ -60,9 +60,9 @@ class Ledger()
                 unreadable += 1
                 return
         val outcome = job.outcome.getOrElse(Lost)
-        val run = if outcome == Cancelled then long(0) else ev.get("run_ms").flatMap(v -> v.asLong()).getOrElse(job.elapsedMs)
+        val run = if outcome == Cancelled then long(0) else ev.get("run_ms").flatMap(v -> v.asLong).getOrElse(job.elapsedMs)
         // an external job's peak is its tree's, not its work's, so stats leave it out
-        val peak = if job.external then 0 else ev.get("peak_rss").flatMap(v -> v.asLong()).getOrElse(0)
+        val peak = if job.external then 0 else ev.get("peak_rss").flatMap(v -> v.asLong).getOrElse(0)
         val e = EndedJob(job.id, job.kind, job.landing, howWord(outcome, job.killed), exitCode(outcome), run, ts, job.deadlineMs, peak, job.label, job.quick, job.urgent)
         position.get(job.id) match
             Some(p) -> ends(p) = e
@@ -85,7 +85,7 @@ selectEnded(ledger: Ledger, f: HistoryFilter, limit: int) -> Vector[EndedJob]
 // that at least p percent of the values do not exceed. One value is every percentile; of two, the
 // median is the lesser.
 percentile(xs: Vector[long], p: int) -> long
-    val s = xs.sorted()
+    val s = xs.sorted
     val n = s.length
     val rank = (p * n + 99) / 100
     s(if rank < 1 then 0 else rank - 1)
@@ -127,7 +127,7 @@ kindStats(ledger: Ledger, f: HistoryFilter, learning: Learning = defaultLearning
 // A wall clock time as the listings show it: `2026-11-07 14:03:22`, as the clocks of `zone` read it.
 formatWhen(ms: long, zone: time.Zone) -> string = time.epochMillis(ms).atZone(zone).format("YYYY-MM-DD hh:mm:ss")
 
-private isDigits(text: string) -> bool = text.nonEmpty() && text.chars().forall(c -> '0' <= c <= '9')
+private isDigits(text: string) -> bool = text.nonEmpty && text.chars.forall(c -> '0' <= c <= '9')
 
 private daysIn(year: long, month: long) -> long
     if month == 2 then (if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) then 29 else 28)
@@ -138,7 +138,7 @@ private daysIn(year: long, month: long) -> long
 // if it were UTC). A reading that occurs twice, as the clocks go back, is its first occurrence; one
 // that never occurs, as they go forward, is read with the offset in force before the change.
 private instantOfReading(wallMs: long, zone: time.Zone) -> long
-    val offsetAt = (ms: long) -> time.epochMillis(ms).atZone(zone).offset.toMillis()
+    val offsetAt = (ms: long) -> time.epochMillis(ms).atZone(zone).offset.toMillis
     val before = offsetAt(wallMs - 86400000)
     val after = offsetAt(wallMs + 86400000)
     val fits = [before, after].filter(o -> offsetAt(wallMs - o) == o).map(o -> wallMs - o)
@@ -148,7 +148,7 @@ private instantOfReading(wallMs: long, zone: time.Zone) -> long
 // other text.
 private parseOffset(text: string) -> Option[long]
     if text == "Z" then return Some(0)
-    val cs = text.chars().toVector
+    val cs = text.chars.toVector
     if cs.length != 6 || cs(3) != ':' then return None
     val sign: long = cs(0) match
         '+' -> 1
@@ -165,8 +165,8 @@ private parseOffset(text: string) -> Option[long]
 // an offset (`+02:00`, `-05:00`), and is then taken as that instant whatever `zone` is. None for
 // anything else.
 parseEndedSince(text: string, nowMs: long, zone: time.Zone) -> Option[long]
-    if text.isEmpty() then return None
-    val unit: long = text.last() match
+    if text.isEmpty then return None
+    val unit: long = text.last match
         's' -> 1000
         'm' -> 60000
         'h' -> 3600000
@@ -182,7 +182,7 @@ parseEndedSince(text: string, nowMs: long, zone: time.Zone) -> Option[long]
     val parts = text.split("T")
     if parts.length > 2 then return None
     val ymd = parts(0).split("-")
-    if ymd.length != 3 || ymd(0).charCount() != 4 || ymd(1).charCount() != 2 || ymd(2).charCount() != 2 then return None
+    if ymd.length != 3 || ymd(0).charCount != 4 || ymd(1).charCount != 2 || ymd(2).charCount != 2 then return None
     if !ymd.forall(isDigits) then return None
     val (y, mo, d) = (ymd(0).toLong(), ymd(1).toLong(), ymd(2).toLong())
     if !(1 <= mo <= 12) || !(1 <= d <= daysIn(y, mo)) then return None
@@ -191,18 +191,18 @@ parseEndedSince(text: string, nowMs: long, zone: time.Zone) -> Option[long]
     var offset: Option[long] = None
     if parts.length == 2
         var clock = parts(1)
-        val cut = if clock.endsWith("Z") then clock.charCount() - 1 elif clock.charCount() > 5 then 5 else clock.charCount()
+        val cut = if clock.endsWith("Z") then clock.charCount - 1 elif clock.charCount > 5 then 5 else clock.charCount
         val suffix = clock.drop(cut)
         clock = clock.take(cut)
-        if suffix.nonEmpty()
+        if suffix.nonEmpty
             parseOffset(suffix) match
                 Some(o) -> offset = Some(o)
                 None -> return None
         val hm = clock.split(":")
-        if hm.length != 2 || hm(0).charCount() != 2 || hm(1).charCount() != 2 || !hm.forall(isDigits) then return None
+        if hm.length != 2 || hm(0).charCount != 2 || hm(1).charCount != 2 || !hm.forall(isDigits) then return None
         (h, mi) = (hm(0).toLong(), hm(1).toLong())
         if h > 23 || mi > 59 then return None
-    val wall = time.Zoned(time.dateTime(int(y), int(mo), int(d), int(h), int(mi)), time.minutes(0), time.utc).toInstant().epochMillis()
+    val wall = time.Zoned(time.dateTime(int(y), int(mo), int(d), int(h), int(mi)), time.minutes(0), time.utc).toInstant.epochMillis
     offset match
         Some(o) -> Some(wall - o)
         None -> Some(instantOfReading(wall, zone))
@@ -213,8 +213,8 @@ private dash(v: Option[long], f: (long) -> string) -> string = v.map(f).getOrEls
 
 private table(rows: Vector[Vector[string]]) -> string
     val cols = rows(0).length
-    val widths = (0..<cols).map(c -> rows.map(r -> r(c).charCount()).max)
-    rows.map(r -> (0..<cols).map(c -> r(c).padEnd(widths(c), ' ')).mkString("  ").trim()).mkString("\n")
+    val widths = (0..<cols).map(c -> rows.map(r -> r(c).charCount).max)
+    rows.map(r -> (0..<cols).map(c -> r(c).padEnd(widths(c), ' ')).mkString("  ").trim).mkString("\n")
 
 // The table `history` prints, its times on the clocks of `zone`, or a line saying nothing matched.
 historyListing(jobs: Vector[EndedJob], zone: time.Zone) -> string
@@ -256,7 +256,7 @@ historyJson(jobs: Vector[EndedJob], unreadable: int) -> Json = Json.obj(
         ("exit", Json.num(e.exit)),
         ("duration_ms", Json.num(e.runMs)),
         ("ended_at", Json.num(e.endedAt)),
-        ("peak_rss", optNum(if e.peakRss > 0 then Some(e.peakRss) else None))).asMembers().get() ++ (if e.label.isEmpty() then [] else [("label", Json.str(e.label))]))))),
+        ("peak_rss", optNum(if e.peakRss > 0 then Some(e.peakRss) else None))).asMembers.get ++ (if e.label.isEmpty then [] else [("label", Json.str(e.label))]))))),
     ("unreadable", Json.num(unreadable)))
 
 // `stats --json`: one object, `kinds` with a member per history key, and how many lines were skipped.

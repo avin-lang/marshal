@@ -3,7 +3,7 @@ module tests
 // `marshal top` scrolled back past the snapshot's ended jobs: the pages of earlier ones, read from
 // the event log or from a history made to order, the position the bottom line gives, and goldens.
 import avin.fs
-import json.Json
+import avin.json.Json
 import dev.avinlang.marshal
 import dev.avinlang.marshal.{JobInfo, Outcome, Overview, Usage}
 import dev.avinlang.marshal.top
@@ -49,7 +49,7 @@ thousand() -> FakeHistory = FakeHistory(endedRange(1010, 1))
 
 selectedId(app: App) -> long = app.selected().map(j -> j.id).getOrElse(-1)
 
-footer(g: Grid) -> string = g.rowText(g.height - 1).trim()
+footer(g: Grid) -> string = g.rowText(g.height - 1).trim
 
 @test("a page of the log's jobs starts after the job it is asked for, or at the latest, and says how many are left")
 pages()
@@ -69,28 +69,28 @@ pages()
 
 @test("the event log's ended jobs, the latest ending first: the last ending stands, a retried attempt and other lines are skipped, no outcome is lost")
 endedJobsOfALog()
-    val dir = fs.createTempDir("marshal-top-history-").ok().get()
+    val dir = fs.createTempDir("marshal-top-history-").ok.get
     val noOutcome = JobInfo(6, "test", 1, 0, false, "/d", ["make"], "done", None, false, 0, 0, 60000, "/h/jobs/6.log", None)
     val retrying = marshal.eventLine(250, "finished", JobInfo(3, "test", 1, 0, false, "/d", ["make"], "done", Some(Outcome.Exited(1)), false, 0, 0, 60000, "/h/jobs/3.log", None), [("retrying", Json.Bool(true))])
     val lines = [endLine(100, 1), endLine(300, 2, Outcome.Exited(3)), retrying, endLine(200, 3), "not json", "",
                  endLine(150, 4, event = "submitted"), endLine(300, 5), endLine(400, 1, Outcome.TimedOut, event = "timeout"),
                  marshal.eventLine(500, "lost", noOutcome, [])]
-    fs.writeText(dir + "/events.jsonl", lines.mkString("\n") + "\n").ok().get()
-    val got = top.endedJobs(dir + "/events.jsonl").ok().get()
+    fs.writeText(dir + "/events.jsonl", lines.mkString("\n") + "\n").ok.get
+    val got = top.endedJobs(dir + "/events.jsonl").ok.get
     assertEq(got.map(j -> j.id), [long(6), long(1), long(5), long(2), long(3)])
     assertEq(got(0).outcome, Some(Outcome.Lost))
     assertEq(got(1).outcome, Some(Outcome.TimedOut))
     assertEq(got(4).outcome, Some(Outcome.Exited(0)))
     assertEq(got(1).cmd, ["make"])
-    assertEq(top.endedJobs(dir + "/none.jsonl").ok().get(), [])
+    assertEq(top.endedJobs(dir + "/none.jsonl").ok.get, [])
     // read once: the pages after the first come from what the first read
     val source = top.logHistory(dir + "/events.jsonl")
-    assertEq(source(Some(1), 2).ok().get().jobs.map(j -> j.id), [long(5), long(2)])
-    fs.writeText(dir + "/events.jsonl", "").ok().get()
-    val next = source(Some(2), 2).ok().get()
+    assertEq(source(Some(1), 2).ok.get.jobs.map(j -> j.id), [long(5), long(2)])
+    fs.writeText(dir + "/events.jsonl", "").ok.get
+    val next = source(Some(2), 2).ok.get
     assertEq(next.jobs.map(j -> j.id), [long(3)])
     assertEq(next.left, 0)
-    assertEq(top.logHistory(dir + "/none.jsonl")(None, 5).ok().get(), Page([], 0))
+    assertEq(top.logHistory(dir + "/none.jsonl")(None, 5).ok.get, Page([], 0))
     fs.removeDirAll(dir)
 
 @test("Down on the last job loads the next page of earlier jobs and selects the first of them; Down within them only moves")
@@ -160,7 +160,7 @@ filterAndPaging()
     app.handle(press(End), 0)
     assertEq(selectedId(app), long(1))
     assertEq(app.shown.length, 1010)
-    assert(app.shown.forall(l -> l.job.outcome.isDefined()))
+    assert(app.shown.forall(l -> l.job.outcome.isDefined))
     app.handle(key('f'), 0)
     assertEq(app.filter, ShowAll)
     assertEq(app.older, [])

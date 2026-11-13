@@ -8,10 +8,10 @@ import avin.fs
 import avin.threads
 import avin.time
 import avin.time.millis
-import json.Json
+import avin.json.Json
 
 // The last event of job `id`.
-lastEventOf(home: string, id: long) -> Json = events(home).filter(e -> e("id").asLong() == Some(id)).last
+lastEventOf(home: string, id: long) -> Json = events(home).filter(e -> e("id").asLong == Some(id)).last
 
 // Waits up to `ms` for the daemon's log to contain `text`.
 daemonSaid(home: string, text: string, ms: long) -> bool
@@ -26,11 +26,11 @@ endedQuiet(home: string, id: long, words: string)
     assertEq(r.code, 124)
     assert(r.out.contains(s"killed after $words without output (quiet timeout)"), r.out)
     val last = lastEventOf(home, id)
-    assertEq(last("event").asString(), Some("quiet"))
-    assertEq(last("outcome")("how").asString(), Some("quiet"))
-    assertEq(last("exit").asLong(), Some(124))
+    assertEq(last("event").asString, Some("quiet"))
+    assertEq(last("outcome")("how").asString, Some("quiet"))
+    assertEq(last("exit").asLong, Some(124))
     val log = fs.readText(s"$home/jobs/$id.log").getOrElse("")
-    assert(log.trim().lines().last.startsWith(s"marshal: killed after $words without output (quiet timeout)"), log)
+    assert(log.trim.lines.last.startsWith(s"marshal: killed after $words without output (quiet timeout)"), log)
 
 @test("a silent job is sampled and stopped at its quiet timeout, with the quiet outcome, while a chatty one as long is not")
 quietSilentAndChatty()
@@ -39,7 +39,7 @@ quietSilentAndChatty()
     val silent = submitted(home, "--quiet-timeout", "2s", "--deadline", "1h", "--", "sh", "-c", "echo starting; sleep 300 & sleep 301 & wait")
     val chatty = submitted(home, "--quiet-timeout", "2s", "--", "sh", "-c", "i=0; while [ $i -lt 6 ]; do echo tick $i; i=$((i+1)); sleep 1; done")
     endedQuiet(home, silent, "2.0s")
-    val took = (time.monotonic() - began).toMillis()
+    val took = (time.monotonic() - began).toMillis
     assert(took >= 2000, s"stopped ${took}ms after it was submitted")
     assert(took < 15000, s"stopped ${took}ms after it was submitted")
     assert(fs.exists(s"$home/jobs/$silent.sample.txt"))
@@ -47,16 +47,16 @@ quietSilentAndChatty()
     assert(!groupAlive(pgidOf(home, silent)))
     assert(fs.readText(s"$home/jobs/$silent.log").getOrElse("").startsWith("starting"))
     assertEq(eventsOf(home, silent), ["submitted", "started", "quiet"])
-    assertEq(lastEventOf(home, silent)("quiet_ms").asLong(), Some(2000))
-    assertEq(lastEventOf(home, silent)("outcome")("after_ms").asLong(), Some(2000))
+    assertEq(lastEventOf(home, silent)("quiet_ms").asLong, Some(2000))
+    assertEq(lastEventOf(home, silent)("outcome")("after_ms").asLong, Some(2000))
     assert(daemonLog(home).contains(s"marshal: job $silent has had no output for 2.0s: sampling and stopping it"), daemonLog(home))
     // the chatty one ran its six seconds and exited 0
     assertEq(m(home, "wait", chatty.toString()).code, 0)
     assertEq(eventsOf(home, chatty), ["submitted", "started", "finished"])
     // ls and history say quiet, not timeout
-    assert(m(home, "ls").out.lines().exists(l -> l.startsWith(silent.toString()) && l.contains("quiet")), m(home, "ls").out)
+    assert(m(home, "ls").out.lines.exists(l -> l.startsWith(silent.toString()) && l.contains("quiet")), m(home, "ls").out)
     val h = m(home, "history").out
-    assert(h.lines().exists(l -> l.trim().startsWith(silent.toString()) && l.contains("quiet") && !l.contains("timeout")), h)
+    assert(h.lines.exists(l -> l.trim.startsWith(silent.toString()) && l.contains("quiet") && !l.contains("timeout")), h)
     assertEq(m(home, "wait", "--until", "ended:outcome=quiet", "--since", silent.toString(), "--timeout", "5s").code, 0)
     cleanUp(home)
 
@@ -67,14 +67,14 @@ quietInStatus()
     val plain = submitted(home, "--", "sleep", "60")
     startedGroup(home, quiet)
     startedGroup(home, plain)
-    assertEq(runningJson(home, quiet)("quiet_ms").asLong(), Some(1800000))
-    assert(!runningJson(home, plain).asMembers().get().exists(kv -> kv.0 == "quiet_ms"), runningJson(home, plain).render())
+    assertEq(runningJson(home, quiet)("quiet_ms").asLong, Some(1800000))
+    assert(!runningJson(home, plain).asMembers.get.exists(kv -> kv.0 == "quiet_ms"), runningJson(home, plain).render)
     // a rerun keeps it
     assertEq(m(home, "kill", quiet.toString()).code, 0)
     assertEq(m(home, "wait", quiet.toString()).code, 143)
-    val again = m(home, "rerun", quiet.toString()).out.trim().toLong()
+    val again = m(home, "rerun", quiet.toString()).out.trim.toLong()
     startedGroup(home, again)
-    assertEq(runningJson(home, again)("quiet_ms").asLong(), Some(1800000))
+    assertEq(runningJson(home, again)("quiet_ms").asLong, Some(1800000))
     assertEq(m(home, "kill", again.toString()).code, 0)
     assertEq(m(home, "kill", plain.toString()).code, 0)
     m(home, "wait", again.toString())
@@ -89,7 +89,7 @@ quietDeadlineFirst()
     assert(r.out.contains("timed out"), r.out)
     assert(!r.out.contains("without output"), r.out)
     assertEq(eventsOf(home, 1), ["submitted", "started", "timeout"])
-    assertEq(lastEventOf(home, 1)("outcome")("how").asString(), Some("timeout"))
+    assertEq(lastEventOf(home, 1)("outcome")("how").asString, Some("timeout"))
     assert(daemonLog(home).contains("job 1 passed its deadline"), daemonLog(home))
     assert(!daemonLog(home).contains("has had no output"), daemonLog(home))
     assert(!fs.readText(s"$home/jobs/1.log").getOrElse("").contains("without output"))
@@ -112,8 +112,8 @@ quietPaused()
     assert(!daemonLog(home).contains(s"job $id has had no output"), daemonLog(home))
     endedQuiet(home, id, "2.0s")
     assertEq(eventsOf(home, id), ["submitted", "started", "paused", "resumed", "quiet"])
-    assert((time.monotonic() - began).toMillis() >= 6500)
-    assert((time.monotonic() - resumed).toMillis() >= 2000)
+    assert((time.monotonic() - began).toMillis >= 6500)
+    assert((time.monotonic() - resumed).toMillis >= 2000)
     cleanUp(home)
 
 @test("a restart starts a running job's quiet clock again, and the job is still stopped at its quiet timeout after it")
@@ -127,9 +127,9 @@ quietAcrossRestart()
     // 5.5 seconds after it started: the old image's clock would have stopped it by now
     threads.sleep(millis(3000))
     assert(!daemonLog(home).contains(s"job $id has had no output"), daemonLog(home))
-    assertEq(runningJson(home, id)("quiet_ms").asLong(), Some(4000))
+    assertEq(runningJson(home, id)("quiet_ms").asLong, Some(4000))
     endedQuiet(home, id, "4.0s")
-    assert((time.monotonic() - restarted).toMillis() >= 4000)
+    assert((time.monotonic() - restarted).toMillis >= 4000)
     assert(fs.exists(s"$home/jobs/$id.sample.txt"))
     cleanUp(home)
 
@@ -153,7 +153,7 @@ quietJobTypeStep()
     endedQuiet(home, id, "2.0s")
     assert(waitGone([sh, sleeper], 6000), "a process of the step survived the quiet timeout")
     assert(fs.exists(s"$home/jobs/$id.sample.txt"))
-    assertEq(lastEventOf(home, id)("quiet_ms").asLong(), Some(2000))
+    assertEq(lastEventOf(home, id)("quiet_ms").asLong, Some(2000))
     cleanUp(home)
 
 @test("a quiet timeout that is zero, negative or garbage is refused by submit, run and run-type, and the help names it")
@@ -168,7 +168,7 @@ quietRefusedE2e()
         assert(t.out.contains(why), t.out)
     refusedWith(m(home, "submit", "--quiet-timeout"), "`--quiet-timeout` needs a value")
     // nothing was submitted
-    assert(events(home).isEmpty, events(home).map(e -> e.render()).mkString("\n"))
+    assert(events(home).isEmpty, events(home).map(e -> e.render).mkString("\n"))
     for name in ["submit", "run"]
         val help = m(home, name, "--help")
         assert(help.out.contains("--quiet-timeout <t>"), name)

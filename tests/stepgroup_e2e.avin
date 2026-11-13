@@ -16,17 +16,17 @@ import dev.avinlang.marshal
 
 @test("a step's group is recorded whole, read back, and forgotten when the step ends")
 recordRoundTrip()
-    val home = fs.createTempDir("marshal-stepgroup-").ok().get()
-    fs.createDirAll(home + "/runs/7").ok().get()
+    val home = fs.createTempDir("marshal-stepgroup-").ok.get
+    fs.createDirAll(home + "/runs/7").ok.get
     assertEq(marshal.stepGroupOf(home, 7), 0)
     marshal.recordStepGroup(home, "7", 4242)
     assertEq(marshal.stepGroupOf(home, 7), 4242)
-    assertEq(fs.readText(marshal.stepGroupFile(home, 7)).ok().get(), "4242")
+    assertEq(fs.readText(marshal.stepGroupFile(home, 7)).ok.get, "4242")
     marshal.recordStepGroup(home, "7", 4343)
     assertEq(marshal.stepGroupOf(home, 7), 4343)
     marshal.forgetStepGroup(home, "7")
     assertEq(marshal.stepGroupOf(home, 7), 0)
-    assert(fs.listDir(home + "/runs/7").ok().get().isEmpty, "a temporary file was left")
+    assert(fs.listDir(home + "/runs/7").ok.get.isEmpty, "a temporary file was left")
     // forgetting what is not recorded is nothing
     marshal.forgetStepGroup(home, "7")
     marshal.forgetStepGroup(home, "8")
@@ -34,19 +34,19 @@ recordRoundTrip()
 
 @test("a record that is not a group is no step group")
 recordGarbage()
-    val home = fs.createTempDir("marshal-stepgroup-").ok().get()
-    fs.createDirAll(home + "/runs/3").ok().get()
+    val home = fs.createTempDir("marshal-stepgroup-").ok.get
+    fs.createDirAll(home + "/runs/3").ok.get
     for text in ["", "abc", "-5", "0", "1", "12x", "\n"]
-        fs.writeText(marshal.stepGroupFile(home, 3), text).ok().get()
+        fs.writeText(marshal.stepGroupFile(home, 3), text).ok.get
         assertEq(marshal.stepGroupOf(home, 3), 0)
-    fs.writeText(marshal.stepGroupFile(home, 3), "99\n").ok().get()
+    fs.writeText(marshal.stepGroupFile(home, 3), "99\n").ok.get
     assertEq(marshal.stepGroupOf(home, 3), 99)
     fs.removeDirAll(home)
 
 @test("a job's groups are its own and its step's, never the same one twice")
 groupsOfJob()
-    val home = fs.createTempDir("marshal-stepgroup-").ok().get()
-    fs.createDirAll(home + "/runs/5").ok().get()
+    val home = fs.createTempDir("marshal-stepgroup-").ok.get
+    fs.createDirAll(home + "/runs/5").ok.get
     assertEq(marshal.groupsOf(home, 5, 100), [100])
     marshal.recordStepGroup(home, "5", 200)
     assertEq(marshal.groupsOf(home, 5, 100), [100, 200])
@@ -58,10 +58,10 @@ groupsOfJob()
 
 @test("a job's memory counts its step's group as well as its own")
 residentCountsStep()
-    val home = fs.createTempDir("marshal-stepgroup-").ok().get()
-    fs.createDirAll(home + "/runs/5").ok().get()
-    val own = Command("sleep", "30").inNewGroup().start().ok().get()
-    val step = Command("sleep", "30").inNewGroup().start().ok().get()
+    val home = fs.createTempDir("marshal-stepgroup-").ok.get
+    fs.createDirAll(home + "/runs/5").ok.get
+    val own = Command("sleep", "30").inNewGroup.start().ok.get
+    val step = Command("sleep", "30").inNewGroup.start().ok.get
     val ownGroup = own.group().getOrElse(own.pid())
     val stepGroup = step.group().getOrElse(step.pid())
     val ownOnly = marshal.jobResident(home, 5, ownGroup)
@@ -83,28 +83,28 @@ val holdScript: string = "echo $$ > shpid\nsleep 300 &\necho $! > sleeppid\nwait
 // A project with the type `hold`, one step that runs `script`.
 holdProject(script: string) -> (string, string)
     val (home, project) = projectWithType("hold", "{\"steps\": [{\"name\": \"hold\", \"run\": [\"sh\", \"hold.sh\"]}]}")
-    fs.writeText(project + "/hold.sh", script).ok().get()
+    fs.writeText(project + "/hold.sh", script).ok.get
     (home, project)
 
 // Waits up to ten seconds for the step to have written its two pids; answers them.
 stepPids(project: string) -> (long, long)
     val until = time.monotonic() + millis(10000)
     while time.monotonic() < until
-        val a = fs.readText(project + "/shpid").getOrElse("").trim().toLongOption()
-        val b = fs.readText(project + "/sleeppid").getOrElse("").trim().toLongOption()
-        if a.isDefined() && b.isDefined() then return (a.get(), b.get())
+        val a = fs.readText(project + "/shpid").getOrElse("").trim.toLongOption()
+        val b = fs.readText(project + "/sleeppid").getOrElse("").trim.toLongOption()
+        if a.isDefined && b.isDefined then return (a.get, b.get)
         threads.sleep(millis(50))
     fail("the step did not start")
 
 // A submitted run of the type `hold`; its id, once its step runs.
 startHold(home: string, project: string, extra: Vector[string] = []) -> long
-    val id = m(home, (["run-type", "--submit", "--dir", project] ++ extra ++ ["hold"])*).out.trim().toLong()
+    val id = m(home, (["run-type", "--submit", "--dir", project] ++ extra ++ ["hold"])*).out.trim.toLong()
     stepPids(project)
     id
 
-procState(pid: long) -> string = Command("ps", "-o", "stat=", "-p", pid.toString()).output().getOrElse("").trim()
+procState(pid: long) -> string = Command("ps", "-o", "stat=", "-p", pid.toString()).output().getOrElse("").trim
 
-procAlive(pid: long) -> bool = process.signal(pid, 0).isOk() && !procState(pid).startsWith("Z") && procState(pid).nonEmpty()
+procAlive(pid: long) -> bool = process.signal(pid, 0).isOk && !procState(pid).startsWith("Z") && procState(pid).nonEmpty
 
 // Waits up to `ms` for every pid to be gone.
 waitGone(pids: Vector[long], ms: long) -> bool
@@ -128,7 +128,7 @@ killReachesStep()
     assertEq(m(home, "kill", id.toString()).code, 0)
     assertEq(m(home, "wait", id.toString()).code, 143)
     assert(waitGone([sh, sleeper], 6000), "a process of the step survived the kill")
-    assert((time.monotonic() - began).toMillis() < 8000)
+    assert((time.monotonic() - began).toMillis < 8000)
     assert(!fs.exists(marshal.stepGroupFile(home, id)) || !procAlive(marshal.stepGroupOf(home, id)))
     cleanUp(home)
 
@@ -182,10 +182,10 @@ deadlineSampleSeesStep()
 @test("a run's peak memory includes its step's process")
 peakIncludesStep()
     val (home, project) = holdProject("/usr/bin/perl -e '$x = \"x\" x 200000000; sleep 4'\n")
-    val id = m(home, "run-type", "--submit", "--dir", project, "hold").out.trim().toLong()
+    val id = m(home, "run-type", "--submit", "--dir", project, "hold").out.trim.toLong()
     assertEq(m(home, "wait", id.toString()).code, 0)
-    val ended = events(home).find(e -> e("id").asLong() == Some(id) && e("event").asString() == Some("finished")).get()
-    assert(ended("peak_rss").asLong().get() > 150000000, ended.render())
+    val ended = events(home).find(e -> e("id").asLong == Some(id) && e("event").asString == Some("finished")).get
+    assert(ended("peak_rss").asLong.get > 150000000, ended.render)
     cleanUp(home)
 
 @test("kill reaches the step after the daemon restarted mid-step")
@@ -242,7 +242,7 @@ runnerKilledHard()
 @test("a step that has ended leaves no record, and a job with no step is signalled as it always was")
 noRecordBetweenSteps()
     val (home, project) = holdProject("echo done\n")
-    val id = m(home, "run-type", "--submit", "--dir", project, "hold").out.trim().toLong()
+    val id = m(home, "run-type", "--submit", "--dir", project, "hold").out.trim.toLong()
     assertEq(m(home, "wait", id.toString()).code, 0)
     assert(!fs.exists(marshal.stepGroupFile(home, id)))
     // a plain job has no run directory, and pause, resume and kill are as before

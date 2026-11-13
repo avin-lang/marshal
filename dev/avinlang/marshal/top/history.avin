@@ -5,8 +5,9 @@ module dev.avinlang.marshal.top
 // the oldest of them asks for a page of earlier ones.
 import avin.collections.mutable.{Map as MutableMap}
 import avin.fs
+import avin.io.ErrorKind
 import avin.io.IoError
-import json
+import avin.json
 import dev.avinlang.marshal
 import dev.avinlang.marshal.{JobInfo, Lost}
 
@@ -37,8 +38,8 @@ pageOf(all: Vector[JobInfo], before: Option[long], limit: int) -> Page
 endedJobs(log: string) -> Result[Vector[JobInfo], string]
     val f = fs.open(log) match
         Ok(f) -> f
-        Err(IoError.NotFound) -> return Ok([])
-        Err(e) -> return Err(s"$log: ${e.message()}")
+        Err(IoError(ErrorKind.NotFound, _, _)) -> return Ok([])
+        Err(e) -> return Err(s"$log: ${e.message}")
     val ends = Buffer[(long, JobInfo)]()
     val position = MutableMap[long, int]()
     loop
@@ -53,22 +54,22 @@ endedJobs(log: string) -> Result[Vector[JobInfo], string]
             Ok(None) -> break
             Err(e) ->
                 f.close()
-                return Err(s"$log: ${e.message()}")
+                return Err(s"$log: ${e.message}")
     f.close()
     val sorted = ends.toVector.sortWith((a, b) -> if a.0 != b.0 then (if a.0 > b.0 then -1 else 1) elif a.1.id != b.1.id then (if a.1.id > b.1.id then -1 else 1) else 0)
     Ok(sorted.map(e -> e.1))
 
 // The time and job of a line of the log that ends a job; None for any other line.
 private endingOf(line: string) -> Option[(long, JobInfo)]
-    if line.trim().isEmpty() then return None
-    val ev = json.parse(line).ok() match
+    if line.trim.isEmpty then return None
+    val ev = json.parse(line).ok match
         Some(ev) -> ev
         None -> return None
     if !marshal.endsJob(ev) then return None
-    val ts = ev.get("ts").flatMap(v -> v.asLong()) match
+    val ts = ev.get("ts").flatMap(v -> v.asLong) match
         Some(t) -> t
         None -> return None
-    marshal.decodeJob(ev).ok().map(j -> (ts, if j.outcome.isDefined() then j else j with { outcome = Some(Lost) }))
+    marshal.decodeJob(ev).ok.map(j -> (ts, if j.outcome.isDefined then j else j with { outcome = Some(Lost) }))
 
 // The history of the log at `log`, read once, at the first page asked for: what ended later comes in
 // the snapshots, so the pages before it never change.

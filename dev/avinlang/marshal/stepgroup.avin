@@ -13,7 +13,7 @@ stepGroupFile(home: string, id: long) -> string = s"$home/runs/$id/step.pgid"
 
 // The group of the step job `id` is running; 0 where there is none or the file is not a group.
 stepGroupOf(home: string, id: long) -> long
-    val n = fs.readText(stepGroupFile(home, id)).getOrElse("").trim().toLongOption().getOrElse(0)
+    val n = fs.readText(stepGroupFile(home, id)).getOrElse("").trim.toLongOption().getOrElse(0)
     if n > 1 then n else 0
 
 // Records `pgid` as job `id`'s current step group, whole or not at all.

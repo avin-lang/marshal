@@ -2,8 +2,8 @@ module tests
 
 // The event log as a restarting daemon reads it, the settings file, and what the command line prints.
 import avin.time
-import json
-import json.Json
+import avin.json
+import avin.json.Json
 import dev.avinlang.marshal
 import dev.avinlang.marshal.cli
 import dev.avinlang.marshal.{Budget, JobInfo, Learning, Outcome, TakeSlotUse, Usage}
@@ -12,7 +12,7 @@ info(id: long, kind: string = "test", landing: bool = false, state: string = "qu
     JobInfo(id, kind, 4, 0, landing, "/d", ["make", "it"], state, outcome, false, 5, elapsed, 60000, s"/h/jobs/$id.log", None, 0, 0, started)
 
 // A zone the tz database names.
-zoneNamed(name: string) -> time.Zone = time.zone(name).ok().get()
+zoneNamed(name: string) -> time.Zone = time.zone(name).ok.get
 
 line(event: string, j: JobInfo, extra: Vector[(string, Json)] = []) -> string = marshal.eventLine(1000, event, j, extra)
 
@@ -21,10 +21,10 @@ ended(id: long, run: long, exit: int, kind: string = "test", landing: bool = fal
 
 @test("an event line is one JSON object: ts and event first, then the job")
 eventShape()
-    val j = json.parse(line("started", info(3), [("pgid", Json.num(77))])).ok().get()
-    assertEq(j.keys().take(3), ["ts", "event", "id"])
-    assertEq(j("event").asString(), Some("started"))
-    assertEq(j("pgid").asLong(), Some(long(77)))
+    val j = json.parse(line("started", info(3), [("pgid", Json.num(77))])).ok.get
+    assertEq(j.keys.take(3), ["ts", "event", "id"])
+    assertEq(j("event").asString, Some("started"))
+    assertEq(j("pgid").asLong, Some(long(77)))
     assertEq(marshal.decodeJob(j), Ok(info(3)))
 
 // A job that ran and was measured: `peak` the most its tree held, started at `at`.
@@ -35,10 +35,10 @@ measured(id: long, peak: long, at: long) -> JobInfo =
 peakInEndingEvent()
     for peak in [long(0), long(1), long(812) * 1024 * 1024, 3072 * G, long.MaxValue]
         val j = measured(4, peak, 1762521060000)
-        val ev = json.parse(line("finished", j, [("run_ms", Json.num(9000)), ("exit", Json.num(0))])).ok().get()
-        assertEq(ev("peak_rss").asLong(), Some(peak))
-        assertEq(ev("rss").asLong(), Some(long(0)))
-        assertEq(ev("started_at").asLong(), Some(long(1762521060000)))
+        val ev = json.parse(line("finished", j, [("run_ms", Json.num(9000)), ("exit", Json.num(0))])).ok.get
+        assertEq(ev("peak_rss").asLong, Some(peak))
+        assertEq(ev("rss").asLong, Some(long(0)))
+        assertEq(ev("started_at").asLong, Some(long(1762521060000)))
         assertEq(marshal.decodeJob(ev), Ok(j))
         // the jobs recovered from the log keep their peaks
         assertEq(marshal.recover([line("submitted", info(4)), line("finished", j)]).ended, [j])
@@ -46,9 +46,9 @@ peakInEndingEvent()
 @test("an event written before memory was measured reads back with no rss, peak or start")
 eventWithoutMemory()
     val old = "{\"ts\":1,\"event\":\"finished\",\"id\":3,\"kind\":\"test\",\"units\":4,\"mem\":0,\"landing\":false,\"dir\":\"/d\",\"cmd\":[\"make\",\"it\"],\"state\":\"done\",\"outcome\":null,\"killed\":false,\"queued_ms\":5,\"elapsed_ms\":0,\"deadline_ms\":60000,\"log\":\"/h/jobs/3.log\",\"sample\":null}"
-    val j = marshal.decodeJob(json.parse(old).ok().get()).ok().get()
+    val j = marshal.decodeJob(json.parse(old).ok.get).ok.get
     assertEq((j.rss, j.peakRss, j.startedAt), (long(0), long(0), long(0)))
-    assert(marshal.decodeJob(json.parse(old.replace("\"sample\":null", "\"sample\":null,\"peak_rss\":\"big\"")).ok().get()).err().exists(e -> e.contains("`peak_rss` is not a whole number")))
+    assert(marshal.decodeJob(json.parse(old.replace("\"sample\":null", "\"sample\":null,\"peak_rss\":\"big\"")).ok.get).err.exists(e -> e.contains("`peak_rss` is not a whole number")))
 
 @test("a job lost with the daemon keeps the peak it was measured at and holds nothing now")
 lostKeepsPeak()
@@ -75,8 +75,8 @@ openJobs()
         line("submitted", info(6)), line("lost", info(6, state = "done", outcome = Some(Outcome.Lost)))]
     val r = marshal.recover(lines)
     assertEq(r.nextId, 7)
-    assertEq(r.open.map(e -> e("id").asLong().get()), [long(2), long(3)])
-    assertEq(r.open.map(e -> e("event").asString().get()), ["started", "submitted"])
+    assertEq(r.open.map(e -> e("id").asLong.get), [long(2), long(3)])
+    assertEq(r.open.map(e -> e("event").asString.get), ["started", "submitted"])
 
 @test("the jobs the log saw end are recovered as their endings describe them, by id, the last `keep` of them")
 endedJobs()
@@ -115,44 +115,44 @@ unreadable()
 
 @test("a lost event marks the job done with the outcome Lost and says whether its group lives")
 lostEvents()
-    val ev = json.parse(line("started", info(2, state = "running"), [("pgid", Json.num(55))])).ok().get()
-    val lost = json.parse(marshal.lostLine(2000, ev, true).get()).ok().get()
-    assertEq(lost("event").asString(), Some("lost"))
-    assertEq(lost("state").asString(), Some("done"))
+    val ev = json.parse(line("started", info(2, state = "running"), [("pgid", Json.num(55))])).ok.get
+    val lost = json.parse(marshal.lostLine(2000, ev, true).get).ok.get
+    assertEq(lost("event").asString, Some("lost"))
+    assertEq(lost("state").asString, Some("done"))
     assertEq(marshal.decodeOutcome(lost("outcome")), Ok(Outcome.Lost))
-    assertEq(lost("exit").asLong(), Some(long(125)))
-    assertEq(lost("pgid").asLong(), Some(long(55)))
-    assertEq(lost("group_alive").asBool(), Some(true))
+    assertEq(lost("exit").asLong, Some(long(125)))
+    assertEq(lost("pgid").asLong, Some(long(55)))
+    assertEq(lost("group_alive").asBool, Some(true))
     assertEq(marshal.lostLine(2000, Json.obj(("id", Json.num(1))), false), None)
 
 @test("a job's ending is found by its id alone, the last one winning, and not a longer id's")
 endings()
     val lines = [line("submitted", info(1)), ended(1, 10, 3), line("submitted", info(12)), ended(12, 10, 0)]
-    assertEq(marshal.endOf(lines, 1).flatMap(e -> e("exit").asLong()), Some(long(3)))
-    assertEq(marshal.endOf(lines, 12).flatMap(e -> e("exit").asLong()), Some(long(0)))
+    assertEq(marshal.endOf(lines, 1).flatMap(e -> e("exit").asLong), Some(long(3)))
+    assertEq(marshal.endOf(lines, 12).flatMap(e -> e("exit").asLong), Some(long(0)))
     assertEq(marshal.endOf(lines, 2), None)
     assertEq(marshal.endOf([line("submitted", info(1))], 1), None)
 
 
 @test("an empty settings file is every default: 12 units, the machine's memory less 8G")
 configDefaults()
-    val c = marshal.readConfig("", 64 * G).ok().get()
+    val c = marshal.readConfig("", 64 * G).ok.get
     assertEq(c.budget, Budget(12, 56 * G))
     assertEq(c.learning, marshal.defaultLearning)
-    assertEq(marshal.readConfig("  \n", 64 * G).ok().get().budget, Budget(12, 56 * G))
+    assertEq(marshal.readConfig("  \n", 64 * G).ok.get.budget, Budget(12, 56 * G))
 
 @test("a machine whose memory is unknown has no memory budget; a small one keeps half")
 configMachines()
-    assertEq(marshal.readConfig("", 0).ok().get().budget.memory, long.MaxValue)
-    assertEq(marshal.readConfig("", 4 * G).ok().get().budget.memory, 2 * G)
+    assertEq(marshal.readConfig("", 0).ok.get.budget.memory, long.MaxValue)
+    assertEq(marshal.readConfig("", 4 * G).ok.get.budget.memory, 2 * G)
 
 @test("every setting is read")
 configSettings()
-    val c = marshal.readConfig("{\"units\": 3, \"memory\": \"10G\", \"deadline_floor\": \"7s\", \"learn_window\": 5, \"learn_min_runs\": 2}", 64 * G).ok().get()
+    val c = marshal.readConfig("{\"units\": 3, \"memory\": \"10G\", \"deadline_floor\": \"7s\", \"learn_window\": 5, \"learn_min_runs\": 2}", 64 * G).ok.get
     assertEq(c.budget, Budget(3, 10 * G))
     assertEq(c.learning, Learning(5, 2, 2, 7000))
-    assertEq(marshal.readConfig("{\"reserve\": \"16G\"}", 64 * G).ok().get().budget.memory, 48 * G)
-    assertEq(marshal.readConfig("{\"memory\": 1000}", 64 * G).ok().get().budget.memory, long(1000))
+    assertEq(marshal.readConfig("{\"reserve\": \"16G\"}", 64 * G).ok.get.budget.memory, 48 * G)
+    assertEq(marshal.readConfig("{\"memory\": 1000}", 64 * G).ok.get.budget.memory, long(1000))
 
 @test("a bad settings file is refused naming the setting")
 configErrors()
@@ -186,7 +186,7 @@ resultLines()
 
 @test("a listing lines its columns up, marks landing jobs and shows no memory as -")
 listings()
-    val rows = marshal.listing([info(1, state = "running"), info(12, "build", true)]).lines().toVector
+    val rows = marshal.listing([info(1, state = "running"), info(12, "build", true)]).lines.toVector
     assertEq(rows.length, 3)
     assertEq(rows(0), "ID  STATE    KIND    UNITS  RESV  STARTED  ELAPSED  LABEL  COMMAND")
     assertEq(rows(1), "1   running  test    4      -     -        0ms             make it")
@@ -196,8 +196,8 @@ listings()
 @test("ELAPSED is - for a job that has not started, whatever its wait, and the run time for the rest")
 elapsedColumn()
     val cell = (j: JobInfo) ->
-        val rows = marshal.listing([j]).lines().toVector
-        rows(1).slice(rows(0).indexOf("ELAPSED"), rows(0).indexOf("LABEL")).trim()
+        val rows = marshal.listing([j]).lines.toVector
+        rows(1).slice(rows(0).indexOf("ELAPSED"), rows(0).indexOf("LABEL")).trim
     for state in ["queued", "waiting", "retrying"] do assertEq(cell(info(1, state = state, elapsed = 90000)), "-")
     assertEq(cell(info(1, state = "running", elapsed = 90000)), marshal.formatMillis(90000))
     assertEq(cell(info(1, state = "done", outcome = Some(Outcome.Cancelled), elapsed = 90000)), marshal.formatMillis(90000))
@@ -237,7 +237,7 @@ startedOnAnotherDay()
 
 @test("a listing shows each job's start in the host's zone, and - for a queued one")
 listingStarted()
-    val rows = marshal.listing([info(1, state = "running", started = 1794058290000), info(2)]).lines().toVector
+    val rows = marshal.listing([info(1, state = "running", started = 1794058290000), info(2)]).lines.toVector
     val expected = time.epochMillis(1794058290000).atZone(time.localZone()).format("MM-DD hh:mm")
     assertEq(rows(0), "ID  STATE    KIND  UNITS  RESV  STARTED      ELAPSED  LABEL  COMMAND")
     assertEq(rows(1), s"1   running  test  4      -     $expected  0ms             make it")
@@ -255,11 +255,11 @@ usageLinesTakeSlot()
 
 @test("take_slot names take-slot's directory, \"\" none, and nothing leaves it to the default")
 configTakeSlot()
-    assertEq(marshal.readConfig("", 64 * G).ok().get().takeSlot, None)
-    assertEq(marshal.readConfig("{\"take_slot\": \"/x/.git\"}", 64 * G).ok().get().takeSlot, Some("/x/.git"))
-    assertEq(marshal.readConfig("{\"take_slot\": \"\"}", 64 * G).ok().get().takeSlot, Some(""))
+    assertEq(marshal.readConfig("", 64 * G).ok.get.takeSlot, None)
+    assertEq(marshal.readConfig("{\"take_slot\": \"/x/.git\"}", 64 * G).ok.get.takeSlot, Some("/x/.git"))
+    assertEq(marshal.readConfig("{\"take_slot\": \"\"}", 64 * G).ok.get.takeSlot, Some(""))
     for bad in ["{\"take_slot\": 3}", "{\"take_slot\": null}", "{\"take_slot\": false}"]
-        assert(marshal.readConfig(bad, 64 * G).err().exists(e -> e.contains("`take_slot` is a directory")), bad)
+        assert(marshal.readConfig(bad, 64 * G).err.exists(e -> e.contains("`take_slot` is a directory")), bad)
 
 @test("the command line's options are read, with kind and units defaulted")
 submissions()
@@ -272,7 +272,7 @@ submissions()
     assertEq(cli.parseSubmission(["--mem", "0", "make"], "/w", env).map(s -> (s.memory, s.memoryGiven)), Ok((long(0), true)))
     assertEq(cli.parseSubmission(["--dir", "/abs", "--", "a"], "/w", env).map(s -> s.dir), Ok("/abs"))
     for bad in [[], ["--"], ["--units"], ["--units", "x", "a"], ["--mem", "1.5G", "a"], ["--deadline", "0", "a"], ["--kind", "", "a"], ["--frob", "1", "a"]]
-        assert(cli.parseSubmission(bad, "/w", env).isErr(), s"$bad")
+        assert(cli.parseSubmission(bad, "/w", env).isErr, s"$bad")
 
 @test("the narrow STARTED text is hh:mm for a job that started today, the full form for another day, - for none")
 startedShortText()

@@ -11,7 +11,7 @@ import dev.avinlang.marshal
 import dev.avinlang.marshal.{StepEnd, StepSaid, ExitSaid, HeadSaid, FailSaid, ResultSaid}
 import dev.avinlang.marshal.runner
 
-scratch() -> string = fs.createTempDir("marshal-runner-").ok().get()
+scratch() -> string = fs.createTempDir("marshal-runner-").ok.get
 
 // Runs `script` with sh as a step in a scratch directory, stopped after `deadlineMs`.
 shStep(script: string, deadlineMs: Option[long] = None) -> (StepEnd, string)
@@ -67,8 +67,8 @@ stepDeadline()
     val ran = runner.execStep(["sh", "-c", "echo $$ > pid; sleep 300 & sleep 301 & wait"], dir, [], log, Some(500), group)
     assert(ran.timedOut)
     assertEq(ran.code, 128 + 15)
-    val pgid = fs.readText(dir + "/pid").ok().get().trim().toLong()
-    assert(process.signal(-pgid, 0).isErr(), "the step's group is still alive")
+    val pgid = fs.readText(dir + "/pid").ok.get.trim.toLong()
+    assert(process.signal(-pgid, 0).isErr, "the step's group is still alive")
     assertEq(group.load(), 0)
     fs.removeDirAll(dir)
 
@@ -77,14 +77,14 @@ stepEndsInTime()
     val dir = scratch()
     val ran = runner.execStep(["sh", "-c", "echo $$ > pid; (sleep 300 &) ; exit 0"], dir, [], dir + "/l.log", Some(60000), Atomic[long](0))
     assertEq(ran, StepEnd(0, false, []))
-    val pgid = fs.readText(dir + "/pid").ok().get().trim().toLong()
+    val pgid = fs.readText(dir + "/pid").ok.get.trim.toLong()
     // TERM was sent as the step ended; the sleeper takes a moment to go
     threads.sleep(millis(300))
-    assert(process.signal(-pgid, 0).isErr(), "the step's leftovers are still alive")
+    assert(process.signal(-pgid, 0).isErr, "the step's leftovers are still alive")
     fs.removeDirAll(dir)
 
 // An Avin program that prints `word`.
-writeProgram(file: string, word: string) = fs.writeText(file, s"main(args: Vector[string]) -> int\n    println(\"$word\")\n    0\n").ok().get()
+writeProgram(file: string, word: string) = fs.writeText(file, s"main(args: Vector[string]) -> int\n    println(\"$word\")\n    0\n").ok.get
 
 @test("a compiled step is cached: the second build is a hit, and a change of its source a miss")
 stepCache()
@@ -92,17 +92,17 @@ stepCache()
     val home = dir + "/home"
     val source = dir + "/hello.avin"
     writeProgram(source, "one")
-    val first = runner.stepBinary(source, home).ok().get()
+    val first = runner.stepBinary(source, home).ok.get
     assert(first.fresh)
     assert(first.program.startsWith(home + "/steps/hello-"), first.program)
-    assertEq(process.Command(first.program).output().ok().get(), "one\n")
-    val again = runner.stepBinary(source, home).ok().get()
+    assertEq(process.Command(first.program).output().ok.get, "one\n")
+    val again = runner.stepBinary(source, home).ok.get
     assertEq(again, runner.Compiled(first.program, false))
     writeProgram(source, "two")
-    val changed = runner.stepBinary(source, home).ok().get()
+    val changed = runner.stepBinary(source, home).ok.get
     assert(changed.fresh)
     assert(changed.program != first.program)
-    assertEq(process.Command(changed.program).output().ok().get(), "two\n")
+    assertEq(process.Command(changed.program).output().ok.get, "two\n")
     // the first build is still there for a run that asks for the first source
     assert(fs.isFile(first.program))
     fs.removeDirAll(dir)
@@ -112,15 +112,15 @@ stepCacheDirectory()
     val dir = scratch()
     val home = dir + "/home"
     val pkg = dir + "/tool"
-    fs.createDir(pkg).ok().get()
-    fs.writeText(pkg + "/avin.hocon", "package { name = \"tool\", version = \"0.1.0\" }\n").ok().get()
+    fs.createDir(pkg).ok.get
+    fs.writeText(pkg + "/avin.hocon", "package { name = \"tool\", version = \"0.1.0\" }\n").ok.get
     writeProgram(pkg + "/main.avin", "pkg")
-    val first = runner.stepBinary(pkg, home).ok().get()
+    val first = runner.stepBinary(pkg, home).ok.get
     assert(first.fresh)
-    assertEq(process.Command(first.program).output().ok().get(), "pkg\n")
-    assert(!runner.stepBinary(pkg, home).ok().get().fresh)
-    fs.writeText(pkg + "/avin.hocon", "package { name = \"tool\", version = \"0.1.1\" }\n").ok().get()
-    assert(runner.stepBinary(pkg, home).ok().get().fresh)
+    assertEq(process.Command(first.program).output().ok.get, "pkg\n")
+    assert(!runner.stepBinary(pkg, home).ok.get.fresh)
+    fs.writeText(pkg + "/avin.hocon", "package { name = \"tool\", version = \"0.1.1\" }\n").ok.get
+    assert(runner.stepBinary(pkg, home).ok.get.fresh)
     fs.removeDirAll(dir)
 
 @test("a step that does not compile is an error with the compiler's message, and nothing is cached")
@@ -128,12 +128,12 @@ stepCacheError()
     val dir = scratch()
     val home = dir + "/home"
     val source = dir + "/broken.avin"
-    fs.writeText(source, "main() -> int = nope\n").ok().get()
+    fs.writeText(source, "main() -> int = nope\n").ok.get
     runner.stepBinary(source, home) match
         Err(e) -> assert(e.contains("cannot build") && e.contains("nope"), e)
         Ok(c) -> fail(s"built $c")
-    assertEq(fs.listDir(home + "/steps").ok().get(), [])
-    assert(runner.stepBinary(dir + "/missing.avin", home).isErr())
+    assertEq(fs.listDir(home + "/steps").ok.get, [])
+    assert(runner.stepBinary(dir + "/missing.avin", home).isErr)
     fs.removeDirAll(dir)
 
 @test("a stale lock of a compiler that died is taken over")
@@ -142,19 +142,19 @@ stepCacheStaleLock()
     val home = dir + "/home"
     val source = dir + "/hello.avin"
     writeProgram(source, "lock")
-    val built = runner.stepBinary(source, home).ok().get()
+    val built = runner.stepBinary(source, home).ok.get
     // as a run killed while compiling leaves it: half an executable under the temporary name and
     // the lock, held by a pid that is gone; nothing at the cache name
-    fs.remove(built.program).ok().get()
-    fs.writeText(built.program + ".building", "half").ok().get()
-    fs.createDir(built.program + ".lock").ok().get()
-    fs.writeText(built.program + ".lock/pid", "999999").ok().get()
+    fs.remove(built.program).ok.get
+    fs.writeText(built.program + ".building", "half").ok.get
+    fs.createDir(built.program + ".lock").ok.get
+    fs.writeText(built.program + ".lock/pid", "999999").ok.get
     assert(!fs.exists(built.program))
-    val again = runner.stepBinary(source, home).ok().get()
+    val again = runner.stepBinary(source, home).ok.get
     assert(again.fresh)
-    assertEq(process.Command(again.program).output().ok().get(), "lock\n")
-    val name = again.program.drop(home.byteLength() + 7)
-    assertEq(fs.listDir(home + "/steps").ok().get(), [name])
+    assertEq(process.Command(again.program).output().ok.get, "lock\n")
+    val name = again.program.drop(home.byteLength + 7)
+    assertEq(fs.listDir(home + "/steps").ok.get, [name])
     fs.removeDirAll(dir)
 
 @test("using a cached step moves the executable's modification time forward; a fresh build is stamped too")
@@ -163,15 +163,15 @@ stepCacheStampsUse()
     val home = dir + "/home"
     val source = dir + "/hello.avin"
     writeProgram(source, "stamp")
-    val built = runner.stepBinary(source, home).ok().get()
-    val builtAt = fs.modified(built.program).ok().get()
+    val built = runner.stepBinary(source, home).ok.get
+    val builtAt = fs.modified(built.program).ok.get
     // aged back a day, as a step nobody has used for a while
-    fs.setModified(built.program, builtAt - millis(86400000)).ok().get()
-    assert(fs.modified(built.program).ok().get() < builtAt)
-    val again = runner.stepBinary(source, home).ok().get()
+    fs.setModified(built.program, builtAt - millis(86400000)).ok.get
+    assert(fs.modified(built.program).ok.get < builtAt)
+    val again = runner.stepBinary(source, home).ok.get
     assert(!again.fresh)
-    assert(fs.modified(again.program).ok().get() >= builtAt)
-    assertEq(fs.listDir(home + "/steps").ok().get().length, 1)
+    assert(fs.modified(again.program).ok.get >= builtAt)
+    assertEq(fs.listDir(home + "/steps").ok.get.length, 1)
     fs.removeDirAll(dir)
 
 @test("an interrupted build leaves nothing at the cache name: a waiter that finds a dead holder never runs half a program")
@@ -180,17 +180,17 @@ stepCacheInterrupted()
     val home = dir + "/home"
     val source = dir + "/hello.avin"
     writeProgram(source, "kill")
-    val built = runner.stepBinary(source, home).ok().get()
-    fs.remove(built.program).ok().get()
+    val built = runner.stepBinary(source, home).ok.get
+    fs.remove(built.program).ok.get
     // the compiler was killed after writing part of its output, and the run after it
-    fs.writeText(built.program + ".building", "half").ok().get()
-    fs.writeText(built.program + ".build.log", "partial").ok().get()
-    fs.createDir(built.program + ".lock").ok().get()
-    fs.writeText(built.program + ".lock/pid", "999999").ok().get()
+    fs.writeText(built.program + ".building", "half").ok.get
+    fs.writeText(built.program + ".build.log", "partial").ok.get
+    fs.createDir(built.program + ".lock").ok.get
+    fs.writeText(built.program + ".lock/pid", "999999").ok.get
     assert(!fs.isFile(built.program))
-    val again = runner.stepBinary(source, home).ok().get()
+    val again = runner.stepBinary(source, home).ok.get
     assert(again.fresh)
-    assertEq(process.Command(again.program).output().ok().get(), "kill\n")
+    assertEq(process.Command(again.program).output().ok.get, "kill\n")
     assert(!fs.exists(again.program + ".building"))
     assert(!fs.exists(again.program + ".build.log"))
     fs.removeDirAll(dir)
@@ -201,14 +201,14 @@ stepCacheNoTemporaries()
     val home = dir + "/home"
     val source = dir + "/hello.avin"
     writeProgram(source, "tidy")
-    val built = runner.stepBinary(source, home).ok().get()
-    assertEq(fs.listDir(home + "/steps").ok().get().length, 1)
-    runner.stepBinary(source, home).ok().get()
-    assertEq(fs.listDir(home + "/steps").ok().get().length, 1)
+    val built = runner.stepBinary(source, home).ok.get
+    assertEq(fs.listDir(home + "/steps").ok.get.length, 1)
+    runner.stepBinary(source, home).ok.get
+    assertEq(fs.listDir(home + "/steps").ok.get.length, 1)
     assert(fs.isFile(built.program))
-    fs.writeText(dir + "/bad.avin", "main() -> int = nope\n").ok().get()
-    assert(runner.stepBinary(dir + "/bad.avin", home).isErr())
-    assertEq(fs.listDir(home + "/steps").ok().get().length, 1)
+    fs.writeText(dir + "/bad.avin", "main() -> int = nope\n").ok.get
+    assert(runner.stepBinary(dir + "/bad.avin", home).isErr)
+    assertEq(fs.listDir(home + "/steps").ok.get.length, 1)
     fs.removeDirAll(dir)
 
 @test("the cache name follows the compiler's source text: the same text, the same name; another, another")
@@ -217,43 +217,43 @@ stepCacheKey()
     val home = dir + "/home"
     val a = dir + "/hello.avin"
     val b = dir + "/other/hello.avin"
-    fs.createDir(dir + "/other").ok().get()
+    fs.createDir(dir + "/other").ok.get
     writeProgram(a, "same")
     writeProgram(b, "same")
-    val first = runner.stepBinary(a, home).ok().get()
+    val first = runner.stepBinary(a, home).ok.get
     // another path, identical text: one build
-    assertEq(runner.stepBinary(b, home).ok().get(), runner.Compiled(first.program, false))
+    assertEq(runner.stepBinary(b, home).ok.get, runner.Compiled(first.program, false))
     writeProgram(b, "diff")
-    assert(runner.stepBinary(b, home).ok().get().program != first.program)
+    assert(runner.stepBinary(b, home).ok.get.program != first.program)
     // the name carries a 32-digit key
-    assertEq(first.program.drop(first.program.lastIndexOf("-") + 1).byteLength(), 32)
+    assertEq(first.program.drop(first.program.lastIndexOf("-") + 1).byteLength, 32)
     fs.removeDirAll(dir)
 
 @test("an atomic write replaces a file whole and leaves no temporary file, and a failed one leaves the old file")
 atomicWrite()
     val dir = scratch()
     val file = dir + "/state.json"
-    marshal.writeAtomic(file, "one\n").ok().get()
-    assertEq(fs.readText(file).ok().get(), "one\n")
-    marshal.writeAtomic(file, "two\n").ok().get()
-    assertEq(fs.readText(file).ok().get(), "two\n")
-    assertEq(fs.listDir(dir).ok().get(), ["state.json"])
-    marshal.writeAtomic(file, "").ok().get()
-    assertEq(fs.readText(file).ok().get(), "")
-    marshal.writeAtomic(file, "日本\n").ok().get()
-    assertEq(fs.readText(file).ok().get(), "日本\n")
+    marshal.writeAtomic(file, "one\n").ok.get
+    assertEq(fs.readText(file).ok.get, "one\n")
+    marshal.writeAtomic(file, "two\n").ok.get
+    assertEq(fs.readText(file).ok.get, "two\n")
+    assertEq(fs.listDir(dir).ok.get, ["state.json"])
+    marshal.writeAtomic(file, "").ok.get
+    assertEq(fs.readText(file).ok.get, "")
+    marshal.writeAtomic(file, "日本\n").ok.get
+    assertEq(fs.readText(file).ok.get, "日本\n")
     // a directory that is not there: an error, nothing made
-    assert(marshal.writeAtomic(dir + "/missing/state.json", "x").isErr())
-    assertEq(fs.listDir(dir).ok().get(), ["state.json"])
+    assert(marshal.writeAtomic(dir + "/missing/state.json", "x").isErr)
+    assertEq(fs.listDir(dir).ok.get, ["state.json"])
     // a target that cannot be replaced (a directory holding an entry): an error, the temporary file removed
-    fs.createDir(dir + "/full").ok().get()
-    fs.writeText(dir + "/full/x", "x").ok().get()
-    assert(marshal.writeAtomic(dir + "/full", "x").isErr())
-    assertEq(fs.listDir(dir).ok().get().length, 2)
+    fs.createDir(dir + "/full").ok.get
+    fs.writeText(dir + "/full/x", "x").ok.get
+    assert(marshal.writeAtomic(dir + "/full", "x").isErr)
+    assertEq(fs.listDir(dir).ok.get.length, 2)
     // a temporary file named by the caller, in another directory of the same file system
-    fs.createDir(dir + "/rec").ok().get()
-    marshal.writeAtomicVia(dir + "/rec/7", "3\n", dir + "/.t").ok().get()
-    assertEq(fs.listDir(dir + "/rec").ok().get(), ["7"])
+    fs.createDir(dir + "/rec").ok.get
+    marshal.writeAtomicVia(dir + "/rec/7", "3\n", dir + "/.t").ok.get
+    assertEq(fs.listDir(dir + "/rec").ok.get, ["7"])
     assert(!fs.exists(dir + "/.t"))
     fs.removeDirAll(dir)
 
@@ -263,42 +263,42 @@ typeLookup()
     val project = dir + "/project"
     val home = dir + "/home"
     val stock = dir + "/stock"
-    for d in [project + "/.marshal/types", home + "/types", stock + "/types"] do fs.createDirAll(d).ok().get()
-    fs.writeText(stock + "/types/t.job", "{}").ok().get()
+    for d in [project + "/.marshal/types", home + "/types", stock + "/types"] do fs.createDirAll(d).ok.get
+    fs.writeText(stock + "/types/t.job", "{}").ok.get
     assertEq(runner.findType("t", project, home, Some(stock)), Ok(stock + "/types/t.job"))
-    fs.writeText(home + "/types/t.job", "{}").ok().get()
+    fs.writeText(home + "/types/t.job", "{}").ok.get
     assertEq(runner.findType("t", project, home, Some(stock)), Ok(home + "/types/t.job"))
-    fs.writeText(project + "/.marshal/types/t.job", "{}").ok().get()
+    fs.writeText(project + "/.marshal/types/t.job", "{}").ok.get
     assertEq(runner.findType("t", project, home, Some(stock)), Ok(project + "/.marshal/types/t.job"))
     // a path is the file itself, relative to the directory
-    fs.writeText(project + "/mine.job", "{}").ok().get()
+    fs.writeText(project + "/mine.job", "{}").ok.get
     assertEq(runner.findType("mine.job", project, home, None), Ok(project + "/mine.job"))
     assertEq(runner.findType("./mine.job", project, home, None), Ok(project + "/./mine.job"))
     runner.findType("other", project, home, Some(stock)) match
         Err(e) -> assert(e.contains("no type `other`") && e.contains(stock + "/types/other.job"), e)
         Ok(f) -> fail(f)
-    assert(runner.findType("nope.job", project, home, None).isErr())
+    assert(runner.findType("nope.job", project, home, None).isErr)
     fs.removeDirAll(dir)
 
 @test("a type is named after its file, and a broken one is refused naming the file")
 typeLoading()
     val dir = scratch()
-    fs.writeText(dir + "/gate.job", "{\"steps\": [{\"name\": \"a\", \"run\": [\"true\"]}]}").ok().get()
-    val t = runner.loadType(dir + "/gate.job").ok().get()
+    fs.writeText(dir + "/gate.job", "{\"steps\": [{\"name\": \"a\", \"run\": [\"true\"]}]}").ok.get
+    val t = runner.loadType(dir + "/gate.job").ok.get
     assertEq(t.name, "gate")
     assertEq(t.kind, "gate")
-    fs.writeText(dir + "/bad.job", "{\"steps\": 1}").ok().get()
+    fs.writeText(dir + "/bad.job", "{\"steps\": 1}").ok.get
     runner.loadType(dir + "/bad.job") match
         Err(e) -> assert(e.startsWith(dir + "/bad.job: "), e)
         Ok(t) -> fail(s"$t")
-    assert(runner.loadType(dir + "/none.job").isErr())
+    assert(runner.loadType(dir + "/none.job").isErr)
     fs.removeDirAll(dir)
 
 @test("the stock train type reads, and so does every example type")
 stockTypes()
-    val root = process.currentDir().ok().get()
-    val t = runner.loadType(root + "/stock/types/train.job").ok().get()
+    val root = process.currentDir().ok.get
+    val t = runner.loadType(root + "/stock/types/train.job").ok.get
     assert(t.landing)
     assertEq(t.bisect, Some("branch"))
-    for name in fs.listDir(root + "/examples/types").ok().get()
-        assert(runner.loadType(root + "/examples/types/" + name).isOk(), name)
+    for name in fs.listDir(root + "/examples/types").ok.get
+        assert(runner.loadType(root + "/examples/types/" + name).isOk, name)

@@ -43,7 +43,7 @@ cleanSparesActive()
     val queued = submitted(home, "--units", "12", "--", "sleep", "30")
     val held = submitted(home, "--units", "12", "--", "sleep", "30")
     assertEq(m(home, "hold", held.toString()).code, 0)
-    for id in [running, queued, held] do fs.createDirAll(s"$home/runs/$id").ok().get()
+    for id in [running, queued, held] do fs.createDirAll(s"$home/runs/$id").ok.get
     for _ in 1..40
         if m(home, "ls").out.contains("running") then break
         threads.sleep(millis(100))
@@ -80,17 +80,17 @@ cleanKilled()
 cleanDryRun()
     val home = newHome()
     quickJobs(home, 3)
-    fs.createDirAll(s"$home/runs/1").ok().get()
-    val before = fs.readText(home + "/events.jsonl").ok().get()
+    fs.createDirAll(s"$home/runs/1").ok.get
+    val before = fs.readText(home + "/events.jsonl").ok.get
     val dry = m(home, "clean", "--dry-run")
     assertEq(dry.code, 0)
     assert(dry.out.contains("would remove job 1's log") && dry.out.contains("would remove run directory 1"), dry.out)
     assert(dry.out.contains("dry run, nothing was removed"), dry.out)
     for id in 1..3 do assert(hasLog(home, id))
     assert(fs.isDir(home + "/runs/1"))
-    assertEq(fs.readText(home + "/events.jsonl").ok().get(), before)
+    assertEq(fs.readText(home + "/events.jsonl").ok.get, before)
     val real = m(home, "clean")
-    assertEq(real.out.replace("would remove", "removed").lines().filter(l -> l.startsWith("removed")), dry.out.replace("would remove", "removed").lines().filter(l -> l.startsWith("removed")))
+    assertEq(real.out.replace("would remove", "removed").lines.filter(l -> l.startsWith("removed")), dry.out.replace("would remove", "removed").lines.filter(l -> l.startsWith("removed")))
     for id in 1..3 do assert(!hasLog(home, id))
     assert(!fs.exists(home + "/runs/1"))
     cleanUp(home)
@@ -159,9 +159,9 @@ cleanThenRerun()
     assert(w.out.contains("job 1 exited 0"), w.out)
     val r = m(home, "rerun", "1")
     assertEq(r.code, 0)
-    assertEq(r.out.trim(), "3")
+    assertEq(r.out.trim, "3")
     assertEq(m(home, "wait", "3").code, 0)
-    assertEq(fs.readText(s"$home/jobs/3.log").ok().get(), "job 1\n")
+    assertEq(fs.readText(s"$home/jobs/3.log").ok.get, "job 1\n")
     assertEq(m(home, "clean").out.contains("removed job 3's log"), true)
     cleanUp(home)
 
@@ -194,10 +194,10 @@ trimmedEvents()
     assertEq(gone.code, 2)
     assert(gone.out.contains("job 1's command is not in the event log"), gone.out)
     // the newest job's can, and ids go on from 4
-    assertEq(m(home, "rerun", "3").out.trim(), "4")
+    assertEq(m(home, "rerun", "3").out.trim, "4")
     assertEq(m(home, "wait", "4").code, 0)
     // nothing is left beside events.jsonl
-    assertEq(fs.listDir(home).ok().get().filter(n -> n.startsWith("events")), ["events.jsonl"])
+    assertEq(fs.listDir(home).ok.get.filter(n -> n.startsWith("events")), ["events.jsonl"])
     cleanUp(home)
 
 @test("a trimmed log survives a restart: ids are not reused and the newest job is still known")
@@ -215,16 +215,16 @@ trimmedEventsRestart()
 cleanSteps()
     val home = newHome("{\"keep_steps\": \"never\"}")
     val dir = home + "/steps"
-    fs.createDirAll(dir).ok().get()
+    fs.createDirAll(dir).ok.get
     val old = "old-0123456789abcdef0123456789abcdef"
     val fresh = "fresh-fedcba9876543210fedcba9876543210"
     val busy = "busy-00000000000000000000000000000000"
-    for name in [old, fresh, busy] do fs.writeText(s"$dir/$name", "x".repeat(2048)).ok().get()
-    fs.setModified(s"$dir/$old", time.epochMillis(1000)).ok().get()
-    fs.setModified(s"$dir/$busy", time.epochMillis(1000)).ok().get()
-    fs.createDir(s"$dir/$busy.lock").ok().get()
+    for name in [old, fresh, busy] do fs.writeText(s"$dir/$name", "x".repeat(2048)).ok.get
+    fs.setModified(s"$dir/$old", time.epochMillis(1000)).ok.get
+    fs.setModified(s"$dir/$busy", time.epochMillis(1000)).ok.get
+    fs.createDir(s"$dir/$busy.lock").ok.get
     // a record an older version wrote beside the step goes with the next clean
-    fs.writeText(s"$dir/$fresh.used", "1000").ok().get()
+    fs.writeText(s"$dir/$fresh.used", "1000").ok.get
     val dry = m(home, "clean", "--older-than", "1h", "--dry-run")
     assert(dry.out.contains(s"would remove compiled step $old"), dry.out)
     assert(dry.out.contains("marshal: would free 2.0K"), dry.out)
@@ -243,14 +243,14 @@ cleanSteps()
 cleanBytesReported()
     val home = newHome()
     quickJobs(home, 2)
-    fs.createDirAll(home + "/runs/1").ok().get()
-    fs.writeText(home + "/runs/1/big", "z".repeat(3000)).ok().get()
+    fs.createDirAll(home + "/runs/1").ok.get
+    fs.writeText(home + "/runs/1/big", "z".repeat(3000)).ok.get
     val dry = m(home, "clean", "--dry-run")
-    val freed = dry.out.lines().filter(l -> l.startsWith("marshal: would free ")).toVector
+    val freed = dry.out.lines.filter(l -> l.startsWith("marshal: would free ")).toVector
     assertEq(freed.length, 1)
     assert(fs.isFile(home + "/runs/1/big"))
     val real = m(home, "clean")
-    assertEq(real.out.lines().filter(l -> l.startsWith("marshal: freed ")).map(l -> l.drop("marshal: freed ".byteLength())).toVector, freed.map(l -> l.drop("marshal: would free ".byteLength())))
+    assertEq(real.out.lines.filter(l -> l.startsWith("marshal: freed ")).map(l -> l.drop("marshal: freed ".byteLength)).toVector, freed.map(l -> l.drop("marshal: would free ".byteLength)))
     assert(!fs.exists(home + "/runs/1/big"))
     cleanUp(home)
 
@@ -258,7 +258,7 @@ cleanBytesReported()
 cleanRunDirectories()
     val home = newHome()
     quickJobs(home, 1)
-    for name in ["1", "77", "notes"] do fs.createDirAll(s"$home/runs/$name").ok().get()
+    for name in ["1", "77", "notes"] do fs.createDirAll(s"$home/runs/$name").ok.get
     val r = m(home, "clean", "--keep", "1")
     assert(r.out.contains("removed run directory 77"), r.out)
     assert(!fs.exists(home + "/runs/77"))
@@ -273,7 +273,7 @@ automaticRetention()
     assertEq(first.code, 0)
     assertEq(mWith(home, env, "wait", "1").code, 0)
     for text in ["two", "three"]
-        val id = mWith(home, env, "submit", "--", "sh", "-c", s"echo $text").out.trim()
+        val id = mWith(home, env, "submit", "--", "sh", "-c", s"echo $text").out.trim
         assertEq(mWith(home, env, "wait", id).code, 0)
     val blocker = idIn(mWith(home, env, "submit", "--units", "12", "--", "sleep", "30").out)
     for _ in 1..50
@@ -302,7 +302,7 @@ retentionAcrossRestart()
     quickJobs(home, 3)
     val long = submitted(home, "--units", "12", "--", "sleep", "30")
     for id in 1..3 do assert(hasLog(home, id))
-    fs.writeText(home + "/config.json", "{\"keep_jobs\": 1}").ok().get()
+    fs.writeText(home + "/config.json", "{\"keep_jobs\": 1}").ok.get
     restarted(home)
     assert(!hasLog(home, 1) && !hasLog(home, 2), "old logs remain")
     assert(hasLog(home, 3))

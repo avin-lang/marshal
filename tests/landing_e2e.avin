@@ -68,17 +68,17 @@ landingTicketAheadOfTakeSlot()
     assert(within(2000, () -> started(home, a)))
     // a take-slot waiter that arrived a second before the landing job
     val waiter = sleeper()
-    fs.createDirAll(slots(home) + "/slot-waiting").ok().get()
+    fs.createDirAll(slots(home) + "/slot-waiting").ok.get
     val earlier = time.now().epochMicros - 1000000
     val theirs = slots(home) + "/slot-waiting/" + marshal.ticketName(earlier, waiter.pid)
-    fs.writeText(theirs, "1\n").ok().get()
+    fs.writeText(theirs, "1\n").ok.get
     val land = submitted(home, "--landing", "--mem", "600M", "--", "sleep", "0.3")
     val mine = s"-${daemonPid(home)}"
     val ours = () -> tickets(home).find(t -> t.endsWith(mine)).flatMap(t -> marshal.parseTicket(t))
     assert(within(5000, () -> ours().exists(t -> t.0 < earlier)), tickets(home).mkString(" "))
-    assertEq(fs.readText(slots(home) + "/slot-waiting/" + tickets(home).find(t -> t.endsWith(mine)).get()).ok().get(), "1\nmarshal\n")
+    assertEq(fs.readText(slots(home) + "/slot-waiting/" + tickets(home).find(t -> t.endsWith(mine)).get).ok.get, "1\nmarshal\n")
     // with the earlier waiter gone, a real take-slot run that fits is still held back
-    fs.remove(theirs).ok().get()
+    fs.remove(theirs).ok.get
     stopSleeper(waiter)
     val run = takeSlot(home, [("SLOT_UNITS", "1")], "touch", "marker")
     threads.sleep(millis(12000))

@@ -2,7 +2,7 @@ module tests
 
 // Reservations learned from a kind's peaks, and admission counting each running job as its
 // reservation or its measured memory, whichever is more.
-import json
+import avin.json
 import dev.avinlang.marshal
 import dev.avinlang.marshal.{Budget, JobInfo, JobSpec, MemoryHistory, MemoryLearning, Overview, Reply, Request, Reservation, Started, Usage, Waiting}
 
@@ -26,7 +26,7 @@ enoughHistory()
     // rounded up to a whole mebibyte
     assertEq(marshal.learnedPeak(learning0,[1000, 1000]), Some(M))
     val odd = 3 * G + 12345
-    val learned = marshal.learnedPeak(learning0,[odd, 1]).get()
+    val learned = marshal.learnedPeak(learning0,[odd, 1]).get
     assertEq(learned % M, 0)
     assert(learned >= odd + odd / 10, s"$learned")
     assert(learned < odd + odd / 10 + M, s"$learned")
@@ -98,7 +98,7 @@ dirHistory()
     assertEq(marshal.reservationFor(learning0, 0, false, fallback.peaks, 60 * G), Reservation(0, false))
     // the directory's estimate is the same rule: the most of its last ten, a tenth more
     val own = marshal.memoryHistory(learning0, small, big)
-    assertEq(marshal.reservationFor(learning0, 0, false, own.peaks, 60 * G), Reservation(marshal.learnedPeak(learning0, small).get(), true))
+    assertEq(marshal.reservationFor(learning0, 0, false, own.peaks, 60 * G), Reservation(marshal.learnedPeak(learning0, small).get, true))
     assertEq(marshal.learnedPeak(learning0, small), Some(2 * G + 205 * M))
     // the minimum follows the learning's minRuns
     assertEq(marshal.memoryHistory(MemoryLearning(10, 1, 10), [G], big).from, "kind+dir")
@@ -138,7 +138,7 @@ recoverDirPeaks()
     // a log written before directories were learned (no dir) still teaches the kind
     val old = marshal.recover([peakEvent(1, 26 * G, None), peakEvent(2, 20 * G, None)])
     assertEq(old.peaks.keys.toVector, ["test"])
-    assertEq(marshal.reservationFor(learning0, 0, false, marshal.memoryHistory(learning0, [], old.peaks("test")).peaks, 60 * G), Reservation(marshal.learnedPeak(learning0, [26 * G, 20 * G]).get(), true))
+    assertEq(marshal.reservationFor(learning0, 0, false, marshal.memoryHistory(learning0, [], old.peaks("test")).peaks, 60 * G), Reservation(marshal.learnedPeak(learning0, [26 * G, 20 * G]).get, true))
 
 job(memory: long, reserved: long, learned: bool) -> JobInfo =
     JobInfo(1, "build", 1, memory, false, "/", ["true"], "queued", None, false, 0, 0, 0, "/l", None, reserved = reserved, reservedLearned = learned)
@@ -156,34 +156,34 @@ resvText()
 resvFromProtocol()
     for from in ["given", "kind+dir", "kind", "none"]
         val j = JobInfo(1, "build", 1, 0, false, "/", ["true"], "queued", None, false, 0, 0, 0, "/l", None, reserved = 22 * G, reservedLearned = true, reservedFrom = from)
-        assertEq(marshal.encodeJob(j)("resv_from").asString(), Some(from))
-        assertEq(marshal.decodeReply(marshal.encodeReply(Reply.Jobs([j])).render()), Ok(Reply.Jobs([j])))
+        assertEq(marshal.encodeJob(j)("resv_from").asString, Some(from))
+        assertEq(marshal.decodeReply(marshal.encodeReply(Reply.Jobs([j])).render), Ok(Reply.Jobs([j])))
     val unsaid = marshal.encodeJob(job(0, 22 * G, true))
-    assert(!unsaid.render().contains("resv_from"), unsaid.render())
+    assert(!unsaid.render.contains("resv_from"), unsaid.render)
     assertEq(marshal.decodeJob(unsaid).map(j -> j.reservedFrom), Ok(""))
-    assert(marshal.decodeJob(json.parse(unsaid.render().replace("\"resv\":", "\"resv_from\":7,\"resv\":")).ok().get()).err().exists(e -> e.contains("`resv_from` is not a string")))
+    assert(marshal.decodeJob(json.parse(unsaid.render.replace("\"resv\":", "\"resv_from\":7,\"resv\":")).ok.get).err.exists(e -> e.contains("`resv_from` is not a string")))
 
 @test("a job's reservation and learned mark, the held memory and the memory-given flag read back")
 protocol()
     for (r, learned) in [(long(0), false), (22 * G, true), (long.MaxValue, true)]
         val reply = Reply.Jobs([job(0, r, learned)])
-        assertEq(marshal.decodeReply(marshal.encodeReply(reply).render()), Ok(reply))
+        assertEq(marshal.decodeReply(marshal.encodeReply(reply).render), Ok(reply))
     val j = marshal.encodeJob(job(0, 22 * G, true))
-    assertEq((j("resv").asLong(), j("resv_learned").asBool()), (Some(22 * G), Some(true)))
+    assertEq((j("resv").asLong, j("resv_learned").asBool), (Some(22 * G), Some(true)))
     // a job from a daemon that sent no reservation reserves the memory it declared
-    val old = marshal.encodeJob(job(3 * G, 0, false)).render().replace(",\"resv\":0,\"resv_learned\":false", "")
+    val old = marshal.encodeJob(job(3 * G, 0, false)).render.replace(",\"resv\":0,\"resv_learned\":false", "")
     assert(!old.contains("resv"), old)
     assertEq(marshal.decodeReply(s"{\"ok\":true,\"job\":$old}"), Ok(Reply.Ended(job(3 * G, 3 * G, false))))
     val u = Usage(1, 12, 30 * G, 56 * G, 1, 0, None, None, 27 * G, 64 * G, false, 57 * G)
-    assertEq(marshal.decodeReply(marshal.encodeReply(Reply.Using(u)).render()), Ok(Reply.Using(u)))
+    assertEq(marshal.decodeReply(marshal.encodeReply(Reply.Using(u)).render), Ok(Reply.Using(u)))
     // a snapshot counts its running and queued jobs from its lists
     val view = Reply.Viewed(Overview(Usage(0, 12, 30 * G, 56 * G, 0, 0, None, None, 27 * G, 64 * G, false, 57 * G), 0, [], [], []))
-    assertEq(marshal.decodeReply(marshal.encodeReply(view).render()), Ok(view))
-    assertEq(marshal.statusJson(u, [])("mem_held").asLong(), Some(57 * G))
+    assertEq(marshal.decodeReply(marshal.encodeReply(view).render), Ok(view))
+    assertEq(marshal.statusJson(u, [])("mem_held").asLong, Some(57 * G))
     for given in [false, true]
         val r = Request.Submit(JobSpec("build", 1, 0, false, "/", None, ["make"], [], memoryGiven = given))
-        assertEq(marshal.decodeRequest(marshal.encodeRequest(r).render()), Ok(r))
+        assertEq(marshal.decodeRequest(marshal.encodeRequest(r).render), Ok(r))
     // a submit from a client that does not say reads as not given
     assertEq(marshal.decodeRequest("{\"op\":\"submit\",\"kind\":\"build\",\"units\":1,\"mem\":0,\"dir\":\"/\",\"cmd\":[\"make\"]}"),
              Ok(Request.Submit(JobSpec("build", 1, 0, false, "/", None, ["make"], []))))
-    assert(marshal.decodeRequest("{\"op\":\"submit\",\"kind\":\"build\",\"units\":1,\"mem\":0,\"dir\":\"/\",\"cmd\":[\"make\"],\"mem_given\":3}").err().get().contains("`mem_given` is not a bool"))
+    assert(marshal.decodeRequest("{\"op\":\"submit\",\"kind\":\"build\",\"units\":1,\"mem\":0,\"dir\":\"/\",\"cmd\":[\"make\"],\"mem_given\":3}").err.get.contains("`mem_given` is not a bool"))

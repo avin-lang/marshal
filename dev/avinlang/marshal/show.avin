@@ -20,7 +20,7 @@ resultLine(j: JobInfo) -> string
         Some(Lost) -> "lost: the daemon stopped while it was queued or running"
         Some(DependencyFailed(after)) -> s"cancelled before it started: job $after, which it waited for, did not succeed"
         None -> s"is ${j.state}"
-    val attempts = if j.attempt > 1 && j.outcome.isDefined() then s" (attempt ${j.attempt})" else ""
+    val attempts = if j.attempt > 1 && j.outcome.isDefined then s" (attempt ${j.attempt})" else ""
     s"marshal: job ${j.id} $how$attempts; log ${j.log}"
 
 // A job's state as a listing's column shows it: a job waiting for others with the jobs it waits
@@ -44,7 +44,7 @@ stateColumn(j: JobInfo) -> string = j.outcome match
             other -> other
 
 // Whether a job is still to run: queued, held, waiting for others or waiting to retry.
-notRunYet(j: JobInfo) -> bool = j.outcome.isEmpty() && (j.state == "queued" || j.state == "waiting" || j.state == "retrying")
+notRunYet(j: JobInfo) -> bool = j.outcome.isEmpty && (j.state == "queued" || j.state == "waiting" || j.state == "retrying")
 
 // The ELAPSED column for `ms` of run time: `-` for a job that has not started, whose wait is
 // `queued_ms` in the JSON.
@@ -107,7 +107,7 @@ listing(jobs: Vector[JobInfo], whys: Vector[(long, Why)] = []) -> string
         j.label,
         j.cmd.mkString(" ")])
     val last = rows(0).length - 1
-    val widths = (0..<last).map(c -> rows.map(r -> r(c).charCount()).max)
+    val widths = (0..<last).map(c -> rows.map(r -> r(c).charCount).max)
     rows.map(r -> (0..<last).map(c -> r(c).padEnd(widths(c), ' ')).mkString("  ") + "  " + r(last)).mkString("\n")
 
 // A job's kind as a listing shows it, marked with its lane: `*` after a landing job's, `^` after a
@@ -123,8 +123,8 @@ fittedKind(j: JobInfo, width: int) -> string = fittedMarked(j.kind, j.landing, j
 fittedMarked(kind: string, landing: bool, quick: bool, urgent: bool, width: int, exclusive: bool = false) -> string
     val marks = kindMarked("", landing, quick, urgent, exclusive)
     val whole = kind + marks
-    if whole.charCount() <= width then return whole
-    val room = width - marks.charCount() - 1
+    if whole.charCount <= width then return whole
+    val room = width - marks.charCount - 1
     if room < 0 then return ("…" + marks).take(if width < 0 then 0 else width)
     kind.take(room) + "…" + marks
 

@@ -18,7 +18,7 @@ import dev.avinlang.marshal.{Outcome, Overview, Reply, Why}
 topIn(home: string, keys: string, zone: string = "") -> string
     val script = "(sleep 3; printf '" + keys + "'; sleep 2) | script -q /dev/null sh -c 'stty cols 100 rows 30; \"$M\" top; echo STATUS=$?'"
     val base = Command("sh", "-c", script).withEnv("M", bin()).withEnv("MARSHAL_HOME", home).withEnv("MARSHAL_TAKE_SLOT_DIR", slots(home))
-    val out = (if zone.nonEmpty() then base.withEnv("TZ", zone) else base).output().getOrElse("")
+    val out = (if zone.nonEmpty then base.withEnv("TZ", zone) else base).output().getOrElse("")
     plainText(out)
 
 // Runs `marshal top` against `home` with the highlight hiding after `idleMs`, running the shell
@@ -34,7 +34,7 @@ topRaw(home: string, steps: string, idleMs: int) -> string
 plainText(text: string) -> string
     val out = StringWriter()
     var escaping = false
-    for c in text.chars()
+    for c in text.chars
         if escaping
             if 'a' <= c <= 'z' || 'A' <= c <= 'Z'
                 escaping = false
@@ -43,7 +43,7 @@ plainText(text: string) -> string
             escaping = true
         else
             out.write(c.toString())
-    out.text().split(" ").filter((w: string) -> w.trim().nonEmpty()).mkString(" ")
+    out.text.split(" ").filter((w: string) -> w.trim.nonEmpty).mkString(" ")
 
 // Waits up to five seconds for job `id` of `home` to be running.
 runningSoon(home: string, id: long) -> bool
@@ -83,7 +83,7 @@ topShowsStartTime()
     assert(utc.contains(s"$id running build 1 - ") && utc.contains(s" $utcText 0:"), utc)
     assert(utc.contains(s"$waiting #1 no units build 1 - - - - "), utc)
     val york = topIn(home, "q", "America/New_York")
-    val yorkText = time.epochMillis(startedAt).atZone(time.zone("America/New_York").ok().get()).format("MM-DD hh:mm")
+    val yorkText = time.epochMillis(startedAt).atZone(time.zone("America/New_York").ok.get).format("MM-DD hh:mm")
     assert(york.contains(s"$id running build 1 - ") && york.contains(s" $yorkText 0:"), york)
     assert(utcText != yorkText)
     cleanUp(home)
@@ -148,9 +148,9 @@ topRefusals()
 
 // The daemon's snapshot of `home`, asked over its socket.
 snapshotOf(home: string) -> Overview
-    val conn = UnixStream.connect(home + "/sock").ok().get()
-    conn.writeText("{\"op\":\"snapshot\"}\n").ok().get()
-    val reply = conn.readLine().ok().get().get()
+    val conn = UnixStream.connect(home + "/sock").ok.get
+    conn.writeText("{\"op\":\"snapshot\"}\n").ok.get
+    val reply = conn.readLine().ok.get.get
     conn.close()
     marshal.decodeReply(reply) match
         Ok(Reply.Viewed(o)) -> o

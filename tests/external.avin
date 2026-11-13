@@ -6,8 +6,8 @@ module tests
 import dev.avinlang.marshal
 import dev.avinlang.marshal.{JobInfo, JobSpec, Outcome, SavedJob, SavedState}
 import dev.avinlang.marshal.cli
-import json
-import json.Json
+import avin.json
+import avin.json.Json
 
 val Gi: long = 1024 * 1024 * 1024
 
@@ -26,15 +26,15 @@ externalNeedsMem()
     submission("--external", "--kind", "linux", "--", "true") match
         Err(e) -> assert(e.contains("`--external` needs `--mem"), e)
         Ok(s) -> fail(s"accepted: $s")
-    val s = submission("--external", "--mem", "8G", "--", "docker", "run", "img").ok().get()
+    val s = submission("--external", "--mem", "8G", "--", "docker", "run", "img").ok.get
     assertEq((s.external, s.memory, s.memoryGiven), (true, 8 * Gi, true))
-    val zero = submission("--mem", "0", "--external", "--", "true").ok().get()
+    val zero = submission("--mem", "0", "--external", "--", "true").ok.get
     assertEq((zero.external, zero.memory, zero.memoryGiven), (true, long(0), true))
-    assertEq(submission("--mem", "8G", "--", "true").ok().get().external, false)
+    assertEq(submission("--mem", "8G", "--", "true").ok.get.external, false)
 
 @test("the refusal is one rule, for the command line and the daemon alike")
 externalRefusalRule()
-    assert(marshal.externalRefusal(true, false).isDefined())
+    assert(marshal.externalRefusal(true, false).isDefined)
     assertEq(marshal.externalRefusal(true, true), None)
     assertEq(marshal.externalRefusal(false, false), None)
     assertEq(marshal.externalRefusal(false, true), None)
@@ -54,8 +54,8 @@ looksExternalCases()
 @test("the usage, a command's help and the README describe --external, and --external does not swallow --help")
 externalInHelp()
     assert(cli.usage.contains("--external"), cli.usage)
-    assert(cli.commandHelp("run").get().contains("--external"))
-    assert(cli.commandHelp("submit").get().contains("--external"))
+    assert(cli.commandHelp("run").get.contains("--external"))
+    assert(cli.commandHelp("submit").get.contains("--external"))
     assert(readme().contains("| `--external`"))
     for name in ["submit", "run"]
         assert(cli.asksHelp(name, ["--external", "--help"]), name)
@@ -65,17 +65,17 @@ externalInHelp()
 @test("an external spec reads back as itself on the wire; the member is absent for any other job, and absent reads as false")
 externalOnTheWire()
     assertEq(marshal.decodeSpec(marshal.encodeSpec(externalSpec)), Ok(externalSpec))
-    assert(marshal.encodeSpec(externalSpec).render().contains("\"external\":true"))
+    assert(marshal.encodeSpec(externalSpec).render.contains("\"external\":true"))
     val plain = JobSpec("build", 1, 0, false, "/w", None, ["make"], [])
-    assert(!marshal.encodeSpec(plain).render().contains("external"))
+    assert(!marshal.encodeSpec(plain).render.contains("external"))
     assertEq(marshal.decodeSpec(marshal.encodeSpec(plain)), Ok(plain))
-    assertEq(marshal.decodeRequest(marshal.encodeRequest(marshal.Request.Submit(externalSpec)).render()), Ok(marshal.Request.Submit(externalSpec)))
-    val text = marshal.encodeSpec(plain).render()
-    val open = text.slice(0, text.byteLength() - 1)
+    assertEq(marshal.decodeRequest(marshal.encodeRequest(marshal.Request.Submit(externalSpec)).render), Ok(marshal.Request.Submit(externalSpec)))
+    val text = marshal.encodeSpec(plain).render
+    val open = text.slice(0, text.byteLength - 1)
     val explicitFalse = open + ",\"external\":false}"
-    assertEq(json.parse(explicitFalse).ok().flatMap(j -> marshal.decodeSpec(j).ok()), Some(plain))
+    assertEq(json.parse(explicitFalse).ok.flatMap(j -> marshal.decodeSpec(j).ok), Some(plain))
     val bad = open + ",\"external\":\"yes\"}"
-    assertEq(marshal.decodeSpec(json.parse(bad).ok().get()), Err("`external` is not a bool"))
+    assertEq(marshal.decodeSpec(json.parse(bad).ok.get), Err("`external` is not a bool"))
 
 // An ended job, external or not, that reserved `reserved` bytes.
 externalJob(external: bool, reserved: long, peak: long = 0) -> JobInfo =
@@ -86,8 +86,8 @@ externalJobReply()
     for ext in [false, true]
         val j = externalJob(ext, 8 * Gi, 4096)
         assertEq(marshal.decodeJob(marshal.encodeJob(j)), Ok(j))
-        assertEq(marshal.encodeJob(j).render().contains("\"external\":true"), ext)
-        assertEq(marshal.encodeJob(j).render().contains("external"), ext)
+        assertEq(marshal.encodeJob(j).render.contains("\"external\":true"), ext)
+        assertEq(marshal.encodeJob(j).render.contains("external"), ext)
 
 @test("RESV shows an external job's reservation with @, its --mem 0 as @0, and other jobs as before")
 externalResvText()
@@ -98,7 +98,7 @@ externalResvText()
     assertEq(marshal.reservedText(externalJob(false, 0)), "-")
     // at most 6 cells for every size marshal rounds to, so top's RESV column keeps its width
     for size in [long(1023), 1023 * 1024 * 1024, 999 * Gi, 1000 * Gi]
-        assert(marshal.reservedText(externalJob(true, size)).byteLength() <= 6, marshal.reservedText(externalJob(true, size)))
+        assert(marshal.reservedText(externalJob(true, size)).byteLength <= 6, marshal.reservedText(externalJob(true, size)))
 
 @test("top draws an external job's RESV with @ in its 6-cell column, beside a learned and a given one")
 externalInTop()
@@ -118,12 +118,12 @@ externalState()
     val running = SavedJob(5, externalSpec, "running", 1, 2, 3, 0, 5, 6, "/l", 77, 77, None, false, false, None, 4096, 8192)
     val ended = SavedJob(6, externalSpec, "done", 1, 2, 3, 4, 5, 6, "/l", 77, 77, Some(Outcome.Exited(0)), false, false, None, 0, 8192)
     val s = SavedState("0.2.7", 1, 2, 3, 7, [queued], [running], [ended], None)
-    assertEq(marshal.decodeState(marshal.encodeState(s).render()), Ok(s))
-    val text = marshal.encodeState(s).render()
+    assertEq(marshal.decodeState(marshal.encodeState(s).render), Ok(s))
+    val text = marshal.encodeState(s).render
     val old = text.replace(",\"external\":true", "")
     assert(!old.contains("external"), old)
     val plainSpec = JobSpec("linux", 2, 8 * Gi, false, "/w", None, ["docker", "run", "img"], [], memoryGiven = true)
-    val decoded = marshal.decodeState(old).ok().get()
+    val decoded = marshal.decodeState(old).ok.get
     assertEq(decoded.queue(0).spec, plainSpec)
     marshal.decodeState(text.replace("\"external\":true", "\"external\":1")) match
         Err(e) -> assert(e.contains("`external` is not a bool"), e)

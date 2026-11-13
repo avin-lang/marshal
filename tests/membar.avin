@@ -44,7 +44,7 @@ rssOnly()
     // more than the budget fills the meter and no more
     assertEq(shades(bar(0, 40 * G)), "bbbbbbbbbbbbbbbb")
 
-g0(g: Grid) -> string = g.rowText(0).trim()
+g0(g: Grid) -> string = g.rowText(0).trim
 
 @test("reserved and measured beyond it: cyan for the reservations, then blue for the rest")
 both()

@@ -14,10 +14,10 @@ typeRefused(text: string, why: string) = marshal.parseJobType("t", "/types/t.job
     Ok(t) -> fail(s"$text read as $t")
 
 // A type of one step around `rest`, a JSON fragment of more fields.
-withSteps(steps: string, rest: string = "") -> string = s"{\"steps\": [$steps]${if rest.isEmpty() then "" else ", " + rest}}"
+withSteps(steps: string, rest: string = "") -> string = s"{\"steps\": [$steps]${if rest.isEmpty then "" else ", " + rest}}"
 
 // A type with the parameters `params` (a JSON object's members) and one step.
-withParams(params: string, rest: string = "") -> string = withSteps("{\"name\": \"a\", \"run\": [\"true\"]}", s"\"params\": {$params}${if rest.isEmpty() then "" else ", " + rest}")
+withParams(params: string, rest: string = "") -> string = withSteps("{\"name\": \"a\", \"run\": [\"true\"]}", s"\"params\": {$params}${if rest.isEmpty then "" else ", " + rest}")
 
 val sampleType: string = """
 // a comment line, as is the next
@@ -223,8 +223,8 @@ referencePieces()
     assertEq(marshal.pieces("$${a}"), Ok([Lit("${a}")]))
     assertEq(marshal.pieces("$ {a} $"), Ok([Lit("$ {a} $")]))
     assertEq(marshal.pieces("é${ü}日"), Ok([Lit("é"), Ref("ü"), Lit("日")]))
-    assert(marshal.pieces("${a").isErr())
-    assert(marshal.pieces("x ${").isErr())
+    assert(marshal.pieces("${a").isErr)
+    assert(marshal.pieces("x ${").isErr)
 
 @test("a word of one reference is an argument per value; any other joins the values with spaces")
 expansion()

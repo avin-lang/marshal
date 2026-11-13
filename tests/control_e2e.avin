@@ -5,8 +5,8 @@ module tests
 // survives `marshal restart`.
 import avin.threads
 import avin.time.millis
-import json
-import json.Json
+import avin.json
+import avin.json.Json
 
 // Fails unless `r` exited 2 saying `why`.
 refusedWith(r: Ran, why: string)
@@ -19,13 +19,13 @@ startOrder(home: string, ids: Vector[long]) -> Vector[long] = ids.sortBy(id -> a
 statusJsonOf(home: string) -> Json
     val r = m(home, "status", "--json")
     assertEq(r.code, 0)
-    json.parse(r.out.trim()).ok().get()
+    json.parse(r.out.trim).ok.get
 
 // The queued jobs' ids in queue order, as `status --json` lists them.
-queuedIds(home: string) -> Vector[long] = statusJsonOf(home)("queued").asVector().get().map(q -> q("id").asLong().get())
+queuedIds(home: string) -> Vector[long] = statusJsonOf(home)("queued").asVector.get.map(q -> q("id").asLong.get)
 
 // Whether each queued job is urgent, in queue order.
-queuedUrgent(home: string) -> Vector[bool] = statusJsonOf(home)("queued").asVector().get().map(q -> q("urgent").asBool().get())
+queuedUrgent(home: string) -> Vector[bool] = statusJsonOf(home)("queued").asVector.get.map(q -> q("urgent").asBool.get)
 
 @test("submit --urgent queues a job ahead of every job not urgent, and two urgent jobs keep their arrival order")
 submitUrgent()
@@ -112,10 +112,10 @@ pauseAndResume()
     threads.sleep(millis(300))
     assertEq(eventsOf(home, queued), ["submitted"])
     assert(m(home, "status").out.contains("the queue is held"))
-    assertEq(statusJsonOf(home)("queue_held").asBool(), Some(true))
+    assertEq(statusJsonOf(home)("queue_held").asBool, Some(true))
     assertEq(m(home, "resume").code, 0)
     assertEq(m(home, "wait", queued.toString()).code, 0)
-    assertEq(statusJsonOf(home)("queue_held").asBool(), Some(false))
+    assertEq(statusJsonOf(home)("queue_held").asBool, Some(false))
     assert(!m(home, "status").out.contains("held"))
     cleanUp(home)
 
@@ -143,7 +143,7 @@ pauseHoldsLanding()
     assertEq(eventsOf(home, landing), ["submitted"])
     assertEq(eventsOf(home, development), ["submitted"])
     val snapshot = statusJsonOf(home)
-    assertEq(snapshot("queued").asVector().map(q -> q.length), Some(2))
+    assertEq(snapshot("queued").asVector.map(q -> q.length), Some(2))
     assertEq(snapshot("landing"), Json.Null)
     assertEq(m(home, "resume").code, 0)
     assertEq(m(home, "wait", landing.toString()).code, 0)
@@ -160,7 +160,7 @@ holdAndRelease()
     val h = m(home, "hold", b.toString())
     assertEq(h.code, 0)
     assert(h.out.contains(s"job $b is held"), h.out)
-    assert(m(home, "ls").out.lines().exists(l -> l.startsWith(b.toString()) && l.contains("held")))
+    assert(m(home, "ls").out.lines.exists(l -> l.startsWith(b.toString()) && l.contains("held")))
     m(home, "kill", blocker.toString())
     assertEq(m(home, "wait", c.toString()).code, 0)
     threads.sleep(millis(300))
@@ -209,7 +209,7 @@ priorityOrder()
     assertEq(u.code, 0)
     assert(u.out.contains(s"job $c is placed"), u.out)
     // the queue lists in its new order
-    val listed = m(home, "ls").out.lines().drop(1).map(l -> l.trim().split(" ")(0).toLong()).filter(id -> id != blocker).toVector
+    val listed = m(home, "ls").out.lines.drop(1).map(l -> l.trim.split(" ")(0).toLong()).filter(id -> id != blocker).toVector
     assertEq(listed.take(5), [c, d, e, b, f])
     // a job submitted now, at the default 0, goes behind b and ahead of f
     val g = submitted(home, "--", "true")
@@ -258,11 +258,11 @@ controlAcrossRestart()
     restarted(home)
     assertEq(daemonPid(home), pid)
     threads.sleep(millis(300))
-    assertEq(statusJsonOf(home)("queue_held").asBool(), Some(true))
-    val queued = statusJsonOf(home)("queued").asVector().get()
-    assertEq(queued.map(q -> q("id").asLong().get()), [d, b, c])
-    assertEq(queued.map(q -> q("held").asBool().get()), [false, true, false])
-    assertEq(queued.map(q -> q("priority").asInt().get()), [3, 0, 0])
+    assertEq(statusJsonOf(home)("queue_held").asBool, Some(true))
+    val queued = statusJsonOf(home)("queued").asVector.get
+    assertEq(queued.map(q -> q("id").asLong.get), [d, b, c])
+    assertEq(queued.map(q -> q("held").asBool.get), [false, true, false])
+    assertEq(queued.map(q -> q("priority").asInt.get), [3, 0, 0])
     for id in [b, c, d] do assertEq(eventsOf(home, id).filter(e -> e == "started"), Vector[string]())
     refusedWith(m(home, "pause"), "the queue is already held")
     assertEq(m(home, "resume").code, 0)

@@ -10,13 +10,13 @@ import avin.time.millis
 
 // Puts `text` as job `id`'s log in the home.
 writeLog(home: string, id: long, text: string)
-    fs.createDirAll(home + "/jobs").ok().get()
-    fs.writeText(s"$home/jobs/$id.log", text).ok().get()
+    fs.createDirAll(home + "/jobs").ok.get
+    fs.writeText(s"$home/jobs/$id.log", text).ok.get
 
 val sample: string = "alpha\nERR one\nbeta\ngamma\ndelta\nERR two\nepsilon\nzeta\neta\nERR three\n"
 
 // The lines of a command's output.
-linesOf(r: Ran) -> Vector[string] = r.out.lines().toVector
+linesOf(r: Ran) -> Vector[string] = r.out.lines.toVector
 
 @test("grep prints the matching lines of a log, exits 0, and starts no daemon")
 grepMatches()
@@ -159,7 +159,7 @@ grepBigLog()
     val text = Buffer[string]()
     for i in 1..<100_001 do text.addOne(s"line $i of the big log, padded with some more words to give it weight")
     val big = text.mkString("\n") + "\n"
-    assert(big.byteLength() > 6_000_000, s"${big.byteLength()}")
+    assert(big.byteLength > 6_000_000, s"${big.byteLength}")
     writeLog(home, 5, big)
     assertEq(m(home, "grep", "5", "line 99999 ", "-n").out, "99999:line 99999 of the big log, padded with some more words to give it weight\n")
     assertEq(m(home, "grep", "5", "of the big log", "-c").out, "100000\n")

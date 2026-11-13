@@ -4,7 +4,7 @@ module tests
 // while they run, hold back what is queued behind them but never a landing job, and wait for the
 // load when asked), their refusals, the quiet-load clock, the sample line and how marshal tells its
 // own processes from others', the spec's round trips, and how listings show them.
-import json
+import avin.json
 import dev.avinlang.marshal
 import dev.avinlang.marshal.{Budget, JobInfo, JobSpec, Outside, Proc, Reply, Started, Ticket, Usage, Waiting, Why}
 import dev.avinlang.marshal.{NoUnits, Draining, Behind, Starting, QuickFull, Emptying, Load, ForExclusive, DrainingFor}
@@ -169,7 +169,7 @@ exclWeighsTheBudget()
     val s = JobSpec("bench", 3, 512, false, "/w", Some(minute), ["./bench", "-n", "3"], [("K", "V")], true, [long(4)], true, 2, 1000, true, "the label", 5000, true, false, true, 2.5)
     val e = marshal.exclusiveSpec(s, 12)
     assertEq(e.units, 12)
-    assertEq(marshal.encodeSpec(e).render(), marshal.encodeSpec(JobSpec("bench", 12, 512, false, "/w", Some(minute), ["./bench", "-n", "3"], [("K", "V")], true, [long(4)], true, 2, 1000, true, "the label", 5000, true, false, true, 2.5)).render())
+    assertEq(marshal.encodeSpec(e).render, marshal.encodeSpec(JobSpec("bench", 12, 512, false, "/w", Some(minute), ["./bench", "-n", "3"], [("K", "V")], true, [long(4)], true, 2, 1000, true, "the label", 5000, true, false, true, 2.5)).render)
     // of any memory: it runs alone
     assertEq(marshal.neverFits(xb, 12, 1000, true), None)
 
@@ -260,29 +260,29 @@ exclSampleLines()
 @test("--exclusive and --quiet-load survive the spec's round trip, and a spec without them reads as before")
 exclSpecRoundTrip()
     val s = xSpec(quietLoad = 2.5)
-    val back = marshal.decodeSpec(marshal.encodeSpec(s)).ok().get()
+    val back = marshal.decodeSpec(marshal.encodeSpec(s)).ok.get
     assert(back.exclusive)
     assertEq(back.quietLoad, 2.5)
-    assertEq(marshal.encodeSpec(back).render(), marshal.encodeSpec(s).render())
+    assertEq(marshal.encodeSpec(back).render, marshal.encodeSpec(s).render)
     val plain = xSpec(exclusive = false)
     assert(!marshal.encodeSpec(plain).has("exclusive") && !marshal.encodeSpec(plain).has("quiet_load"))
-    val old = marshal.decodeSpec(marshal.encodeSpec(plain)).ok().get()
+    val old = marshal.decodeSpec(marshal.encodeSpec(plain)).ok.get
     assert(!old.exclusive)
     assertEq(old.quietLoad, 0.0)
     // a whole-number quiet load reads too; one not above 0 does not
-    val whole = json.parse("{\"kind\": \"b\", \"units\": 1, \"mem\": 0, \"dir\": \"/w\", \"cmd\": [\"x\"], \"exclusive\": true, \"quiet_load\": 4}").ok().get()
-    assertEq(marshal.decodeSpec(whole).ok().get().quietLoad, 4.0)
-    val zero = json.parse("{\"kind\": \"b\", \"units\": 1, \"mem\": 0, \"dir\": \"/w\", \"cmd\": [\"x\"], \"quiet_load\": 0}").ok().get()
-    assertEq(marshal.decodeSpec(zero).err(), Some("`quiet_load` is not a number above 0"))
+    val whole = json.parse("{\"kind\": \"b\", \"units\": 1, \"mem\": 0, \"dir\": \"/w\", \"cmd\": [\"x\"], \"exclusive\": true, \"quiet_load\": 4}").ok.get
+    assertEq(marshal.decodeSpec(whole).ok.get.quietLoad, 4.0)
+    val zero = json.parse("{\"kind\": \"b\", \"units\": 1, \"mem\": 0, \"dir\": \"/w\", \"cmd\": [\"x\"], \"quiet_load\": 0}").ok.get
+    assertEq(marshal.decodeSpec(zero).err, Some("`quiet_load` is not a number above 0"))
 
 @test("a job's exclusive mark and quiet load, and the running exclusive job in the budget, survive the protocol")
 exclInfoRoundTrip()
     val j = JobInfo(3, "bench", 12, 0, false, "/w", ["./bench"], "running", None, false, 0, 10, 60000, "/l", None, exclusive = true, quietLoad = 4.0)
-    val back = marshal.decodeJob(marshal.encodeJob(j)).ok().get()
+    val back = marshal.decodeJob(marshal.encodeJob(j)).ok.get
     assert(back.exclusive)
     assertEq(back.quietLoad, 4.0)
     val u = Usage(12, 12, 0, 100, 1, 2, None, None, exclusive = Some(long(3)))
-    marshal.decodeReply(marshal.encodeReply(Reply.Using(u)).render()).ok().get() match
+    marshal.decodeReply(marshal.encodeReply(Reply.Using(u)).render).ok.get match
         Reply.Using(v) -> assertEq(v.exclusive, Some(long(3)))
         other -> fail(s"not a usage: $other")
     assert(marshal.usageLine(u).contains("; exclusive job 3 owns the machine: nothing else starts"), marshal.usageLine(u))
@@ -293,7 +293,7 @@ exclWhyRoundTrip()
     val j = JobInfo(3, "bench", 12, 0, false, "/w", ["./bench"], "queued", None, false, 0, 0, 60000, "/l", None)
     for why in [Emptying, Load(7.9, 4.0, 0), Load(3.5, 4.0, 1500), ForExclusive(2)]
         val o = marshal.Overview(Usage(0, 12, 0, 100, 0, 1, None, None), 0, [], [marshal.QueuedJob(j, 1, why)], [])
-        marshal.decodeReply(marshal.encodeReply(Reply.Viewed(o)).render()).ok().get() match
+        marshal.decodeReply(marshal.encodeReply(Reply.Viewed(o)).render).ok.get match
             Reply.Viewed(v) -> assertEq(v.queued(0).why, why)
             other -> fail(s"not a snapshot: $other")
 

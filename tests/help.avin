@@ -29,8 +29,8 @@ everyCommandHasUsage()
 
 @test("only submit and run print the options")
 optionsOnlyForSubmitAndRun()
-    for name in ["submit", "run"] do assert(cli.commandHelp(name).get().contains("--deadline"), name)
-    for name in ["wait", "ls", "kill", "tail", "status", "stop", "daemon"] do assert(!cli.commandHelp(name).get().contains("--deadline"), name)
+    for name in ["submit", "run"] do assert(cli.commandHelp(name).get.contains("--deadline"), name)
+    for name in ["wait", "ls", "kill", "tail", "status", "stop", "daemon"] do assert(!cli.commandHelp(name).get.contains("--deadline"), name)
 
 @test("help is asked for by --help or -h before any --")
 asksHelpBeforeDashDash()

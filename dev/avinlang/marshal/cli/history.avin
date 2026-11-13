@@ -3,6 +3,7 @@ module dev.avinlang.marshal.cli
 // `marshal history` and `marshal stats`: accounting read from `events.jsonl`. They never ask the
 // daemon, so they answer with none running; the log is streamed a line at a time.
 import avin.fs
+import avin.io.ErrorKind
 import avin.io.IoError
 import avin.time
 import dev.avinlang.marshal
@@ -33,10 +34,10 @@ parseQuery(command: string, args: Vector[string], nowMs: long, zone: time.Zone) 
             val value = args(i)
             word match
                 "--kind" ->
-                    if value.isEmpty() then return Err("marshal: --kind needs a kind")
+                    if value.isEmpty then return Err("marshal: --kind needs a kind")
                     kind = Some(value)
                 "--label" ->
-                    if value.isEmpty() then return Err("marshal: --label needs some text")
+                    if value.isEmpty then return Err("marshal: --label needs some text")
                     label = Some(value)
                 "--since" -> marshal.parseEndedSince(value, nowMs, zone) match
                     Some(t) -> since = Some(t)
@@ -55,30 +56,30 @@ readLedger(log: string) -> Result[Ledger, string]
     val ledger = Ledger()
     val f = fs.open(log) match
         Ok(f) -> f
-        Err(IoError.NotFound) -> return Ok(ledger)
-        Err(e) -> return Err(s"marshal: $log: ${e.message()}")
+        Err(IoError(ErrorKind.NotFound, _, _)) -> return Ok(ledger)
+        Err(e) -> return Err(s"marshal: $log: ${e.message}")
     loop
         f.readLine() match
             Ok(Some(line)) -> ledger.add(line)
             Ok(None) -> break
             Err(e) ->
                 f.close()
-                return Err(s"marshal: $log: ${e.message()}")
+                return Err(s"marshal: $log: ${e.message}")
     f.close()
     Ok(ledger)
 
 history(args: Vector[string]) -> int = account("history", args, (ledger, q) ->
     val jobs = marshal.selectEnded(ledger, q.filter, q.limit)
-    if q.json then marshal.historyJson(jobs, ledger.unreadable).render() else marshal.historyListing(jobs, time.localZone()))
+    if q.json then marshal.historyJson(jobs, ledger.unreadable).render else marshal.historyListing(jobs, time.localZone()))
 
 stats(args: Vector[string]) -> int = account("stats", args, (ledger, q) ->
     val rows = marshal.kindStats(ledger, q.filter)
-    if q.json then marshal.statsJson(rows, ledger.unreadable).render() else marshal.statsListing(rows))
+    if q.json then marshal.statsJson(rows, ledger.unreadable).render else marshal.statsListing(rows))
 
 // Parses the options, reads the log and prints what `render` makes of them. Lines the log has that
 // are not events are skipped, and said so on standard error.
 account(command: string, args: Vector[string], render: (Ledger, Query) -> string) -> int
-    val q = parseQuery(command, args, time.now().epochMillis(), time.localZone()) match
+    val q = parseQuery(command, args, time.now().epochMillis, time.localZone()) match
         Ok(q) -> q
         Err(e) -> return complain(e)
     val log = home() + "/events.jsonl"

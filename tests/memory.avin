@@ -17,8 +17,8 @@ table(pid: long) -> Result[long, IoError] = pid match
     1 -> Ok(1000)
     2 -> Ok(long(3) * 1024 * 1024 * 1024)
     3 -> Ok(0)
-    4 -> Err(io.PermissionDenied)
-    _ -> Err(io.NotFound)
+    4 -> Err(IoError(io.PermissionDenied))
+    _ -> Err(IoError(io.NotFound))
 
 @test("a tree's memory is the sum of its processes', one that has ended or cannot be asked counting nothing")
 treeSums()
@@ -33,17 +33,17 @@ treeSums()
 
 @test("a child that has exited and been waited for answers NotFound and counts nothing beside a live one")
 exitedChild()
-    val child = Command("true").start().ok().get()
+    val child = Command("true").start().ok.get
     val gone = child.pid()
-    child.waitFor().ok().get()
-    assertEq(process.residentBytes(gone).err(), Some(io.NotFound))
+    child.waitFor().ok.get
+    assertEq(process.residentBytes(gone).err, Some(IoError(io.NotFound)))
     val me = process.pid()
     assertEq(marshal.residentOf([gone], pid -> process.residentBytes(pid)), 0)
     assert(marshal.residentOf([me, gone], pid -> process.residentBytes(pid)) > 0)
 
 @test("a group's memory covers every process in it, grandchildren included, and nothing once it has ended")
 groupTree()
-    val child = Command("sh", "-c", "sh -c 'sleep 30 & wait' & sleep 31 & wait").inNewGroup().start().ok().get()
+    val child = Command("sh", "-c", "sh -c 'sleep 30 & wait' & sleep 31 & wait").inNewGroup.start().ok.get
     val pgid = child.group().getOrElse(child.pid())
     var members: Vector[long] = []
     for _ in 0 ..< 50

@@ -91,18 +91,18 @@ val NoOutside: Outside = Outside(0, [], false)
 // The ids of the jobs to start now, in the order to start them: a landing job first, then
 // development jobs in queue order.
 schedule(budget: Budget, running: Vector[Started], queue: Vector[Waiting], now: long, outside: Outside = NoOutside, fair: Fairness = Unbounded) -> Vector[long] =
-    decide(budget, running, queue, now, outside, fair).filter(d -> d.why.isEmpty()).map(d -> d.id)
+    decide(budget, running, queue, now, outside, fair).filter(d -> d.why.isEmpty).map(d -> d.id)
 
 // What `schedule` answers, each id with the draining job it starts ahead of when it is backfilled
 // during a drain.
 starts(budget: Budget, running: Vector[Started], queue: Vector[Waiting], now: long, outside: Outside = NoOutside, fair: Fairness = Unbounded) -> Vector[(long, Option[long])] =
-    decide(budget, running, queue, now, outside, fair).filter(d -> d.why.isEmpty()).map(d -> (d.id, d.ahead))
+    decide(budget, running, queue, now, outside, fair).filter(d -> d.why.isEmpty).map(d -> (d.id, d.ahead))
 
 // The development job the machine drains for and when it is expected to start, on the clock of
 // `now`, if one drains and that is known: not while it waits behind take-slot, nor when its units or
 // memory never free.
 drainStart(budget: Budget, running: Vector[Started], queue: Vector[Waiting], now: long, outside: Outside = NoOutside, fair: Fairness = Unbounded) -> Option[(long, long)] =
-    decide(budget, running, queue, now, outside, fair).find(d -> d.at.isDefined()).map(d -> (d.id, d.at.get()))
+    decide(budget, running, queue, now, outside, fair).find(d -> d.at.isDefined).map(d -> (d.id, d.at.get))
 
 // Each waiting job's place in its lane's queue (from 1) and why it waits, in the order of `queue`:
 // what `schedule` would say of it, with `Starting` for a job it would start now.
@@ -207,7 +207,7 @@ private decide(budget: Budget, running: Vector[Started], queue: Vector[Waiting],
     for w in queue.filter(w -> w.landing)
         if laneBusy
             out += Decision(w.id, Some(if outside.landing then ForTakeSlot else LaneBusy))
-        elif draining.isDefined()
+        elif draining.isDefined
             out += Decision(w.id, draining.map(id -> Behind(id)))
         elif memory + w.memory <= budget.memory || running.isEmpty
             out += Decision(w.id, None)
@@ -241,7 +241,7 @@ private decide(budget: Budget, running: Vector[Started], queue: Vector[Waiting],
     var spareUnits = 0
     var spareMemory: long = 0
     for e in arrivalOrder(order, tickets)
-        if hold.isDefined()
+        if hold.isDefined
             for w in e.job
                 val fits = units + w.units <= budget.units && memory + w.memory <= budget.memory
                 val estimate = drainEstimate(w.expectedMs, w.drainMs)
@@ -265,12 +265,12 @@ private decide(budget: Budget, running: Vector[Started], queue: Vector[Waiting],
                 if !fits then head = Some((whenFits(budget, units, memory, e.units, e.memory, ends), e.job.map(w -> w.id)))
                 fits
             // take-slot never lets a waiter overtake; a marshal job may, when it delays nobody
-            Some((at, _)) -> e.job.isDefined() && fits && now + e.expectedMs <= at
+            Some((at, _)) -> e.job.isDefined && fits && now + e.expectedMs <= at
         if go
             units += e.units
             memory += e.memory
             ends += (now + e.expectedMs, e.units, e.memory)
-            if e.job.isEmpty() then theirs += e.units
+            if e.job.isEmpty then theirs += e.units
         for w in e.job
             if go
                 out += Decision(w.id, None)
@@ -290,10 +290,10 @@ private decide(budget: Budget, running: Vector[Started], queue: Vector[Waiting],
                 out += Decision(w.id, Some(waitsFor(budget, units, memory, theirs, e, fits, head)))
     for x in exclusive
         // it waits behind a job ahead of it that waits, then for the machine to empty, then for the load
-        val ahead = out.find(d -> d.why.isDefined() && weighed.exists(w -> w.id == d.id && !w.landing))
+        val ahead = out.find(d -> d.why.isDefined && weighed.exists(w -> w.id == d.id && !w.landing))
         // take-slot's waiters that arrived before it go before it, as take-slot admits them
-        val busy = running.nonEmpty || out.exists(d -> d.why.isEmpty()) || outside.units > 0 || outside.landing || tickets.nonEmpty
-        val why = if ahead.isDefined() then ahead.map(d -> Behind(d.id)) elif busy then Some(Emptying) else x.unsettled
+        val busy = running.nonEmpty || out.exists(d -> d.why.isEmpty) || outside.units > 0 || outside.landing || tickets.nonEmpty
+        val why = if ahead.isDefined then ahead.map(d -> Behind(d.id)) elif busy then Some(Emptying) else x.unsettled
         out += Decision(x.id, why)
         for w in queue
             if !w.landing && w.id != x.id && !weighed.exists(v -> v.id == w.id) then out += Decision(w.id, Some(ForExclusive(x.id)))
@@ -307,7 +307,7 @@ private quickLane(budget: Budget, queue: Vector[Waiting], now: long, quicks: int
     var used = memory
     var blocked: Option[long] = None
     for w in queue.filter(w -> w.quick && !w.landing)
-        if blocked.isDefined()
+        if blocked.isDefined
             out += Decision(w.id, blocked.map(id -> Behind(id)))
         elif free <= 0
             out += Decision(w.id, Some(QuickFull))

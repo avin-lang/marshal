@@ -10,23 +10,23 @@ import avin.threads
 import avin.threads.spawn
 import avin.time
 import avin.time.millis
-import json.Json
+import avin.json.Json
 
 // The restart request a client sends, naming `program`.
-restartRequest(program: string) -> string = Json.obj(("op", Json.str("restart")), ("program", Json.str(program))).render() + "\n"
+restartRequest(program: string) -> string = Json.obj(("op", Json.str("restart")), ("program", Json.str(program))).render + "\n"
 
 @test("a restarted image takes over its socket's path even while another listener still answers there")
 restartTakesOverSocket()
     val home = newHome()
     val id = submitted(home, "--", "sleep", "30")
     val before = daemonPid(home)
-    val conn = UnixStream.connect(home + "/sock").ok().get()
+    val conn = UnixStream.connect(home + "/sock").ok.get
     // the path answers for a listener that is not the new image's, as the old one's copy does
     fs.remove(home + "/sock")
-    val stray = UnixListener.bind(home + "/sock").ok().get()
-    conn.writeText(restartRequest(bin())).ok().get()
+    val stray = UnixListener.bind(home + "/sock").ok.get
+    conn.writeText(restartRequest(bin())).ok.get
     // the old image goes without a reply
-    assertEq(conn.readLine().ok().flatten(), None)
+    assertEq(conn.readLine().ok.flatten, None)
     conn.close()
     assert(daemonSaid(home, s"daemon $before restarted", 10000), daemonLog(home))
     assert(!daemonLog(home).contains("another daemon is listening"), daemonLog(home))
@@ -43,8 +43,8 @@ restartAsksAgain()
     // the daemon restarts as a script that runs marshal once the test says so
     val go = home + "/go"
     val wrapper = home + "/marshal-later"
-    fs.writeText(wrapper, s"#!/bin/sh\nwhile [ ! -f '$go' ]; do sleep 0.05; done\nexec '${bin()}' \"$$@\"\n").ok().get()
-    assertEq(Command("chmod", "+x", wrapper).run().ok(), Some(ExitStatus.Exited(0)))
+    fs.writeText(wrapper, s"#!/bin/sh\nwhile [ ! -f '$go' ]; do sleep 0.05; done\nexec '${bin()}' \"$$@\"\n").ok.get
+    assertEq(Command("chmod", "+x", wrapper).run().ok, Some(ExitStatus.Exited(0)))
     assertEq(mWith(home, [("MARSHAL_RESTART_PROGRAM", wrapper)], "submit", "--", "sleep", "30").code, 0)
     val before = daemonPid(home)
     val client = spawn(() -> m(home, "restart"))
@@ -52,12 +52,12 @@ restartAsksAgain()
     // the old image is gone and the new one waits: the client's next connection reaches a
     // listener that closes it unanswered
     fs.remove(home + "/sock")
-    val stray = UnixListener.bind(home + "/sock").ok().get()
-    val answered = stray.accept().ok().get()
+    val stray = UnixListener.bind(home + "/sock").ok.get
+    val answered = stray.accept().ok.get
     answered.close()
     stray.close()
     fs.remove(home + "/sock")
-    fs.writeText(go, "").ok().get()
+    fs.writeText(go, "").ok.get
     val r = client.join()
     assertEq(r.code, 0)
     assert(r.out.contains(s"daemon $before restarted"), r.out)

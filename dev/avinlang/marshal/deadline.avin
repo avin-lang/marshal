@@ -27,7 +27,7 @@ defaultDeadlineMs(kind: string, landing: bool) -> long
 // The middle of the durations, the mean of the two middle ones for an even count; 0 for none.
 median(xs: Vector[long]) -> long
     if xs.isEmpty then return 0
-    val s = xs.sorted()
+    val s = xs.sorted
     val n = s.length
     if n % 2 == 1 then s(n / 2) else s(n / 2 - 1) / 2 + s(n / 2) / 2 + (s(n / 2 - 1) % 2 + s(n / 2) % 2) / 2
 

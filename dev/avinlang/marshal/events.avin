@@ -13,15 +13,15 @@ module dev.avinlang.marshal
 // is retried ends each attempt with an ending event that adds `"retrying": true`, and then records
 // `retry`, so its last event is an ending only once its last attempt has ended.
 import avin.collections.mutable.{Map as MutableMap}
-import json
-import json.Json
+import avin.json
+import avin.json.Json
 
 val endings: Set[string] = {"finished", "timeout", "quiet", "killed", "cancelled", "lost"}
 
 // One event line, without its line feed.
 eventLine(ts: long, event: string, job: JobInfo, extra: Vector[(string, Json)]) -> string =
     val head = [("ts", Json.num(ts)), ("event", Json.str(event))]
-    Json.Obj(head ++ encodeJob(job).asMembers().get() ++ extra).render()
+    Json.Obj(head ++ encodeJob(job).asMembers.get ++ extra).render
 
 // What a daemon learns from the log when it starts.
 // - `nextId`: one past the highest job id the log has seen, or 1.
@@ -43,13 +43,13 @@ recover(lines: Iterable[string], keep: int = 10) -> Recovered
     val histories = MutableMap[string, Buffer[long]]()
     val peaks = MutableMap[string, Buffer[long]]()
     for line in lines
-        if line.trim().isEmpty() then continue
+        if line.trim.isEmpty then continue
         val ev = json.parse(line) match
             Ok(j) -> j
             Err(_) ->
                 unreadable += 1
                 continue
-        val fields = (ev.get("id").flatMap(v -> v.asLong()), ev.get("event").flatMap(v -> v.asString()))
+        val fields = (ev.get("id").flatMap(v -> v.asLong), ev.get("event").flatMap(v -> v.asString))
         val (id, kind) = fields match
             (Some(i), Some(k)) -> (i, k)
             _ ->
@@ -61,13 +61,13 @@ recover(lines: Iterable[string], keep: int = 10) -> Recovered
             None ->
                 position(id) = last.length
                 last += (id, ev)
-        val peak = ev.get("peak_rss").flatMap(v -> v.asLong()).getOrElse(0)
+        val peak = ev.get("peak_rss").flatMap(v -> v.asLong).getOrElse(0)
         // an external job's peak is its tree's, not its work's: never learned from
-        if endings.contains(kind) && peak > 0 && ev.get("external").flatMap(v -> v.asBool()) != Some(true)
-            val evKind = ev.get("kind").flatMap(v -> v.asString()).getOrElse("")
-            val evLanding = ev.get("landing").flatMap(v -> v.asBool()).getOrElse(false)
+        if endings.contains(kind) && peak > 0 && ev.get("external").flatMap(v -> v.asBool) != Some(true)
+            val evKind = ev.get("kind").flatMap(v -> v.asString).getOrElse("")
+            val evLanding = ev.get("landing").flatMap(v -> v.asBool).getOrElse(false)
             // an event without a directory teaches its kind only
-            val keys = [historyKey(evKind, evLanding)] ++ ev.get("dir").flatMap(v -> v.asString()).map(d -> [memoryDirKey(evKind, evLanding, d)]).getOrElse(Vector[string]())
+            val keys = [historyKey(evKind, evLanding)] ++ ev.get("dir").flatMap(v -> v.asString).map(d -> [memoryDirKey(evKind, evLanding, d)]).getOrElse(Vector[string]())
             for key in keys
                 peaks.get(key) match
                     Some(b) -> b += peak
@@ -75,9 +75,9 @@ recover(lines: Iterable[string], keep: int = 10) -> Recovered
                         val b = Buffer[long]()
                         b += peak
                         peaks(key) = b
-        if kind == "finished" && ev.get("exit").flatMap(v -> v.asLong()) == Some(long(0)) && !(ev.get("killed").flatMap(v -> v.asBool()) == Some(true))
-            val run = ev.get("run_ms").flatMap(v -> v.asLong())
-            val key = historyKey(ev.get("kind").flatMap(v -> v.asString()).getOrElse(""), ev.get("landing").flatMap(v -> v.asBool()).getOrElse(false))
+        if kind == "finished" && ev.get("exit").flatMap(v -> v.asLong) == Some(long(0)) && !(ev.get("killed").flatMap(v -> v.asBool) == Some(true))
+            val run = ev.get("run_ms").flatMap(v -> v.asLong)
+            val key = historyKey(ev.get("kind").flatMap(v -> v.asString).getOrElse(""), ev.get("landing").flatMap(v -> v.asBool).getOrElse(false))
             run match
                 Some(ms) ->
                     histories.get(key) match
@@ -87,9 +87,9 @@ recover(lines: Iterable[string], keep: int = 10) -> Recovered
                             b += ms
                             histories(key) = b
                 None -> ()
-    val open = last.filter(e -> !endings.contains(e.1.get("event").flatMap(v -> v.asString()).getOrElse(""))).map(e -> e.1)
+    val open = last.filter(e -> !endings.contains(e.1.get("event").flatMap(v -> v.asString).getOrElse(""))).map(e -> e.1)
     val learned = histories.keys.map(k -> (k, histories(k).toVector)).toMap
-    val ended = last.filter(e -> endings.contains(e.1.get("event").flatMap(v -> v.asString()).getOrElse(""))).map(e -> decodeJob(e.1)).filter(r -> r.isOk()).map(r -> r.ok().get())
+    val ended = last.filter(e -> endings.contains(e.1.get("event").flatMap(v -> v.asString).getOrElse(""))).map(e -> decodeJob(e.1)).filter(r -> r.isOk).map(r -> r.ok.get)
     val peaked = peaks.keys.map(k -> (k, peaks(k).toVector)).toMap
     Recovered(maxId + 1, open.toVector, learned, unreadable, ended.takeRight(keep).toVector, peaked)
 
@@ -108,7 +108,7 @@ asLost(j: JobInfo) -> JobInfo = JobInfo(j.id, j.kind, j.units, j.memory, j.landi
 
 // Whether an event ends its job for good: an ending, and not one of an attempt that runs again.
 endsJob(ev: Json) -> bool =
-    endings.contains(ev.get("event").flatMap(v -> v.asString()).getOrElse("")) && ev.get("retrying").flatMap(v -> v.asBool()) != Some(true)
+    endings.contains(ev.get("event").flatMap(v -> v.asString).getOrElse("")) && ev.get("retrying").flatMap(v -> v.asBool) != Some(true)
 
 // The specification job `id` was submitted with, as its `submitted` event records it; None when the
 // log has no such event or it records none.
@@ -116,8 +116,8 @@ specOf(lines: Iterable[string], id: long) -> Option[JobSpec]
     for line in lines
         if !line.contains("\"id\":" + id.toString()) || !line.contains("\"submitted\"") then continue
         json.parse(line) match
-            Ok(ev) if ev.get("id").flatMap(v -> v.asLong()) == Some(id) && ev.get("event").flatMap(v -> v.asString()) == Some("submitted") ->
-                return ev.get("spec").flatMap(s -> decodeSpec(s).ok())
+            Ok(ev) if ev.get("id").flatMap(v -> v.asLong) == Some(id) && ev.get("event").flatMap(v -> v.asString) == Some("submitted") ->
+                return ev.get("spec").flatMap(s -> decodeSpec(s).ok)
             _ -> ()
     None
 
@@ -128,7 +128,7 @@ endOf(lines: Iterable[string], id: long) -> Option[Json]
     for line in lines
         if !line.contains("\"id\":" + id.toString()) then continue
         json.parse(line) match
-            Ok(ev) if ev.get("id").flatMap(v -> v.asLong()) == Some(id) && endsJob(ev) ->
+            Ok(ev) if ev.get("id").flatMap(v -> v.asLong) == Some(id) && endsJob(ev) ->
                 found = Some(ev)
             _ -> ()
     found

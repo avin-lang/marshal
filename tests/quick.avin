@@ -2,7 +2,7 @@ module tests
 
 // The quick lane: the scheduler's rules for quick jobs, the cap and its refusals, the hint, the
 // spec's round trips and how listings show the lane.
-import json
+import avin.json
 import dev.avinlang.marshal
 import dev.avinlang.marshal.top
 import dev.avinlang.marshal.{Budget, JobInfo, JobSpec, Reply, Started, Usage, Waiting, Why}
@@ -104,11 +104,11 @@ hint()
     assertEq(marshal.quickHint(l, qSpec(), [long(20000), 25000, 2 * minute]), "")
     // one slow run in ten is under the 90th percentile; two are not
     val mostlyShort = (0 ..< 9).map(i -> long(10000)).toVector ++ [20 * minute]
-    assert(marshal.quickHint(l, qSpec(), mostlyShort).nonEmpty())
+    assert(marshal.quickHint(l, qSpec(), mostlyShort).nonEmpty)
     assertEq(marshal.quickHint(l, qSpec(), mostlyShort ++ [20 * minute]), "")
     // only the learning window counts: old slow runs fall out of it
     assertEq(marshal.quickHint(l, qSpec(), (0 ..< 30).map(i -> 20 * minute).toVector ++ short), "")
-    assert(marshal.quickHint(l, qSpec(), (0 ..< 30).map(i -> 20 * minute).toVector ++ (0 ..< 20).map(i -> long(9000)).toVector).nonEmpty())
+    assert(marshal.quickHint(l, qSpec(), (0 ..< 30).map(i -> 20 * minute).toVector ++ (0 ..< 20).map(i -> long(9000)).toVector).nonEmpty)
 
 @test("quick goes through the spec's and the job's JSON, and is absent for a job not quick")
 roundTrips()
@@ -163,15 +163,15 @@ quickListings()
     assertEq(marshal.whyWord(QuickFull), "quick-lane")
     // top's 14-cell STATE column says it shorter, whole even after a two-digit queue position
     assertEq(top.whyText(QuickFull), "quick full")
-    assert(("#99 " + top.whyText(QuickFull)).charCount() <= 14)
+    assert(("#99 " + top.whyText(QuickFull)).charCount <= 14)
     assertEq(top.whyText(NoMemory), marshal.whyText(NoMemory))
     val q =JobInfo(2, "test", 4, 0, false, "/w", ["t"], "queued", None, false, 0, 0, 120000, "/l", None, quick = true)
     assertEq(marshal.stateWithWhy(q, [(long(2), QuickFull)]), "queued (quick lane full)")
     assertEq(marshal.usageLine(Usage(0, 12, 0, long.MaxValue, 1, 0, None, None, quick = 1)), "units 0/12, memory 0, 1 running, 0 queued, landing lane free, quick lane 1/2")
     assertEq(marshal.usageLine(Usage(0, 12, 0, long.MaxValue, 0, 0, None, None)), "units 0/12, memory 0, 0 running, 0 queued, landing lane free")
     val status = marshal.statusJson(Usage(0, 12, 0, 100, 1, 1, None, None, quick = 1), [j, q], [(long(2), QuickFull)])
-    assertEq(status("quick").asInt(), Some(1))
-    assertEq(status("quick_slots").asInt(), Some(2))
-    val queued = status("queued").asVector().get()(0)
-    assertEq(queued("why").asString(), Some("quick-lane"))
-    assertEq(queued("quick").asBool(), Some(true))
+    assertEq(status("quick").asInt, Some(1))
+    assertEq(status("quick_slots").asInt, Some(2))
+    val queued = status("queued").asVector.get(0)
+    assertEq(queued("why").asString, Some("quick-lane"))
+    assertEq(queued("quick").asBool, Some(true))

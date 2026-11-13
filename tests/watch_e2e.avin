@@ -10,16 +10,16 @@ import avin.threads
 import avin.threads.{Atomic, spawn}
 import avin.time
 import avin.time.millis
-import json
-import json.Json
+import avin.json
+import avin.json.Json
 
 // The event a `wait --until` or `events` printed first.
 printedEvent(r: Ran) -> Json = printedEvents(r)(0)
 
 printedEvents(r: Ran) -> Vector[Json] =
-    r.out.lines().filter(l -> l.startsWith("{")).map(l -> json.parse(l).ok().get()).toVector
+    r.out.lines.filter(l -> l.startsWith("{")).map(l -> json.parse(l).ok.get).toVector
 
-eventName(ev: Json) -> string = ev("event").asString().get()
+eventName(ev: Json) -> string = ev("event").asString.get
 
 // Starts a command line in the background; its output lands in a file of the home's.
 data Background(pid: long, file: string)
@@ -28,7 +28,7 @@ startM(home: string, env: Vector[(string, string)], args: string*) -> Background
     val file = s"$home/bg.${outputs.add(1)}.out"
     var command = homed(Command(bin(), args*), home).toFile(file).errorsToOutput()
     for (k, v) in env do command = command.withEnv(k, v)
-    val child = command.start().ok().get()
+    val child = command.start().ok.get
     val code = Atomic(-1)
     spawn(() ->
         child.waitFor()
@@ -37,13 +37,13 @@ startM(home: string, env: Vector[(string, string)], args: string*) -> Background
 
 outputOf(b: Background) -> string = fs.readText(b.file).getOrElse("")
 
-linesOf(b: Background) -> Vector[string] = outputOf(b).lines().filter(l -> l.startsWith("{")).toVector
+linesOf(b: Background) -> Vector[string] = outputOf(b).lines.filter(l -> l.startsWith("{")).toVector
 
 stopBackground(b: Background) = process.signal(b.pid, 9)
 
 // Whether the process is still there; a child that has exited and not been waited for is not alive
 // for this purpose, since `waitFor` above reaps it.
-alive(pid: long) -> bool = process.signal(pid, 0).isOk()
+alive(pid: long) -> bool = process.signal(pid, 0).isOk
 
 // A home with its daemon already running: a wait never starts one.
 daemonHome(config: string = "") -> string
@@ -61,9 +61,9 @@ waitIdleAtOnce()
     assertEq(r.code, 0)
     val ev = printedEvent(r)
     assertEq(eventName(ev), "idle")
-    assertEq(ev("running").asLong(), Some(0))
-    assertEq(ev("queued").asLong(), Some(0))
-    assert(ev("ts").asLong().get() > 0)
+    assertEq(ev("running").asLong, Some(0))
+    assertEq(ev("queued").asLong, Some(0))
+    assert(ev("ts").asLong.get > 0)
     cleanUp(home)
 
 @test("wait --until idle waits for what runs and what is queued behind it")
@@ -77,7 +77,7 @@ waitIdleWaits()
     val r = waiter.join()
     assertEq(r.code, 0)
     assertEq(eventName(printedEvent(r)), "idle")
-    assert((time.monotonic() - began).toMillis() >= 1400, "answered before the queued job ended")
+    assert((time.monotonic() - began).toMillis >= 1400, "answered before the queued job ended")
     assertEq(eventsOf(home, 2), ["submitted", "started", "finished"])
     cleanUp(home)
 
@@ -93,14 +93,14 @@ waitJobs()
     assertEq(r.code, 0)
     val ev = printedEvent(r)
     assertEq(eventName(ev), "finished")
-    assertEq(ev("id").asLong(), Some(second))
-    assertEq(ev("exit").asLong(), Some(3))
+    assertEq(ev("id").asLong, Some(second))
+    assertEq(ev("exit").asLong, Some(3))
     // all ended already: answered at once, with the one that ended last
     val again = m(home, "wait", "--until", s"job=$second,$first")
     assertEq(again.code, 0)
-    assertEq(printedEvent(again)("id").asLong(), Some(second))
+    assertEq(printedEvent(again)("id").asLong, Some(second))
     val single = m(home, "wait", "--until", s"job=$first")
-    assertEq(printedEvent(single)("id").asLong(), Some(first))
+    assertEq(printedEvent(single)("id").asLong, Some(first))
     cleanUp(home)
 
 @test("wait --until job= for a job nobody numbered, or a job that was cancelled, is answered")
@@ -138,15 +138,15 @@ waitEndedFilters()
     threads.sleep(millis(500))
     val slow = submitted(home, "--kind", "slow", "--", "sh", "-c", "sleep 0.2")
     val anyEv = printedEvent(any.join())
-    assertEq(anyEv("id").asLong(), Some(quick))
+    assertEq(anyEv("id").asLong, Some(quick))
     val outcomeEv = printedEvent(byOutcome.join())
-    assertEq(outcomeEv("id").asLong(), Some(bad))
-    assertEq(outcomeEv("exit").asLong(), Some(9))
-    assertEq(printedEvent(failed.join())("id").asLong(), Some(bad))
+    assertEq(outcomeEv("id").asLong, Some(bad))
+    assertEq(outcomeEv("exit").asLong, Some(9))
+    assertEq(printedEvent(failed.join())("id").asLong, Some(bad))
     val kindEv = printedEvent(byKind.join())
-    assertEq(kindEv("id").asLong(), Some(slow))
-    assertEq(kindEv("kind").asString(), Some("slow"))
-    assertEq(printedEvent(both.join())("id").asLong(), Some(slow))
+    assertEq(kindEv("id").asLong, Some(slow))
+    assertEq(kindEv("kind").asString, Some("slow"))
+    assertEq(printedEvent(both.join())("id").asLong, Some(slow))
     cleanUp(home)
 
 @test("wait --until started, and landing-done, answer on those events only")
@@ -161,14 +161,14 @@ waitStartedAndLanding()
     val land = submitted(home, "--landing", "--kind", "probe", "--", "sh", "-c", "exit 0")
     val probeStart = printedEvent(started.join())
     assertEq(eventName(probeStart), "started")
-    assertEq(probeStart("id").asLong(), Some(land))
+    assertEq(probeStart("id").asLong, Some(land))
     val landEv = printedEvent(landing.join())
     assertEq(eventName(landEv), "finished")
-    assertEq(landEv("id").asLong(), Some(land))
-    assertEq(landEv("landing").asBool(), Some(true))
+    assertEq(landEv("id").asLong, Some(land))
+    assertEq(landEv("landing").asBool, Some(true))
     val queuedEv = printedEvent(submittedEv.join())
     assertEq(eventName(queuedEv), "submitted")
-    assertEq(queuedEv("id").asLong(), Some(land))
+    assertEq(queuedEv("id").asLong, Some(land))
     assert(dev < land)
     cleanUp(home)
 
@@ -194,7 +194,7 @@ waitSinceIsAlreadyTrue()
         val r = m(home, "wait", "--until", cond, "--since", "1", "--timeout", "10s")
         assertEq(r.code, 0)
         val ev = printedEvent(r)
-        assertEq((cond, eventName(ev), ev("id").asLong()), (cond, name, Some(id)))
+        assertEq((cond, eventName(ev), ev("id").asLong), (cond, name, Some(id)))
     // without --since the same events are in the past, and the wait gives up
     val late = m(home, "wait", "--until", "ended", "--timeout", "1s")
     assertEq(late.code, 124)
@@ -203,7 +203,7 @@ waitSinceIsAlreadyTrue()
     assertEq(after.code, 124)
     val ago = m(home, "wait", "--until", "failed", "--since", "1h", "--timeout", "10s")
     assertEq(ago.code, 0)
-    assertEq(printedEvent(ago)("id").asLong(), Some(bad))
+    assertEq(printedEvent(ago)("id").asLong, Some(bad))
     cleanUp(home)
 
 @test("a job ending as the wait is asked for is never missed")
@@ -217,7 +217,7 @@ waitRacesTheEnd()
         val byEvent = spawn(() -> m(home, "wait", "--until", "ended", "--since", id.toString(), "--timeout", "20s"))
         val r = byId.join()
         assertEq(r.code, 0)
-        assertEq(printedEvent(r)("id").asLong(), Some(id))
+        assertEq(printedEvent(r)("id").asLong, Some(id))
         val e = byEvent.join()
         assertEq(e.code, 0)
         assertEq(eventName(printedEvent(e)), "finished")
@@ -231,7 +231,7 @@ waitTimeout()
     val r = m(home, "wait", "--until", "idle", "--timeout", "1s")
     assertEq(r.code, 124)
     assert(r.out.contains("timed out after 1.0s waiting for idle"), r.out)
-    val took = (time.monotonic() - began).toMillis()
+    val took = (time.monotonic() - began).toMillis
     assert(took >= 900 && took < 8000, s"took $took ms")
     assertEq(m(home, "status").code, 0)
     val ended = m(home, "wait", "--until", "ended", "--timeout", "1s")
@@ -255,8 +255,8 @@ waitSeveral()
         val r = w.join()
         assertEq(r.code, 0)
         val ev = printedEvent(r)
-        assertEq(ev("id").asLong(), Some(id))
-        assertEq(ev("exit").asLong(), Some(2))
+        assertEq(ev("id").asLong, Some(id))
+        assertEq(ev("exit").asLong, Some(2))
     // and the daemon has let each go
     assertEq(m(home, "status").code, 0)
     assertEq(submitted(home, "--", "true"), id + 1)
@@ -275,10 +275,10 @@ waitAcrossRestart2()
         restarted(home)
         val e = byEvent.join()
         assertEq(e.code, 0)
-        assertEq(printedEvent(e)("id").asLong(), Some(id))
+        assertEq(printedEvent(e)("id").asLong, Some(id))
         val j = byJob.join()
         assertEq(j.code, 0)
-        assertEq(printedEvent(j)("id").asLong(), Some(id))
+        assertEq(printedEvent(j)("id").asLong, Some(id))
         val i = byIdle.join()
         assertEq(i.code, 0)
         assertEq(eventName(printedEvent(i)), "idle")
@@ -290,12 +290,12 @@ waitSeesTheHandover()
     val id = submitted(home, "--", "sh", "-c", "sleep 0.5")
     // the restart is held up by nothing, so a waiter begun just before it and an event that falls
     // in the gap between its two connections are both found by the replay
-    val waiter = spawn(() -> m(home, "wait", "--until", "ended", "--since", "@" + (time.now().epochMillis() - 5000).toString(), "--timeout", "30s"))
+    val waiter = spawn(() -> m(home, "wait", "--until", "ended", "--since", "@" + (time.now().epochMillis - 5000).toString(), "--timeout", "30s"))
     threads.sleep(millis(100))
     restarted(home)
     val r = waiter.join()
     assertEq(r.code, 0)
-    assertEq(printedEvent(r)("id").asLong(), Some(id))
+    assertEq(printedEvent(r)("id").asLong, Some(id))
     cleanUp(home)
 
 @test("a waiter learns that the daemon stopped, with status 1")
@@ -361,7 +361,7 @@ watchWithNoDaemon()
 @test("events prints the logged events, in order, and exits")
 eventsPast()
     val home = daemonHome()
-    assertEq(m(home, "events").out.trim(), "")
+    assertEq(m(home, "events").out.trim, "")
     assertEq(m(home, "events").code, 0)
     val a = submitted(home, "--kind", "a", "--", "sh", "-c", "exit 0")
     assertEq(m(home, "wait", a.toString()).code, 0)
@@ -369,22 +369,22 @@ eventsPast()
     assertEq(m(home, "wait", b.toString()).code, 5)
     val all = m(home, "events")
     assertEq(all.code, 0)
-    val names = printedEvents(all).map(e -> (e("id").asLong().get(), eventName(e)))
+    val names = printedEvents(all).map(e -> (e("id").asLong.get, eventName(e)))
     assertEq(names, [(a, "submitted"), (a, "started"), (a, "finished"), (b, "submitted"), (b, "started"), (b, "finished")])
     // line for line what the log holds
-    assertEq(printedEvents(all).map(e -> e.render()), fs.readText(home + "/events.jsonl").ok().get().lines().filter(l -> l.nonEmpty()).toVector)
+    assertEq(printedEvents(all).map(e -> e.render), fs.readText(home + "/events.jsonl").ok.get.lines.filter(l -> l.nonEmpty).toVector)
     assertEq(printedEvents(m(home, "events", "any")).length, 6)
-    assertEq(printedEvents(m(home, "events", "ended")).map(e -> e("id").asLong().get()), [a, b])
-    assertEq(printedEvents(m(home, "events", "failed")).map(e -> e("id").asLong().get()), [b])
-    assertEq(printedEvents(m(home, "events", "ended:kind=a")).map(e -> e("id").asLong().get()), [a])
-    assertEq(printedEvents(m(home, "events", "ended:outcome=ok")).map(e -> e("id").asLong().get()), [a])
+    assertEq(printedEvents(m(home, "events", "ended")).map(e -> e("id").asLong.get), [a, b])
+    assertEq(printedEvents(m(home, "events", "failed")).map(e -> e("id").asLong.get), [b])
+    assertEq(printedEvents(m(home, "events", "ended:kind=a")).map(e -> e("id").asLong.get), [a])
+    assertEq(printedEvents(m(home, "events", "ended:outcome=ok")).map(e -> e("id").asLong.get), [a])
     assertEq(printedEvents(m(home, "events", "started")).length, 2)
     assertEq(printedEvents(m(home, "events", "submitted:kind=b")).length, 1)
     assertEq(printedEvents(m(home, "events", "landing-done")).length, 0)
-    assertEq(printedEvents(m(home, "events", "--since", b.toString())).map(e -> e("id").asLong().get()).distinct, [b])
+    assertEq(printedEvents(m(home, "events", "--since", b.toString())).map(e -> e("id").asLong.get).distinct, [b])
     assertEq(printedEvents(m(home, "events", "--since", b.toString(), "ended")).length, 1)
     assertEq(printedEvents(m(home, "events", "--since", "1h")).length, 6)
-    assertEq(printedEvents(m(home, "events", "--since", "@" + (time.now().epochMillis() + 60000).toString())).length, 0)
+    assertEq(printedEvents(m(home, "events", "--since", "@" + (time.now().epochMillis + 60000).toString())).length, 0)
     assertEq(printedEvents(m(home, "events", "ended", "--since", "1")).length, 2)
     cleanUp(home)
 
@@ -422,10 +422,10 @@ eventsFollow()
     assert(within(5000, () -> linesOf(all).length == 3), s"saw ${linesOf(all).length} events")
     assert(within(5000, () -> linesOf(ended).length == 1), s"saw ${linesOf(ended).length} ended events")
     assert(within(5000, () -> linesOf(replay).length == 2), "the live event was not printed")
-    assertEq(linesOf(all).map(l -> eventName(json.parse(l).ok().get())), ["submitted", "started", "finished"])
-    val finished = json.parse(linesOf(ended)(0)).ok().get()
-    assertEq(finished("id").asLong(), Some(second))
-    assertEq(finished("exit").asLong(), Some(1))
+    assertEq(linesOf(all).map(l -> eventName(json.parse(l).ok.get)), ["submitted", "started", "finished"])
+    val finished = json.parse(linesOf(ended)(0)).ok.get
+    assertEq(finished("id").asLong, Some(second))
+    assertEq(finished("exit").asLong, Some(1))
     for b in [all, ended, replay] do stopBackground(b)
     // a client that left is let go, and the daemon goes on
     assertEq(submitted(home, "--", "true"), second + 1)
@@ -448,7 +448,7 @@ eventsFollowRestart()
     val seen = linesOf(following)
     assertEq(seen.length, 6)
     assertEq(seen.distinct.length, 6)
-    assertEq(seen.map(l -> json.parse(l).ok().get()("id").asLong().get()), [first, first, first, second, second, second])
+    assertEq(seen.map(l -> json.parse(l).ok.get("id").asLong.get), [first, first, first, second, second, second])
     stopBackground(following)
     cleanUp(home)
 
@@ -462,16 +462,16 @@ eventsSlowReader()
     val kept = startM(home, [], "events", "--follow", "ended")
     settleWatch()
     // the slow reader is stopped, so its socket fills and then its buffer in the daemon
-    assertEq(Command("kill", "-STOP", slow.pid.toString()).run().ok(), Some(ExitStatus.Exited(0)))
+    assertEq(Command("kill", "-STOP", slow.pid.toString()).run().ok, Some(ExitStatus.Exited(0)))
     val began = time.monotonic()
     for _ in 0..<30
         assertEq(m(home, "run", "--", "sh", "-c", padding).code, 0)
-    val took = (time.monotonic() - began).toMillis()
+    val took = (time.monotonic() - began).toMillis
     assert(took < 60000, s"30 jobs took $took ms: the daemon waited for the reader")
     assert(within(5000, () -> daemonLog(home).contains("fell behind and was dropped")), daemonLog(home))
     assert(within(5000, () -> linesOf(kept).length == 30), s"${linesOf(kept).length} ended events reached the other reader")
     // the stopped reader is let go again: it prints what reached it, says it was dropped, exits 1
-    assertEq(Command("kill", "-CONT", slow.pid.toString()).run().ok(), Some(ExitStatus.Exited(0)))
+    assertEq(Command("kill", "-CONT", slow.pid.toString()).run().ok, Some(ExitStatus.Exited(0)))
     assert(within(10000, () -> !alive(slow.pid)), "the dropped reader did not end")
     val out = outputOf(slow)
     assert(out.contains("events were dropped"), out)

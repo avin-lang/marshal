@@ -188,11 +188,11 @@ landingEndFreesMemory()
 neverFits()
     assertEq(marshal.neverFits(budget, 4, 0, false), None)
     assertEq(marshal.neverFits(budget, 12, 64 * 1024, false), None)
-    assert(marshal.neverFits(budget, 13, 0, false).isDefined())
-    assert(marshal.neverFits(budget, 1, 64 * 1024 + 1, false).isDefined())
-    assert(marshal.neverFits(budget, 0, 0, false).isDefined())
-    assert(marshal.neverFits(budget, 0, 0, true).isDefined())
-    assert(marshal.neverFits(budget, 1, -1, false).isDefined())
+    assert(marshal.neverFits(budget, 13, 0, false).isDefined)
+    assert(marshal.neverFits(budget, 1, 64 * 1024 + 1, false).isDefined)
+    assert(marshal.neverFits(budget, 0, 0, false).isDefined)
+    assert(marshal.neverFits(budget, 0, 0, true).isDefined)
+    assert(marshal.neverFits(budget, 1, -1, false).isDefined)
     assertEq(marshal.neverFits(budget, 13, 1024 * 1024, true), None)
 
 @test("a test weighs 4 units by default and anything else 1")
@@ -323,5 +323,5 @@ whyAgreesWithSchedule()
         ([running(1, 1, memory = 60 * 1024)], [land(2, memory = 8 * 1024), dev(3, 1)], outside(0, [Ticket(5, 1)])),
         ([running(1, 12, memory = 10 * 1024)], [land(2, memory = 8 * 1024), dev(3, 1)], marshal.NoOutside)]
     for (r, q, o) in cases
-        val starting = why(r, q, o).filter(w -> w.2 == Starting).map(w -> w.0).sorted()
-        assertEq(starting, marshal.schedule(budget, r, q, 0, o).sorted())
+        val starting = why(r, q, o).filter(w -> w.2 == Starting).map(w -> w.0).sorted
+        assertEq(starting, marshal.schedule(budget, r, q, 0, o).sorted)

@@ -9,19 +9,19 @@ import avin.process
 import avin.threads
 import avin.time
 import avin.time.millis
-import json
-import json.Json
+import avin.json
+import avin.json.Json
 
 // The `ls` row of job `id`.
 lsRow(home: string, id: long) -> string =
-    m(home, "ls").out.lines().find(l -> l.startsWith(id.toString() + " ")).getOrElse("")
+    m(home, "ls").out.lines.find(l -> l.startsWith(id.toString() + " ")).getOrElse("")
 
 // The position in the log of job `id`'s `n`th `started` event, counting from 1; -1 when there is none.
 nthStart(home: string, id: long, n: int) -> int
     var seen = 0
     val evs = events(home)
     for i in evs.indices
-        if evs(i)("id").asLong() == Some(id) && evs(i)("event").asString() == Some("started")
+        if evs(i)("id").asLong == Some(id) && evs(i)("event").asString == Some("started")
             seen += 1
             if seen == n then return i
     -1
@@ -176,9 +176,9 @@ togetherPausedAttemptRetried()
     process.signal(-pgid, 9)
     assertEq(m(home, "wait", id.toString()).code, 0)
     assertEq(eventsOf(home, id), ["submitted", "started", "paused", "finished", "retry", "started", "finished"])
-    val last = events(home).filter(e -> e("id").asLong() == Some(id)).last
-    assertEq(last("paused").asBool(), Some(false))
-    assertEq(last("attempt").asLong(), Some(long(2)))
+    val last = events(home).filter(e -> e("id").asLong == Some(id)).last
+    assertEq(last("paused").asBool, Some(false))
+    assertEq(last("attempt").asLong, Some(long(2)))
     cleanUp(home)
 
 @test("a retry of an urgent job joins the urgent band again, ahead of jobs queued while it ran")
@@ -237,21 +237,21 @@ togetherWaitReadyRetry()
     val c = submitted(home, (["--retries", "1", "--"] ++ failsUntil(home, 2))*)
     awaitExit(ready)
     awaitExit(retry)
-    val r = json.parse(linesOf(ready)(0)).ok().get()
+    val r = json.parse(linesOf(ready)(0)).ok.get
     assertEq(eventName(r), "ready")
-    assertEq(r("id").asLong(), Some(b))
-    val t = json.parse(linesOf(retry)(0)).ok().get()
+    assertEq(r("id").asLong, Some(b))
+    val t = json.parse(linesOf(retry)(0)).ok.get
     assertEq(eventName(t), "retry")
-    assertEq(t("id").asLong(), Some(c))
-    assertEq(t("attempt").asLong(), Some(long(2)))
+    assertEq(t("id").asLong, Some(c))
+    assertEq(t("attempt").asLong, Some(long(2)))
     assertEq(m(home, "wait", c.toString()).code, 0)
     // the same events, already in the log
     val since = m(home, "wait", "--until", "ready", "--since", "1")
     assertEq(since.code, 0)
-    assertEq(printedEvent(since)("id").asLong(), Some(b))
-    val again = m(home, "wait", "--until", "retry:kind=" + t("kind").asString().get(), "--since", "1")
+    assertEq(printedEvent(since)("id").asLong, Some(b))
+    val again = m(home, "wait", "--until", "retry:kind=" + t("kind").asString.get, "--since", "1")
     assertEq(again.code, 0)
-    assertEq(printedEvent(again)("id").asLong(), Some(c))
+    assertEq(printedEvent(again)("id").asLong, Some(c))
     cleanUp(home)
 
 @test("events filters on every event name either feature logs, and ended:outcome=cancelled finds a cascade")
@@ -272,8 +272,8 @@ togetherEventsFilters()
         val r = m(home, "events", filter)
         assertEq(r.code, 0)
         val evs = printedEvents(r)
-        assertEq(evs.map(e -> e("id").asLong().get()), [id])
-    assertEq(printedEvents(m(home, "events", "failed")).map(e -> e("id").asLong().get()), [a, b])
+        assertEq(evs.map(e -> e("id").asLong.get), [id])
+    assertEq(printedEvents(m(home, "events", "failed")).map(e -> e("id").asLong.get), [a, b])
     cleanUp(home)
 
 @test("wait --until job= on a job that is retried answers only when its last attempt ends, live and from the log")
@@ -282,12 +282,12 @@ togetherWaitJobRetried()
     val id = submitted(home, (["--retries", "2", "--"] ++ ["sh", "-c", "sleep 0.5; " + failsUntil(home, 3)(2)])*)
     val w = startM(home, [], "wait", "--until", s"job=$id", "--timeout", "20s")
     awaitExit(w)
-    val ev = json.parse(linesOf(w)(0)).ok().get()
-    assertEq(ev("attempt").asLong(), Some(long(3)))
-    assertEq(ev("exit").asLong(), Some(long(0)))
+    val ev = json.parse(linesOf(w)(0)).ok.get
+    assertEq(ev("attempt").asLong, Some(long(3)))
+    assertEq(ev("exit").asLong, Some(long(0)))
     // the log has three endings of the job; the one asked for is the last
     val back = m(home, "wait", "--until", s"job=$id")
-    assertEq(printedEvent(back)("attempt").asLong(), Some(long(3)))
+    assertEq(printedEvent(back)("attempt").asLong, Some(long(3)))
     val listed = m(home, "history", "--json")
     assert(listed.out.contains(s"\"id\":$id"), listed.out)
     cleanUp(home)
@@ -301,10 +301,10 @@ togetherWaitJobRetriedAcrossRestart()
     awaitEvent(home, id, "retry")
     assertEq(m(home, "wait", "--until", s"job=$id", "--timeout", "1s").code, 124)
     restarted(home)
-    fs.writeText(home + "/end", "").ok().get()
+    fs.writeText(home + "/end", "").ok.get
     val r = m(home, "wait", "--until", s"job=$id", "--timeout", "20s")
     assertEq(r.code, 0)
-    assertEq(printedEvent(r)("attempt").asLong(), Some(long(2)))
+    assertEq(printedEvent(r)("attempt").asLong, Some(long(2)))
     cleanUp(home)
 
 @test("wait --until idle waits for a job waiting for another and for one waiting to retry")

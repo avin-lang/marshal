@@ -50,7 +50,7 @@ exclusiveSpec(s: JobSpec, units: int) -> JobSpec =
 // The load averages `text` holds, as `sysctl -n vm.loadavg` prints them (`{ 1.52 1.40 1.31 }`) or as
 // bare numbers; empty when it holds none.
 parseLoads(text: string) -> Vector[real] =
-    text.split(" ").map(w -> w.trim()).filter(w -> w.nonEmpty() && w != "{" && w != "}").map(w -> w.toRealOption()).takeWhile(r -> r.isDefined()).map(r -> r.get()).toVector
+    text.split(" ").map(w -> w.trim).filter(w -> w.nonEmpty && w != "{" && w != "}").map(w -> w.toRealOption()).takeWhile(r -> r.isDefined).map(r -> r.get).toVector
 
 // The machine's load averages (1, 5 and 15 minutes), or empty where they cannot be read. A test
 // names a file to read them from instead (`$MARSHAL_TEST_LOAD_FILE`), so no real load is needed.
@@ -93,8 +93,8 @@ data Proc(pid: long, ppid: long, pgid: long, cpu: real, name: string)
 // read is left out. The name is the program's file name, the rest of its path left off.
 parseProcs(text: string) -> Vector[Proc]
     val out = Buffer[Proc]()
-    for line in text.lines()
-        val words = line.trim().split(" ").filter(w -> w.nonEmpty()).toVector
+    for line in text.lines
+        val words = line.trim.split(" ").filter(w -> w.nonEmpty).toVector
         if words.length < 5 then continue
         val name = words.drop(4).mkString(" ").split("/").toVector.last
         (words(0).toLongOption(), words(1).toLongOption(), words(2).toLongOption(), words(3).toRealOption()) match

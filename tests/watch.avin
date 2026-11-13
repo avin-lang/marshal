@@ -4,18 +4,18 @@ module tests
 // and replies on the wire.
 import dev.avinlang.marshal
 import dev.avinlang.marshal.{Condition, Filter, Mode, Request, Reply, Since}
-import json
-import json.Json
+import avin.json
+import avin.json.Json
 
 val Ending: Vector[string] = ["finished", "timeout", "quiet", "killed", "cancelled", "lost"]
 
-parsed(text: string) -> Condition = marshal.parseCondition(text).ok().get()
+parsed(text: string) -> Condition = marshal.parseCondition(text).ok.get
 
 filterOf(text: string) -> Filter = parsed(text) match
     Condition.Matching(f) -> f
     other -> fail(s"$text is not an event filter: $other")
 
-refused(text: string) -> string = marshal.parseCondition(text).err().get()
+refused(text: string) -> string = marshal.parseCondition(text).err.get
 
 // An event as the log writes it, with the fields the filters read.
 event(name: string, kind: string = "build", landing: bool = false, exit: Option[int] = None) -> Json
@@ -42,7 +42,7 @@ eventNames()
         assertEq(filterOf(name), Filter([name], None, None, false, false))
         assertEq(filterOf(name + ":kind=gate"), Filter([name], Some("gate"), None, false, false))
         assert(refused(name + ":outcome=ok").contains("has no outcome"), refused(name + ":outcome=ok"))
-        assert(marshal.parseFilter(name).isOk(), name)
+        assert(marshal.parseFilter(name).isOk, name)
         assert(marshal.admits(filterOf(name), event(name)), name)
         assert(!marshal.admits(filterOf(name), event("started")), name)
     assert(refused("dance").contains("ready, retry, held, released, paused, resumed, prioritized"), refused("dance"))
@@ -104,11 +104,11 @@ badConditions()
 
 @test("an events filter is an event condition, never idle or job=")
 eventFilters()
-    assert(marshal.parseFilter("ended:kind=x").isOk())
-    assert(marshal.parseFilter("any").isOk())
-    assert(marshal.parseFilter("idle").isErr())
-    assert(marshal.parseFilter("job=3").isErr())
-    assert(marshal.parseFilter("nonsense").isErr())
+    assert(marshal.parseFilter("ended:kind=x").isOk)
+    assert(marshal.parseFilter("any").isOk)
+    assert(marshal.parseFilter("idle").isErr)
+    assert(marshal.parseFilter("job=3").isErr)
+    assert(marshal.parseFilter("nonsense").isErr)
 
 @test("the outcome of an event is ok, failed, timeout, killed or lost, and only an ending has one")
 outcomes()
@@ -185,24 +185,24 @@ sinceForms()
 @test("--since refuses what is not a time")
 sinceRefusals()
     for text in ["", "s", "m", "-5", "1.5h", "10x", "@", "@x", "@-1", "abc", "1 0", "99999999999999999999"] do
-        assert(marshal.parseSince(text, 1000).isErr(), text)
-    assert(marshal.parseSince("9999999999999999d", 1000).isErr())
+        assert(marshal.parseSince(text, 1000).isErr, text)
+    assert(marshal.parseSince("9999999999999999d", 1000).isErr)
 
 @test("a watch request reads back as itself, in each mode, with and without a since")
 watchRequests()
     for source in ["idle", "job=3", "job=3,4", "ended", "ended:kind=x,outcome=failed", "failed", "landing-done", "started", "any"] do
         val once = Request.Watch(source, parsed(source), Mode.Once, None, None)
-        assertEq(marshal.decodeRequest(marshal.encodeRequest(once).render()), Ok(once))
+        assertEq(marshal.decodeRequest(marshal.encodeRequest(once).render), Ok(once))
     for source in ["ended", "failed:kind=gate", "any", "started", "submitted"] do
         for mode in [Mode.Past, Mode.Follow, Mode.Once] do
             val r = Request.Watch(source, parsed(source), mode, Some(1762521060000), Some(12))
-            assertEq(marshal.decodeRequest(marshal.encodeRequest(r).render()), Ok(r))
+            assertEq(marshal.decodeRequest(marshal.encodeRequest(r).render), Ok(r))
             val none = Request.Watch(source, parsed(source), mode, None, None)
-            assertEq(marshal.decodeRequest(marshal.encodeRequest(none).render()), Ok(none))
+            assertEq(marshal.decodeRequest(marshal.encodeRequest(none).render), Ok(none))
 
 @test("a watch request with a bad condition, mode or field is refused with a reason")
 watchRefusals()
-    val decode = (text: string) -> marshal.decodeRequest(text).err().get()
+    val decode = (text: string) -> marshal.decodeRequest(text).err.get
     assert(decode("{\"op\":\"watch\",\"cond\":\"dance\",\"mode\":\"once\"}").contains("bad condition"))
     assert(decode("{\"op\":\"watch\",\"mode\":\"once\"}").contains("`cond` is missing"))
     assert(decode("{\"op\":\"watch\",\"cond\":\"idle\"}").contains("`mode` is missing"))
@@ -211,15 +211,15 @@ watchRefusals()
     assert(decode("{\"op\":\"watch\",\"cond\":\"ended\",\"mode\":\"once\",\"since\":\"x\"}").contains("`since` is not"))
     assert(decode("{\"op\":\"watch\",\"cond\":\"idle\",\"mode\":\"follow\"}").contains("event filter"))
     assert(decode("{\"op\":\"watch\",\"cond\":\"job=2\",\"mode\":\"past\"}").contains("event filter"))
-    assert(marshal.decodeRequest("{\"op\":\"watch\",\"cond\":\"idle\",\"mode\":\"once\"}").isOk())
+    assert(marshal.decodeRequest("{\"op\":\"watch\",\"cond\":\"idle\",\"mode\":\"once\"}").isOk)
 
 @test("a watch's replies read back as themselves")
 watchReplies()
     val ev = event("finished", exit = Some(0))
-    assertEq(marshal.decodeReply(marshal.encodeReply(Reply.Streamed(ev)).render()), Ok(Reply.Streamed(ev)))
-    assertEq(marshal.decodeReply(marshal.encodeReply(Reply.Replayed([ev, event("started")])).render()), Ok(Reply.Replayed([ev, event("started")])))
-    assertEq(marshal.decodeReply(marshal.encodeReply(Reply.Replayed([])).render()), Ok(Reply.Replayed([])))
-    assertEq(marshal.decodeReply(marshal.encodeReply(Reply.Failed("events were dropped: x")).render()), Ok(Reply.Failed("events were dropped: x")))
+    assertEq(marshal.decodeReply(marshal.encodeReply(Reply.Streamed(ev)).render), Ok(Reply.Streamed(ev)))
+    assertEq(marshal.decodeReply(marshal.encodeReply(Reply.Replayed([ev, event("started")])).render), Ok(Reply.Replayed([ev, event("started")])))
+    assertEq(marshal.decodeReply(marshal.encodeReply(Reply.Replayed([])).render), Ok(Reply.Replayed([])))
+    assertEq(marshal.decodeReply(marshal.encodeReply(Reply.Failed("events were dropped: x")).render), Ok(Reply.Failed("events were dropped: x")))
 
 @test("only a watch is answered with a stream")
 watchingIsWatch()

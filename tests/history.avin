@@ -4,8 +4,8 @@ module tests
 // options and what `history` and `stats` print.
 import avin.fs
 import avin.time
-import json
-import json.Json
+import avin.json
+import avin.json.Json
 import dev.avinlang.marshal
 import dev.avinlang.marshal.cli
 import dev.avinlang.marshal.{EndedJob, HistoryFilter, JobInfo, KindStats, Ledger, Outcome}
@@ -33,8 +33,8 @@ historyEmptyLog()
     assertEq(marshal.kindStats(l, Everything), [])
     assertEq(marshal.historyListing([], zoneNamed("UTC")), "marshal: no ended jobs match")
     assertEq(marshal.statsListing([]), "marshal: no ended jobs match")
-    assertEq(marshal.historyJson([], 0).render(), "{\"jobs\":[],\"unreadable\":0}")
-    assertEq(marshal.statsJson([], 0).render(), "{\"kinds\":[],\"unreadable\":0}")
+    assertEq(marshal.historyJson([], 0).render, "{\"jobs\":[],\"unreadable\":0}")
+    assertEq(marshal.statsJson([], 0).render, "{\"kinds\":[],\"unreadable\":0}")
 
 @test("blank lines are nothing, a corrupt line is skipped and counted, and the others are read")
 corruptLines()
@@ -65,7 +65,7 @@ lastEndingStands()
     val l = ledgerOf([endLine(1, 1, Outcome.TimedOut, event = "timeout"), endLine(2, 2), endLine(3, 1, Outcome.Lost, event = "lost")])
     val jobs = marshal.selectEnded(l, Everything, 20)
     assertEq(jobs.length, 2)
-    assertEq(jobs.find(e -> e.id == 1).get().how, "lost")
+    assertEq(jobs.find(e -> e.id == 1).get.how, "lost")
 
 @test("history is newest first, ties by the higher id, and --limit keeps the newest")
 newestFirst()
@@ -103,8 +103,8 @@ markedEnd(id: long, landing: bool = false, quick: bool = false, urgent: bool = f
 historyKindMarks()
     val lines = [markedEnd(1, urgent = true), markedEnd(2, quick = true, urgent = true), markedEnd(3, landing = true, urgent = true),
                  markedEnd(4), markedEnd(5, quick = true), markedEnd(6, landing = true)]
-    val rows = marshal.historyListing(marshal.selectEnded(ledgerOf(lines), Everything, 20), zoneNamed("UTC")).lines().toVector
-    val kinds = rows.drop(1).map(r -> r.split(" ").filter(w -> w.nonEmpty())(1))
+    val rows = marshal.historyListing(marshal.selectEnded(ledgerOf(lines), Everything, 20), zoneNamed("UTC")).lines.toVector
+    val kinds = rows.drop(1).map(r -> r.split(" ").filter(w -> w.nonEmpty)(1))
     assertEq(kinds.toSet, ["test!", "test^!", "test*!", "test", "test^", "test*"].toSet)
     assertEq(kinds.length, 6)
 
@@ -112,7 +112,7 @@ historyKindMarks()
 landingStar()
     val text = marshal.historyListing(marshal.selectEnded(ledgerOf([endLine(1, 1, landing = true), endLine(2, 2)]), Everything, 20), zoneNamed("UTC"))
     assert(text.contains("test*"), text)
-    assertEq(text.lines().length, 3)
+    assertEq(text.lines.length, 3)
 
 @test("percentiles are nearest-rank: one value, two values, many values")
 percentiles()
@@ -180,7 +180,7 @@ statsPeak()
     assertEq((rows(0).peakP50, rows(0).peakMax), (Some(long(200)), Some(long(300))))
     assertEq((rows(1).peakP50, rows(1).peakMax), (None, None))
     val text = marshal.statsListing(rows)
-    assert(text.lines().toVector(2).startsWith("old") && text.lines().toVector(2).trim().endsWith("-"), text)
+    assert(text.lines.toVector(2).startsWith("old") && text.lines.toVector(2).trim.endsWith("-"), text)
 
 @test("stats: PEAK P50 and PEAK MAX are sized alike in every row, as RESV and PEAK are, never as raw kilobytes")
 statsPeakUnits()
@@ -201,43 +201,43 @@ statsPeakUnits()
         (Some(5 * G), None, "5.0G", "-")]
     for c in cases
         val row = KindStats("k", 3, 3, 0, Some(long(1000)), Some(long(1000)), Some(long(1000)), 20 * Minute, c.0, c.1)
-        val cells = marshal.statsListing([row]).lines().toVector(1).split("  ").filter(s -> s.nonEmpty()).map(s -> s.trim())
+        val cells = marshal.statsListing([row]).lines.toVector(1).split("  ").filter(s -> s.nonEmpty).map(s -> s.trim)
         assertEq((cells(cells.length - 2), cells(cells.length - 1)), (c.2, c.3))
 
 @test("stats --json keeps the peaks as raw bytes")
 statsJsonPeakBytes()
     val row = KindStats("k", 1, 1, 0, None, None, None, 20 * Minute, Some(long(7320688) * 1024), Some(long(9903) * 1024 * 1024))
     val k = marshal.statsJson([row], 0)("kinds")(0)
-    assertEq((k("peak_p50").asLong(), k("peak_max").asLong()), (Some(long(7320688) * 1024), Some(long(9903) * 1024 * 1024)))
+    assertEq((k("peak_p50").asLong, k("peak_max").asLong), (Some(long(7320688) * 1024), Some(long(9903) * 1024 * 1024)))
 
 @test("the json of history and of stats has its fields, with null where unknown")
 jsonShape()
     val l = ledgerOf([endLine(1000, 7, Outcome.Exited(3), kind = "build", run = 4200, extra = [("peak_rss", Json.num(long(512)))]), endLine(2000, 8, landing = true), "junk"])
-    val h = json.parse(marshal.historyJson(marshal.selectEnded(l, Everything, 20), l.unreadable).render()).ok().get()
-    assertEq(h("unreadable").asLong(), Some(long(1)))
-    val jobs = h("jobs").asVector().get()
+    val h = json.parse(marshal.historyJson(marshal.selectEnded(l, Everything, 20), l.unreadable).render).ok.get
+    assertEq(h("unreadable").asLong, Some(long(1)))
+    val jobs = h("jobs").asVector.get
     assertEq(jobs.length, 2)
     val first = jobs(0)
-    assertEq(first.keys(), ["id", "kind", "landing", "outcome", "exit", "duration_ms", "ended_at", "peak_rss"])
-    assertEq(first("id").asLong(), Some(long(8)))
-    assertEq(first("landing").asBool(), Some(true))
+    assertEq(first.keys, ["id", "kind", "landing", "outcome", "exit", "duration_ms", "ended_at", "peak_rss"])
+    assertEq(first("id").asLong, Some(long(8)))
+    assertEq(first("landing").asBool, Some(true))
     assertEq(first("peak_rss"), Json.Null)
     val second = jobs(1)
-    assertEq(second("outcome").asString(), Some("failed"))
-    assertEq(second("exit").asLong(), Some(long(3)))
-    assertEq(second("duration_ms").asLong(), Some(long(4200)))
-    assertEq(second("ended_at").asLong(), Some(long(1000)))
-    assertEq(second("peak_rss").asLong(), Some(long(512)))
-    val s = json.parse(marshal.statsJson(marshal.kindStats(l, Everything), l.unreadable).render()).ok().get()
-    assertEq(s("unreadable").asLong(), Some(long(1)))
-    val kinds = s("kinds").asVector().get()
+    assertEq(second("outcome").asString, Some("failed"))
+    assertEq(second("exit").asLong, Some(long(3)))
+    assertEq(second("duration_ms").asLong, Some(long(4200)))
+    assertEq(second("ended_at").asLong, Some(long(1000)))
+    assertEq(second("peak_rss").asLong, Some(long(512)))
+    val s = json.parse(marshal.statsJson(marshal.kindStats(l, Everything), l.unreadable).render).ok.get
+    assertEq(s("unreadable").asLong, Some(long(1)))
+    val kinds = s("kinds").asVector.get
     val k = kinds(0)
-    assertEq(k.keys(), ["kind", "count", "ok", "success_pct", "timeouts", "p50_ms", "p90_ms", "max_ms", "deadline_ms", "peak_p50", "peak_max"])
-    assertEq(k("kind").asString(), Some("build"))
-    assertEq(k("success_pct").asLong(), Some(long(0)))
-    assertEq(k("peak_max").asLong(), Some(long(512)))
+    assertEq(k.keys, ["kind", "count", "ok", "success_pct", "timeouts", "p50_ms", "p90_ms", "max_ms", "deadline_ms", "peak_p50", "peak_max"])
+    assertEq(k("kind").asString, Some("build"))
+    assertEq(k("success_pct").asLong, Some(long(0)))
+    assertEq(k("peak_max").asLong, Some(long(512)))
     assertEq(kinds(1)("peak_max"), Json.Null)
-    assertEq(kinds(1)("kind").asString(), Some("test+landing"))
+    assertEq(kinds(1)("kind").asString, Some("test+landing"))
 
 @test("wall clock times are listed on the clocks of the zone given, across leap days and the epoch")
 formatWhen()
@@ -276,7 +276,7 @@ parseSince()
         for name in ["UTC", "America/New_York", "Asia/Kolkata", "Pacific/Auckland"] do
             val z = zoneNamed(name)
             val shown = marshal.parseEndedSince(text, now, z).map(ms -> marshal.formatWhen(ms, z))
-            val want = if text.charCount() == 10 then text + " 00:00:00" else text.replace("T", " ") + ":00"
+            val want = if text.charCount == 10 then text + " 00:00:00" else text.replace("T", " ") + ":00"
             assert(shown == Some(want), s"$text in $name: $shown")
 
 @test("--since in a zone with an offset from UTC counts the offset: the same words are different instants")
@@ -331,17 +331,17 @@ parseSinceRefuses()
     val now: long = 1794061800000
     for bad in ["", "5", "h", "0h", "-2h", "2x", "1.5h", "2h30m", "x", "2026", "2026-11", "2026-1-07", "2026-13-01", "2026-00-10", "2026-02-30", "2025-02-29", "2026-11-00", "2026-11-07T", "2026-11-07T25:00", "2026-11-07T10:60", "2026-11-07T1:30", "2026-11-07T10", "2026-11-07T10:30:00", "2026-11-07T10:30T", "abcd-ef-gh", "99999999999999999999h", "999999999999999h", "2026-11-07Z", "2026-11-07+02:00", "2026-11-07T14:30z", "2026-11-07T14:30+2", "2026-11-07T14:30+0200", "2026-11-07T14:30+02", "2026-11-07T14:30+24:00", "2026-11-07T14:30+02:60", "2026-11-07T14:30*02:00", "2026-11-07T14:30+0a:00", "2026-11-07T14:30ZZ", "2026-11-07T14:30 UTC", "2026-11-07T14:30+02:00Z", "2026-13-07T14:30Z", "2026-11-31T14:30+02:00", "2026-11-07T25:30Z"] do
         for z in [zoneNamed("UTC"), zoneNamed("America/New_York")] do
-            assert(marshal.parseEndedSince(bad, now, z).isEmpty(), bad)
+            assert(marshal.parseEndedSince(bad, now, z).isEmpty, bad)
 
 @test("the options of history: each one, and what they default to")
 parseHistoryOptions()
     val now: long = 1794061800000
     val utc = zoneNamed("UTC")
-    val none = cli.parseQuery("history", [], now, utc).ok().get()
+    val none = cli.parseQuery("history", [], now, utc).ok.get
     assertEq(none.filter, Everything)
     assertEq(none.limit, 20)
     assert(!none.json)
-    val all = cli.parseQuery("history", ["--kind", "build", "--since", "1h", "--failed", "--limit", "3", "--json"], now, utc).ok().get()
+    val all = cli.parseQuery("history", ["--kind", "build", "--since", "1h", "--failed", "--limit", "3", "--json"], now, utc).ok.get
     assertEq(all.filter, HistoryFilter(Some("build"), Some(now - 3600000), true))
     assertEq(all.limit, 3)
     assert(all.json)
@@ -350,32 +350,32 @@ parseHistoryOptions()
 parseHistorySinceZone()
     val now: long = 1794061800000
     val york = zoneNamed("America/New_York")
-    val q = cli.parseQuery("history", ["--since", "2026-11-07T09:30"], now, york).ok().get()
+    val q = cli.parseQuery("history", ["--since", "2026-11-07T09:30"], now, york).ok.get
     assertEq(q.filter.since, Some(now))
-    val z = cli.parseQuery("history", ["--since", "2026-11-07T14:30Z"], now, york).ok().get()
+    val z = cli.parseQuery("history", ["--since", "2026-11-07T14:30Z"], now, york).ok.get
     assertEq(z.filter.since, Some(now))
-    assert(cli.parseQuery("history", ["--since", "2026-11-07T14:30+2"], now, york).isErr())
+    assert(cli.parseQuery("history", ["--since", "2026-11-07T14:30+2"], now, york).isErr)
 
 @test("the listing shows ENDED, with no zone in the heading, and each row on the zone's clocks")
 historyListingZone()
     val jobs = marshal.selectEnded(ledgerOf([endLine(1794061800000, 1), endLine(1783182600000, 2)]), Everything, 20)
     val utc = marshal.historyListing(jobs, zoneNamed("UTC"))
-    assert(utc.lines().toVector(0).endsWith("ENDED                LABEL"), utc)
+    assert(utc.lines.toVector(0).endsWith("ENDED                LABEL"), utc)
     assert(!utc.contains("(UTC)"), utc)
     assert(utc.contains("2026-11-07 14:30:00") && utc.contains("2026-07-04 16:30:00"), utc)
     val york = marshal.historyListing(jobs, zoneNamed("America/New_York"))
     assert(york.contains("2026-11-07 09:30:00") && york.contains("2026-07-04 12:30:00"), york)
-    assertEq(marshal.historyJson(jobs, 0).render().contains("\"ended_at\":1794061800000"), true)
+    assertEq(marshal.historyJson(jobs, 0).render.contains("\"ended_at\":1794061800000"), true)
 
 @test("the options of stats take no --failed or --limit")
 parseStatsOptions()
     val now: long = 1794061800000
     val utc = zoneNamed("UTC")
-    val q = cli.parseQuery("stats", ["--json", "--kind", "test"], now, utc).ok().get()
+    val q = cli.parseQuery("stats", ["--json", "--kind", "test"], now, utc).ok.get
     assertEq(q.filter, HistoryFilter(Some("test"), None, false))
     assert(q.json)
-    assert(cli.parseQuery("stats", ["--failed"], now, utc).isErr())
-    assert(cli.parseQuery("stats", ["--limit", "3"], now, utc).isErr())
+    assert(cli.parseQuery("stats", ["--failed"], now, utc).isErr)
+    assert(cli.parseQuery("stats", ["--limit", "3"], now, utc).isErr)
 
 @test("bad options are refused with a sentence")
 parseRefusals()
@@ -383,21 +383,21 @@ parseRefusals()
     val utc = zoneNamed("UTC")
     for args in [["--kind"], ["--kind", ""], ["--since"], ["--since", "soon"], ["--limit"], ["--limit", "0"], ["--limit", "-1"], ["--limit", "x"], ["--limit", "2.5"], ["--bogus"], ["7"], ["--kind", "a", "--json", "extra"]] do
         val r = cli.parseQuery("history", args, now, utc)
-        assert(r.isErr(), args.mkString(" "))
-        assert(r.err().get().startsWith("marshal: "), args.mkString(" "))
+        assert(r.isErr, args.mkString(" "))
+        assert(r.err.get.startsWith("marshal: "), args.mkString(" "))
 
 @test("a log is streamed from its file a line at a time: a quarter of a million lines, one of them corrupt")
 hugeLog()
-    val dir = fs.createTempDir("marshal-history-").ok().get()
+    val dir = fs.createTempDir("marshal-history-").ok.get
     val log = dir + "/events.jsonl"
-    val f = fs.create(log).ok().get()
+    val f = fs.create(log).ok.get
     val n = 250000
     for i in 1..n
         val id = long(i)
         f.writeText(endLine(1000 + id, id, kind = if i % 2 == 0 then "build" else "test", run = id) + "\n")
         if i == 1000 then f.writeText("{\"ts\":oops\n")
     f.close()
-    val l = cli.readLedger(log).ok().get()
+    val l = cli.readLedger(log).ok.get
     assertEq(l.unreadable, 1)
     assertEq(l.ends.length, n)
     assertEq(ids(marshal.selectEnded(l, Everything, 3)), [long(250000), long(249999), long(249998)])
@@ -407,19 +407,19 @@ hugeLog()
 
 @test("a log that is not there is an empty ledger, and a directory is an error")
 missingLog()
-    val dir = fs.createTempDir("marshal-history-").ok().get()
-    val l = cli.readLedger(dir + "/events.jsonl").ok().get()
+    val dir = fs.createTempDir("marshal-history-").ok.get
+    val l = cli.readLedger(dir + "/events.jsonl").ok.get
     assertEq(l.ends.length, 0)
-    assert(cli.readLedger(dir).isErr())
+    assert(cli.readLedger(dir).isErr)
     fs.removeDirAll(dir)
 
 @test("history and stats have their own help, with the options")
 help()
     for name in ["history", "stats"] do
-        val text = cli.commandHelp(name).get()
+        val text = cli.commandHelp(name).get
         for flag in ["--kind", "--since", "--json"] do assert(text.contains(flag), s"$name $flag")
-    assert(cli.commandHelp("history").get().contains("--limit"))
-    assert(cli.commandHelp("history").get().contains("--failed"))
+    assert(cli.commandHelp("history").get.contains("--limit"))
+    assert(cli.commandHelp("history").get.contains("--failed"))
     assert(cli.usage.contains("marshal history [options]"))
     assert(cli.usage.contains("marshal stats [options]"))
     assert(cli.asksHelp("history", ["--help"]))

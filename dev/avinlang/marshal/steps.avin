@@ -4,8 +4,8 @@ module dev.avinlang.marshal
 // deciding whether a step passed, following the transitions through the gate, bisecting a red batch,
 // and what the run comes to. The runner (`runner/runner.avin`) runs the programs and hands this
 // module what they did, so every decision here is tested without starting one.
-import json
-import json.Json
+import avin.json
+import avin.json.Json
 
 // A line a step says to marshal on its standard output (docs/protocol.md, "The step protocol").
 data Said
@@ -20,13 +20,13 @@ data Said
     // The step's verdict.
     ResultSaid(green: bool)
 
-private isHex(s: string) -> bool = s.chars().forall(c -> '0' <= c <= '9' || 'a' <= c <= 'f')
+private isHex(s: string) -> bool = s.chars.forall(c -> '0' <= c <= '9' || 'a' <= c <= 'f')
 
 // What `line` says to marshal: None where it is not a protocol line (it does not start `=== ` and a
 // kind marshal knows), an `Err` with the reason where it is one of marshal's kinds written wrong.
 readSaid(line: string) -> Option[Result[Said, string]]
     if !line.startsWith("=== ") then return None
-    val words = line.drop(4).trim().split(" ").filter(w -> w.nonEmpty())
+    val words = line.drop(4).trim.split(" ").filter(w -> w.nonEmpty)
     if words.isEmpty then return None
     val rest = words.drop(1)
     val said = words(0) match
@@ -39,7 +39,7 @@ readSaid(line: string) -> Option[Result[Said, string]]
                 None -> Err(s"`=== EXIT $n`: an exit code is a whole number")
             _ -> Err("`=== EXIT` gives one exit code")
         "HEAD" -> rest match
-            [sha] if 4 <= sha.byteLength() <= 64 && isHex(sha) -> Ok(HeadSaid(sha))
+            [sha] if 4 <= sha.byteLength <= 64 && isHex(sha) -> Ok(HeadSaid(sha))
             _ -> Err("`=== HEAD` gives one commit, 4 to 64 lowercase hexadecimal digits")
         "FAIL" -> rest match
             [test] -> Ok(FailSaid(test, None))
@@ -208,9 +208,9 @@ encodeReport(typeName: string, r: RunReport) -> Json = Json.obj(
 // is to blame.
 renderReport(typeName: string, r: RunReport) -> string
     val lines = Buffer[string]()
-    val at = if r.step.isEmpty() then "" else s" at step ${r.step}"
+    val at = if r.step.isEmpty then "" else s" at step ${r.step}"
     lines += s"marshal: $typeName ${r.result}$at"
-    if r.landed.nonEmpty then lines += s"  landed ${r.landed.mkString(" ")}" + (if r.head.isEmpty() then "" else s" as ${r.head}")
+    if r.landed.nonEmpty then lines += s"  landed ${r.landed.mkString(" ")}" + (if r.head.isEmpty then "" else s" as ${r.head}")
     if r.culprits.nonEmpty
         lines += (if r.together then s"  fail together: ${r.culprits.mkString(" ")}" else s"  to blame: ${r.culprits.mkString(" ")}")
     for f in r.fails

@@ -53,7 +53,7 @@ roundedSizes()
     assertEq(marshal.roundSize(1024 * 1023 * G + 900 * G), "1024T")
     assertEq(marshal.roundSize(long.MaxValue), "8388608T")
     for n in [long(1), long(1023), K, 999 * K, 1023 * K + 1023, 1023 * M + 999 * K, 99 * G, long(9999) * 1024 * G]
-        assert(marshal.roundSize(n).charCount() <= 5, s"$n: ${marshal.roundSize(n)}")
+        assert(marshal.roundSize(n).charCount <= 5, s"$n: ${marshal.roundSize(n)}")
 
 @test("a size is shown in the largest unit that divides it")
 formattedSizes()

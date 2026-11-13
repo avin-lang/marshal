@@ -3,8 +3,8 @@ module tests
 // Jobs waiting for others and jobs retried, without a daemon: their fields cross the protocol, the
 // restart state and the event log; the command line reads their options; listings and `top` show
 // them; and an outcome says whether it succeeded and whether another attempt may mend it.
-import json
-import json.Json
+import avin.json
+import avin.json.Json
 import dev.avinlang.marshal
 import dev.avinlang.marshal.cli
 import dev.avinlang.marshal.top
@@ -19,13 +19,13 @@ waitingInfo(id: long, state: string = "waiting", after: Vector[long] = [], attem
 @test("a job's dependencies, outcome mode and retries cross the protocol and read back as themselves")
 dependsProtocol()
     for s in [afterSpec, JobSpec("b", 1, 0, true, "/", None, ["x"], [], true, [1], true, 0, 0), JobSpec("b", 1, 0, false, "/", None, ["x"], [], false, [], false, 1000000, long.MaxValue)]
-        assertEq(marshal.decodeRequest(marshal.encodeRequest(Request.Submit(s)).render()), Ok(Request.Submit(s)))
+        assertEq(marshal.decodeRequest(marshal.encodeRequest(Request.Submit(s)).render), Ok(Request.Submit(s)))
     for id in [long(1), long.MaxValue]
-        assertEq(marshal.decodeRequest(marshal.encodeRequest(Request.Rerun(id)).render()), Ok(Request.Rerun(id)))
+        assertEq(marshal.decodeRequest(marshal.encodeRequest(Request.Rerun(id)).render), Ok(Request.Rerun(id)))
     for j in [waitingInfo(5, after = [3, 4]), waitingInfo(5, "retrying", attempt = 3), waitingInfo(5, "done", outcome = Some(Outcome.DependencyFailed(3)))]
-        assertEq(marshal.decodeReply(marshal.encodeReply(Reply.Ended(j)).render()), Ok(Reply.Ended(j)))
+        assertEq(marshal.decodeReply(marshal.encodeReply(Reply.Ended(j)).render), Ok(Reply.Ended(j)))
     val o = Overview(Usage(0, 12, 0, 0, 0, 0, None, None), 0, [], [], [], [waitingInfo(5, after = [3]), waitingInfo(6, "retrying", attempt = 2)])
-    assertEq(marshal.decodeReply(marshal.encodeReply(Reply.Viewed(o)).render()), Ok(Reply.Viewed(o)))
+    assertEq(marshal.decodeReply(marshal.encodeReply(Reply.Viewed(o)).render), Ok(Reply.Viewed(o)))
 
 @test("a submit, job or snapshot without the new fields reads with no dependencies, no retries and attempt 1")
 dependsProtocolDefaults()
@@ -34,7 +34,7 @@ dependsProtocolDefaults()
     val nulls = "{\"op\": \"submit\", \"kind\": \"x\", \"units\": 1, \"mem\": 0, \"dir\": \"/\", \"cmd\": [\"a\"], \"after\": null, \"after_any\": null, \"retries\": null, \"retry_delay_ms\": null}"
     assertEq(marshal.decodeRequest(nulls), Ok(Request.Submit(JobSpec("x", 1, 0, false, "/", None, ["a"], []))))
     val job = "{\"id\":7,\"kind\":\"b\",\"units\":1,\"mem\":0,\"landing\":false,\"dir\":\"/\",\"cmd\":[\"a\"],\"state\":\"queued\",\"outcome\":null,\"killed\":false,\"queued_ms\":0,\"elapsed_ms\":0,\"deadline_ms\":1,\"log\":\"/l\"}"
-    val read = marshal.decodeJob(json.parse(job).ok().get()).ok().get()
+    val read = marshal.decodeJob(json.parse(job).ok.get).ok.get
     assertEq(read.after, [])
     assertEq(read.attempt, 1)
     val snap = "{\"ok\":true,\"snapshot\":{\"units\":0,\"unit_budget\":12,\"mem\":0,\"mem_budget\":0,\"landing\":null,\"take_slot\":null,\"uptime_ms\":0,\"running\":[],\"queued\":[],\"recent\":[]}}"
@@ -56,7 +56,7 @@ dependsProtocolRefusals()
         assertEq(marshal.decodeRequest(head + tail), Err(why))
     assertEq(marshal.decodeRequest("{\"op\": \"rerun\"}"), Err("`id` is missing"))
     assertEq(marshal.decodeRequest("{\"op\": \"rerun\", \"id\": \"4\"}"), Err("`id` is not a whole number"))
-    assertEq(marshal.decodeOutcome(json.parse("{\"how\": \"dependency-failed\"}").ok().get()), Err("`after` is missing"))
+    assertEq(marshal.decodeOutcome(json.parse("{\"how\": \"dependency-failed\"}").ok.get), Err("`after` is missing"))
 
 @test("only exit 0 succeeds; a failure, a signal or a deadline may be retried, a kill, cancel or loss never")
 dependsOutcomes()
@@ -76,16 +76,16 @@ dependsState()
     val retrying = SavedJob(13, afterSpec, "retrying", 1, 2, 3, 4, 60000, 50000, "/h/jobs/13.log", 0, 0, None, false, false, None, 0, 4096, priority = 3, urgentAt = 1_762_000_000_000_000, attempt = 3, retryAt = 1_762_000_030_000)
     val ended = SavedJob(11, afterSpec, "done", 1, 2, 3, 4, 5, 6, "/h/jobs/11.log", 0, 0, Some(Outcome.DependencyFailed(9)), false, false, None, 0, 0, attempt = 2)
     val s = SavedState("0.1.0", 501, 1, 2, 14, [], [], [ended], None, true, [waits, retrying])
-    assertEq(marshal.decodeState(marshal.encodeState(s).render()), Ok(s))
+    assertEq(marshal.decodeState(marshal.encodeState(s).render), Ok(s))
     val old = "{\"version\":\"0.1.0\",\"pid\":1,\"saved_at\":2,\"began_at\":3,\"next_id\":4,\"queue\":[{\"id\":3,\"spec\":{\"kind\":\"b\",\"units\":1,\"mem\":0,\"dir\":\"/\",\"cmd\":[\"a\"]},\"state\":\"queued\",\"submitted_at\":1,\"arrived\":2,\"started_at\":0,\"ended_at\":0,\"deadline_ms\":5,\"expected_ms\":6,\"log\":\"/l\",\"pid\":0,\"pgid\":0,\"outcome\":null,\"killed\":false,\"timed_out\":false,\"sample\":null}],\"running\":[],\"ended\":[],\"ticket\":null}"
-    val read = marshal.decodeState(old).ok().get()
+    val read = marshal.decodeState(old).ok.get
     assertEq(read.waiting, [])
     assertEq(read.queueHeld, false)
     assertEq(read.queue(0).attempt, 1)
     assertEq(read.queue(0).retryAt, 0)
     assertEq(read.queue(0).spec.after, [])
     assertEq(read.queue(0).spec.retries, 0)
-    assert(marshal.decodeState(old.replace("\"ticket\":null", "\"ticket\":null,\"waiting\":3")).isErr())
+    assert(marshal.decodeState(old.replace("\"ticket\":null", "\"ticket\":null,\"waiting\":3")).isErr)
 
 @test("the event log keeps a job's spec for rerun, a retried job stays open between attempts, and cancelled ends a job")
 dependsEvents()
@@ -103,9 +103,9 @@ dependsEvents()
     assertEq(r.ended, [])
     // the ending of an attempt that runs again does not end the job; the last attempt's does
     assertEq(marshal.endOf(retrying, 5), None)
-    assert(!marshal.endsJob(json.parse(attemptEnd).ok().get()))
+    assert(!marshal.endsJob(json.parse(attemptEnd).ok.get))
     val last = marshal.eventLine(6, "finished", waitingInfo(5, "done", attempt = 2, outcome = Some(Outcome.Exited(0))), [])
-    assertEq(marshal.endOf(retrying ++ [last], 5).flatMap(e -> e.get("ts")).flatMap(v -> v.asLong()), Some(long(6)))
+    assertEq(marshal.endOf(retrying ++ [last], 5).flatMap(e -> e.get("ts")).flatMap(v -> v.asLong), Some(long(6)))
     val cancelled = marshal.recover([sub(6), marshal.eventLine(2, "cancelled", waitingInfo(6, "done", outcome = Some(Outcome.DependencyFailed(5))), [])])
     assertEq(cancelled.open, [])
     assertEq(cancelled.ended.map(j -> j.outcome), [Some(Outcome.DependencyFailed(5))])
@@ -122,8 +122,8 @@ dependsListing()
     assertEq(marshal.resultLine(waitingInfo(5, "done", outcome = Some(Outcome.DependencyFailed(3)))), "marshal: job 5 cancelled before it started: job 3, which it waited for, did not succeed; log /h/jobs/5.log")
     assertEq(marshal.resultLine(waitingInfo(5, "done", attempt = 3, outcome = Some(Outcome.Exited(0)))), "marshal: job 5 exited 0 after 0ms (attempt 3); log /h/jobs/5.log")
     assertEq(marshal.resultLine(waitingInfo(5, "done", outcome = Some(Outcome.Exited(0)))), "marshal: job 5 exited 0 after 0ms; log /h/jobs/5.log")
-    val rows = marshal.listing([waitingInfo(5, after = [3, 4])]).lines().toVector
-    assertEq(rows(1).split("  ").filter(c -> c.nonEmpty())(1).trim(), "after 3,4")
+    val rows = marshal.listing([waitingInfo(5, after = [3, 4])]).lines.toVector
+    assertEq(rows(1).split("  ").filter(c -> c.nonEmpty)(1).trim, "after 3,4")
 
 @test("top lists waiting jobs after the queued ones, under all and queued, with their state and deadline")
 dependsTop()

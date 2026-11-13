@@ -3,8 +3,8 @@ module tests
 // Job labels: what a label may be, how it travels (the wire, the saved state, the event log), and
 // where it shows (ls, history, events filters, top).
 import avin.time
-import json
-import json.Json
+import avin.json
+import avin.json.Json
 import dev.avinlang.marshal
 import dev.avinlang.marshal.cli
 import dev.avinlang.marshal.top
@@ -48,10 +48,10 @@ labelInvalid()
 
 @test("a label travels in a submit request, and a job without one writes no label member")
 labelWire()
-    assertEq(marshal.decodeRequest(marshal.encodeRequest(marshal.Request.Submit(labelSpec)).render()), Ok(marshal.Request.Submit(labelSpec)))
-    assert(marshal.encodeSpec(labelSpec).render().contains("\"label\":\"train 209\""), marshal.encodeSpec(labelSpec).render())
+    assertEq(marshal.decodeRequest(marshal.encodeRequest(marshal.Request.Submit(labelSpec)).render), Ok(marshal.Request.Submit(labelSpec)))
+    assert(marshal.encodeSpec(labelSpec).render.contains("\"label\":\"train 209\""), marshal.encodeSpec(labelSpec).render)
     val plain = JobSpec("build", 1, 0, false, "/w", None, ["make"], [])
-    assert(!marshal.encodeSpec(plain).render().contains("label"), marshal.encodeSpec(plain).render())
+    assert(!marshal.encodeSpec(plain).render.contains("label"), marshal.encodeSpec(plain).render)
     assertEq(marshal.decodeSpec(marshal.encodeSpec(plain)).map(s -> s.label), Ok(""))
 
 @test("a request from a client that knows no labels, or sends a null one, has none")
@@ -77,9 +77,9 @@ labelBadRequest()
 labelInJobReply()
     val j = labelled(7, "train 209")
     assertEq(marshal.decodeJob(marshal.encodeJob(j)), Ok(j))
-    assert(marshal.encodeJob(j).render().contains("\"label\":\"train 209\""), marshal.encodeJob(j).render())
+    assert(marshal.encodeJob(j).render.contains("\"label\":\"train 209\""), marshal.encodeJob(j).render)
     val plain = labelled(7, "")
-    assert(!marshal.encodeJob(plain).render().contains("label"), marshal.encodeJob(plain).render())
+    assert(!marshal.encodeJob(plain).render.contains("label"), marshal.encodeJob(plain).render)
     assertEq(marshal.decodeJob(marshal.encodeJob(plain)).map(i -> i.label), Ok(""))
     // a label already in the log is read as it is, whatever the limits are now
     val long81 = (0 ..< 90).map(i -> "x").mkString("")
@@ -89,13 +89,13 @@ labelInJobReply()
 labelSavedState()
     val saved = (id: long, state: string) -> SavedJob(id, labelSpec, state, 1, 2, 3, 4, 5, 6, s"/h/jobs/$id.log", 0, 0, None, false, false, None, 0, 0)
     val s = SavedState("0.2.4", 1, 2, 3, 10, [saved(9, "queued")], [saved(8, "running")], [saved(7, "done")], None)
-    assertEq(marshal.decodeState(marshal.encodeState(s).render()), Ok(s))
-    assert(marshal.encodeState(s).render().contains("\"label\":\"train 209\""), marshal.encodeState(s).render())
+    assertEq(marshal.decodeState(marshal.encodeState(s).render), Ok(s))
+    assert(marshal.encodeState(s).render.contains("\"label\":\"train 209\""), marshal.encodeState(s).render)
     val oldSpec = JobSpec("test", 4, 0, false, "/w", None, ["sysl"], [])
     val old = SavedState("0.2.4", 1, 2, 3, 10, [SavedJob(9, oldSpec, "queued", 1, 2, 3, 4, 5, 6, "/h/jobs/9.log", 0, 0, None, false, false, None, 0, 0)], [], [], None)
-    assertEq(marshal.decodeState(marshal.encodeState(old).render()), Ok(old))
-    assert(!marshal.encodeState(old).render().contains("label"), marshal.encodeState(old).render())
-    assertEq(marshal.decodeState(marshal.encodeState(old).render()).map(r -> r.queue(0).spec.label), Ok(""))
+    assertEq(marshal.decodeState(marshal.encodeState(old).render), Ok(old))
+    assert(!marshal.encodeState(old).render.contains("label"), marshal.encodeState(old).render)
+    assertEq(marshal.decodeState(marshal.encodeState(old).render).map(r -> r.queue(0).spec.label), Ok(""))
 
 @test("every event of a labelled job carries its label, and rerun finds it in the submitted event")
 labelInEvents()
@@ -131,19 +131,19 @@ labelHistoryPrinting()
     val zone = time.utc
     val plain = ledgerOf([endedLine(1000, 1, ""), endedLine(2000, 2, "")])
     val withOut = marshal.historyListing(marshal.selectEnded(plain, HistoryFilter(None, None, false), 20), zone)
-    val bare = withOut.lines().toVector
+    val bare = withOut.lines.toVector
     assert(bare(0).endsWith("LABEL") && bare(0).contains("ENDED"), bare(0))
     assertEq(bare.length, 3)
     assert(!bare(1).contains("train"), bare(1))
     val l =ledgerOf([endedLine(1000, 1, "train 209"), endedLine(2000, 2, "")])
-    val shown = marshal.historyListing(marshal.selectEnded(l, HistoryFilter(None, None, false), 20), zone).lines().toVector
+    val shown = marshal.historyListing(marshal.selectEnded(l, HistoryFilter(None, None, false), 20), zone).lines.toVector
     assert(shown(0).startsWith("ID  KIND") && shown(0).endsWith("LABEL") && shown(0).contains("ENDED"), shown(0))
     assertEq(shown(0).indexOf("LABEL"), shown(2).indexOf("train 209"))
     assert(shown(2).endsWith("train 209"), shown(2))
     assert(!shown(1).contains("train"), shown(1))
     val onlyPlain = marshal.historyListing(marshal.selectEnded(l, HistoryFilter(None, None, false, Some("none")), 20), zone)
     assertEq(onlyPlain, "marshal: no ended jobs match")
-    val json = marshal.historyJson(marshal.selectEnded(l, HistoryFilter(None, None, false), 20), 0).render()
+    val json = marshal.historyJson(marshal.selectEnded(l, HistoryFilter(None, None, false), 20), 0).render
     assert(json.contains("\"label\":\"train 209\""), json)
     assertEq(json.split("\"label\"").length, 2)
 
@@ -158,7 +158,7 @@ labelHistoryOptions()
 
 @test("the events filter label= matches a part of a job's label, takes the rest of the text with its commas, and combines with the others")
 labelEventFilter()
-    val filterOf = (text: string) -> marshal.parseFilter(text).ok().get()
+    val filterOf = (text: string) -> marshal.parseFilter(text).ok.get
     assertEq(filterOf("any:label=train 209").label, Some("train 209"))
     assertEq(filterOf("ended:label=train 210, take 2").label, Some("train 210, take 2"))
     val both = filterOf("ended:kind=build,label=a,b=c")
@@ -181,13 +181,13 @@ labelEventFilter()
 @test("a label= filter with no text, or a filter of the wrong shape beside it, is refused")
 labelEventFilterRefused()
     for text in ["ended:label=", "ended:kind=build,label=", "ended:label"]
-        assert(marshal.parseCondition(text).isErr(), text)
-    assert(marshal.parseCondition("ended:label").err().get().contains("is not a filter"), marshal.parseCondition("ended:label").err().get())
-    assert(marshal.parseCondition("ended:kind=build,").isErr())
-    assert(marshal.parseCondition("idle:label=x").isErr())
-    assert(marshal.parseCondition("job=3,label=x").isErr())
+        assert(marshal.parseCondition(text).isErr, text)
+    assert(marshal.parseCondition("ended:label").err.get.contains("is not a filter"), marshal.parseCondition("ended:label").err.get)
+    assert(marshal.parseCondition("ended:kind=build,").isErr)
+    assert(marshal.parseCondition("idle:label=x").isErr)
+    assert(marshal.parseCondition("job=3,label=x").isErr)
     // kind twice is still refused beside a label
-    assert(marshal.parseCondition("ended:kind=a,kind=b,label=x").isErr())
+    assert(marshal.parseCondition("ended:kind=a,kind=b,label=x").isErr)
 
 @test("run and submit read --label, run-type does too, and each refuses a bad label with a reason")
 labelOptions()
@@ -208,10 +208,10 @@ labelOptions()
 
 @test("ls always has a LABEL column before COMMAND, empty for a job without a label")
 labelListing()
-    val none = marshal.listing([labelled(1, ""), labelled(2, "")]).lines().toVector
+    val none = marshal.listing([labelled(1, ""), labelled(2, "")]).lines.toVector
     assertEq(none(0), "ID  STATE    KIND   UNITS  RESV  STARTED  ELAPSED  LABEL  COMMAND")
     assertEq(none(1).indexOf("sleep 30"), none(0).indexOf("COMMAND"))
-    val rows = marshal.listing([labelled(1, "train 209"), labelled(2, ""), labelled(30, "a longer label")]).lines().toVector
+    val rows = marshal.listing([labelled(1, "train 209"), labelled(2, ""), labelled(30, "a longer label")]).lines.toVector
     assert(rows(0).contains("ELAPSED  LABEL"), rows(0))
     assert(rows(0).endsWith("LABEL           COMMAND"), rows(0))
     assertEq(rows(1).indexOf("train 209"), rows(0).indexOf("LABEL"))
@@ -269,15 +269,15 @@ labelTopTable()
     assert(wide.rowText(head).indexOf("LABEL") < wide.rowText(head).indexOf("COMMAND"), wide.rowText(head))
     assert(wide.rowText(head + 1).contains("train 209"), wide.rowText(head + 1))
     assertEq(wide.rowText(head + 1).indexOf("train 209"), wide.rowText(head).indexOf("LABEL"))
-    assert(wide.rowText(head + 1).trim().endsWith("sleep 30"), wide.rowText(head + 1))
-    assert(wide.rowText(head + 2).trim().endsWith("sleep 30"), wide.rowText(head + 2))
+    assert(wide.rowText(head + 1).trim.endsWith("sleep 30"), wide.rowText(head + 1))
+    assert(wide.rowText(head + 2).trim.endsWith("sleep 30"), wide.rowText(head + 2))
     assertEq(wide.rowText(head + 2).indexOf("sleep 30"), wide.rowText(head + 1).indexOf("sleep 30"))
     // a long label is cut with an ellipsis, and COMMAND keeps its place
     val long = (0 ..< 60).map(i -> "L").mkString("")
     val cut = drawn(viewing(overviewOf([labelled(1, long)])), 140, 20)
     assert(cut.rowText(head + 1).contains("…"), cut.rowText(head + 1))
     assert(!cut.rowText(head + 1).contains(long), cut.rowText(head + 1))
-    assert(cut.rowText(head + 1).trim().endsWith("sleep 30"), cut.rowText(head + 1))
+    assert(cut.rowText(head + 1).trim.endsWith("sleep 30"), cut.rowText(head + 1))
     // a narrow screen leaves the column out
     val narrow = drawn(viewing(overviewOf([labelled(1, "train 209")])), 100, 20)
     assert(!narrow.rowText(rowOf(narrow, "ID STATE")).contains("LABEL"), narrow.rowText(rowOf(narrow, "ID STATE")))
@@ -285,7 +285,7 @@ labelTopTable()
     val plain = drawn(viewing(overviewOf([labelled(1, ""), labelled(2, "")])), 140, 20)
     val plainHead = rowOf(plain, "ID STATE")
     assert(plain.rowText(plainHead).contains("LABEL"), plain.rowText(plainHead))
-    assertEq(plain.rowText(plainHead).trim().split(" ").filter(w -> w.nonEmpty()).takeRight(2), ["LABEL", "COMMAND"])
+    assertEq(plain.rowText(plainHead).trim.split(" ").filter(w -> w.nonEmpty).takeRight(2), ["LABEL", "COMMAND"])
     assertEq(plain.rowText(plainHead + 1).indexOf("sleep 30"), plain.rowText(plainHead).indexOf("COMMAND"))
     // a screen too narrow for it still leaves it out, labels or none
     val plainNarrow = drawn(viewing(overviewOf([labelled(1, "")])), 100, 20)
@@ -310,7 +310,7 @@ labelTopLogHeader()
     val p = drawn(plain, 100, 30)
     val pt = rowOf(p, "job 2 log, following")
     assert(p.rowText(pt + 1).contains("kind") && p.rowText(pt + 1).contains("build"), p.rowText(pt + 1))
-    assertEq(p.rowText(pt + 1).replace("│", "").trim(), "kind    build")
+    assertEq(p.rowText(pt + 1).replace("│", "").trim, "kind    build")
     assert(p.rowText(pt + 2).contains("command"), p.rowText(pt + 2))
     assert(p.rowText(pt + 3).contains("──────"), p.rowText(pt + 3))
     // a label too long for the rest of the kind line wraps under where it began, every character kept
@@ -323,7 +323,7 @@ labelTopLogHeader()
     val start = w.rowText(wt + 1).indexOf("label") + 7
     var seen = ""
     for k in 1 ..< 5
-        seen = seen + w.rowText(wt + k).slice(start, w.rowText(wt + k).byteLength()).replace("│", "").trim()
+        seen = seen + w.rowText(wt + k).slice(start, w.rowText(wt + k).byteLength).replace("│", "").trim
     assert(!seen.contains("…"), seen)
     assertEq(seen, long)
     assert(w.rowText(wt + 1).contains("kind") && w.rowText(wt + 1).contains("build   label  "), w.rowText(wt + 1))

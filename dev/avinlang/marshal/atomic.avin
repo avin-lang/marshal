@@ -17,11 +17,11 @@ writeAtomic(file: string, text: string) -> Result[unit, IoError] = writeAtomicVi
 // would be taken for one.
 writeAtomicVia(file: string, text: string, tmp: string) -> Result[unit, IoError]
     val wrote = fs.writeText(tmp, text)
-    if wrote.isErr()
+    if wrote.isErr
         fs.remove(tmp)
         return wrote
     val moved = fs.rename(tmp, file)
-    if moved.isErr() then fs.remove(tmp)
+    if moved.isErr then fs.remove(tmp)
     moved
 
 // The name a compiled step has in the cache: the first 32 hexadecimal digits (128 bits) of the

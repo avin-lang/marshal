@@ -13,8 +13,8 @@ import avin.threads
 import avin.threads.{Atomic, spawn}
 import avin.time
 import avin.time.millis
-import json
-import json.Json
+import avin.json
+import avin.json.Json
 import dev.avinlang.marshal
 
 val outputs: Atomic[int] = Atomic(0)
@@ -26,10 +26,10 @@ bin() -> string = process.env("MARSHAL_BIN").getOrElse(fail("MARSHAL_BIN names t
 // A home of its own, with `config` as its config.json when it is not empty, and a take-slot
 // directory of its own (`slots`), never the real one.
 newHome(config: string = "") -> string
-    val home = fs.createTempDir("marshal-").ok().get()
-    fs.createDir(slots(home)).ok().get()
+    val home = fs.createTempDir("marshal-").ok.get
+    fs.createDir(slots(home)).ok.get
     register(home, process.pid())
-    if config.nonEmpty() then fs.writeText(home + "/config.json", config).ok().get()
+    if config.nonEmpty then fs.writeText(home + "/config.json", config).ok.get
     home
 
 // Runs the command line with `args` against `home`; its standard output and error, together.
@@ -43,7 +43,7 @@ mFrom(program: string, home: string, env: Vector[(string, string)], args: string
     val out = s"$home/cli.${outputs.add(1)}.out"
     var command = homed(Command(program, args*), home)
     for (k, v) in env do command = command.withEnv(k, v)
-    val status = command.toFile(out).errorsToOutput().run().ok().get()
+    val status = command.toFile(out).errorsToOutput().run().ok.get
     val code = status match
         ExitStatus.Exited(c) -> c
         ExitStatus.Signalled(s) -> 128 + s
@@ -65,8 +65,8 @@ registry() -> string = bin().split("/").dropRight(1).mkString("/") + "/homes"
 // Records `home` as owned by process `owner`: one file in the registry, naming the home and then
 // the owner.
 register(home: string, owner: long)
-    fs.createDirAll(registry()).ok().get()
-    fs.writeText(entryOf(home), s"$home\n$owner\n").ok().get()
+    fs.createDirAll(registry()).ok.get
+    fs.writeText(entryOf(home), s"$home\n$owner\n").ok.get
 
 entryOf(home: string) -> string = registry() + "/" + home.split("/").last
 
@@ -81,17 +81,17 @@ cleanUp(home: string)
 // It returns how many homes it cleaned.
 reapOrphans() -> int
     var reaped = 0
-    if process.env("MARSHAL_BIN").isEmpty() then return 0
+    if process.env("MARSHAL_BIN").isEmpty then return 0
     for name in fs.listDir(registry()).getOrElse([])
         val entry = registry() + "/" + name
-        val lines = fs.readText(entry).getOrElse("").lines().toVector
-        val owner = (if lines.length > 1 then lines(1).trim().toLongOption() else None).getOrElse(0)
-        if lines.nonEmpty && !(owner >= 1 && process.signal(owner, 0).isOk())
+        val lines = fs.readText(entry).getOrElse("").lines.toVector
+        val owner = (if lines.length > 1 then lines(1).trim.toLongOption() else None).getOrElse(0)
+        if lines.nonEmpty && !(owner >= 1 && process.signal(owner, 0).isOk)
             val home = lines(0)
-            for pid in fs.readText(home + "/daemon.pid").ok().flatMap(t -> t.trim().toLongOption())
+            for pid in fs.readText(home + "/daemon.pid").ok.flatMap(t -> t.trim.toLongOption())
                 process.signal(pid, 15)
                 val until = time.monotonic() + millis(5000)
-                while process.signal(pid, 0).isOk() && time.monotonic() < until do threads.sleep(millis(20))
+                while process.signal(pid, 0).isOk && time.monotonic() < until do threads.sleep(millis(20))
                 process.signal(pid, 9)
             fs.removeDirAll(home)
             fs.remove(entry)
@@ -110,13 +110,13 @@ submitted(home: string, args: string*) -> long
     idIn(r.out)
 
 // The job id on the last line of a command's output.
-idIn(out: string) -> long = out.trim().lines().toVector.last.trim().toLong()
+idIn(out: string) -> long = out.trim.lines.toVector.last.trim.toLong()
 
 events(home: string) -> Vector[Json] =
-    fs.readText(home + "/events.jsonl").getOrElse("").lines().filter(l -> l.nonEmpty()).map(l -> json.parse(l).ok().get()).toVector
+    fs.readText(home + "/events.jsonl").getOrElse("").lines.filter(l -> l.nonEmpty).map(l -> json.parse(l).ok.get).toVector
 
 eventsOf(home: string, id: long) -> Vector[string] =
-    events(home).filter(e -> e("id").asLong() == Some(id)).map(e -> e("event").asString().get())
+    events(home).filter(e -> e("id").asLong == Some(id)).map(e -> e("event").asString.get)
 
 // The most jobs running at once, by the order the daemon recorded them starting and ending.
 mostAtOnce(home: string, landing: bool) -> int
@@ -124,9 +124,9 @@ mostAtOnce(home: string, landing: bool) -> int
     var most = 0
     val started = MutableSet[long]()
     for e in events(home)
-        if e("landing").asBool() != Some(landing) then continue
-        val id = e("id").asLong().get()
-        e("event").asString().get() match
+        if e("landing").asBool != Some(landing) then continue
+        val id = e("id").asLong.get
+        e("event").asString.get match
             "started" ->
                 started += id
                 now += 1
@@ -140,13 +140,13 @@ mostAtOnce(home: string, landing: bool) -> int
 
 // The position of the first event `name` of job `id` in the log.
 at(home: string, id: long, name: string) -> int =
-    events(home).indexWhere(e -> e("id").asLong() == Some(id) && e("event").asString() == Some(name))
+    events(home).indexWhere(e -> e("id").asLong == Some(id) && e("event").asString == Some(name))
 
 // Whether any process is left in the process group.
-groupAlive(pgid: long) -> bool = process.signal(-pgid, 0).isOk()
+groupAlive(pgid: long) -> bool = process.signal(-pgid, 0).isOk
 
 pgidOf(home: string, id: long) -> long =
-    events(home).find(e -> e("id").asLong() == Some(id) && e("event").asString() == Some("started")).get()("pgid").asLong().get()
+    events(home).find(e -> e("id").asLong == Some(id) && e("event").asString == Some("started")).get("pgid").asLong.get
 
 @test("a job submitted runs, and wait answers with its exit status and a result line")
 submitAndWait()
@@ -156,7 +156,7 @@ submitAndWait()
     val r = m(home, "wait", id.toString())
     assertEq(r.code, 0)
     assert(r.out.contains("job 1 exited 0"), r.out)
-    assertEq(fs.readText(s"$home/jobs/1.log").ok().get(), "hello\n")
+    assertEq(fs.readText(s"$home/jobs/1.log").ok.get, "hello\n")
     assertEq(eventsOf(home, 1), ["submitted", "started", "finished"])
     cleanUp(home)
 
@@ -167,7 +167,7 @@ runExitStatus()
     assertEq(r.code, 3)
     assert(r.out.contains("job 1: log "), r.out)
     assert(r.out.contains("job 1 exited 3"), r.out)
-    assertEq(fs.readText(s"$home/jobs/1.log").ok().get(), "out\nerr\n")
+    assertEq(fs.readText(s"$home/jobs/1.log").ok.get, "out\nerr\n")
     cleanUp(home)
 
 @test("a job ended by a signal exits 128 plus the signal")
@@ -184,16 +184,16 @@ missingProgram()
     assertEq(m(home, "run", "--", "no-such-program-marshal").code, 127)
     val landing = m(home, "run", "--landing", "--", "no-such-program-marshal")
     assertEq(landing.code, 127)
-    assert(fs.readText(s"$home/jobs/2.log").ok().get().contains("could not start"))
+    assert(fs.readText(s"$home/jobs/2.log").ok.get.contains("could not start"))
     cleanUp(home)
 
 @test("a job runs in the directory given, relative to the caller's, and with the caller's environment")
 dirAndEnv()
     val home = newHome()
-    fs.createDir(home + "/work").ok().get()
+    fs.createDir(home + "/work").ok.get
     val r = m(home, "run", "--dir", home + "/work", "--", "sh", "-c", "pwd; echo $MARSHAL_HOME")
     assertEq(r.code, 0)
-    val log = fs.readText(s"$home/jobs/1.log").ok().get().lines().toVector
+    val log = fs.readText(s"$home/jobs/1.log").ok.get.lines.toVector
     assert(log(0).endsWith("/work"), log(0))
     assertEq(log(1), home)
     cleanUp(home)
@@ -252,7 +252,7 @@ budgetUnderConcurrency()
     for c in clients do assertEq(c.join(), 0)
     assert(mostAtOnce(home, false) <= 3)
     assert(mostAtOnce(home, false) >= 2)
-    assertEq(events(home).count(e -> e("event").asString() == Some("finished")), 8)
+    assertEq(events(home).count(e -> e("event").asString == Some("finished")), 8)
     cleanUp(home)
 
 @test("the memory budget holds a second job back until the first ends")
@@ -337,11 +337,11 @@ tailFollow()
     val id = submitted(home, "--", "sh", "-c", "for i in 1 2 3 4; do echo line $i; sleep 0.2; done; printf partial")
     val r = m(home, "tail", "-f", id.toString())
     assertEq(r.code, 0)
-    val lines = r.out.lines().toVector
+    val lines = r.out.lines.toVector
     assertEq(lines.take(5), ["line 1", "line 2", "line 3", "line 4", "partial"])
     assert(lines(5).contains("exited 0"), r.out)
     val last = m(home, "tail", "-n", "2", id.toString())
-    assertEq(last.out.lines().toVector, ["line 4", "partial"])
+    assertEq(last.out.lines.toVector, ["line 4", "partial"])
     assertEq(m(home, "tail", "99").code, 2)
     cleanUp(home)
 
@@ -354,8 +354,8 @@ autoStart()
     assert(fs.exists(home + "/sock"))
     assert(fs.exists(home + "/daemon.pid"))
     assert(!fs.exists(home + "/starting"))
-    val log = fs.readText(home + "/daemon.log").ok().get()
-    assertEq(log.lines().count(l -> l.contains("listening")), 1)
+    val log = fs.readText(home + "/daemon.log").ok.get
+    assertEq(log.lines.count(l -> l.contains("listening")), 1)
     cleanUp(home)
 
 @test("stop is refused while jobs run, --wait waits for them, and the socket goes with the daemon")
@@ -394,11 +394,11 @@ terminate()
     val id = submitted(home, "--", "sleep", "30")
     threads.sleep(millis(200))
     val pgid = pgidOf(home, id)
-    val daemon = fs.readText(home + "/daemon.pid").ok().get().trim().toLong()
-    process.signal(daemon, 15).ok().get()
+    val daemon = fs.readText(home + "/daemon.pid").ok.get.trim.toLong()
+    process.signal(daemon, 15).ok.get
     val until = time.monotonic() + millis(10000)
-    while process.signal(daemon, 0).isOk() && time.monotonic() < until do threads.sleep(millis(50))
-    assert(process.signal(daemon, 0).isErr(), "the daemon is still running")
+    while process.signal(daemon, 0).isOk && time.monotonic() < until do threads.sleep(millis(50))
+    assert(process.signal(daemon, 0).isErr, "the daemon is still running")
     assert(!groupAlive(pgid))
     assertEq(eventsOf(home, id), ["submitted", "started", "killed"])
     assert(!fs.exists(home + "/sock"))
@@ -410,15 +410,15 @@ lostOnRestart()
     val id = submitted(home, "--", "sleep", "30")
     threads.sleep(millis(200))
     val pgid = pgidOf(home, id)
-    val daemon = fs.readText(home + "/daemon.pid").ok().get().trim().toLong()
-    process.signal(daemon, 9).ok().get()
-    while process.signal(daemon, 0).isOk() do threads.sleep(millis(20))
+    val daemon = fs.readText(home + "/daemon.pid").ok.get.trim.toLong()
+    process.signal(daemon, 9).ok.get
+    while process.signal(daemon, 0).isOk do threads.sleep(millis(20))
     val r = m(home, "wait", id.toString())
     assertEq(r.code, 125)
     assert(r.out.contains("lost"), r.out)
     assertEq(eventsOf(home, id), ["submitted", "started", "lost"])
-    val lost = events(home).find(e -> e("event").asString() == Some("lost")).get()
-    assertEq(lost("group_alive").asBool(), Some(true))
+    val lost = events(home).find(e -> e("event").asString == Some("lost")).get
+    assertEq(lost("group_alive").asBool, Some(true))
     process.signal(-pgid, 9)
     assertEq(submitted(home, "--", "true"), id + 1)
     cleanUp(home)
@@ -439,7 +439,7 @@ daemonLog(home: string) -> string = fs.readText(home + "/daemon.log").getOrElse(
 
 // The time, in milliseconds since the epoch, of job `id`'s first event `name`; 0 when it has none.
 tsOf(home: string, id: long, name: string) -> long =
-    events(home).find(e -> e("id").asLong() == Some(id) && e("event").asString() == Some(name)).flatMap(e -> e("ts").asLong()).getOrElse(0)
+    events(home).find(e -> e("id").asLong == Some(id) && e("event").asString == Some(name)).flatMap(e -> e("ts").asLong).getOrElse(0)
 
 // `restart`, which must succeed; a failure says what the command and the daemon said.
 restarted(home: string) -> Ran
@@ -450,8 +450,8 @@ restarted(home: string) -> Ran
 // A program standing in for a newer marshal: the one under test, reporting `version` as its own.
 newerMarshal(home: string, version: string) -> string
     val script = home + "/newer-marshal"
-    fs.writeText(script, "#!/bin/sh\nMARSHAL_TEST_VERSION=" + version + " exec \"" + bin() + "\" \"$@\"\n").ok().get()
-    assertEq(Command("chmod", "+x", script).run().ok(), Some(ExitStatus.Exited(0)))
+    fs.writeText(script, "#!/bin/sh\nMARSHAL_TEST_VERSION=" + version + " exec \"" + bin() + "\" \"$@\"\n").ok.get
+    assertEq(Command("chmod", "+x", script).run().ok, Some(ExitStatus.Exited(0)))
     script
 
 @test("a restart keeps the daemon's process and its running job, and a wait across it answers with the job's own exit")
@@ -499,12 +499,12 @@ restartKeepsDeadline()
     restarted(home)
     // how long after its start the restart was over, by the clock the daemon's events use
     val started = tsOf(home, id, "started")
-    val restartedAfter = time.now().epochMillis() - started
+    val restartedAfter = time.now().epochMillis - started
     // on time: from the job's start, not counted again from the restart, which would be
     // `restartedAfter` later; the deadline's line is looked for until the job has ended
     val until = time.monotonic() + millis(30000)
     while !daemonLog(home).contains(s"job $id passed its deadline") && time.monotonic() < until do threads.sleep(millis(20))
-    val firedAfter = time.now().epochMillis() - started
+    val firedAfter = time.now().epochMillis - started
     val r = m(home, "wait", id.toString())
     assertEq(r.code, 124)
     assert(4000 <= firedAfter, s"the deadline fired ${firedAfter}ms after the start, before its 4000")
@@ -551,7 +551,7 @@ restartExecFails()
     // the daemon takes its restart program from the environment of the command that started it
     val start = mWith(home, [("MARSHAL_RESTART_PROGRAM", home + "/no-such-marshal")], "submit", "--", "sleep", "30")
     assertEq(start.code, 0)
-    val id = start.out.trim().toLong()
+    val id = start.out.trim.toLong()
     threads.sleep(millis(200))
     val pgid = pgidOf(home, id)
     val before = daemonPid(home)
@@ -575,9 +575,9 @@ restartExecFails()
 // A copy of the executable under test, in a directory of its own, as an installed version is.
 copyOfBin(home: string, name: string) -> string
     val dir = home + "/" + name
-    fs.createDirAll(dir).ok().get()
+    fs.createDirAll(dir).ok.get
     val copy = dir + "/marshal"
-    assertEq(Command("cp", bin(), copy).run().ok(), Some(ExitStatus.Exited(0)))
+    assertEq(Command("cp", bin(), copy).run().ok, Some(ExitStatus.Exited(0)))
     copy
 
 @test("a restart runs the marshal the command was run from, even when the daemon's own program is gone")
@@ -586,12 +586,12 @@ restartAfterUpgrade()
     val old = copyOfBin(home, "cellar-old")
     val start = mFrom(old, home, [], "submit", "--", "sh", "-c", "sleep 1.5; exit 7")
     assertEq(start.code, 0)
-    val id = start.out.trim().toLong()
+    val id = start.out.trim.toLong()
     threads.sleep(millis(200))
     val pgid = pgidOf(home, id)
     val before = daemonPid(home)
     // the upgrade removes the directory the daemon was started from
-    fs.removeDirAll(home + "/cellar-old").ok().get()
+    fs.removeDirAll(home + "/cellar-old").ok.get
     val r = restarted(home)
     assert(r.out.contains(s"daemon $before restarted"), r.out)
     assert(daemonLog(home).contains(s"restarting as ${bin()} with 1 running"), daemonLog(home))
@@ -606,7 +606,7 @@ restartRunsClientsProgram()
     val home = newHome()
     val start = m(home, "submit", "--", "sleep", "30")
     assertEq(start.code, 0)
-    val id = start.out.trim().toLong()
+    val id = start.out.trim.toLong()
     val before = daemonPid(home)
     val client = copyOfBin(home, "cellar-new")
     val r = mFrom(client, home, [], "restart")
@@ -624,9 +624,9 @@ restartThroughSymlink()
     assertEq(m(home, "status").code, 0)
     val before = daemonPid(home)
     val real = copyOfBin(home, "cellar-real")
-    fs.createDirAll(home + "/links").ok().get()
+    fs.createDirAll(home + "/links").ok.get
     val link = home + "/links/marshal"
-    assertEq(Command("ln", "-s", real, link).run().ok(), Some(ExitStatus.Exited(0)))
+    assertEq(Command("ln", "-s", real, link).run().ok, Some(ExitStatus.Exited(0)))
     assertEq(mFrom(link, home, [], "restart").code, 0)
     val log = daemonLog(home)
     assert(log.contains("/cellar-real/marshal with"), log)
@@ -637,9 +637,9 @@ restartThroughSymlink()
 // Sends `request` to the home's daemon as it is, and answers the one line it replies with; `None`
 // when the connection closes without a reply.
 rawRequest(home: string, request: string) -> Option[string]
-    val conn = UnixStream.connect(home + "/sock").ok().get()
-    conn.writeText(request + "\n").ok().get()
-    val reply = conn.readLine().ok().flatten()
+    val conn = UnixStream.connect(home + "/sock").ok.get
+    conn.writeText(request + "\n").ok.get
+    val reply = conn.readLine().ok.flatten
     conn.close()
     reply
 
@@ -649,11 +649,11 @@ restartClientProgramUnusable()
     val id = submitted(home, "--", "sleep", "30")
     val before = daemonPid(home)
     val plain = home + "/plain-file"
-    fs.writeText(plain, "not a program\n").ok().get()
+    fs.writeText(plain, "not a program\n").ok.get
     val missing = home + "/gone/marshal"
     val cases = [(missing, "is not a file"), (home, "is not a file"), (plain, "cannot be run")]
     for (program, why) in cases
-        val reply = rawRequest(home, Json.obj(("op", Json.str("restart")), ("program", Json.str(program))).render()).get()
+        val reply = rawRequest(home, Json.obj(("op", Json.str("restart")), ("program", Json.str(program))).render).get
         assert(reply.contains("the daemon did not restart: " + program + " " + why), reply)
         assertEq(daemonPid(home), before)
         assert(!fs.exists(home + "/state.json"))
@@ -698,11 +698,11 @@ restartUpgrades()
     assert(idle.out.contains(s"marshal ${marshal.Version}"), idle.out)
     assert(idle.out.contains("no daemon is running"), idle.out)
     assert(!fs.exists(home + "/sock"), "version started a daemon")
-    assertEq(m(home, "restart").out.trim(), "marshal: no daemon is running")
+    assertEq(m(home, "restart").out.trim, "marshal: no daemon is running")
     assert(!fs.exists(home + "/sock"), "restart started a daemon")
     val start = mWith(home, env, "submit", "--", "sh", "-c", "sleep 1; exit 3")
     assertEq(start.code, 0)
-    val id = start.out.trim().toLong()
+    val id = start.out.trim.toLong()
     val pid = daemonPid(home)
     val old = m(home, "version")
     assertEq(old.code, 0)
@@ -726,10 +726,10 @@ learnedDeadlines()
     for _ in 0..<2 do assertEq(m(home, "run", "--kind", "quick", "--", "true").code, 0)
     m(home, "run", "--kind", "quick", "--", "sh", "-c", "exit 1")
     val id = submitted(home, "--kind", "quick", "--", "true")
-    val ev = events(home).find(e -> e("id").asLong() == Some(id)).get()
-    assertEq(ev("deadline_ms").asLong(), Some(long(7000)))
+    val ev = events(home).find(e -> e("id").asLong == Some(id)).get
+    assertEq(ev("deadline_ms").asLong, Some(long(7000)))
     val other = submitted(home, "--kind", "slowpoke", "--", "true")
-    assertEq(events(home).find(e -> e("id").asLong() == Some(other)).get()("deadline_ms").asLong(), Some(long(30 * 60000)))
+    assertEq(events(home).find(e -> e("id").asLong == Some(other)).get("deadline_ms").asLong, Some(long(30 * 60000)))
     cleanUp(home)
 
 @test("a bad config.json keeps the daemon from starting, and the command says why")
@@ -746,23 +746,23 @@ lsStartedColumn()
     val home = newHome("{\"units\": 1}")
     val running = submitted(home, "--", "sleep", "30")
     val queued = submitted(home, "--", "sleep", "30")
-    val job = (n: long) -> statusOf(home)("running").asVector().get().find(x -> x("id").asLong() == Some(n))
-    assert(within(5000, () -> job(running).exists(x -> x("started_at").asLong().exists(n -> n > 0))), "the job did not start")
-    val startedAt = job(running).get()("started_at").asLong().get()
+    val job = (n: long) -> statusOf(home)("running").asVector.get.find(x -> x("id").asLong == Some(n))
+    assert(within(5000, () -> job(running).exists(x -> x("started_at").asLong.exists(n -> n > 0))), "the job did not start")
+    val startedAt = job(running).get("started_at").asLong.get
     val utc = mWith(home, [("TZ", "UTC")], "ls")
     assertEq(utc.code, 0)
-    val utcRows = utc.out.lines().toVector
+    val utcRows = utc.out.lines.toVector
     assert(utcRows(0).contains("RESV  STARTED"), utc.out)
     assert(utcRows(0).indexOf("STARTED") < utcRows(0).indexOf("ELAPSED"), utc.out)
     val utcText = time.epochMillis(startedAt).atZone(time.utc).format("MM-DD hh:mm")
     assert(utcRows.exists(r -> r.startsWith(s"$running ") && r.contains(s"  $utcText  ")), utc.out)
     assert(utcRows.exists(r -> r.startsWith(s"$queued ") && r.contains("queued") && r.contains("  -  ")), utc.out)
     val york = mWith(home, [("TZ", "America/New_York")], "ls")
-    val yorkText = time.epochMillis(startedAt).atZone(time.zone("America/New_York").ok().get()).format("MM-DD hh:mm")
-    assert(york.out.lines().toVector.exists(r -> r.startsWith(s"$running ") && r.contains(s"  $yorkText  ")), york.out)
+    val yorkText = time.epochMillis(startedAt).atZone(time.zone("America/New_York").ok.get).format("MM-DD hh:mm")
+    assert(york.out.lines.toVector.exists(r -> r.startsWith(s"$running ") && r.contains(s"  $yorkText  ")), york.out)
     assert(utcText != yorkText)
     // the JSON carries the start in milliseconds, whatever the zone
-    assertEq(job(running).get()("started_at").asLong(), Some(startedAt))
+    assertEq(job(running).get("started_at").asLong, Some(startedAt))
     assertEq(job(queued), None)
     cleanUp(home)
 
@@ -774,7 +774,7 @@ listAndStatus()
     val queued = submitted(home, "--units", "2", "--", "sleep", "30")
     val ls = m(home, "ls")
     assertEq(ls.code, 0)
-    val rows = ls.out.lines().toVector
+    val rows = ls.out.lines.toVector
     assert(rows(0).startsWith("ID"), ls.out)
     assert(rows.exists(r -> r.startsWith(s"$running ") && r.contains("running") && r.contains("2G")), ls.out)
     assert(rows.exists(r -> r.startsWith(s"$queued ") && r.contains("queued")), ls.out)
@@ -804,7 +804,7 @@ split(home: string, args: string*) -> Split
     val n = outputs.add(1)
     val out = s"$home/split.$n.out"
     val err = s"$home/split.$n.err"
-    val status = homed(Command(bin(), args*), home).toFile(out).errorsToFile(err).run().ok().get()
+    val status = homed(Command(bin(), args*), home).toFile(out).errorsToFile(err).run().ok.get
     val code = status match
         ExitStatus.Exited(c) -> c
         ExitStatus.Signalled(s) -> 128 + s
@@ -893,7 +893,7 @@ helpAfterDashDash()
     val home = newHome()
     val id = submitted(home, "--", "echo", "--help")
     assertEq(m(home, "wait", id.toString()).code, 0)
-    assertEq(fs.readText(s"$home/jobs/$id.log").ok().get().trim(), "--help")
+    assertEq(fs.readText(s"$home/jobs/$id.log").ok.get.trim, "--help")
     val run = split(home, "run", "--", "echo", "-h")
     assertEq(run.code, 0)
     assert(run.out.contains("exited 0"), run.out)
@@ -938,7 +938,7 @@ takeSlotScript() -> string = process.env("TAKE_SLOT").getOrElse("/Users/ed/dev/s
 data Sleeper(pid: long)
 
 sleeper() -> Sleeper
-    val child = Command("sleep", "120").start().ok().get()
+    val child = Command("sleep", "120").start().ok.get
     val pid = child.pid()
     spawn(() -> child.waitFor())
     Sleeper(pid)
@@ -963,7 +963,7 @@ data Run(pid: long, code: Atomic[int])
 takeSlot(home: string, env: Vector[(string, string)], cmd: string*) -> Run
     var c = Command("zsh", ([takeSlotScript(), home] ++ cmd.toVector)*).withEnv("SLOT_LOCKDIR", slots(home)).toFile(s"$home/take-slot.${outputs.add(1)}.out").errorsToOutput()
     for (k, v) in env do c = c.withEnv(k, v)
-    val child = c.start().ok().get()
+    val child = c.start().ok.get
     val code = Atomic(-1)
     spawn(() ->
         val st = child.waitFor()
@@ -976,26 +976,26 @@ takeSlot(home: string, env: Vector[(string, string)], cmd: string*) -> Run
 started(home: string, id: long) -> bool = eventsOf(home, id).contains("started")
 ended(home: string, id: long) -> bool = eventsOf(home, id).exists(e -> e == "finished" || e == "killed")
 pidOf(home: string, id: long) -> long =
-    events(home).find(e -> e("id").asLong() == Some(id) && e("event").asString() == Some("started")).get()("pid").asLong().get()
+    events(home).find(e -> e("id").asLong == Some(id) && e("event").asString == Some("started")).get("pid").asLong.get
 held(home: string) -> Vector[string] = fs.listDir(slots(home) + "/slot-units").getOrElse([])
 tickets(home: string) -> Vector[string] = fs.listDir(slots(home) + "/slot-waiting").getOrElse([])
-daemonPid(home: string) -> long = fs.readText(home + "/daemon.pid").ok().get().trim().toLong()
+daemonPid(home: string) -> long = fs.readText(home + "/daemon.pid").ok.get.trim.toLong()
 
 @test("a take-slot holder's units leave marshal less room, until its process ends")
 foreignHolder()
     val home = newHome("{\"units\": 8}")
     val holder = sleeper()
-    fs.createDirAll(slots(home) + "/slot-units").ok().get()
-    fs.writeText(slots(home) + s"/slot-units/${holder.pid}", "4\n").ok().get()
+    fs.createDirAll(slots(home) + "/slot-units").ok.get
+    fs.writeText(slots(home) + s"/slot-units/${holder.pid}", "4\n").ok.get
     val a = submitted(home, "--units", "4", "--", "sleep", "60")
     assert(within(2000, () -> started(home, a)))
     val b = submitted(home, "--units", "1", "--", "true")
     threads.sleep(millis(4000))
     assert(!started(home, b), "a job started over the shared budget")
-    val status = json.parse(m(home, "status", "--json").out).ok().get()
-    assertEq(status("take_slot")("units").asInt(), Some(4))
-    assertEq(status("units").asInt(), Some(4))
-    assertEq(status("queued").asVector().get().length, 1)
+    val status = json.parse(m(home, "status", "--json").out).ok.get
+    assertEq(status("take_slot")("units").asInt, Some(4))
+    assertEq(status("units").asInt, Some(4))
+    assertEq(status("queued").asVector.get.length, 1)
     stopSleeper(holder)
     assert(within(8000, () -> ended(home, b)), "the job did not start once the holder ended")
     cleanUp(home)
@@ -1004,13 +1004,13 @@ foreignHolder()
 staleIgnored()
     val home = newHome("{\"units\": 4}")
     val d = slots(home)
-    fs.createDirAll(d + "/slot-units").ok().get()
-    fs.createDirAll(d + "/slot-waiting").ok().get()
-    fs.writeText(d + s"/slot-units/$NoProcess", "4\n").ok().get()
-    fs.writeText(d + s"/slot-waiting/1.000000-$NoProcess", "4\n").ok().get()
+    fs.createDirAll(d + "/slot-units").ok.get
+    fs.createDirAll(d + "/slot-waiting").ok.get
+    fs.writeText(d + s"/slot-units/$NoProcess", "4\n").ok.get
+    fs.writeText(d + s"/slot-waiting/1.000000-$NoProcess", "4\n").ok.get
     for lock in ["build.lock", "land.lock", "slot-units.mutex"]
-        fs.createDir(d + "/" + lock).ok().get()
-        fs.writeText(d + s"/$lock/pid", NoProcess.toString()).ok().get()
+        fs.createDir(d + "/" + lock).ok.get
+        fs.writeText(d + s"/$lock/pid", NoProcess.toString()).ok.get
     assertEq(m(home, "run", "--units", "4", "--", "true").code, 0)
     assertEq(m(home, "run", "--landing", "--", "true").code, 0)
     assertEq(held(home), [])
@@ -1022,8 +1022,8 @@ staleIgnored()
 oldScriptSlot()
     val home = newHome("{\"units\": 4}")
     val holder = sleeper()
-    fs.createDir(slots(home) + "/build3.lock").ok().get()
-    fs.writeText(slots(home) + "/build3.lock/pid", holder.pid.toString()).ok().get()
+    fs.createDir(slots(home) + "/build3.lock").ok.get
+    fs.writeText(slots(home) + "/build3.lock/pid", holder.pid.toString()).ok.get
     val id = submitted(home, "--units", "1", "--", "true")
     threads.sleep(millis(1500))
     assert(!started(home, id))
@@ -1039,7 +1039,7 @@ registration()
     assert(within(2000, () -> started(home, id)))
     val pid = pidOf(home, id)
     assertEq(held(home), [pid.toString()])
-    assertEq(fs.readText(slots(home) + s"/slot-units/$pid").ok().get().trim(), "3")
+    assertEq(fs.readText(slots(home) + s"/slot-units/$pid").ok.get.trim, "3")
     assert(!fs.exists(slots(home) + "/slot-units.mutex"), "the mutex was left held")
     assertEq(m(home, "kill", id.toString()).code, 0)
     m(home, "wait", id.toString())
@@ -1047,7 +1047,7 @@ registration()
     // a landing job holds land.lock instead, and counts no units
     val land = submitted(home, "--landing", "--", "sleep", "60")
     assert(within(2000, () -> started(home, land)))
-    assertEq(fs.readText(slots(home) + "/land.lock/pid").ok().get().trim(), pidOf(home, land).toString())
+    assertEq(fs.readText(slots(home) + "/land.lock/pid").ok.get.trim, pidOf(home, land).toString())
     assertEq(held(home), [])
     m(home, "kill", land.toString())
     m(home, "wait", land.toString())
@@ -1091,13 +1091,13 @@ marshalWaitsForTakeSlot()
 marshalTicketHoldsTakeSlot()
     val home = newHome()
     val holder = sleeper()
-    fs.createDirAll(slots(home) + "/slot-units").ok().get()
-    fs.writeText(slots(home) + s"/slot-units/${holder.pid}", "10\n").ok().get()
+    fs.createDirAll(slots(home) + "/slot-units").ok.get
+    fs.writeText(slots(home) + s"/slot-units/${holder.pid}", "10\n").ok.get
     val id = submitted(home, "--units", "4", "--", "sleep", "60")
     val mine = s"-${daemonPid(home)}"
     assert(within(2000, () -> tickets(home).exists(t -> t.endsWith(mine))), tickets(home).mkString(" "))
-    val ticket = tickets(home).find(t -> t.endsWith(mine)).get()
-    assertEq(fs.readText(slots(home) + "/slot-waiting/" + ticket).ok().get(), "4\nmarshal\n")
+    val ticket = tickets(home).find(t -> t.endsWith(mine)).get
+    assertEq(fs.readText(slots(home) + "/slot-waiting/" + ticket).ok.get, "4\nmarshal\n")
     // one unit is free, but marshal's job arrived first
     val run = takeSlot(home, [("SLOT_UNITS", "1")], "touch", "marker")
     threads.sleep(millis(12000))
@@ -1114,15 +1114,15 @@ takeSlotTicketHoldsMarshal()
     val home = newHome()
     val holder = sleeper()
     val waiter = sleeper()
-    fs.createDirAll(slots(home) + "/slot-units").ok().get()
-    fs.createDirAll(slots(home) + "/slot-waiting").ok().get()
-    fs.writeText(slots(home) + s"/slot-units/${holder.pid}", "10\n").ok().get()
+    fs.createDirAll(slots(home) + "/slot-units").ok.get
+    fs.createDirAll(slots(home) + "/slot-waiting").ok.get
+    fs.writeText(slots(home) + s"/slot-units/${holder.pid}", "10\n").ok.get
     val ticket = slots(home) + "/slot-waiting/" + marshal.ticketName(time.now().epochMicros - 1000000, waiter.pid)
-    fs.writeText(ticket, "4\n").ok().get()
+    fs.writeText(ticket, "4\n").ok.get
     val id = submitted(home, "--units", "1", "--", "true")
     threads.sleep(millis(4000))
     assert(!started(home, id), "marshal overtook take-slot's waiter")
-    fs.remove(ticket).ok().get()
+    fs.remove(ticket).ok.get
     assert(within(6000, () -> ended(home, id)))
     stopSleeper(holder)
     stopSleeper(waiter)
@@ -1132,7 +1132,7 @@ takeSlotTicketHoldsMarshal()
 takeSlotLandingFirst()
     val home = newHome()
     val run = takeSlot(home, [("LANDING", "1")], "sleep", "60")
-    assert(within(5000, () -> fs.readText(slots(home) + "/land.lock/pid").ok().exists(t -> t.trim() == run.pid.toString())))
+    assert(within(5000, () -> fs.readText(slots(home) + "/land.lock/pid").ok.exists(t -> t.trim == run.pid.toString())))
     val id = submitted(home, "--landing", "--", "true")
     threads.sleep(millis(4000))
     assert(!started(home, id), "two landings at once")
@@ -1158,17 +1158,17 @@ marshalLandingFirst()
 restartCleansRegistrations()
     val home = newHome("{\"units\": 4}")
     val other = sleeper()
-    fs.createDirAll(slots(home) + "/slot-units").ok().get()
-    fs.writeText(slots(home) + s"/slot-units/${other.pid}", "0\n").ok().get()
+    fs.createDirAll(slots(home) + "/slot-units").ok.get
+    fs.writeText(slots(home) + s"/slot-units/${other.pid}", "0\n").ok.get
     val id = submitted(home, "--units", "3", "--", "sleep", "60")
     assert(within(2000, () -> started(home, id)))
     val queued = submitted(home, "--units", "4", "--", "true")
     val pid = pidOf(home, id)
     val daemon = daemonPid(home)
     assert(within(2000, () -> tickets(home).exists(t -> t.endsWith(s"-$daemon"))))
-    process.signal(daemon, 9).ok().get()
+    process.signal(daemon, 9).ok.get
     process.signal(-pgidOf(home, id), 9)
-    while process.signal(daemon, 0).isOk() || process.signal(pid, 0).isOk() do threads.sleep(millis(20))
+    while process.signal(daemon, 0).isOk || process.signal(pid, 0).isOk do threads.sleep(millis(20))
     assert(held(home).contains(pid.toString()))
     assertEq(m(home, "status").code, 0)
     assertEq(held(home), [other.pid.toString()])
@@ -1185,63 +1185,63 @@ statusJson()
     assert(within(2000, () -> started(home, running)))
     val r = m(home, "status", "--json")
     assertEq(r.code, 0)
-    assertEq(r.out.lines().toVector.length, 1)
-    val j = json.parse(r.out).ok().get()
-    assertEq(j("units").asInt(), Some(3))
-    assertEq(j("unit_budget").asInt(), Some(4))
-    assertEq(j("mem").asLong(), Some(long(2) * 1024 * 1024 * 1024))
-    assertEq(j("running").asVector().get().map(x -> x("id").asLong().get()), [running])
-    assertEq(j("queued").asVector().get().map(x -> x("id").asLong().get()), [queued])
-    assertEq(j("take_slot")("dir").asString(), Some(slots(home)))
+    assertEq(r.out.lines.toVector.length, 1)
+    val j = json.parse(r.out).ok.get
+    assertEq(j("units").asInt, Some(3))
+    assertEq(j("unit_budget").asInt, Some(4))
+    assertEq(j("mem").asLong, Some(long(2) * 1024 * 1024 * 1024))
+    assertEq(j("running").asVector.get.map(x -> x("id").asLong.get), [running])
+    assertEq(j("queued").asVector.get.map(x -> x("id").asLong.get), [queued])
+    assertEq(j("take_slot")("dir").asString, Some(slots(home)))
     assertEq(m(home, "status", "--yaml").code, 2)
     cleanUp(home)
 
 // `status --json` of `home`, parsed.
-statusOf(home: string) -> Json = json.parse(m(home, "status", "--json").out).ok().get()
+statusOf(home: string) -> Json = json.parse(m(home, "status", "--json").out).ok.get
 
 @test("the daemon measures a running job's whole tree: rss and peak in status --json and the snapshot, the peak in its ending event")
 measuredMemory()
     val home = newHome("{\"units\": 4}")
-    val before = time.now().epochMillis()
+    val before = time.now().epochMillis
     // a shell, a shell under it, and a sleep under each
     val id = submitted(home, "--units", "4", "--", "sh", "-c", "sh -c 'sleep 30 & wait' & sleep 31 & wait")
     val waiting = submitted(home, "--", "sleep", "1")
-    val job = () -> statusOf(home)("running").asVector().get().find(x -> x("id").asLong() == Some(id))
-    assert(within(5000, () -> job().exists(x -> x("rss").asLong().exists(n -> n > 0))), "no measurement of the running job")
-    val after = time.now().epochMillis()
+    val job = () -> statusOf(home)("running").asVector.get.find(x -> x("id").asLong == Some(id))
+    assert(within(5000, () -> job().exists(x -> x("rss").asLong.exists(n -> n > 0))), "no measurement of the running job")
+    val after = time.now().epochMillis
     val status = statusOf(home)
-    val j = status("running").asVector().get()(0)
-    val rss = j("rss").asLong().get()
+    val j = status("running").asVector.get(0)
+    val rss = j("rss").asLong.get
     // the tree is four processes, each a megabyte or more
     assert(rss > long(4) * 1024 * 1024, s"$rss")
-    assert(j("peak_rss").asLong().get() >= rss)
-    assert(before <= j("started_at").asLong().get() <= after, j.render())
-    assert(status("rss").asLong().get() > 0)
-    assertEq(status("machine_mem").asLong(), process.totalMemory().ok())
+    assert(j("peak_rss").asLong.get >= rss)
+    assert(before <= j("started_at").asLong.get <= after, j.render)
+    assert(status("rss").asLong.get > 0)
+    assertEq(status("machine_mem").asLong, process.totalMemory().ok)
     // the queued job has not started and holds nothing
-    val q = status("queued").asVector().get()(0)
-    assertEq((q("id").asLong(), q("rss").asLong(), q("peak_rss").asLong(), q("started_at").asLong()), (Some(waiting), Some(long(0)), Some(long(0)), Some(long(0))))
+    val q = status("queued").asVector.get(0)
+    assertEq((q("id").asLong, q("rss").asLong, q("peak_rss").asLong, q("started_at").asLong), (Some(waiting), Some(long(0)), Some(long(0)), Some(long(0))))
     // snapshot after snapshot, the peak never goes down and is never below what is held now
     var peak: long = 0
     for _ in 0 ..< 4
         val o = snapshotOf(home)
-        val r = o.running.find(x -> x.id == id).get()
+        val r = o.running.find(x -> x.id == id).get
         assert(r.peakRss >= peak && r.peakRss >= r.rss && r.rss > 0, s"${r.rss} ${r.peakRss} after $peak")
         assertEq(o.usage.rss, r.rss)
-        assertEq(Some(o.usage.machineMemory), process.totalMemory().ok())
+        assertEq(Some(o.usage.machineMemory), process.totalMemory().ok)
         peak = r.peakRss
         threads.sleep(millis(600))
     assertEq(m(home, "kill", id.toString()).code, 0)
     m(home, "wait", id.toString())
-    val ending = events(home).find(e -> e("id").asLong() == Some(id) && e("event").asString() == Some("killed")).get()
-    assert(ending("peak_rss").asLong().get() >= peak, ending.render())
-    assertEq(ending("rss").asLong(), Some(long(0)))
+    val ending = events(home).find(e -> e("id").asLong == Some(id) && e("event").asString == Some("killed")).get
+    assert(ending("peak_rss").asLong.get >= peak, ending.render)
+    assertEq(ending("rss").asLong, Some(long(0)))
     // an ended job is shown with its peak and nothing held
-    val ended = snapshotOf(home).recent.find(x -> x.id == id).get()
-    assertEq((ended.rss, ended.peakRss), (long(0), ending("peak_rss").asLong().get()))
+    val ended = snapshotOf(home).recent.find(x -> x.id == id).get
+    assertEq((ended.rss, ended.peakRss), (long(0), ending("peak_rss").asLong.get))
     assertEq(m(home, "wait", waiting.toString()).code, 0)
-    val finished = events(home).find(e -> e("id").asLong() == Some(waiting) && e("event").asString() == Some("finished")).get()
-    assert(finished.has("peak_rss"), finished.render())
+    val finished = events(home).find(e -> e("id").asLong == Some(waiting) && e("event").asString == Some("finished")).get
+    assert(finished.has("peak_rss"), finished.render)
     cleanUp(home)
 
 @test("a job's peak memory and start time survive a restart, and the restarted daemon goes on measuring it")
@@ -1249,25 +1249,25 @@ measuredMemorySurvivesRestart()
     val home = newHome("{\"units\": 4}")
     // one sleep under the shell for five seconds, then four: the tree grows after the restart
     val id = submitted(home, "--", "sh", "-c", "sleep 40 & sleep 5; sleep 41 & sleep 42 & sleep 43 & wait")
-    val job = () -> statusOf(home)("running").asVector().get().find(x -> x("id").asLong() == Some(id))
-    assert(within(5000, () -> job().exists(x -> x("rss").asLong().exists(n -> n > 0))), "no measurement of the running job")
-    val first = job().get()
-    val startedAt = first("started_at").asLong().get()
-    val peakBefore = first("peak_rss").asLong().get()
-    assert(peakBefore > 0, first.render())
+    val job = () -> statusOf(home)("running").asVector.get.find(x -> x("id").asLong == Some(id))
+    assert(within(5000, () -> job().exists(x -> x("rss").asLong.exists(n -> n > 0))), "no measurement of the running job")
+    val first = job().get
+    val startedAt = first("started_at").asLong.get
+    val peakBefore = first("peak_rss").asLong.get
+    assert(peakBefore > 0, first.render)
     restarted(home)
     // at once after the restart the job has what it had: its start and a peak no lower
-    val resumed = job().get()
-    assertEq(resumed("started_at").asLong(), Some(startedAt))
-    assert(resumed("peak_rss").asLong().get() >= peakBefore, resumed.render())
+    val resumed = job().get
+    assertEq(resumed("started_at").asLong, Some(startedAt))
+    assert(resumed("peak_rss").asLong.get >= peakBefore, resumed.render)
     // and the new image measures it: the peak rises as the tree grows
-    assert(within(12000, () -> job().exists(x -> x("peak_rss").asLong().exists(n -> n > peakBefore))), s"the peak stayed at $peakBefore: ${job().map(x -> x.render())}")
-    assert(job().get()("rss").asLong().get() > 0)
+    assert(within(12000, () -> job().exists(x -> x("peak_rss").asLong.exists(n -> n > peakBefore))), s"the peak stayed at $peakBefore: ${job().map(x -> x.render)}")
+    assert(job().get("rss").asLong.get > 0)
     assertEq(m(home, "kill", id.toString()).code, 0)
     m(home, "wait", id.toString())
-    val ending = events(home).find(e -> e("id").asLong() == Some(id) && e("event").asString() == Some("killed")).get()
-    assert(ending("peak_rss").asLong().get() > peakBefore, ending.render())
-    assertEq(snapshotOf(home).recent.find(x -> x.id == id).get().startedAt, startedAt)
+    val ending = events(home).find(e -> e("id").asLong == Some(id) && e("event").asString == Some("killed")).get
+    assert(ending("peak_rss").asLong.get > peakBefore, ending.render)
+    assertEq(snapshotOf(home).recent.find(x -> x.id == id).get.startedAt, startedAt)
     cleanUp(home)
 
 @test("a job's start time is the same to the millisecond across any number of restarts, queued, running and ended, and in its events")
@@ -1275,29 +1275,29 @@ startTimeSurvivesRestarts()
     val home = newHome("{\"units\": 1}")
     val id = submitted(home, "--", "sleep", "30")
     val waiting = submitted(home, "--", "sleep", "30")
-    val job = (n: long) -> statusOf(home)("running").asVector().get().find(x -> x("id").asLong() == Some(n))
-    assert(within(5000, () -> job(id).exists(x -> x("started_at").asLong().exists(n -> n > 0))), "the job did not start")
-    val startedAt = job(id).get()("started_at").asLong().get()
+    val job = (n: long) -> statusOf(home)("running").asVector.get.find(x -> x("id").asLong == Some(n))
+    assert(within(5000, () -> job(id).exists(x -> x("started_at").asLong.exists(n -> n > 0))), "the job did not start")
+    val startedAt = job(id).get("started_at").asLong.get
     for i in [long(0), 1, 2, 3, 4]
         threads.sleep(millis(i * 37))
         restarted(home)
-        assertEq(job(id).get()("started_at").asLong(), Some(startedAt))
+        assertEq(job(id).get("started_at").asLong, Some(startedAt))
     assertEq(m(home, "kill", id.toString()).code, 0)
     m(home, "wait", id.toString())
-    assertEq(snapshotOf(home).recent.find(x -> x.id == id).get().startedAt, startedAt)
+    assertEq(snapshotOf(home).recent.find(x -> x.id == id).get.startedAt, startedAt)
     restarted(home)
-    assertEq(snapshotOf(home).recent.find(x -> x.id == id).get().startedAt, startedAt)
-    val ending = events(home).find(e -> e("id").asLong() == Some(id) && e("event").asString() == Some("killed")).get()
-    assertEq(ending("started_at").asLong(), Some(startedAt))
+    assertEq(snapshotOf(home).recent.find(x -> x.id == id).get.startedAt, startedAt)
+    val ending = events(home).find(e -> e("id").asLong == Some(id) && e("event").asString == Some("killed")).get
+    assertEq(ending("started_at").asLong, Some(startedAt))
     // the job that was queued across the restarts starts after them, at a later time
-    assert(within(5000, () -> job(waiting).exists(x -> x("started_at").asLong().exists(n -> n >= startedAt))), "the queued job did not start")
+    assert(within(5000, () -> job(waiting).exists(x -> x("started_at").asLong.exists(n -> n >= startedAt))), "the queued job did not start")
     assertEq(m(home, "kill", waiting.toString()).code, 0)
     cleanUp(home)
 
 @test("a take-slot directory that is not one keeps the daemon from starting")
 missingTakeSlotDir()
     val home = newHome()
-    fs.removeDir(slots(home)).ok().get()
+    fs.removeDir(slots(home)).ok.get
     val r = m(home, "status")
     assertEq(r.code, 2)
     assert(r.out.contains("is not a directory"), r.out)
@@ -1310,12 +1310,12 @@ inZone(home: string, zone: string, args: string*) -> Ran = mWith(home, [("TZ", z
 historyLocalTime()
     val home = newHome()
     val finished = (id: long, ts: long) -> marshal.eventLine(ts, "finished", marshal.JobInfo(id, "build", 4, 0, false, "/d", ["x"], "done", Some(marshal.Outcome.Exited(0)), false, 0, 1000, 60000, s"$home/jobs/$id.log", None), [("run_ms", Json.num(1000)), ("exit", Json.num(0))])
-    fs.writeText(home + "/events.jsonl", finished(1, 1783182600000) + "\n" + finished(2, 1794061800000) + "\n").ok().get()
+    fs.writeText(home + "/events.jsonl", finished(1, 1783182600000) + "\n" + finished(2, 1794061800000) + "\n").ok.get
     val h = inZone(home, "America/New_York", "history")
     assert(h.out.contains("2026-11-07 09:30:00") && h.out.contains("2026-07-04 12:30:00"), h.out)
     assert(inZone(home, "Asia/Kolkata", "history").out.contains("2026-11-07 20:00:00"), inZone(home, "Asia/Kolkata", "history").out)
     assertEq(mWith(home, [("TZ", "UTC")], "history").out.contains("2026-07-04 16:30:00"), true)
-    val ids = (r: Ran) -> r.out.lines().toVector.filter(l -> l.startsWith("1 ") || l.startsWith("2 ")).length
+    val ids = (r: Ran) -> r.out.lines.toVector.filter(l -> l.startsWith("1 ") || l.startsWith("2 ")).length
     assertEq(ids(inZone(home, "America/New_York", "history", "--since", "2026-11-07T09:30")), 1)
     assertEq(ids(inZone(home, "America/New_York", "history", "--since", "2026-11-07T09:31")), 0)
     assertEq(ids(inZone(home, "America/New_York", "history", "--since", "2026-07-04T12:30")), 2)
@@ -1333,7 +1333,7 @@ historyLocalTime()
 @test("history refuses a bad --since date, offset included, and says so on standard error")
 historyBadSince()
     val home = newHome()
-    fs.writeText(home + "/events.jsonl", "").ok().get()
+    fs.writeText(home + "/events.jsonl", "").ok.get
     for bad in ["2026-11-07T14:30+2", "2026-11-07T14:30+25:00", "2026-11-07Z", "2026-13-07", "soon"] do
         val r = mWith(home, [("TZ", "America/New_York")], "history", "--since", bad)
         assertEq(r.code, 2)
@@ -1344,31 +1344,31 @@ historyBadSince()
 historyNoDaemon()
     val home = newHome()
     val finished = (id: long, kind: string, run: long, exit: int) -> marshal.eventLine(1794061800000 + id * 1000, "finished", marshal.JobInfo(id, kind, 4, 0, false, "/d", ["x"], "done", Some(marshal.Outcome.Exited(exit)), false, 0, run, 60000, s"$home/jobs/$id.log", None), [("run_ms", Json.num(run)), ("exit", Json.num(exit))])
-    fs.writeText(home + "/events.jsonl", finished(1, "build", 2000, 0) + "\nthis is not json\n" + finished(2, "test", 5000, 1) + "\n" + finished(3, "test", 7000, 0) + "\n").ok().get()
+    fs.writeText(home + "/events.jsonl", finished(1, "build", 2000, 0) + "\nthis is not json\n" + finished(2, "test", 5000, 1) + "\n" + finished(3, "test", 7000, 0) + "\n").ok.get
     val h = mWith(home, [("TZ", "UTC")], "history")
     assertEq(h.code, 0)
     assert(h.out.contains("ID  KIND"), h.out)
     assert(h.out.contains("ENDED") && !h.out.contains("(UTC)"), h.out)
     assert(h.out.contains("skipped 1 lines"), h.out)
-    val rows = h.out.lines().toVector.filter(l -> l.nonEmpty() && !l.startsWith("marshal:") && !l.startsWith("ID"))
+    val rows = h.out.lines.toVector.filter(l -> l.nonEmpty && !l.startsWith("marshal:") && !l.startsWith("ID"))
     assertEq(rows.length, 3)
     assert(rows(0).startsWith("3 "), rows(0))
     assert(rows(0).contains("2026-11-07 14:30:03"), rows(0))
     assert(rows(1).contains("failed") && rows(1).contains("5.0s"), rows(1))
-    assertEq(m(home, "history", "--failed").out.lines().toVector.filter(l -> l.startsWith("2 ")).length, 1)
+    assertEq(m(home, "history", "--failed").out.lines.toVector.filter(l -> l.startsWith("2 ")).length, 1)
     assert(!m(home, "history", "--failed").out.contains("build"))
-    assertEq(m(home, "history", "--kind", "build", "--limit", "5").out.lines().toVector.filter(l -> l.startsWith("1 ")).length, 1)
+    assertEq(m(home, "history", "--kind", "build", "--limit", "5").out.lines.toVector.filter(l -> l.startsWith("1 ")).length, 1)
     assert(m(home, "history", "--since", "2030-01-01").out.contains("no ended jobs match"))
     assert(mWith(home, [("TZ", "UTC")], "history", "--since", "2026-11-07T14:30").out.contains("2026-11-07 14:30:03"))
     val s = m(home, "stats", "--json")
     assertEq(s.code, 0)
-    val parsed = json.parse(s.out.lines().toVector(0)).ok().get()
-    assertEq(parsed("unreadable").asLong(), Some(long(1)))
-    val kinds = parsed("kinds").asVector().get()
-    assertEq(kinds.map(k -> k("kind").asString().get()), ["build", "test"])
-    assertEq(kinds(1)("count").asLong(), Some(long(2)))
-    assertEq(kinds(1)("success_pct").asLong(), Some(long(50)))
-    assertEq(kinds(1)("p50_ms").asLong(), Some(long(5000)))
+    val parsed = json.parse(s.out.lines.toVector(0)).ok.get
+    assertEq(parsed("unreadable").asLong, Some(long(1)))
+    val kinds = parsed("kinds").asVector.get
+    assertEq(kinds.map(k -> k("kind").asString.get), ["build", "test"])
+    assertEq(kinds(1)("count").asLong, Some(long(2)))
+    assertEq(kinds(1)("success_pct").asLong, Some(long(50)))
+    assertEq(kinds(1)("p50_ms").asLong, Some(long(5000)))
     assertEq(kinds(1)("peak_max"), Json.Null)
     assert(m(home, "stats", "--kind", "test").out.contains("50%"))
     assert(!fs.exists(home + "/sock"), "history started a daemon")
@@ -1397,24 +1397,24 @@ historyAfterJobsAndRestart()
     assertEq(m(home, "run", "--kind", "test", "--", "sh", "-c", "exit 3").code, 3)
     val before = m(home, "history")
     assertEq(before.code, 0)
-    val rows = before.out.lines().toVector.filter(l -> l.startsWith("1 ") || l.startsWith("2 "))
+    val rows = before.out.lines.toVector.filter(l -> l.startsWith("1 ") || l.startsWith("2 "))
     assertEq(rows.length, 2)
     assert(rows(0).startsWith("2 ") && rows(0).contains("failed") && rows(0).contains("3"), rows(0))
     assert(rows(1).startsWith("1 ") && rows(1).contains("ok"), rows(1))
-    assertEq(m(home, "history", "--failed").out.lines().toVector.filter(l -> l.startsWith("1 ")).length, 0)
+    assertEq(m(home, "history", "--failed").out.lines.toVector.filter(l -> l.startsWith("1 ")).length, 0)
     restarted(home)
     assertEq(m(home, "history").out, before.out)
     assertEq(m(home, "run", "--kind", "build", "--", "true").code, 0)
-    val s = json.parse(m(home, "stats", "--json").out.lines().toVector(0)).ok().get()
-    val kinds = s("kinds").asVector().get()
-    assertEq(kinds.map(k -> k("kind").asString().get()), ["build", "test"])
-    assertEq(kinds(0)("count").asLong(), Some(long(2)))
-    assertEq(kinds(0)("success_pct").asLong(), Some(long(100)))
-    assertEq(kinds(1)("success_pct").asLong(), Some(long(0)))
+    val s = json.parse(m(home, "stats", "--json").out.lines.toVector(0)).ok.get
+    val kinds = s("kinds").asVector.get
+    assertEq(kinds.map(k -> k("kind").asString.get), ["build", "test"])
+    assertEq(kinds(0)("count").asLong, Some(long(2)))
+    assertEq(kinds(0)("success_pct").asLong, Some(long(100)))
+    assertEq(kinds(1)("success_pct").asLong, Some(long(0)))
     cleanUp(home)
 
 // A process that does nothing but stand in for the test process that owns a home.
-startOwner() -> process.Child = Command("sleep", "120").start().ok().get()
+startOwner() -> process.Child = Command("sleep", "120").start().ok.get
 
 // Ends `owner` by SIGKILL, as a killed test run would be, and reaps it.
 killOwner(owner: process.Child)
@@ -1431,7 +1431,7 @@ reapsDeadOwner()
     val daemon = daemonPid(home)
     killOwner(owner)
     assert(reapOrphans() >= 1, "nothing was reaped")
-    assert(process.signal(daemon, 0).isErr(), "the daemon is still running")
+    assert(process.signal(daemon, 0).isErr, "the daemon is still running")
     assert(!fs.exists(home), "the home is still there")
     assert(!fs.exists(entryOf(home)), "the registry entry is still there")
 
@@ -1441,11 +1441,11 @@ reapLeavesLiveOwner()
     assertEq(m(home, "status").code, 0)
     val daemon = daemonPid(home)
     reapOrphans()
-    assert(process.signal(daemon, 0).isOk(), "a live test's daemon was ended")
+    assert(process.signal(daemon, 0).isOk, "a live test's daemon was ended")
     assert(fs.exists(home + "/sock"))
-    fs.writeText(registry() + "/garbage-entry", "").ok().get()
+    fs.writeText(registry() + "/garbage-entry", "").ok.get
     reapOrphans()
-    assert(process.signal(daemon, 0).isOk(), "an empty entry ended a daemon")
+    assert(process.signal(daemon, 0).isOk, "an empty entry ended a daemon")
     fs.remove(registry() + "/garbage-entry")
     cleanUp(home)
 
@@ -1460,8 +1460,8 @@ daemonStopsWithOwner()
     val following = startM(home, [], "events", "--follow")
     assert(within(5000, () -> started(home, id)), "the job did not start")
     killOwner(owner)
-    assert(within(5000, () -> process.signal(daemon, 0).isErr()), "the daemon is still running")
-    assert(within(5000, () -> process.signal(following.pid, 0).isErr()), "events --follow is still running")
+    assert(within(5000, () -> process.signal(daemon, 0).isErr), "the daemon is still running")
+    assert(within(5000, () -> process.signal(following.pid, 0).isErr), "events --follow is still running")
     assertEq(eventsOf(home, id), ["submitted", "started", "killed"])
     fs.removeDirAll(home)
     fs.remove(entryOf(home))

@@ -45,7 +45,7 @@ val savedEnded: SavedJob = savedEndedJob()
 stateOf(queue: Vector[SavedJob], run: Vector[SavedJob], ended: Vector[SavedJob], ticket: Option[string] = None) -> SavedState =
     SavedState("0.1.0", 501, 1_762_000_000_500, 1_761_999_000_000, 10, queue, run, ended, ticket)
 
-stateRoundTrip(s: SavedState) = assertEq(marshal.decodeState(marshal.encodeState(s).render()), Ok(s))
+stateRoundTrip(s: SavedState) = assertEq(marshal.decodeState(marshal.encodeState(s).render), Ok(s))
 
 stateRefused(text: string, why: string) = marshal.decodeState(text) match
     Err(e) -> assert(e.contains(why), s"$text: $e")
@@ -89,12 +89,12 @@ savedStartTimes()
 savedMemory()
     stateRoundTrip(stateOf([], [savedRunningJob(), savedJob(id = 3, state = "running", startedAt = 1_762_000_000_002, pid = 9, pgid = 9, rss = 123_456_789, peakRss = 987_654_321)], []))
     stateRoundTrip(stateOf([], [savedJob(id = 4, state = "running", startedAt = 1, rss = 0, peakRss = 5)], [savedEnded]))
-    val read = marshal.decodeState(marshal.encodeState(stateOf([], [savedJob(id = 3, state = "running", startedAt = 77, rss = 5, peakRss = 9)], [])).render())
-    assertEq(read.ok().map(s -> (s.running(0).startedAt, s.running(0).rss, s.running(0).peakRss)), Some((long(77), long(5), long(9))))
+    val read = marshal.decodeState(marshal.encodeState(stateOf([], [savedJob(id = 3, state = "running", startedAt = 77, rss = 5, peakRss = 9)], [])).render)
+    assertEq(read.ok.map(s -> (s.running(0).startedAt, s.running(0).rss, s.running(0).peakRss)), Some((long(77), long(5), long(9))))
 
 @test("state saved before memory was measured, with no rss or peak_rss, reads with both 0")
 savedWithoutMemory()
-    val full = marshal.encodeSavedJob(savedRunningJob()).render()
+    val full = marshal.encodeSavedJob(savedRunningJob()).render
     assert(full.contains("\"rss\":0"), full)
     val old = full.replace(",\"rss\":0,\"peak_rss\":0", "")
     assert(!old.contains("rss"), old)
@@ -106,7 +106,7 @@ savedWithoutMemory()
 @test("a memory figure that is not a whole number is refused naming the field")
 savedBadMemory()
     val head = "\"version\": \"0.1.0\", \"pid\": 1, \"saved_at\": 2, \"began_at\": 3, \"next_id\": 4"
-    val good = marshal.encodeSavedJob(savedEnded).render()
+    val good = marshal.encodeSavedJob(savedEnded).render
     val withJob = (j: string) -> s"{$head, \"queue\": [], \"running\": [], \"ended\": [$j]}"
     stateRefused(withJob(good.replace("\"peak_rss\":912000000", "\"peak_rss\":\"big\"")), "`peak_rss` is not a whole number")
     stateRefused(withJob(good.replace("\"rss\":0", "\"rss\":1.5")), "`rss` is not a whole number")
@@ -119,7 +119,7 @@ savedAwkwardText()
 
 @test("a saved state is one line")
 savedOneLine()
-    val text = marshal.encodeState(stateOf([savedJob(spec = JobSpec("k", 1, 0, false, "/", None, ["a\nb"], [("V", "x\ny")]))], [], [])).render()
+    val text = marshal.encodeState(stateOf([savedJob(spec = JobSpec("k", 1, 0, false, "/", None, ["a\nb"], [("V", "x\ny")]))], [], [])).render
     assert(!text.contains("\n"))
 
 @test("absent or null optional fields of a saved state read as absent")
@@ -141,16 +141,16 @@ savedQueueControl()
 @test("a state saved before holding and priorities existed reads as nothing held, every priority 0")
 savedBeforeQueueControl()
     val head = "\"version\": \"0.1.0\", \"pid\": 1, \"saved_at\": 2, \"began_at\": 3, \"next_id\": 4"
-    val old = marshal.encodeSavedJob(savedQueued).render().replace(",\"held\":false,\"priority\":0", "")
+    val old = marshal.encodeSavedJob(savedQueued).render.replace(",\"held\":false,\"priority\":0", "")
     assert(!old.contains("held") && !old.contains("priority"), old)
     assertEq(marshal.decodeState(s"{$head, \"queue\": [$old], \"running\": [], \"ended\": [], \"ticket\": null}"), Ok(SavedState("0.1.0", 1, 2, 3, 4, [savedQueued], [], [], None, false)))
-    val nulls = marshal.encodeSavedJob(savedQueued).render().replace("\"held\":false,\"priority\":0", "\"held\":null,\"priority\":null")
+    val nulls = marshal.encodeSavedJob(savedQueued).render.replace("\"held\":false,\"priority\":0", "\"held\":null,\"priority\":null")
     assertEq(marshal.decodeState(s"{$head, \"queue\": [$nulls], \"running\": [], \"ended\": [], \"queue_held\": null}"), Ok(SavedState("0.1.0", 1, 2, 3, 4, [savedQueued], [], [], None, false)))
 
 @test("a held mark or priority of the wrong type is refused, naming the field")
 savedBadQueueControl()
     val head = "\"version\": \"0.1.0\", \"pid\": 1, \"saved_at\": 2, \"began_at\": 3, \"next_id\": 4"
-    val good = marshal.encodeSavedJob(savedQueued).render()
+    val good = marshal.encodeSavedJob(savedQueued).render
     val withJob = (j: string) -> s"{$head, \"queue\": [$j], \"running\": [], \"ended\": []}"
     stateRefused(withJob(good.replace("\"held\":false", "\"held\":1")), "`held` is not a bool")
     stateRefused(withJob(good.replace("\"priority\":0", "\"priority\":\"high\"")), "`priority` is not an int")
@@ -175,7 +175,7 @@ savedBadStates()
 @test("a job that is not a saved job is refused, naming the job and the field")
 savedBadJobs()
     val head = "\"version\": \"0.1.0\", \"pid\": 1, \"saved_at\": 2, \"began_at\": 3, \"next_id\": 4"
-    val good = marshal.encodeSavedJob(savedEnded).render()
+    val good = marshal.encodeSavedJob(savedEnded).render
     val withJob = (j: string) -> s"{$head, \"queue\": [], \"running\": [], \"ended\": [$j]}"
     stateRefused(withJob(good.replace("\"killed\":false", "\"killed\":\"no\"")), "`killed` is not a bool")
     stateRefused(withJob(good.replace("\"pid\":70", "\"pid\":7.5")), "`pid` is not a whole number")
@@ -200,7 +200,7 @@ savedReservation()
 @test("a state saved before reservations were recorded reads as -1 and not learned, so the new image learns them again")
 savedBeforeReservations()
     val head = "\"version\": \"0.2.2\", \"pid\": 1, \"saved_at\": 2, \"began_at\": 3, \"next_id\": 4"
-    val full = marshal.encodeSavedJob(reservedJob(22, true)).render()
+    val full = marshal.encodeSavedJob(reservedJob(22, true)).render
     val old = full.replace(",\"reserved\":22,\"reserved_learned\":true", "").replace(",\"mem_given\":false", "").replace(",\"reserved_from\":\"\"", "")
     assert(!old.contains("reserved") && !old.contains("mem_given"), old)
     assertEq(marshal.decodeState(s"{$head, \"queue\": [$old], \"running\": [], \"ended\": []}"), Ok(SavedState("0.2.2", 1, 2, 3, 4, [reservedJob(-1, false)], [], [], None, false)))
@@ -210,7 +210,7 @@ savedBeforeReservations()
 @test("a reservation or its learned mark of the wrong type is refused, naming the field")
 savedBadReservation()
     val head = "\"version\": \"0.2.2\", \"pid\": 1, \"saved_at\": 2, \"began_at\": 3, \"next_id\": 4"
-    val good = marshal.encodeSavedJob(reservedJob(22, true)).render()
+    val good = marshal.encodeSavedJob(reservedJob(22, true)).render
     val withJob = (j: string) -> s"{$head, \"queue\": [$j], \"running\": [], \"ended\": []}"
     stateRefused(withJob(good.replace("\"reserved\":22", "\"reserved\":\"22G\"")), "`reserved` is not a whole number")
     stateRefused(withJob(good.replace("\"reserved\":22", "\"reserved\":2.5")), "`reserved` is not a whole number")
@@ -224,7 +224,7 @@ savedReservedFrom()
         val j = SavedJob(5, JobSpec("build", 1, 0, false, "/w", None, ["make"], []), "queued", 1, 2, 0, 0, 5, 6, "/l", 0, 0, None, false, false, None, 0, 0, reserved = 22, reservedLearned = true, reservedFrom = from)
         stateRoundTrip(stateOf([j], [j], [j]))
     val head = "\"version\": \"0.2.7\", \"pid\": 1, \"saved_at\": 2, \"began_at\": 3, \"next_id\": 4"
-    val full = marshal.encodeSavedJob(reservedJob(22, true)).render()
+    val full = marshal.encodeSavedJob(reservedJob(22, true)).render
     assert(full.contains(",\"reserved_from\":\"\""), full)
     val old = full.replace(",\"reserved_from\":\"\"", "")
     assertEq(marshal.decodeState(s"{$head, \"queue\": [$old], \"running\": [], \"ended\": []}"), Ok(SavedState("0.2.7", 1, 2, 3, 4, [reservedJob(22, true)], [], [], None, false)))
@@ -238,7 +238,7 @@ savedDurationLearned()
         stateRoundTrip(stateOf([j], [j], [j]))
     val head = "\"version\": \"0.2.10\", \"pid\": 1, \"saved_at\": 2, \"began_at\": 3, \"next_id\": 4"
     val job = (learned: bool) -> SavedJob(9, savedSpec, "running", 1, 2, 3, 0, 1_800_000, 600_000, "/h/jobs/9.log", 70, 70, None, false, false, None, 0, 0, durationLearned = learned)
-    val full = marshal.encodeSavedJob(job(true)).render()
+    val full = marshal.encodeSavedJob(job(true)).render
     assert(full.contains(",\"duration_learned\":true"), full)
     val withJob = (j: string) -> s"{$head, \"queue\": [], \"running\": [$j], \"ended\": []}"
     val unlearned = job(false)

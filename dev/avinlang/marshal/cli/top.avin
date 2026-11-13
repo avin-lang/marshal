@@ -27,7 +27,7 @@ top(args: Vector[string]) -> int
     if args.nonEmpty then return complain("marshal: top takes no arguments")
     Terminal.use(TopOptions, watch) match
         Ok(()) -> 0
-        Err(e) -> complain(s"marshal: top: ${e.message()}")
+        Err(e) -> complain(s"marshal: top: ${e.message}")
 
 // Asks, draws, and waits for a key or the next second, until q.
 watch(term: Terminal)
@@ -47,11 +47,11 @@ watch(term: Terminal)
             due = fetched + Every
         readLog(app)
         val g = term.frame()
-        app.draw(g, (time.monotonic() - fetched).toMillis(), (time.monotonic() - epoch).toMillis())
+        app.draw(g, (time.monotonic() - fetched).toMillis, (time.monotonic() - epoch).toMillis)
         term.present(g)
         val wait = due - time.monotonic()
         term.poll(if wait > millis(0) then wait else millis(0)) match
-            Some(e) -> app.handle(e, (time.monotonic() - epoch).toMillis()) match
+            Some(e) -> app.handle(e, (time.monotonic() - epoch).toMillis) match
                 Quit -> return
                 KillJob(id) ->
                     app.message = conn.map(c -> ask(c, Request.Kill(id))) match
@@ -76,7 +76,7 @@ look(app: App, conn: Option[UnixStream], sock: string) -> Option[UnixStream]
         None -> UnixStream.connect(sock) match
             Ok(c) -> c
             Err(e) ->
-                app.lost(s"no daemon at $sock (${e.message()})", true)
+                app.lost(s"no daemon at $sock (${e.message})", true)
                 return None
     ask(c, Request.Snapshot) match
         Ok(Viewed(o)) ->
