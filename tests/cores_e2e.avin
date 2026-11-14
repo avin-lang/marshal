@@ -7,6 +7,7 @@ module tests
 // a missing, corrupt or version 1 memory.json learns the cores again from the event log. The
 // helpers are e2e.avin's, together_e2e.avin's and reserve_e2e.avin's.
 import avin.fs
+import avin.process.{Command, ExitStatus}
 import avin.threads
 import avin.time
 import avin.time.millis
@@ -14,9 +15,12 @@ import dev.avinlang.json
 import dev.avinlang.json.Json
 import dev.avinlang.marshal
 
-// `sh work.sh SECONDS CORES` keeps CORES cores busy for SECONDS (none: it sleeps). Its arguments
-// are not part of its signature, so every run of it is the same command to learn from.
+// `sh work.sh SECONDS CORES` keeps CORES cores busy for SECONDS (none: it sleeps), and
+// `sh work.sh SECONDS fakecores=N` sleeps, using N cores as the stand-in for `ps` (`FakePs`) tells
+// it. Its arguments are not part of its signature, so every run of it is the same command to learn
+// from.
 private val WorkScript: string = """
+case "$2" in fakecores=*) sleep "$1"; exit 0 ;; esac
 n=$2
 if [ "$n" = 0 ]; then exec sleep "$1"; fi
 i=0
@@ -31,6 +35,65 @@ wait
 private work(home: string, kind: string, seconds: string, cores: string) -> Vector[string]
   fs.writeText(home + "/work.sh", WorkScript).ok.get
   ["--kind", kind, "--dir", home, "--", "sh", "work.sh", seconds, cores]
+
+// work.sh in `home` for `seconds`, as using `cores` cores to the stand-in for `ps`.
+private fakeWork(home: string, kind: string, seconds: string, cores: string) -> Vector[string] =
+  work(home, kind, seconds, s"fakecores=$cores")
+
+// A stand-in for `ps -A -o pid=,pgid=,time=`, which the daemon runs instead under
+// `$MARSHAL_TEST_PS`: it lists every process as `ps` does, and gives each one whose command holds
+// `fakecores=N` the processor time of N cores busy since it first listed it, by the wall clock,
+// every other one none. So what a job is measured using is what the test says, however much of the
+// machine its processes are really given.
+private val FakePs: string = """
+#!/usr/bin/perl
+use Time::HiRes qw(time);
+my $state = "$0.seen";
+my %seen;
+if (open(my $f, '<', $state)) {
+  while (my $l = <$f>) { my ($p, $t) = split(' ', $l); $seen{$p} = $t; }
+  close($f);
+}
+my $now = time;
+my %keep;
+for my $l (`ps -A -o pid=,pgid=,command=`) {
+  next unless $l =~ /^ *([0-9]+) +([0-9]+) +(.*)$/;
+  my ($pid, $pgid, $cmd) = ($1, $2, $3);
+  my $cores = $cmd =~ /fakecores=([0-9.]+)/ ? $1 : 0;
+  my $h = 0;
+  if ($cores > 0) {
+    $seen{$pid} = $now unless defined $seen{$pid};
+    $keep{$pid} = $seen{$pid};
+    $h = int(($now - $seen{$pid}) * $cores * 100);
+  }
+  my $s = int($h / 100);
+  printf("%d %d %d:%02d:%02d.%02d
+", $pid, $pgid, $s / 3600, ($s / 60) % 60, $s % 60, $h % 100);
+}
+if (open(my $o, '>', "$state.tmp")) {
+  print $o "$_ $keep{$_}
+" for keys %keep;
+  close($o);
+  rename("$state.tmp", $state);
+}
+"""
+
+// The environment that makes a daemon `home` starts measure through `FakePs`.
+private fakeEnv(home: string) -> Vector[(string, string)]
+  val file = home + "/fake-ps"
+  if !fs.exists(file)
+    fs.writeText(file, FakePs).ok.get
+    assertEq(Command("chmod", "+x", file).run().ok, Some(ExitStatus.Exited(0)))
+  [("MARSHAL_TEST_PS", file)]
+
+// `m` against a daemon measuring through `FakePs`: the first command starts it so.
+private fm(home: string, args: string*) -> Ran = mWith(home, fakeEnv(home), args*)
+
+// `submitted` against a daemon measuring through `FakePs`.
+private fakeSubmitted(home: string, args: string*) -> long
+  val r = fm(home, (["submit"] ++ args.toVector)*)
+  assertEq(r.code, 0)
+  idOf(r)
 
 // The job's units as `status --json` gives them, in units, and whether they were learned.
 private unitsOf(home: string, id: long) -> (Option[real], Option[bool])
@@ -53,17 +116,17 @@ busyLearned()
   val home = newHome()
   // long enough for whole intervals of it: the time a process uses after the last sample before
   // it ends is not seen
-  val first = submitted(home, work(home, "cpu", "6", "2")*)
+  val first = fakeSubmitted(home, fakeWork(home, "cpu", "6", "2")*)
   assertEq(m(home, "wait", first.toString()).code, 0)
   val end = endingOf(home, first)
   val peak = end("peak_cores").asReal.get
-  // two cores, give or take what a shared machine takes from them
-  assert(1.4 <= peak <= 2.6, s"$end")
-  assert(end("cpu_ms").asLong.get >= 5000, s"$end")
+  // two cores, give or take the few milliseconds between the stand-in's clock and the daemon's
+  assert(1.6 <= peak <= 2.4, s"$end")
+  assert(end("cpu_ms").asLong.get >= 4000, s"$end")
   // a finished job's USED is its peak
   val used = marshal.formatCores(marshal.centiOf(end("peak_cores")).get)
   assert(lsRow(home, first).contains(s" $used "), lsRow(home, first))
-  val next = submitted(home, work(home, "cpu", "30", "1")*)
+  val next = submitted(home, fakeWork(home, "cpu", "30", "1")*)
   val (units, learned) = unitsOf(home, next)
   assertEq(learned, Some(true))
   assertEq(units, Some(real(marshal.learnedUnits([marshal.centiOf(end("peak_cores")).get], 48).get) / 4.0))
@@ -73,13 +136,23 @@ busyLearned()
   assertEq(m(home, "stop", "--force").code, 0)
   cleanUp(home)
 
+@test("with the real ps, a busy run is measured using some cores and some processor time")
+realPsSmoke()
+  val home = newHome()
+  // nothing is said of how many: a loaded machine gives a niced job what it can spare
+  val id = submitted(home, work(home, "cpu", "3", "1")*)
+  assertEq(m(home, "wait", id.toString()).code, 0)
+  val end = endingOf(home, id)
+  assert(end("peak_cores").asReal.exists(c -> c > 0.0), s"$end")
+  assert(end("cpu_ms").asLong.exists(ms -> ms > 0), s"$end")
+  cleanUp(home)
+
 @test("idle runs learn a quarter unit, and four of them then run together in a budget of one")
 idleQuarter()
   val home = newHome("{\"units\": 1}")
-  assertEq(m(home, (["run"] ++ work(home, "nap", "2.5", "0"))*).code, 0)
-  // the shell's start costs a little; a sleep nothing
-  assert(endingOf(home, 1)("peak_cores").asReal.get <= 0.1, s"${endingOf(home, 1)}")
-  val ids = (1 .. 4).map(_ -> submitted(home, work(home, "nap", "3", "0")*)).toVector
+  assertEq(fm(home, (["run"] ++ fakeWork(home, "nap", "2.5", "0"))*).code, 0)
+  assertEq(endingOf(home, 1)("peak_cores").asReal, Some(0.0))
+  val ids = (1 .. 4).map(_ -> submitted(home, fakeWork(home, "nap", "3", "0")*)).toVector
   for id in ids do assertEq(unitsOf(home, id), (Some(0.25), Some(true)))
   for id in ids do assertEq(m(home, "wait", id.toString()).code, 0)
   assertEq(mostAtOnce(home, false), 4)
@@ -130,15 +203,15 @@ neverSeen()
 queuedResized()
   val home = newHome("{\"units\": 4}")
   // a blocker fills the budget, so the next waits, at its kind's default: nothing is learned yet
-  val blocker = submitted(home, "--kind", "block", "--units", "4", "--", "sleep", "30")
-  val queued = submitted(home, work(home, "w", "30", "1")*)
-  val given = submitted(home, (["--units", "1"] ++ work(home, "w", "30", "1"))*)
+  val blocker = fakeSubmitted(home, "--kind", "block", "--units", "4", "--", "sleep", "30")
+  val queued = submitted(home, fakeWork(home, "w", "30", "1")*)
+  val given = submitted(home, (["--units", "1"] ++ fakeWork(home, "w", "30", "1"))*)
   assertEq(unitsOf(home, queued), (Some(1.0), Some(false)))
   // a run of the same command on two cores, quick so it starts at once, teaches about two
-  assertEq(m(home, (["run", "--quick"] ++ work(home, "w", "6", "2"))*).code, 0)
+  assertEq(m(home, (["run", "--quick"] ++ fakeWork(home, "w", "6", "2"))*).code, 0)
   val taught = statusJob(home, queued)
   assertEq(taught.get("units_learned").flatMap(v -> v.asBool), Some(true))
-  assert(taught("units").asReal.get >= 1.5, s"$taught")
+  assert(1.75 <= taught("units").asReal.get <= 2.5, s"$taught")
   // units given stay given
   assertEq(unitsOf(home, given), (Some(1.0), Some(false)))
   assertEq(statusJob(home, blocker)("state").asString, Some("running"))
@@ -149,21 +222,23 @@ queuedResized()
 restartResized()
   val home = newHome("{\"units\": 4}")
   fs.writeText(home + "/memory.json", sleepCores("w", "0.5")).ok.get
-  val busy = submitted(home, (["--units", "4"] ++ work(home, "cpu", "30", "1"))*)
+  val busy = fakeSubmitted(home, (["--units", "4"] ++ fakeWork(home, "cpu", "30", "1"))*)
   val queued = submitted(home, "--kind", "w", "--", "sleep", "30")
   val given = submitted(home, "--kind", "w", "--units", "1", "--", "sleep", "30")
   assertEq(unitsOf(home, queued), (Some(0.5), Some(true)))
-  assert(within(10000, () -> statusJob(home, busy).has("peak_cores")), s"${statusJob(home, busy)}")
+  val peakOf = () -> statusJob(home, busy).get("peak_cores").flatMap(v -> v.asReal).getOrElse(0.0)
+  assert(within(10000, () -> peakOf() >= 0.8), s"${statusJob(home, busy)}")
   // the new image reads a memory.json that has learned more
   fs.writeText(home + "/memory.json", sleepCores("w", "2.6")).ok.get
   restarted(home)
   assertEq(unitsOf(home, queued), (Some(2.75), Some(true)))
   assertEq(unitsOf(home, given), (Some(1.0), Some(false)))
   assert(statusJob(home, busy).has("peak_cores"), s"${statusJob(home, busy)}")
-  // the taken-over job goes on being measured from a baseline: its past is no spike
+  // the taken-over job goes on being measured from a baseline: the processor time its process had
+  // used before the restart, many seconds of it, is no spike
   assert(within(10000, () -> statusJob(home, busy).has("cores")), s"${statusJob(home, busy)}")
   threads.sleep(millis(2500))
-  assert(statusJob(home, busy)("peak_cores").asReal.get <= 1.6, s"${statusJob(home, busy)}")
+  assert(0.8 <= peakOf() <= 1.3, s"${statusJob(home, busy)}")
   assertEq(m(home, "stop", "--force").code, 0)
   cleanUp(home)
 

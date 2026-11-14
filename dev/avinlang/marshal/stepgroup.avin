@@ -42,9 +42,14 @@ jobCpu(home: string, id: long, pgid: long, table: Vector[GroupedCpu]) -> Vector[
   table.filter(g -> groups.contains(g.pgid)).map(g -> g.sample)
 
 // The processor time of every process on the machine, with its group, as one `ps` lists them; none
-// where `ps` cannot be run. One listing serves every running job.
-processTimes() -> Vector[GroupedCpu] =
-  groupedCpuTable(Command("ps", "-A", "-o", "pid=,pgid=,time=").output().getOrElse(""))
+// where `ps` cannot be run. One listing serves every running job. A test names a program that
+// prints the same lines instead (`$MARSHAL_TEST_PS`), so what it measures does not hang on how much
+// of the machine the test's jobs are given.
+processTimes() -> Vector[GroupedCpu]
+  val listing = process.env("MARSHAL_TEST_PS") match
+    Some(program) if program.nonEmpty -> Command(program)
+    _ -> Command("ps", "-A", "-o", "pid=,pgid=,time=")
+  groupedCpuTable(listing.output().getOrElse(""))
 
 // Signals every group of job `id`; the errors of a group nobody is in are not an error.
 signalGroups(home: string, id: long, pgid: long, sig: int)
