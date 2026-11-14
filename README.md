@@ -42,9 +42,9 @@ marshal: job 1 exited 0 after 2m12s; log /Users/me/.marshal/jobs/1.log
 
 The first command starts the daemon. `marshal run` waits and exits with the job's own status;
 `marshal submit` queues the job and prints its id, for `marshal wait <id>` later. `marshal top`
-shows what runs and waits, live. Its header gives the daemon's version after the name (`marshal 0.3.7`);
+shows what runs and waits, live. Its header gives the daemon's version after the name (`marshal 0.3.8`);
 when the top you are running is another version it adds it in yellow with a hint,
-`marshal 0.3.7 (top 0.3.6, restart top)`, and `marshal ?` stands for a daemon too old to say.
+`marshal 0.3.8 (top 0.3.7, restart top)`, and `marshal ?` stands for a daemon too old to say.
 
 ## A first train
 
@@ -302,7 +302,7 @@ Options of `submit` and `run`:
 | `--quiet-load <n>` | With `--exclusive`: also wait, before starting, until the 1-minute load average has stayed below `n` for a whole minute — work outside marshal it cannot stop but can wait out. The load is read every second; `ls` shows `queued (load 7.9 ≥ 4)` while it is at or above `n` and `queued (load 3.5 < 4 for 20.0s)` while the minute runs; a reading at or above `n` starts the minute again. Where the load cannot be read, it does not hold the job. `--quiet-load auto` is a quarter of the processors (`sysctl hw.ncpu`), at least 1: 4.5 on an 18-core Mac, whose desktop alone keeps the load near 2–3. While the load holds it, it holds nothing back: jobs queued after it run, and only once the load has settled does it reserve the machine as above. After `load_wait` (`config.json`, 15 minutes) it stops waiting for the load and starts once the machine empties; its log then begins `marshal exclusive: started after waiting 15m00s for the load to fall below 2; the load was 2.13`. |
 | `--urgent` | Queues it in its lane's urgent band: ahead of every job not urgent, behind the urgent jobs already queued. It runs un-niced, as a landing job does, backfilled or not; it still weighs its learned units, or its kind's default without `--units`. `ls` and `top` mark its kind with `!` (`test!`), after the lane's mark when it has one (`test^!` quick, `test*!` landing); the mark stays while it runs and after it ends, and `priority <id> --urgent` adds it too. |
 | `--dir <d>` | Where it runs, relative to the current directory. Default: the current directory. |
-| `--deadline <t>` | Stops it after `t`: a number of minutes, or `90s`, `30m`, `2h`. Default: learned for its kind. |
+| `--deadline <t>` | Stops it after `t`: a number of minutes, or `90s`, `30m`, `2h`. Default: learned from its command's runs, or its kind's (see Deadlines). |
 | `--quiet-timeout <t>` | Stops it once its log has had no new output for `t`, written as `--deadline` writes one: a hung job ends then rather than at its deadline. It is sampled and stopped as a deadline stops it, but its outcome is `quiet`: `wait` says `killed after 10m00s without output (quiet timeout)`, its log ends with that line, the event is `quiet`, and `ls` and `history` show `quiet`. Time paused does not count, and the quiet clock starts again on `resume` and on `marshal restart`. `status --json` gives it as `quiet_ms`; `rerun` keeps it; `run-type` and `train` take it too. Default: none. |
 | `--after <ids>` | Waits until jobs `<ids>` (`3` or `3,4`) have ended; the same as `--after-ok`. |
 | `--after-ok <ids>` | Waits until they have ended, then queues it if each exited 0, and otherwise cancels it (`dependency-failed`, exit 126), which cancels in turn what waits for it. |
@@ -329,8 +329,8 @@ standard error.
 `killed`, `timeout`, `quiet`, `cancelled`, `lost`), EXIT (the status `wait` exits with), DURATION and ENDED
 (the end, to the second, in the caller's local time zone like STARTED; `--json` carries `ended_at` as milliseconds). `stats` has one row per kind (a kind's landing runs are their own row, `kind+landing`, as for
 learning deadlines): COUNT, OK (the share that exited 0), P50, P90 and MAX of the run times,
-TIMEOUTS, DEADLINE (what the next job of the kind would get, learned from every successful run in the
-log whatever the filters) and PEAK P50 / PEAK MAX of the memory the jobs' process trees held, `-`
+TIMEOUTS, DEADLINE (what the next job of the kind would get while its command has too few runs of its
+own, learned from every successful run of the kind in the log whatever the filters) and PEAK P50 / PEAK MAX of the memory the jobs' process trees held, `-`
 for jobs whose events do not say; both peaks are sized as RESV and PEAK are (`756M`, `9.7G`), and
 `--json` keeps raw bytes in `peak_p50` and `peak_max`. The peaks are the kind's across every
 directory, though a reservation learns per directory. Percentiles are nearest-rank, so they are always a run that
@@ -551,9 +551,14 @@ ends: nothing polls.
   that could submit to your daemon could make it run commands as you. A second daemon under the
   other account is not the answer either: two daemons are two budgets, each admitting jobs as if the
   machine were its own, which is the overcommitment marshal exists to prevent.
-- **Deadlines.** A kind's deadline is twice the median of its last 20 successful runs, never under 5
-  minutes; until it has 3 runs it is 20 minutes for a build, 45 for a test, 30 for anything else and
-  120 for a landing job. A job past its deadline has its busiest process sampled (where the system
+- **Deadlines.** A job's deadline is learned from the last 20 successful runs of its command in its
+  directory (the same command signature durations and memory are learned under), or of its command
+  anywhere while its directory has fewer than 3, or of its kind (with `+landing` for a landing job)
+  while its command has fewer than 3: twice their median or 1.5 times the longest of them, whichever
+  is later, never under 5 minutes. Until any of those has 3 runs it is 20 minutes for a build, 45 for
+  a test, 30 for anything else and 120 for a landing job. A run its deadline stopped took at least
+  that long, so until its command next exits 0, the command's deadline is at least 1.5 times how long
+  that run ran: a repeat is not stopped where it was. `--deadline` overrides all of it. A job past its deadline has its busiest process sampled (where the system
   has `sample`, 5 seconds, to `jobs/<id>.sample.txt`), then its group gets TERM and, 5 seconds later,
   KILL. A job with `--quiet-timeout` is stopped the same way once its log's size has not changed
   for that long; the daemon looks at the log once a second, so the stop comes up to a second late.

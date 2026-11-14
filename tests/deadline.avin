@@ -1,6 +1,6 @@
 module tests
 
-// Deadlines learned per kind from recorded durations.
+// Deadlines learned from recorded durations: a command's, else its kind's.
 import dev.avinlang.marshal
 import dev.avinlang.marshal.Learning
 
@@ -21,10 +21,99 @@ tooFew()
   assertEq(marshal.deadlineMs(learning, "test", false, [10 * minute, 10 * minute]), 45 * minute)
   assertEq(marshal.expectedMs(learning, "test", false, [10 * minute, 10 * minute]), 45 * minute / 2)
 
-@test("enough runs give twice their median")
+@test("enough runs give twice their median, or half again their longest where that is later")
 learned()
-  assertEq(marshal.deadlineMs(learning, "test", false, [10 * minute, 12 * minute, 50 * minute]), 24 * minute)
+  assertEq(marshal.deadlineMs(learning, "test", false, [10 * minute, 12 * minute, 14 * minute]), 24 * minute)
+  assertEq(marshal.deadlineMs(learning, "test", false, [10 * minute, 12 * minute, 50 * minute]), 75 * minute)
   assertEq(marshal.expectedMs(learning, "test", false, [10 * minute, 12 * minute, 50 * minute]), 12 * minute)
+
+@test("the nex train: runs of 6 to 13 minutes do not stop a run of 13m17s")
+nexTrain()
+  // job 3470's key held these runs (milliseconds), its median 6m36s, so twice it was 13m11s
+  val runs: Vector[long] = [
+    494150, 1296502, 439729, 336661, 348378, 391987, 345402, 395938, 400588, 522998, 1573, 368784, 358564, 429649,
+    359093, 395829, 424887, 777562, 597322
+  ]
+  val ran: long = 797106
+  // by the median alone, as before
+  assertEq(marshal.median(runs.takeRight(20)) * 2, 791876)
+  val d = marshal.jobDeadline(learning, "train", true, runs, runs, runs, 0)
+  assertEq(d, marshal.LearnedDeadline(1296502 * 3 / 2, "cmd+dir"))
+  assert(d.ms > ran)
+  // without the 21-minute run, the longest left (12m58s) still leaves room: 19m26s
+  val later = runs.filter(r -> r != 1296502)
+  assertEq(marshal.jobDeadline(learning, "train", true, [], later, [], 0).ms, 777562 * 3 / 2)
+  assert(marshal.jobDeadline(learning, "train", true, [], later, [], 0).ms > ran * 14 / 10)
+
+@test("a job's deadline is learned from its command in its directory, then anywhere, then its kind")
+perCommand()
+  val kind = Vector.fill(20, 2 * minute)
+  val mine = [20 * minute, 20 * minute, 20 * minute]
+  val elsewhere = [8 * minute, 8 * minute, 8 * minute]
+  assertEq(
+    marshal.jobDeadline(learning, "test", false, kind, mine, elsewhere, 0),
+    marshal.LearnedDeadline(40 * minute, "cmd+dir")
+  )
+  // too few runs in its directory: its command's runs anywhere
+  assertEq(
+    marshal.jobDeadline(learning, "test", false, kind, mine.take(2), elsewhere, 0),
+    marshal.LearnedDeadline(16 * minute, "cmd")
+  )
+  // too few of its command: its kind's, and the floor under them
+  assertEq(
+    marshal.jobDeadline(learning, "test", false, kind, mine.take(2), elsewhere.take(2), 0),
+    marshal.LearnedDeadline(5 * minute, "kind")
+  )
+  // too few of anything: the kind's default
+  assertEq(marshal.jobDeadline(learning, "test", false, [], [], [], 0), marshal.LearnedDeadline(45 * minute, "none"))
+  assertEq(marshal.jobDeadline(learning, "train", true, [], [], [], 0), marshal.LearnedDeadline(120 * minute, "none"))
+  // a kind's unrelated short runs never cut a long command's deadline
+  assert(marshal.jobDeadline(learning, "test", false, kind, mine, [], 0).ms > 20 * minute)
+
+@test("a growing suite stays inside its deadline")
+growing()
+  // each run a little longer than the one before it, the next as much again
+  var runs = Vector[long]()
+  var next: long = 6 * minute
+  for _ in 0 ..< 30
+    if runs.length >= 3 then assert(marshal.jobDeadline(learning, "test", false, [], runs, [], 0).ms > next, s"$next")
+    runs = runs ++ [next]
+    next = next + next / 10
+  // runs that do not grow keep twice their median
+  val steady = Vector.fill(10, 10 * minute)
+  assertEq(marshal.jobDeadline(learning, "test", false, [], steady, [], 0).ms, 20 * minute)
+
+@test("a single outlier raises the deadline to half again it, until it leaves the window")
+outlier()
+  val runs = Vector.fill(10, 10 * minute) ++ [60 * minute]
+  assertEq(marshal.jobDeadline(learning, "test", false, [], runs, [], 0).ms, 90 * minute)
+  // twenty ordinary runs later it is forgotten
+  val gone = runs ++ Vector.fill(20, 10 * minute)
+  assertEq(marshal.jobDeadline(learning, "test", false, [], gone, [], 0).ms, 20 * minute)
+
+@test("a run its deadline stopped sets the next deadline at half again how long it ran")
+overrun()
+  val runs = [6 * minute, 6 * minute, 6 * minute]
+  assertEq(marshal.jobDeadline(learning, "test", false, [], runs, [], 0).ms, 12 * minute)
+  assertEq(
+    marshal.jobDeadline(learning, "test", false, [], runs, [], 12 * minute),
+    marshal.LearnedDeadline(18 * minute, "overrun")
+  )
+  // a deadline the runs give that is later already is kept
+  assertEq(
+    marshal.jobDeadline(learning, "test", false, [], runs, [], 4 * minute),
+    marshal.LearnedDeadline(12 * minute, "cmd+dir")
+  )
+  // with nothing learned, the default stands unless the stopped run asks for more
+  assertEq(marshal.jobDeadline(learning, "test", false, [], [], [], 45 * minute).ms, 135 * minute / 2)
+  assertEq(marshal.jobDeadline(learning, "test", false, [], [], [], minute).ms, 45 * minute)
+  assertEq(marshal.jobDeadline(learning, "x", false, [], [], [], long.MaxValue).ms, long.MaxValue)
+
+@test("the margin over the longest run is configurable, and a huge longest saturates")
+margin()
+  val tight = Learning(20, 3, 2, 0, 100)
+  assertEq(marshal.jobDeadline(tight, "test", false, [], [10, 10, 30], [], 0).ms, 30)
+  assertEq(marshal.jobDeadline(learning, "test", false, [], [1, 1, long.MaxValue], [], 0).ms, long.MaxValue)
 
 @test("a learned deadline is never below the floor")
 floor()

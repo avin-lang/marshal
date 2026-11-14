@@ -1842,3 +1842,58 @@ called `gate2.zsh`, each in a scratch directory of its own.
   reported job's 1 unit was that default (none of the `gate2.zsh` runs had cores learned), not a
   learned value. Urgency orders the queue; it does not size a job, and a job that knows it is big
   says so with `--units`, or learns it after its first measured run.
+
+## A learned deadline is never tight against a real run (branch `deadline-margin`)
+
+Reported by the nex session: job 3470, a `train` (`--test "sysl test . --jobs 4"`) in
+`/Users/ed/dev/sysl-lang/nex`, was stopped at its learned deadline of 13m11s after 13m17s, green and
+still running (591 passed). Its deadline came from the history key `train+landing`, the kind with its
+lane, which held the 19 successful trains in the log: 18 of nex (5m36s to 21m37s) and one 1.6s probe
+train in a scratch directory. Their median was 6m36s (395938 ms), and twice it, 791876 ms, was the
+deadline, below two of the runs the key itself held (12m58s and 21m37s). Durations had been learned
+per command since 0.3.5; deadlines were still learned per kind.
+
+- **A deadline is learned from the most particular runs there are**: the job's command in its
+  directory (`memoryDirKey`), else its command anywhere (`memoryKey`), else its kind
+  (`historyKey`), each only with at least `learn_min_runs` (3) of the last `learn_window` (20)
+  successful runs; else the kind's default. The command is the signature durations, memory and
+  cores are already learned under. Why: a kind covers work of every size (every train of every
+  repository, every `test`), so its median says little of one command; nex's trains would have
+  shared their key with every other repository's. Alternatives: the command only (a new command
+  would have only the default, 45 minutes or 2 hours, where its kind's runs say more); the median
+  window of durations, 5 (a deadline wants the longer memory: one slow run in 20 is a real one).
+- **The deadline is the later of twice the median and 1.5 times the longest recent run, never under
+  the floor.** Why: twice the median alone can sit below runs that really happened (job 3470's key
+  held one of 21m37s under a deadline of 13m11s), and a suite that grows by a few tests between
+  runs runs past its longest; 1.5 times the longest leaves half a run's room over anything seen. A
+  hung job is still stopped, at most 1.5 times its slowest real run. Alternatives: a percentile
+  (p90) times a factor (too few runs make p90 the longest anyway, and it forgets the run that most
+  needs room); 1.25 times the longest (too little for a suite that grew 30% since); 2 times the
+  longest (a single outlier would hold a hung job for twice the slowest run for 20 runs); a larger
+  factor on the median (it moves the deadline of every job, fast or slow, to fix the slow tail).
+  The margin is `Learning.marginPct` (150); it is not a setting in config.json until someone needs
+  one.
+- **A single outlier raises the deadline until it leaves the window.** A 60-minute run among
+  10-minute ones gives 90 minutes for the next 20 runs. Why: the outlier happened, and the cost of
+  a loose deadline (a hung run holds its units longer) is less than that of a tight one (a green
+  run is killed and its whole time is lost). Alternatives: discarding the longest run (that is the
+  run the deadline most needs to allow for).
+- **A run its deadline stopped is a lower bound: until the command next succeeds, its deadline is
+  at least 1.5 times how long that run ran.** It is kept per command key (in its directory and
+  anywhere), the longest such run since the key's last success, and a success clears it. The
+  daemon learns it as it stops a job, and a starting daemon recovers it from the event log's
+  `timeout` events, so memory.json is unchanged. A job retried after a timeout has its learned
+  deadline learned again, so its next attempt does not stop where the last one did; a given
+  `--deadline` (and a quick job's cap) is never changed. Why: a timeout says the work takes at
+  least that long; without it, a command that outgrew its history (a new suite with three short
+  runs that then doubles) would be stopped at the same point on every repeat until someone passed
+  `--deadline`. Alternatives: not adopting it (job 3470's own repeat would have passed with the
+  rest of this change, but the short-history case would not); counting the stopped run as a
+  successful one (it never finished, and its time would lower the median of a long command); a
+  fixed allowance over the stopped run (a deadline that grows by half on each repeat finds a long
+  suite's length in a few runs). The cost: a command that hangs every time is given half again as
+  long on each repeat until it succeeds; `--quiet-timeout` is what stops a hang early. A `quiet` stop is not counted: it says the job had
+  stopped writing, not that its work was long.
+- **`--deadline` overrides everything**, as before. `stats`' DEADLINE is still per kind: the
+  deadline a job of the kind gets while its command has too few runs of its own, now with the same
+  margin over the longest run.

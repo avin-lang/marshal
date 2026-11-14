@@ -114,7 +114,10 @@ Options of submit and run:
                     of the processors. Other jobs run while it waits for the load; after
                     config.json's load_wait (15m) it starts anyway, and its log says so
   --dir <d>         the directory to run it in, relative to this one (default: this one)
-  --deadline <t>    stop it after t: minutes, or 90s, 30m, 2h (default: learned for the kind)
+  --deadline <t>    stop it after t: minutes, or 90s, 30m, 2h (default: learned from the runs of
+                    what it runs, or of its kind while those are fewer than 3: twice their
+                    median or 1.5x the longest, whichever is later, at least 5m; and at least
+                    1.5x a run of it the deadline stopped, until it next succeeds)
   --quiet-timeout <t>
                     stop it, with a stack sample, once its log has had no new output for t, written
                     as --deadline writes one; time paused does not count (default: none; run-type

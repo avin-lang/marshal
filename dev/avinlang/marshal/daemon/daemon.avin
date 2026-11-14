@@ -134,7 +134,7 @@ class Job(
     var spec: JobSpec,
     val submittedMs: long,
     var arrived: long,
-    val deadlineMs: long,
+    var deadlineMs: long,
     var expectedMs: long,
     val log: string
 )
@@ -288,6 +288,9 @@ class Daemon(
   val cores = MutableMap[string, Buffer[long]]()
   // The run time of each job that exited 0, in milliseconds, by the same keys.
   val durations = MutableMap[string, Buffer[long]]()
+  // The longest a job ran before its deadline stopped it, by the same keys, since a job of the key
+  // last exited 0: its command takes at least that long.
+  val overruns = MutableMap[string, long]()
   // The processor use of every process on the machine, measured with the jobs'.
   var machineMeter = marshal.CpuMeter(Map(), 0, 0, 0, -1, -1, 0, false)
   // The least free space of the volumes of the home and the jobs' directories, -1 until measured,
@@ -382,10 +385,35 @@ class Daemon(
   // Remembers how long a successful job of `key` ran, for the estimates of the jobs after it.
   rememberDuration(key: string, ms: long) = if ms >= 0 then remember(durations, key, ms)
 
+  // The deadline a job of `s` is given when it names none: learned from its command's runs in its
+  // directory, or anywhere, or its kind's, and at least half again what a run its deadline stopped
+  // since its command last succeeded ran.
+  learnedDeadline(s: JobSpec) -> marshal.LearnedDeadline
+    val sig = marshal.commandSignature(s.cmd)
+    val dirKey = marshal.memoryDirKey(s.kind, s.landing, sig, s.dir)
+    val cmdKey = marshal.memoryKey(s.kind, s.landing, sig)
+    val overrun = if sig.isEmpty then 0 else overruns.get(dirKey).orElse(overruns.get(cmdKey)).getOrElse(0)
+    marshal.jobDeadline(
+      config.learning,
+      s.kind,
+      s.landing,
+      history(s),
+      if sig.isEmpty then [] else durationsOf(dirKey),
+      if sig.isEmpty then [] else durationsOf(cmdKey),
+      overrun
+    )
+
+  // Remembers that a job of `key` ran `ms` before its deadline stopped it.
+  rememberOverrun(key: string, ms: long)
+    if ms > overruns.get(key).getOrElse(0) then overruns(key) = ms
+
   // Learns how long a job that succeeded ran, under what it ran and in its directory; the jobs not
-  // started yet are estimated again, and what is learned is written to `memory.json`.
+  // started yet are estimated again, and what is learned is written to `memory.json`. A success
+  // ends what a run its deadline stopped said of the command.
   learnDuration(spec: JobSpec, ms: long)
-    for key in marshal.memoryKeys(spec.kind, spec.landing, spec.cmd, spec.dir) do rememberDuration(key, ms)
+    for key in marshal.memoryKeys(spec.kind, spec.landing, spec.cmd, spec.dir)
+      rememberDuration(key, ms)
+      overruns.remove(key)
     for j in queue ++ waitingJobs do estimate(j)
     saveMemory()
 
@@ -614,7 +642,7 @@ class Daemon(
         Ok(_) -> ()
     val past = history(spec)
     val deadline = if spec.quick then marshal.quickDeadlineMs(spec) else spec.deadlineMs.getOrElse(
-      marshal.deadlineMs(config.learning, spec.kind, spec.landing, past)
+      learnedDeadline(spec).ms
     )
     val id = nextId
     nextId += 1
@@ -733,6 +761,11 @@ class Daemon(
   // A job's attempt ended so: it is retried when it failed in a way another attempt may mend and
   // has attempts left, and otherwise it ends.
   attemptEnded(job: Job, outcome: Outcome, event: string)
+    // a run its deadline stopped took at least as long as it ran, which the next deadline allows for
+    if event == "timeout"
+      val ran = job.ran(now())
+      for key in marshal.memoryKeys(job.spec.kind, job.spec.landing, job.spec.cmd, job.spec.dir)
+        rememberOverrun(key, ran)
     if stopping || job.attempt > job.spec.retries || !marshal.retryable(outcome, job.killed)
       conclude(job, outcome, event)
       return
@@ -759,6 +792,8 @@ class Daemon(
     job.pgid = 0
     job.pausedMs = 0
     job.attempt += 1
+    // a learned deadline is learned again, so an attempt after a timeout is not stopped where it was
+    if !job.spec.quick && job.spec.deadlineMs.isEmpty then job.deadlineMs = learnedDeadline(job.spec).ms
     val delay = job.spec.retryDelayMs
     eprintln(
       s"marshal: job ${job.id} failed (exit ${marshal.exitCode(outcome)}): attempt ${job.attempt} of ${job.spec.retries + 1}" + (if delay > 0 then s" in ${marshal.formatMillis(delay)}" else "")
@@ -2143,6 +2178,8 @@ run(home: string, resume: Option[string] = None) -> int
     for c in cores do daemon.rememberCores(key, c)
   for (key, runs) in learned.durations
     for ms in runs do daemon.rememberDuration(key, ms)
+  // what a run its deadline stopped says of its command is the event log's alone
+  for (key, ms) in recovered.overruns do daemon.rememberOverrun(key, ms)
   if loaded.isErr || read.fromVersion1 || read.withoutDurations || read.staleScripts then daemon.saveMemory()
   // the free disk is known before the first job can start
   daemon.diskFree = marshal.diskFree(daemon.diskDirs()).getOrElse(-1)

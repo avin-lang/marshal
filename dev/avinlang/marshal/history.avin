@@ -145,8 +145,8 @@ private someIfAny(
 ) -> Option[long] = if xs.isEmpty then None else Some(f(xs))
 
 // The statistics of each history key among the jobs that match, in the order keys first ended. The
-// learned deadline is the one the daemon would give the next job of the key: learned from every
-// successful run in the log, whatever the filter.
+// learned deadline is the one the daemon would give the next job of the key whose command has too
+// few runs of its own: learned from every successful run of the key in the log, whatever the filter.
 kindStats(ledger: Ledger, f: HistoryFilter, learning: Learning = defaultLearning) -> Vector[KindStats]
   val order = Buffer[string]()
   val groups = MutableMap[string, Buffer[EndedJob]]()
