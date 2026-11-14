@@ -57,7 +57,6 @@ elapsedColumn(j: JobInfo, ms: long) -> string = if notRunYet(j) then "-" else fo
 // When a job started, as the STARTED column shows it: the local date and minute, `11-07 08:31`, in
 // `zone`; `-` for a job that has not started (queued, or cancelled before it ran).
 startedColumn(j: JobInfo, zone: time.Zone) -> string
-
 startedColumn(j, zone) = if j.startedAt <= 0 then "-" else time.epochMillis(j.startedAt).atZone(zone).format(
   "MM-DD hh:mm"
 )
@@ -83,10 +82,8 @@ whyText(Held) = "held"
 whyText(QueueHeld) = "queue held"
 whyText(QuickFull) = "quick lane full"
 whyText(Emptying) = "emptying"
-
 whyText(Load(load, limit, calmMs)) =
   if load >= limit then s"load ${loadText(load)} ≥ ${loadText(limit)}" else s"load ${loadText(load)} < ${loadText(limit)} for ${formatMillis(calmMs)}"
-
 whyText(ForExclusive(id)) = s"exclusive $id"
 
 // A job's state cell in `ls`: `stateColumn`, and for a job that is plainly `queued` and has a reason

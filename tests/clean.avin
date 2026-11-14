@@ -239,7 +239,7 @@ stepNames()
     s"build-$hex.building",
     s"build-${hex.dropRight(1)}",
     s"build$hex",
-    s"build-${hex.toUpperCase}",
+    s"build-${hex.toUpper}",
     s"build-${hex.dropRight(1)}g"
   ]
     assert(!marshal.isStepName(bad), bad)

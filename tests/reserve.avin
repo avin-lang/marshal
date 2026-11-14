@@ -6,17 +6,7 @@ import dev.avinlang.json
 import dev.avinlang.marshal
 
 import dev.avinlang.marshal.{
-  Budget,
-  JobInfo,
-  JobSpec,
-  MemoryHistory,
-  MemoryLearning,
-  Overview,
-  Reply,
-  Request,
-  Reservation,
-  Started,
-  Usage,
+  Budget, JobInfo, JobSpec, MemoryHistory, MemoryLearning, Overview, Reply, Request, Reservation, Started, Usage,
   Waiting
 }
 

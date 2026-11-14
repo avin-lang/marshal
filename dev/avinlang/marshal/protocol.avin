@@ -6,7 +6,7 @@ import dev.avinlang.json
 import dev.avinlang.json.Json
 
 // marshal's version, as `avin.hocon` gives it: what `marshal version` and `marshal restart` print.
-val Version: string = "0.3.2"
+val Version: string = "0.3.3"
 
 // What a job is to run and how much of the machine it takes. `urgent` queues it in its lane's urgent
 // band, behind the urgent jobs already queued and ahead of every other. `after` names the jobs it
@@ -307,47 +307,38 @@ encodeRequest(Kill(id)) = Json.obj(("op", Json.str("kill")), ("id", Json.num(id)
 encodeRequest(List) = Json.obj(("op", Json.str("ls")))
 encodeRequest(Status) = Json.obj(("op", Json.str("status")))
 encodeRequest(Snapshot) = Json.obj(("op", Json.str("snapshot")))
-
 encodeRequest(Stop(force, drain)) = Json.obj(
   ("op", Json.str("stop")),
   ("force", Json.Bool(force)),
   ("wait", Json.Bool(drain))
 )
-
 encodeRequest(Hello) = Json.obj(("op", Json.str("version")))
-
 encodeRequest(Restart(program)) = Json.Obj(
   [("op", Json.str("restart"))] ++ program.map(p -> [("program", Json.str(p))]).getOrElse([])
 )
-
 encodeRequest(Rerun(id)) = Json.obj(("op", Json.str("rerun")), ("id", Json.num(id)))
-
 encodeRequest(Clean(rule)) = Json.obj(
   ("op", Json.str("clean")),
   ("older_ms", rule.olderMs.map(n -> Json.num(n)).getOrElse(Json.Null)),
   ("keep", rule.keep.map(n -> Json.num(n)).getOrElse(Json.Null)),
   ("dry_run", Json.Bool(rule.dryRun))
 )
-
 encodeRequest(PauseQueue) = Json.obj(("op", Json.str("pause")))
 encodeRequest(ResumeQueue) = Json.obj(("op", Json.str("resume")))
 encodeRequest(PauseJob(id)) = Json.obj(("op", Json.str("pause")), ("id", Json.num(id)))
 encodeRequest(ResumeJob(id)) = Json.obj(("op", Json.str("resume")), ("id", Json.num(id)))
 encodeRequest(Hold(id)) = Json.obj(("op", Json.str("hold")), ("id", Json.num(id)))
 encodeRequest(Release(id)) = Json.obj(("op", Json.str("release")), ("id", Json.num(id)))
-
 encodeRequest(Prioritize(id, Level(n))) = Json.obj(
   ("op", Json.str("priority")),
   ("id", Json.num(id)),
   ("priority", Json.num(n))
 )
-
 encodeRequest(Prioritize(id, Urgent)) = Json.obj(
   ("op", Json.str("priority")),
   ("id", Json.num(id)),
   ("priority", Json.str("urgent"))
 )
-
 encodeRequest(Watch(source, _, mode, since, sinceId)) = Json.obj(
   ("op", Json.str("watch")),
   ("cond", Json.str(source)),
@@ -737,7 +728,6 @@ private withWhy(j: JobInfo, whys: Vector[(long, Why)]) -> Json = whys.find(w -> 
   None -> encodeJob(j)
 
 encodeReply(r: Reply) -> Json
-
 encodeReply(Submitted(id, log, hint)) = Json.Obj(
   [
     ("ok", Json.Bool(true)),
@@ -745,10 +735,8 @@ encodeReply(Submitted(id, log, hint)) = Json.Obj(
     ("log", Json.str(log))
   ] ++ (if hint.isEmpty then [] else [("hint", Json.str(hint))])
 )
-
 encodeReply(Ended(job)) = Json.obj(("ok", Json.Bool(true)), ("job", encodeJob(job)))
 encodeReply(Jobs(jobs)) = Json.obj(("ok", Json.Bool(true)), ("jobs", Json.Arr(jobs.map(encodeJob))))
-
 encodeReply(Using(u)) = Json.obj(
   ("ok", Json.Bool(true)),
   ("units", Json.num(u.units)),
@@ -766,15 +754,12 @@ encodeReply(Using(u)) = Json.obj(
   ("quick", Json.num(u.quick)),
   ("exclusive", u.exclusive.map(id -> Json.num(id)).getOrElse(Json.Null))
 )
-
 encodeReply(Viewed(o)) = Json.obj(("ok", Json.Bool(true)), ("snapshot", encodeOverview(o)))
-
 encodeReply(Hi(version, pid)) = Json.obj(
   ("ok", Json.Bool(true)),
   ("version", Json.str(version)),
   ("pid", Json.num(pid))
 )
-
 encodeReply(Streamed(event)) = Json.obj(("ok", Json.Bool(true)), ("event", event))
 encodeReply(Replayed(events)) = Json.obj(("ok", Json.Bool(true)), ("events", Json.Arr(events)))
 encodeReply(Cleaned(report)) = Json.obj(("ok", Json.Bool(true)), ("cleaned", encodeReport(report)))
@@ -856,13 +841,11 @@ private whyId(why: Why) -> Vector[(string, Json)]
 whyId(Behind(id)) = [("behind", Json.num(id))]
 whyId(DrainingFor(id)) = [("draining_for", Json.num(id))]
 whyId(ForExclusive(id)) = [("exclusive_id", Json.num(id))]
-
 whyId(Load(load, limit, calmMs)) = [
   ("load", Json.num(load)),
   ("load_limit", Json.num(limit)),
   ("calm_ms", Json.num(calmMs))
 ]
-
 whyId(_) = Vector[(string, Json)]()
 
 private encodeQueued(q: QueuedJob) -> Json =

@@ -10,47 +10,9 @@ import dev.avinlang.marshal.{NoUnits, NoMemory, LaneBusy, Draining, ForTakeSlot,
 import dev.avinlang.marshal.{Exited, Signalled, TimedOut, Cancelled, Lost, DependencyFailed, Quiet}
 
 import dev.avinlang.tui.{
-  Black,
-  Blue,
-  Bold,
-  BrightBlack,
-  Char,
-  Column,
-  Ctrl,
-  Cyan,
-  Dim,
-  Down,
-  End,
-  Enter,
-  Escape,
-  Event,
-  Fill,
-  Fixed,
-  Green,
-  Grid,
-  Home,
-  Key,
-  KeyPress,
-  Magenta,
-  Modal,
-  ModalStack,
-  PageDown,
-  PageUp,
-  Rect,
-  Red,
-  Reverse,
-  Rounded,
-  Scrollbar,
-  ScrollView,
-  Segment,
-  Span,
-  Stop,
-  Style,
-  Table,
-  Up,
-  Yellow,
-  textWidth,
-  wrapChars
+  Black, Blue, Bold, BrightBlack, Char, Column, Ctrl, Cyan, Dim, Down, End, Enter, Escape, Event, Fill, Fixed, Green,
+  Grid, Home, Key, KeyPress, Magenta, Modal, ModalStack, PageDown, PageUp, Rect, Red, Reverse, Rounded, Scrollbar,
+  ScrollView, Segment, Span, Stop, Style, Table, Up, Yellow, textWidth, wrapChars
 }
 
 // Which jobs the table lists.
@@ -135,7 +97,6 @@ timeLeft(j: JobInfo, since: long) -> long = j.deadlineMs - j.elapsedMs - (if j.p
 // The style of a running job's time left out of `deadline`: red under a tenth of it or a minute,
 // yellow under a quarter or five minutes, plain otherwise.
 leftStyle(left: long, deadline: long) -> Style
-
 leftStyle(left, deadline)
   | left * 10 < deadline || left < 60000 = Style.fg(Red).with(Bold)
   | left * 4 < deadline || left < 300000 = Style.fg(Yellow)

@@ -36,18 +36,7 @@ import dev.avinlang.json.Json
 import dev.avinlang.marshal
 
 import dev.avinlang.marshal.{
-  Config,
-  JobInfo,
-  JobSpec,
-  Outcome,
-  Outside,
-  Reply,
-  Request,
-  Started,
-  TakeSlot,
-  TakeSlotUse,
-  Usage,
-  Waiting
+  Config, JobInfo, JobSpec, Outcome, Outside, Reply, Request, Started, TakeSlot, TakeSlotUse, Usage, Waiting
 }
 
 import dev.avinlang.marshal.{Submit, Wait, Kill, Status, Stop, Rerun, Clean, Cleaned}
@@ -57,17 +46,7 @@ import dev.avinlang.marshal.{Cancelled, DependencyFailed, TimedOut}
 import dev.avinlang.marshal.Resident
 
 import dev.avinlang.marshal.{
-  Condition,
-  Mode,
-  IsIdle,
-  JobsEnded,
-  Matching,
-  Once,
-  Past,
-  Follow,
-  Watch,
-  Streamed,
-  Replayed
+  Condition, Mode, IsIdle, JobsEnded, Matching, Once, Past, Follow, Watch, Streamed, Replayed
 }
 
 // `Written` follows each reply the daemon gave, once its connection has written it. `Due` and

@@ -60,19 +60,8 @@ readConfig(text: string, machineMemory: long) -> Result[Config, string]
   if j.asMembers.isEmpty then return Err("config.json holds an object")
   for key in j.keys
     if ![
-      "units",
-      "memory",
-      "reserve",
-      "deadline_floor",
-      "learn_window",
-      "learn_min_runs",
-      "take_slot",
-      "keep_logs",
-      "keep_jobs",
-      "keep_events",
-      "keep_steps",
-      "drain_after",
-      "load_wait"
+      "units", "memory", "reserve", "deadline_floor", "learn_window", "learn_min_runs", "take_slot", "keep_logs",
+      "keep_jobs", "keep_events", "keep_steps", "drain_after", "load_wait"
     ].contains(key)
       return Err(s"config.json: no setting `$key`")
   val units = whole(j, "units", 12)?

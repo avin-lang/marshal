@@ -6,31 +6,11 @@ import avin.collections.mutable.{Set as MutableSet}
 import dev.avinlang.marshal
 
 import dev.avinlang.marshal.{
-  AnyExit,
-  Codes,
-  Exits,
-  Fail,
-  PassEnd,
-  PassResult,
-  RunReport,
-  Said,
-  Step,
-  StepEnd,
-  StepOutcome
+  AnyExit, Codes, Exits, Fail, PassEnd, PassResult, RunReport, Said, Step, StepEnd, StepOutcome
 }
 
 import dev.avinlang.marshal.{
-  StepSaid,
-  ExitSaid,
-  HeadSaid,
-  FailSaid,
-  ResultSaid,
-  StepSkipped,
-  StepPassed,
-  StepFailed,
-  Green,
-  Red,
-  Stopped
+  StepSaid, ExitSaid, HeadSaid, FailSaid, ResultSaid, StepSkipped, StepPassed, StepFailed, Green, Red, Stopped
 }
 
 said(line: string) -> Said = marshal.readSaid(line) match
