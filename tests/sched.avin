@@ -397,3 +397,14 @@ whyAgreesWithSchedule()
   for (r, q, o) in cases
     val starting = why(r, q, o).filter(w -> w.2 == Starting).map(w -> w.0).sorted
     assertEq(starting, marshal.schedule(budget, r, q, 0, o).sorted)
+
+@test("a landing, exclusive or urgent job is started without nice; a development or quick job under nice 15")
+niceLevels()
+  // landing, exclusive and urgent, however the rest is set
+  assertEq(marshal.niceFor(true, false, false), 0)
+  assertEq(marshal.niceFor(false, true, false), 0)
+  assertEq(marshal.niceFor(false, false, true), 0)
+  assertEq(marshal.niceFor(true, true, true), 0)
+  // a development job, and a quick one (neither landing, exclusive nor urgent)
+  assertEq(marshal.niceFor(false, false, false), 15)
+  assertEq(marshal.DevelopmentNice, 15)

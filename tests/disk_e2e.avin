@@ -82,7 +82,7 @@ etaLearned()
   val home = newHome("{\"units\": 1}")
   assertEq(m(home, "run", "--units", "1", "--", "sleep", "2").code, 0)
   val text = fs.readText(home + "/memory.json").ok.get
-  assert(text.contains("\"version\":3") && text.contains("\"durations\":{") && text.contains("sleep"), text)
+  assert(text.contains("\"version\":4") && text.contains("\"durations\":{") && text.contains("sleep"), text)
   val first = submitted(home, "--units", "1", "--", "sleep", "20")
   assert(within(10000, () -> started(home, first)), "it starts")
   val next = submitted(home, "--units", "1", "--", "sleep", "20")
@@ -101,7 +101,7 @@ etaLearned()
   cleanUp(home)
 
 @test(
-  "a version 2 memory.json keeps its peaks and cores, learns its durations from the event log and is written as version 3"
+  "a version 2 memory.json keeps its peaks and cores, learns its durations from the event log and is written as version 4"
 )
 memoryVersion2()
   val home = newHome()
@@ -118,7 +118,7 @@ memoryVersion2()
   val id = submitted(home, "--kind", "v", "--", "sleep", "30")
   assertEq(statusJob(home, id).get("duration_from").flatMap(v -> v.asString), Some("cmd+dir"))
   val again = json.parse(fs.readText(home + "/memory.json").ok.get).ok.get
-  assertEq(again("version").asLong, Some(3))
+  assertEq(again("version").asLong, Some(4))
   assertEq(again("peaks"), peaks)
   assertEq(again("cores"), cores)
   assert(again("durations").asMembers.exists(ms -> ms.nonEmpty), again.render)

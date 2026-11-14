@@ -131,6 +131,31 @@ header()
   assertEq(g(7 + 25, 1).style.fg, BrightBlack)
   assert(g.rowText(2).contains("] 1G / 4G"), g.rowText(2))
 
+@test("the header names the daemon's version after marshal, and top's too when they differ")
+headerVersions()
+  val o = Overview(Usage(0, 48, 0, long.MaxValue, 0, 0, None, None), 0, [], [], [])
+  val mine = marshal.Version
+  // not asked yet: the header is as it was
+  val unasked = viewing(o)
+  assert(drawn(unasked, 100, 10).rowText(0).startsWith("marshal  up"), drawn(unasked, 100, 10).rowText(0))
+  // the same version: one number, no hint
+  val same = viewing(o)
+  same.daemonVersion = Some(mine)
+  val sameRow = drawn(same, 100, 10).rowText(0)
+  assert(sameRow.startsWith(s"marshal $mine  up"), sameRow)
+  assert(!sameRow.contains("restart"), sameRow)
+  // another version: both, with the hint
+  val differ = viewing(o)
+  differ.daemonVersion = Some("9.9.9")
+  val differRow = drawn(differ, 100, 10).rowText(0)
+  assert(differRow.startsWith(s"marshal 9.9.9 (top $mine, restart top)  up"), differRow)
+  // a daemon too old to say: a question mark, top's own version, no hint
+  val old = viewing(o)
+  old.daemonVersion = Some("?")
+  val oldRow = drawn(old, 100, 10).rowText(0)
+  assert(oldRow.startsWith(s"marshal ? (top $mine)  up"), oldRow)
+  assert(!oldRow.contains("restart"), oldRow)
+
 @test("the header says when the lane is free or take-slot's, and when nothing is shared with take-slot")
 headerLane()
   val free = Overview(Usage(0, 48, 0, long.MaxValue, 0, 0, None, None), 0, [], [], [])
