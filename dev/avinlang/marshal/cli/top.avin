@@ -12,7 +12,7 @@ import avin.time
 import avin.time.millis
 import dev.avinlang.marshal
 import dev.avinlang.marshal.Request
-import dev.avinlang.marshal.{Viewed, Failed, Done}
+import dev.avinlang.marshal.{Viewed, Failed, Done, Hi}
 import dev.avinlang.marshal.top.{App, KillJob, Quit, StartDaemon, Stay, logHistory}
 import dev.avinlang.tui
 import dev.avinlang.tui.Terminal
@@ -76,7 +76,11 @@ look(app: App, conn: Option[UnixStream], sock: string) -> Option[UnixStream]
   val c = conn match
     Some(c) -> c
     None -> UnixStream.connect(sock) match
-      Ok(c) -> c
+      Ok(c) ->
+        app.daemonVersion = Some(ask(c, Request.Hello) match
+          Ok(Hi(v, _)) -> v
+          _ -> "?")
+        c
       Err(e) ->
         app.lost(s"no daemon at $sock (${e.message})", true)
         return None

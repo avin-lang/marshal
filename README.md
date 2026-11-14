@@ -42,7 +42,9 @@ marshal: job 1 exited 0 after 2m12s; log /Users/me/.marshal/jobs/1.log
 
 The first command starts the daemon. `marshal run` waits and exits with the job's own status;
 `marshal submit` queues the job and prints its id, for `marshal wait <id>` later. `marshal top`
-shows what runs and waits, live.
+shows what runs and waits, live. Its header gives the daemon's version after the name (`marshal 0.3.6`);
+when the top you are running is another version it adds it in yellow with a hint,
+`marshal 0.3.6 (top 0.3.5, restart top)`, and `marshal ?` stands for a daemon too old to say.
 
 ## A first train
 

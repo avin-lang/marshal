@@ -303,6 +303,8 @@ revealsOnly(_) = false
 class App(val sock: string)
   var overview: Option[Overview] = None
   var problem: Option[string] = None
+  // The version the daemon reports, "?" for one too old to say; None until it has been asked.
+  var daemonVersion: Option[string] = None
   // Whether `s` may start a daemon: there is none.
   var noDaemon = false
   var filter: Filter = ShowAll
@@ -567,7 +569,7 @@ class App(val sock: string)
     if overview is Some(o)
       // the header, the body, and the bottom line; with the log open, the table takes half the
       // body (at least two rows) and the pane the rest
-      val screen = g.area().rows([Fixed(drawHeader(g, o, since, filter, owner)), Fill(), Fixed(1)])
+      val screen = g.area().rows([Fixed(drawHeader(g, o, since, filter, owner, daemonVersion)), Fill(), Fixed(1)])
       val body = screen(1)
       val parts = body.rows([Fixed(if logOf.isDefined then maxInt(body.h / 2, 2) else body.h), Fill()])
       val area = parts(0)
@@ -780,19 +782,39 @@ val helpLines: Vector[string] = [
   "OWNER who it is for; disk low: under disk_min, nothing starts."
 ]
 
+// What follows the name: nothing before the daemon has said its version; its version alone while
+// this top is the same; and both, the top's in yellow with a hint to restart it, when they differ.
+// A daemon too old to say ("?") shows both plainly, since the hint would not be known to hold.
+versionSpans(daemon: Option[string]) -> Vector[Span]
+  daemon match
+    None -> []
+    Some(v) if v == marshal.Version -> [Span(s" $v")]
+    Some("?") -> [Span(s" ? (top ${marshal.Version})")]
+    Some(v) -> [
+      Span(s" $v ("),
+      Span(s"top ${marshal.Version}, restart top", Some(Style.fg(Yellow))),
+      Span(")")
+    ]
+
 // The header, four lines and a blank one, and the first row under it.
 //   marshal  up 1:02:03   3 running  2 queued   landing: job 7            filter: all
 //   units [██████▒▒▒·······]  5 + take-slot 4 / 12, 1 waiting
 //   mem   [███·············]  12G / 56G   rss 9.4G   machine 64G
 //   cpu   [████▒▒··········]  5.2 jobs + 3.1 other / 12   disk 120G free
-drawHeader(g: Grid, o: Overview, since: long, f: Filter, owner: Option[string] = None) -> int
+drawHeader(
+  g: Grid,
+  o: Overview,
+  since: long,
+  f: Filter,
+  owner: Option[string] = None,
+  daemon: Option[string] = None
+) -> int
   val u = o.usage
   val held = if u.queueHeld then [Span(" (held)", Some(Style.fg(Red).with(Bold)))] else []
   g.spans(
     0,
     0,
-    [
-      Span("marshal", Some(Style.plain().with(Bold))),
+    [Span("marshal", Some(Style.plain().with(Bold)))] ++ versionSpans(daemon) ++ [
       Span(s"  up ${clock(o.uptimeMs + since)}   "),
       Span(s"${u.running} running", Some(Style.fg(Green))),
       Span("  "),
