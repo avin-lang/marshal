@@ -1725,3 +1725,82 @@ load that marshal's own work was not making, and nothing bounded that wait.
   core count (a number would no longer mean what `uptime` shows); making `auto` the default for
   every exclusive job (a benchmark that never asked for a quiet load would start to wait for one).
   `$MARSHAL_TEST_NCPU` stands in for the count in the tests.
+
+## Memory learned per command, adapting, and kept in memory.json (branch `mem-learning`)
+
+**The user's direction, 2026-11-13**, given in three steps while this was built: *"the amount of
+memory that a job needs should be tied more specifically to which kind of job it is. it can't be
+something generic like 'test'"*; *"it should also be able to adapt to changes in memory
+requirements"*; *"the information shouldn't just be stored in memory. it needs to be persisted"*.
+Found when the machine ran one job at a time: nearly every queued job reserved about 37G of a 56G
+budget. Kind `build` covered compiler gates and trains peaking at 33G, run from a fresh scratch or
+worktree directory each time, so almost every job fell back from its (empty) directory to the kind's
+history, and the kind's maximum was the heaviest gate anyone had run lately. A 1-unit build and a
+plugin build each inherited it. This replaces the per-kind and per-directory rules of `mem-per-dir`
+and `mem-admission` where they differ; the margin, the hold to the budget, `--mem` and admission by
+max(reservation, measured) are unchanged.
+
+- **Learned memory is keyed by what the job runs: kind, lane and command signature, refined by
+  directory.** The signature is the program's basename, then its subcommand and its target (the
+  first two later words that are not options or numbers, each as its last path component):
+  `sysl test compiler` and `sysl test .` are different work, and worktrees of one repository share.
+  A shell is its script's name (`zsh gate.zsh`), without arguments, which in a train are branch
+  names that change every run. A `-c` is the command it runs, past `cd`/`export` steps. Wrappers
+  (`env`, `nice`, `caffeinate`, `nohup`, `time`, `timeout`, `sudo`, `exec`, `command`) and
+  `NAME=value` settings are passed over. Lookup: the signature in the job's directory (`cmd+dir`)
+  once it has a run there, else the signature anywhere (`cmd`), else nothing. Why: the user's
+  first direction, and the data. The heavy jobs were declared as 1 unit (shell scripts that run a
+  suite at `--jobs 4` inside), so the per-unit scaling the director first proposed would have given
+  a 1-unit build 33.8G per unit: still poisoned. The kind stays in the key so a landing gate learns
+  apart from a development run of the same command, and two kinds that happen to share a command
+  (`avin-gate`, `test`) never teach each other. Alternatives: the whole command line (an argument
+  that changes every run, such as a branch or a file list, would never learn); the kind with
+  per-unit scaling (above); finer kinds (every caller has to choose well, and kinds also key
+  deadlines and `stats`).
+- **No fallback to the kind, and a command never seen reserves 0.** The user's direction. Admission
+  counts a running job at max(reservation, measured RSS), so a first run that grows holds back every
+  later start as soon as it is measured (once a second). What that does not cover is several new
+  heavy commands admitted in the same moment, before any of them is measured. A small fixed default
+  was weighed for this and rejected: a default small enough not to recreate the collapse (2–4G)
+  does not stop two 33G gates starting together, and one large enough to (16G+) is the collapse
+  again. The remedy is the caller's, and the README's "Using marshal well" now says it: give `--mem`
+  on the first run of new heavy work, and keep recurring script names stable. One run is enough to
+  learn from (`minRuns` 1, was 2): with a specific key one run says what the work needs, and waiting
+  for a second would leave the second run unreserved too.
+- **The estimate is the most of the last 5 peaks plus 10% (window 10 before).** This is the user's
+  second direction: it must follow the work up and down. Up at once: the newest peak is always in
+  the window, so the next reservation is at least that peak plus the margin. When a peak is learned,
+  every job still queued or waiting reserves again, so queued jobs of that command take the higher
+  figure before they start (the reservation was fixed at submit before). Down steadily: once the
+  work needs less, the old peaks leave the window one run at a time and the reservation reaches the
+  new level on the 5th run; one spike is forgotten the same way. No thrashing: work that varies
+  run to run reserves the top of its last 5 runs, which covers its range and changes only when that
+  top leaves the window. In a test of fifteen peaks wandering between 8G and 10G, the reservation
+  changes once. A job running above its reservation is still counted at what it measures.
+  Alternatives: a decaying maximum (est = max(peak, est × d)) moves on every run while the peaks
+  are noisy, which is the thrashing the user ruled out; the second-highest of a longer window
+  forgets a spike sooner but follows a real step down more slowly, and is harder to explain; an
+  exponentially weighted mean or percentile under-reserves the run that matters, and memory, unlike
+  time, costs every job on the machine when it runs short.
+- **The learned peaks are kept in `<home>/memory.json`, written after every job that ends.** This is
+  the user's third direction. Format: `{"version": 1, "peaks": {"<key>": [bytes...]}}`, the last 20
+  peaks of each key, oldest first (more than the window, so a later wider window has history). The
+  write goes to a temporary file whose name holds the pid and a per-process counter, then a rename,
+  so two writers never share a temporary file, and a reader sees one whole write or another, never
+  a mixture. The daemon writes from its own loop, so its writes are also in order. At startup the
+  daemon reads it. A missing, unreadable or other-version file (older or newer) is set aside with a
+  line on stderr, and the peaks are learned again from `events.jsonl` and written at once. Why a
+  file of its own: the event log is trimmed by `marshal clean` and the daemon's sweep (`keep_events`,
+  365 days by default), so a command run only now and then would lose what it taught. Replaying a
+  large log also costs time at every start, and the log's peaks are keyed by whatever the code of
+  the day derives. Alternatives: only the event log (the trimming); keeping the model in
+  `state.json` (that file is only for handing over across `restart` and is removed after);
+  rewriting the file on a timer (a crash would lose the last few jobs' peaks for no saving that
+  matters, since a job ends at most a few times a minute).
+- **Old events still teach.** Every ending event already records `cmd` and `dir`, so the signature
+  of a log written before this change is derived from the recorded command. An event without a
+  command, which no marshal ever wrote, teaches nothing; one without a directory teaches its
+  command only.
+- **`resv_from` says `cmd+dir`, `cmd`, `given` or `none`**, and `ls`/`top` keep `~` for a learned
+  reservation. A state saved by an earlier daemon, mid-restart, keeps the `kind+dir` or `kind` it
+  recorded until its job ends, so readers accept both old words.

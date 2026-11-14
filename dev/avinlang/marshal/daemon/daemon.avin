@@ -311,30 +311,57 @@ class Daemon(
   // The peaks of the jobs of `key`, oldest first.
   peaksOf(key: string) -> Vector[long] = peaks.get(key).map(b -> b.toVector).getOrElse([])
 
-  // Gives `job` its reservation: the memory it gave, or the peak learned in its directory, or of
-  // its kind while its directory has too few.
+  // Gives `job` its reservation: the memory it gave, or the peak learned of what it runs in its
+  // directory, or of what it runs anywhere while its directory has too few.
   reserve(job: Job)
     val s = job.spec
     val learning = marshal.defaultMemoryLearning
+    val sig = marshal.commandSignature(s.cmd)
     val h = marshal.memoryHistory(
       learning,
-      peaksOf(marshal.memoryDirKey(s.kind, s.landing, s.dir)),
-      peaksOf(marshal.historyKey(s.kind, s.landing))
+      if sig.isEmpty then [] else peaksOf(marshal.memoryDirKey(s.kind, s.landing, sig, s.dir)),
+      if sig.isEmpty then [] else peaksOf(marshal.memoryKey(s.kind, s.landing, sig))
     )
     val r = marshal.reservationFor(learning, s.memory, s.memoryGiven, h.peaks, config.budget.memory)
     job.reserved = r.bytes
     job.learnedMem = r.learned
     job.reservedFrom = marshal.reservationSource(s.memory, s.memoryGiven, r, h.from)
 
-  // Remembers the peak a job of `key` reached, for the reservations of the jobs after it.
+  // Remembers the peak a job of `key` reached, for the reservations of the jobs after it. Only the
+  // last `MemoryKept` are kept: the estimate reads fewer.
   rememberPeak(key: string, peak: long)
     if peak <= 0 then return
     peaks.get(key) match
-      Some(b) -> b += peak
+      Some(b) ->
+        b += peak
+        if b.length > marshal.MemoryKept then b.remove(0)
       None ->
         val b = Buffer[long]()
         b += peak
         peaks(key) = b
+
+  // Learns the peak of a job that has ended: under what it ran, and in its directory; then the jobs
+  // still waiting to start reserve again, so a peak above what they reserved raises theirs at once,
+  // and the learned peaks are written to `memory.json`.
+  learnPeak(spec: JobSpec, peak: long)
+    if peak <= 0 then return
+    for key in marshal.memoryKeys(spec.kind, spec.landing, spec.cmd, spec.dir) do rememberPeak(key, peak)
+    reserveAgain()
+    saveMemory()
+
+  // Every job that has not started and gave no memory reserves again from what is learned now; a
+  // running job keeps its reservation (admission counts what it measures beyond), and a given
+  // memory stays given.
+  reserveAgain()
+    for j in queue ++ waitingJobs do if !j.spec.memoryGiven && j.spec.memory == 0 then reserve(j)
+
+  // Writes the learned peaks to `<home>/memory.json`; a file that cannot be written is said, and the
+  // peaks stay learned in the daemon and in the event log.
+  saveMemory()
+    val all = peaks.keys.map(k -> (k, peaks(k).toVector)).toMap
+    marshal.saveMemory(home + "/memory.json", all) match
+      Ok(_) -> ()
+      Err(e) -> eprintln(s"marshal: cannot write $home/memory.json: ${e.message}")
 
   // What admission counts a running job as holding; an external job's tree is not what it uses, so
   // it holds its reservation whatever its tree measures.
@@ -1086,9 +1113,7 @@ class Daemon(
   offMachine(job: Job)
     running.remove(running.indexOf(job))
     // an external job's tree is not where its work ran, so its peak teaches nothing
-    if !job.spec.external
-      rememberPeak(marshal.historyKey(job.spec.kind, job.spec.landing), job.resident.peak)
-      rememberPeak(marshal.memoryDirKey(job.spec.kind, job.spec.landing, job.spec.dir), job.resident.peak)
+    if !job.spec.external then learnPeak(job.spec, job.resident.peak)
     val pid = job.pid
     if pid > 0 then slots.foreach(ts -> if job.spec.landing then ts.releaseLanding(pid) else ts.unregister(pid))
 
@@ -1628,6 +1653,8 @@ class Daemon(
       if job.state == "retrying" then job.retryAt = mono(sj.retryAt)
       waitingJobs += job
       job)
+    // the jobs that have not started reserve under this image's rules and what it has learned
+    reserveAgain()
     // an exclusive job waiting for the load to settle waits a whole window again: the calm the
     // old image saw is not carried over
     val settling = (queue.toVector ++ waits).filter(j -> j.spec.quietLoad > 0.0)
@@ -1875,8 +1902,16 @@ run(home: string, resume: Option[string] = None) -> int
     ).filter(r -> r.isOk).map(r -> marshal.asLost(r.ok.get))
   ).sortBy(j -> j.id).takeRight(Recent)
   val daemon = Daemon(home, config, events, recovered.nextId, histories, slots, earlier, machine)
-  for (key, peaks) in recovered.peaks
+  // the learned peaks are memory.json's; where it is missing, unreadable or of another version,
+  // they are learned again from the event log and written there at once
+  val memoryFile = home + "/memory.json"
+  val loaded = marshal.loadMemory(memoryFile)
+  loaded.err.foreach(
+    why -> if fs.exists(memoryFile) then eprintln(s"marshal: $memoryFile $why; learning again from the event log")
+  )
+  for (key, peaks) in loaded.getOrElse(recovered.peaks)
     for p in peaks do daemon.rememberPeak(key, p)
+  if loaded.isErr then daemon.saveMemory()
   for s in saved
     daemon.restore(s)
     val upgrade = if s.version == reportedVersion() then s"version ${s.version}" else s"version ${s.version} to ${reportedVersion()}"

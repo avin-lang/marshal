@@ -14,13 +14,14 @@ import dev.avinlang.json.Json
 // long a running job's earlier pauses lasted and `pausedAt` when its current pause began (wall
 // clock, milliseconds; 0 while it is not paused), 0 when absent. `attempt` counts its runs from 1
 // (1 when absent), and `retryAt` is when a job waiting to retry queues again (0 otherwise).
-// `reserved` is the memory the scheduler counts for it and `reservedLearned` whether its kind's
-// peaks taught it; a state saved without them reads as -1 and false, and the new image learns the
+// `reserved` is the memory the scheduler counts for it and `reservedLearned` whether learned peaks
+// taught it; a state saved without them reads as -1 and false, and the new image learns the
 // reservation again. `quietStopped` says a job being stopped (`timedOut`) is stopped for its quiet
 // timeout rather than its deadline; false when absent. The quiet timeout itself is the spec's, and
 // its clock is not saved: the new image starts every running job's again. `reservedFrom` is where
 // the reservation came from (`reservationSource`); "" when absent, and the new image works it out
-// from `reserved` and `reservedLearned`, a learned one being its kind's. `durationLearned` says
+// from `reserved` and `reservedLearned`, a learned one being its kind's (`kind`, as daemons learned
+// before reservations were learned per command). `durationLearned` says
 // `expectedMs` was learned from its kind's runs rather than guessed; false when absent, so a drain
 // counts such a job by its deadline.
 data SavedJob(

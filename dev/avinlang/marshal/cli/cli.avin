@@ -88,9 +88,9 @@ val Options: string = """
 Options of submit and run:
   --kind <k>        what the job is, for learning its deadline (default: test when a word of the command is `test`, else build)
   --units <n>       its weight in units (default: 4 for a test, 1 otherwise)
-  --mem <size>      the memory it needs, such as 29G or 512M (default: its kind's learned
-                    peak in its --dir, or the kind's while that dir has under two measured
-                    runs, ~ in RESV; 0 until two runs were measured; --mem 0 reserves none)
+  --mem <size>      the memory it needs, such as 29G or 512M (default: the learned peak of
+                    what it runs, such as `sysl test compiler` or `zsh gate.zsh`, in its --dir
+                    or anywhere, ~ in RESV; 0 until it has run once; --mem 0 reserves none)
   --external       its work runs outside its own processes (docker run, a VM, sudo to another
                     account's daemon): it reserves exactly --mem, which it must give, and its
                     measured peak is never learned (@ in RESV)

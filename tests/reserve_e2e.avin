@@ -1,19 +1,23 @@
 module tests
 
-// End to end, reservations learned from a kind's peaks: an event log seeded with what earlier jobs
-// of a kind peaked at makes the next ones of that kind reserve it, so two big ones do not run
+// End to end, reservations learned from the peaks of a command's runs: an event log seeded with
+// what earlier jobs of a kind running a command peaked at makes the next ones reserve it, so two big ones do not run
 // together while two small ones do; `--mem 0` opts out; a kind that peaked above the whole budget
 // still runs, alone; and the learned reservation shows in `ls` and `status --json` and survives
 // `marshal restart`. The helpers are e2e.avin's and together_e2e.avin's.
 import avin.fs
+import avin.process
+import avin.time
 import dev.avinlang.json
 import dev.avinlang.json.Json
+import dev.avinlang.marshal
 
 val Mi: long = 1024 * 1024
 
-// An ending event of job `id`, of `kind`, that peaked at `peak` bytes.
+// An ending event of job `id`, of `kind`, running `sleep` (as the tests' jobs do), that peaked at
+// `peak` bytes. It ended now, so no retention sweep of a daemon the test starts removes it.
 peakLine(id: long, kind: string, peak: long, event: string = "finished", exit: int = 0) -> string =
-  s"{\"ts\":1762000000000,\"event\":\"$event\",\"id\":$id,\"kind\":\"$kind\",\"landing\":false,\"exit\":$exit,\"run_ms\":1000,\"peak_rss\":$peak}"
+  s"{\"ts\":${time.now().epochMillis},\"event\":\"$event\",\"id\":$id,\"kind\":\"$kind\",\"landing\":false,\"cmd\":[\"sleep\",\"1\"],\"exit\":$exit,\"run_ms\":1000,\"peak_rss\":$peak}"
 
 // A home with a 1G memory budget whose event log already holds two jobs of `big` that peaked at
 // 600M, two of `small` at 100M, and two of `huge` at 2G, one of them a failure.
@@ -114,15 +118,16 @@ learnedAcrossRestart()
   assertEq(m(home, "stop", "--force").code, 0)
   cleanUp(home)
 
-// An ending event of job `id`, of kind `test`, run in `dir`, that peaked at `peak` bytes.
+// An ending event of job `id`, of kind `test` running `sleep`, run in `dir`, that peaked at `peak`
+// bytes.
 dirPeakLine(id: long, dir: string, peak: long) -> string =
-  s"{\"ts\":1762000000000,\"event\":\"finished\",\"id\":$id,\"kind\":\"test\",\"landing\":false,\"dir\":\"$dir\",\"exit\":0,\"run_ms\":1000,\"peak_rss\":$peak}"
+  s"{\"ts\":${time.now().epochMillis},\"event\":\"finished\",\"id\":$id,\"kind\":\"test\",\"landing\":false,\"dir\":\"$dir\",\"cmd\":[\"sleep\",\"1\"],\"exit\":0,\"run_ms\":1000,\"peak_rss\":$peak}"
 
-// A home with a 1G budget whose log holds `test` jobs of three directories: `big` peaked at 600M
-// twice, `small` at 100M twice, and `once` at 50M once.
+// A home with a 1G budget whose log holds `test` jobs running `sleep` in three directories: `big`
+// peaked at 600M twice, `small` at 100M twice, and `once` at 50M once.
 dirSeededHome() -> string
   val home = newHome("{\"memory\": \"1G\"}")
-  for d in ["big", "small", "once", "fresh"] do fs.createDir(home + "/" + d).ok.get
+  for d in ["big", "small", "once", "fresh", "new"] do fs.createDir(home + "/" + d).ok.get
   val lines = [
     dirPeakLine(1, home + "/big", 600 * Mi),
     dirPeakLine(2, home + "/small", 100 * Mi),
@@ -134,7 +139,7 @@ dirSeededHome() -> string
   home
 
 @test(
-  "two directories of one kind learn separately; one with fewer than two peaks falls back to the kind's; --mem overrides both"
+  "a command learns per directory once it has run there, and from every directory before; --mem overrides both"
 )
 learnedPerDir()
   val home = dirSeededHome()
@@ -149,36 +154,43 @@ learnedPerDir()
     val j = statusJob(home, id)
     (j("resv").asLong.get, j("resv_learned").asBool.get, j("resv_from").asString.get)
   // 600M and 100M, each with a tenth more, rounded up to a mebibyte
-  assertEq(resv(big), (660 * Mi, true, "kind+dir"))
-  assertEq(resv(small), (110 * Mi, true, "kind+dir"))
-  // one peak, or none, in the directory: the kind's most, 600M
-  assertEq(resv(once), (660 * Mi, true, "kind"))
-  assertEq(resv(fresh), (660 * Mi, true, "kind"))
+  assertEq(resv(big), (660 * Mi, true, "cmd+dir"))
+  assertEq(resv(small), (110 * Mi, true, "cmd+dir"))
+  // one run in the directory is enough: 50M and a tenth
+  assertEq(resv(once), (55 * Mi, true, "cmd+dir"))
+  // none there: the command's most anywhere, 600M
+  assertEq(resv(fresh), (660 * Mi, true, "cmd"))
   assertEq(resv(given), (300 * Mi, false, "given"))
   assertEq(resv(none), (long(0), false, "given"))
   // another kind in a directory that taught `test` learns nothing from it
   assertEq(resv(other), (long(0), false, "none"))
+  // a shell's -c is the command it runs; another command of the same kind learns nothing from it
+  val viaShell = submitted(home, "--kind", "test", "--dir", home + "/big", "--", "sh", "-c", "sleep 30")
+  assertEq(resv(viaShell), (660 * Mi, true, "cmd+dir"))
+  val script = submitted(home, "--kind", "test", "--dir", home + "/big", "--", "true", "30")
+  assertEq(resv(script), (long(0), false, "none"))
   assert(lsRow(home, small).contains(" ~110M "), lsRow(home, small))
   // the source survives a restart
   restarted(home)
-  assertEq(resv(small), (110 * Mi, true, "kind+dir"))
-  assertEq(resv(once), (660 * Mi, true, "kind"))
+  assertEq(resv(small), (110 * Mi, true, "cmd+dir"))
+  assertEq(resv(fresh), (660 * Mi, true, "cmd"))
   assertEq(m(home, "stop", "--force").code, 0)
   cleanUp(home)
 
 @test(
-  "a job the daemon ran teaches its own directory: after two small runs there, the directory's peaks win over the kind's"
+  "a job the daemon ran teaches its own directory, and its command everywhere, the last five runs counting"
 )
 learnedPerDirLive()
   val home = dirSeededHome()
   for _ in 0 ..< 2
     assertEq(m(home, "run", "--kind", "test", "--dir", home + "/fresh", "--", "sleep", "2.5").code, 0)
   val j = statusJob(home, submitted(home, "--kind", "test", "--dir", home + "/fresh", "--", "sleep", "30"))
-  assertEq(j("resv_from").asString, Some("kind+dir"))
+  assertEq(j("resv_from").asString, Some("cmd+dir"))
   assert(j("resv").asLong.get < 600 * Mi, s"${j("resv")}")
-  // and the kind keeps learning from every directory
-  val k = statusJob(home, submitted(home, "--kind", "test", "--dir", home + "/once", "--", "sleep", "30"))
-  assertEq((k("resv").asLong, k("resv_from").asString), (Some(660 * Mi), Some("kind")))
+  // the command anywhere: of its last five peaks (550M, 90M, 50M and the two runs), 550M and a tenth;
+  // the 600M before them is forgotten
+  val k = statusJob(home, submitted(home, "--kind", "test", "--dir", home + "/new", "--", "sleep", "30"))
+  assertEq((k("resv").asLong, k("resv_from").asString), (Some(605 * Mi), Some("cmd")))
   // stats stays per kind: the runs of two directories make one `test` row
   assertEq(m(home, "run", "--kind", "test", "--dir", home + "/small", "--mem", "0", "--", "true").code, 0)
   val rows = m(home, "stats").out.lines.filter(l -> l.startsWith("test ")).toVector
@@ -201,4 +213,95 @@ learnedLive()
   assert(j("resv").asLong.get > peaks.max, s"${j("resv")} $peaks")
   assert(lsRow(home, c).contains("~"), lsRow(home, c))
   assertEq(m(home, "stop", "--force").code, 0)
+  cleanUp(home)
+
+// Stops the home's daemon, killing what it runs, and waits for its process to be gone, so the next
+// command starts a new one.
+stopDaemon(home: string)
+  val pid = fs.readText(home + "/daemon.pid").ok.flatMap(t -> t.trim.toLongOption()).getOrElse(0)
+  assertEq(m(home, "stop", "--force").code, 0)
+  assert(within(10000, () -> pid <= 0 || process.signal(pid, 0).isErr), s"daemon $pid still running")
+
+// `{"version":1,"peaks":{...}}` with the peaks of `big` jobs running `sleep` at `peaks` bytes.
+bigMemory(peaks: Vector[long]) -> string =
+  "{\"version\":1,\"peaks\":{\"big\\nsleep\":[" + peaks.map(p -> p.toString()).mkString(",") + "]}}\n"
+
+@test("a restart reserves queued jobs again from what is learned, keeping running jobs' and given memory")
+restartReservesAgain()
+  val home = seededHome()
+  val running = submitted(home, "--kind", "big", "--", "sleep", "30")
+  val queued = submitted(home, "--kind", "big", "--", "sleep", "30")
+  val given = submitted(home, "--kind", "big", "--mem", "500M", "--", "sleep", "30")
+  assertEq(statusJob(home, queued)("resv").asLong, Some(660 * Mi))
+  assertEq(statusJob(home, queued)("state").asString, Some("queued"))
+  // what is learned changes under the daemon; the new image reads it when it starts
+  fs.writeText(home + "/memory.json", bigMemory([100 * Mi])).ok.get
+  restarted(home)
+  val r = statusJob(home, running)
+  assertEq((r("resv").asLong, r("state").asString), (Some(660 * Mi), Some("running")))
+  val q = statusJob(home, queued)
+  assertEq((q("resv").asLong, q("resv_from").asString), (Some(110 * Mi), Some("cmd")))
+  val g = statusJob(home, given)
+  assertEq((g("resv").asLong, g("resv_from").asString), (Some(500 * Mi), Some("given")))
+  // 660M and 110M fit in 1G: the queued job starts beside the running one
+  assert(within(5000, () -> started(home, queued)), s"${eventsOf(home, queued)}")
+  assertEq(m(home, "stop", "--force").code, 0)
+  cleanUp(home)
+
+@test("a queued job reserves again when a run of its command ends, so a lower peak lets it start")
+peerReservesAgain()
+  val home = newHome("{\"memory\": \"1G\"}")
+  // the oldest of the last five is 600M; one more run pushes it out of the window
+  fs.writeText(home + "/memory.json", bigMemory([600 * Mi, 10 * Mi, 10 * Mi, 10 * Mi, 10 * Mi])).ok.get
+  val blocker = submitted(home, "--kind", "block", "--mem", "800M", "--", "sleep", "20")
+  val waiting = submitted(home, "--kind", "big", "--", "sleep", "0.1")
+  assertEq(statusJob(home, waiting)("resv").asLong, Some(660 * Mi))
+  assertEq(statusJob(home, waiting)("state").asString, Some("queued"))
+  // a peer of its command runs and is measured: in the quick lane, so it starts ahead of the queued
+  // job, and given 100M, so it fits beside the blocker
+  assertEq(m(home, "run", "--kind", "big", "--quick", "--mem", "100M", "--", "sleep", "2.5").code, 0)
+  assertEq(m(home, "wait", waiting.toString()).code, 0)
+  // it ran while the blocker still held its 800M
+  assert(!eventsOf(home, blocker).contains("finished"), s"${eventsOf(home, blocker)}")
+  assertEq(m(home, "stop", "--force").code, 0)
+  cleanUp(home)
+
+@test("what is learned is kept in memory.json and comes back in a new daemon without the event log")
+learnedPersists()
+  val home = newHome()
+  assertEq(m(home, "run", "--kind", "live", "--", "sleep", "2.5").code, 0)
+  val first = statusJob(home, submitted(home, "--kind", "live", "--", "sleep", "30"))
+  assertEq(first("resv_learned").asBool, Some(true))
+  val text = fs.readText(home + "/memory.json").ok.get
+  assert(text.contains("\"version\":1") && text.contains("live\\nsleep"), text)
+  assertEq(first("resv_from").asString, Some("cmd+dir"))
+  stopDaemon(home)
+  // the event log goes; a new daemon learns from the file alone, the job stopped above included
+  val kept = marshal.loadMemory(home + "/memory.json").ok.get
+  val dirKey = kept.keys.find(k -> k.startsWith("live\nsleep\n")).get
+  fs.remove(home + "/events.jsonl").ok.get
+  val again = statusJob(home, submitted(home, "--kind", "live", "--", "sleep", "30"))
+  assertEq(
+    (again("resv").asLong, again("resv_from").asString),
+    (marshal.learnedPeak(marshal.defaultMemoryLearning, kept(dirKey)), Some("cmd+dir"))
+  )
+  assertEq(m(home, "stop", "--force").code, 0)
+  cleanUp(home)
+
+@test("a missing, corrupt or older memory.json is learned again from the event log and written anew")
+learnedFallsBack()
+  val home = seededHome()
+  val bads = ["", "{\"version\":1,\"peaks\":{\"big\\nsle", "{\"version\":0,\"peaks\":{}}", "missing"]
+  for i in 0 ..< bads.length
+    val bad = bads(i)
+    if bad == "missing" then fs.remove(home + "/memory.json").ok.get else fs.writeText(home + "/memory.json", bad).ok.get
+    // a directory of its own each time, so the job stopped at the end teaches the next nothing there
+    val dir = home + s"/d$i"
+    fs.createDir(dir).ok.get
+    val j = statusJob(home, submitted(home, "--kind", "big", "--dir", dir, "--", "sleep", "30"))
+    assertEq((j("resv").asLong, j("resv_from").asString), (Some(660 * Mi), Some("cmd")))
+    // rewritten whole from the log
+    assert(fs.readText(home + "/memory.json").ok.get.contains("big\\nsleep"), bad)
+    stopDaemon(home)
+  assert(daemonLog(home).contains("memory.json"), daemonLog(home))
   cleanUp(home)

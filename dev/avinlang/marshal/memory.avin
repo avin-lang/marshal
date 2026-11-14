@@ -2,8 +2,12 @@ module dev.avinlang.marshal
 
 // What a running job holds in RAM, as the daemon measures it: every so often the processes of the
 // job's process group are listed, and their resident bytes summed.
+import avin.fs
 import avin.io.IoError
 import avin.process
+import avin.threads.Atomic
+import dev.avinlang.json
+import dev.avinlang.json.Json
 
 // The resident bytes of the processes `pids`, summed by asking `resident` of each. A process that has
 // ended since it was listed answers NotFound and counts nothing; so does one that cannot be asked.
@@ -32,14 +36,21 @@ impl Resident
   // After a measurement of `bytes`: the peak never goes down.
   measured(bytes: long) -> Resident = Resident(bytes, if bytes > peak then bytes else peak)
 
-// Reservations learned from the peaks jobs of a kind reached. A job that gives no memory reserves
-// its history key's learned peak (its kind's in its directory, or its kind's: `memoryHistory`): the most of the last `window` peaks, plus `marginPercent`, rounded
-// up to a whole mebibyte, once the key has at least `minRuns` peaks; nothing before that. Every job
-// that ran and was measured is history, whatever its outcome: a failed build holds the memory it
-// holds.
+// Reservations learned from the peaks earlier runs of the same work reached. A job that gives no
+// memory reserves the learned peak of what it runs (`memoryHistory`): the most of the last `window`
+// peaks, plus `marginPercent`, rounded up to a whole mebibyte, once there are at least `minRuns`
+// peaks; nothing before that. Every job that ran and was measured is history, whatever its outcome:
+// a failed build holds the memory it holds.
+//
+// The short window is what lets a reservation follow the work as it changes. A run that peaks
+// higher raises the next reservation at once, since the newest peak is always in the window. Once
+// the work needs less, the old peaks leave the window one run at a time, so the reservation comes
+// down to the new level after `window` runs, and a single spike is forgotten as fast. Work whose
+// peaks vary from run to run reserves the top of its last few runs, which covers its usual range
+// and moves only when that top leaves the window.
 data MemoryLearning(window: int, minRuns: int, marginPercent: long)
 
-val defaultMemoryLearning: MemoryLearning = MemoryLearning(10, 2, 10)
+val defaultMemoryLearning: MemoryLearning = MemoryLearning(5, 1, 10)
 
 private val Mebi: long = 1024 * 1024
 
@@ -58,32 +69,170 @@ learnedPeak(learning: MemoryLearning, peaks: Vector[long]) -> Option[long]
 
 // The reservation of a job that declared `memory`, `given` saying it was given: a given memory, `0`
 // among them, is the reservation; otherwise the learned peak, held to the whole `budget` so a job
-// that has peaked above it still starts once nothing else holds memory, and runs alone; 0 for a
-// kind nothing has been learned of.
+// that has peaked above it still starts once nothing else holds memory, and runs alone; 0 for work
+// nothing has been learned of.
 reservationFor(learning: MemoryLearning, memory: long, given: bool, peaks: Vector[long], budget: long) -> Reservation
   if given || memory > 0 then return Reservation(memory, false)
   learnedPeak(learning, peaks) match
     Some(p) -> Reservation(if p > budget then budget else p, true)
     None -> Reservation(0, false)
 
-// The history key of the jobs of a kind run in one working directory: one kind covers suites of
-// very different sizes (a small package's tests and a compiler's), so a directory learns its own
-// peaks. A line feed parts the two, so it never equals a `historyKey`.
-memoryDirKey(kind: string, landing: bool, dir: string) -> string = historyKey(kind, landing) + "\n" + dir
+// What a job runs, as its memory is learned under: the program's name and its subcommand and
+// target (`sysl test compiler`, `sysl test .`, `gradlew test`), or a shell and the name of its
+// script (`zsh gate.zsh`). A kind such as `build` or `test` covers work of every size, so it is
+// never learned from on its own; the command is what tells a compiler's suite from a small
+// package's.
+//
+// The program is the first word that is not a wrapper (`env`, `nice`, `caffeinate`, `nohup`,
+// `time`, `timeout`, `sudo`, `exec`, `command`, with their options) or a `NAME=value` setting. Of
+// its arguments, options (`-x`, `--x`) and numbers are passed over, and the next two words are the
+// subcommand and the target; a word that is a path stands for its last component, so worktrees of
+// one repository share what they learn. A shell running `-c` is learned as the command it runs,
+// leaving out leading `cd` and `export` steps; a shell running a script as the shell and the
+// script's name, its arguments left out (a train's branch names change every run). "" for an empty
+// command, which learns nothing.
+commandSignature(cmd: Vector[string]) -> string = signatureOf(cmd, true)
 
-// The peaks a job learns its reservation from, and which key they are: its directory's (`kind+dir`)
-// once that has `minRuns` peaks, and its kind's (`kind`) until then.
+private val wrappers: Set[string] = {"env", "nice", "nohup", "caffeinate", "time", "timeout", "gtimeout", "sudo", "exec", "command"}
+
+private val shells: Set[string] = {"sh", "bash", "zsh", "dash", "ksh"}
+
+// The options of a wrapper that take the next word as their value.
+private valuedOptions(wrapper: string) -> Set[string] = wrapper match
+  "env" -> {"-u", "-C", "-P", "-S"}
+  "nice" -> {"-n"}
+  "caffeinate" -> {"-t", "-w"}
+  "sudo" -> {"-u", "-g", "-C", "-h", "-p", "-U", "-D", "-R", "-T"}
+  "timeout" | "gtimeout" -> {"-s", "-k", "--signal", "--kill-after"}
+  _ -> {}
+
+private baseName(word: string) -> string = word.drop(word.lastIndexOf("/") + 1)
+
+private isOption(word: string) -> bool = word.charCount > 1 && word.startsWith("-")
+
+private isNumber(word: string) -> bool =
+  word.chars.exists(c -> '0' <= c <= '9') && word.chars.forall(c -> '0' <= c <= '9' || c == '.')
+
+// `NAME=value`, as a shell or `env` takes a setting before a command.
+private isSetting(word: string) -> bool
+  val eq = word.indexOf("=")
+  eq > 0 && !word.take(eq).contains("/") && !word.startsWith("-")
+
+// `words` with `shellC` saying whether a shell's `-c` may still be looked into (once only).
+private signatureOf(words: Vector[string], shellC: bool) -> string
+  var i = 0
+  var more = true
+  while more && i < words.length
+    val w = words(i)
+    if isSetting(w)
+      i += 1
+    elif wrappers.contains(baseName(w))
+      i = afterWrapper(words, i + 1, baseName(w))
+    else
+      more = false
+  if i >= words.length then return ""
+  val program = baseName(words(i))
+  val rest = words.drop(i + 1)
+  if shells.contains(program) then shellSignature(program, rest, shellC) else program + namedWords(rest, 2)
+
+// Where a wrapper's options (and `timeout`'s duration) end, from `from`.
+private afterWrapper(words: Vector[string], from: int, wrapper: string) -> int
+  val valued = valuedOptions(wrapper)
+  var durationLeft = wrapper == "timeout" || wrapper == "gtimeout"
+  var i = from
+  while i < words.length
+    val a = words(i)
+    if a == "--" then return i + 1
+    if isOption(a)
+      i += if valued.contains(a) then 2 else 1
+    elif isSetting(a)
+      i += 1
+    elif durationLeft
+      durationLeft = false
+      i += 1
+    else
+      return i
+  i
+
+// The first `n` words of `args` that are neither options nor numbers, each as its last path
+// component, each after a space.
+private namedWords(args: Vector[string], n: int) -> string
+  var out = ""
+  var found = 0
+  for a in args
+    if found >= n then break
+    if a == "--" || isOption(a) || isNumber(a) then continue
+    val name = baseName(a)
+    if name.isEmpty then continue
+    out = out + " " + name
+    found += 1
+  out
+
+private shellSignature(shell: string, args: Vector[string], shellC: bool) -> string
+  var i = 0
+  while i < args.length && isOption(args(i))
+    val a = args(i)
+    if a == "-o" || a == "+o"
+      i += 2
+    elif !a.startsWith("--") && a.endsWith("c")
+      // `-c`, or `-ec` and the like: the next word is the command
+      if i + 1 >= args.length then return shell + " -c"
+      if !shellC then return shell + " -c"
+      val inner = commandOfScript(args(i + 1))
+      return if inner.isEmpty then shell + " -c" else inner
+    else
+      i += 1
+  if i >= args.length then return shell
+  shell + " " + baseName(args(i))
+
+// The signature of the first step of a `-c` script that is not a `cd`, `export` or the like.
+private commandOfScript(script: string) -> string
+  val tokens = script.replace("\n", " ").replace("\t", " ").split(" ").filter(t -> t.nonEmpty).toVector
+  val step = Buffer[string]()
+  var ended = false
+  for t in tokens
+    val sep = t == "&&" || t == "||" || t == ";" || t == "|"
+    val word = if !sep && t.endsWith(";") then t.dropRight(1) else t
+    if !sep && word.nonEmpty then step += word
+    if sep || t.endsWith(";")
+      if step.nonEmpty && !preparation.contains(step(0)) then return signatureOf(step.toVector, false)
+      step.clear()
+  if step.nonEmpty && !preparation.contains(step(0)) then signatureOf(step.toVector, false) else ""
+
+// Steps of a shell script that prepare for the command rather than run it.
+private val preparation: Set[string] = {"cd", "export", "set", "unset", "source", ".", "pushd", "ulimit", "umask"}
+
+// The key a job's peaks are learned under: its kind (`historyKey`, so landing jobs learn apart) and
+// what it runs (`commandSignature`). A line feed parts them; a signature never holds one.
+memoryKey(kind: string, landing: bool, signature: string) -> string = historyKey(kind, landing) + "\n" + signature
+
+// The key of the same work run in one working directory, which refines `memoryKey` once that
+// directory has history of its own: one repository's tree can differ from another's.
+memoryDirKey(kind: string, landing: bool, signature: string, dir: string) -> string =
+  memoryKey(kind, landing, signature) + "\n" + dir
+
+// The keys a job of `kind` running `cmd` in `dir` teaches; none for a command without a signature.
+memoryKeys(kind: string, landing: bool, cmd: Vector[string], dir: string) -> Vector[string]
+  val sig = commandSignature(cmd)
+  if sig.isEmpty then return []
+  val own = [memoryKey(kind, landing, sig)]
+  if dir.isEmpty then own else own ++ [memoryDirKey(kind, landing, sig, dir)]
+
+// The peaks a job learns its reservation from, and which key they are: its command's in its
+// directory (`cmd+dir`) once that has `minRuns` peaks, and its command's anywhere (`cmd`) until
+// then. There is no wider fallback: work never run before reserves nothing, and admission counts it
+// at what it is measured holding while it runs (`holding`).
 data MemoryHistory(peaks: Vector[long], from: string)
 
-memoryHistory(learning: MemoryLearning, dirPeaks: Vector[long], kindPeaks: Vector[long]) -> MemoryHistory =
+memoryHistory(learning: MemoryLearning, dirPeaks: Vector[long], cmdPeaks: Vector[long]) -> MemoryHistory =
   if dirPeaks.filter(p -> p > 0).length >= learning.minRuns then MemoryHistory(
     dirPeaks,
-    "kind+dir"
-  ) else MemoryHistory(kindPeaks, "kind")
+    "cmd+dir"
+  ) else MemoryHistory(cmdPeaks, "cmd")
 
 // Where a job's reservation came from, as `status --json` shows it in `resv_from`: `given` for a
-// memory it gave (`--mem`, `0` among them), the key its learned peak came from (`kind+dir` or
-// `kind`), or `none` while nothing has been learned.
+// memory it gave (`--mem`, `0` among them), the key its learned peak came from (`cmd+dir` or
+// `cmd`), or `none` while nothing has been learned.
 reservationSource(memory: long, given: bool, r: Reservation, from: string) -> string =
   if given || memory > 0 then "given" elif r.learned then from else "none"
 
@@ -91,3 +240,49 @@ reservationSource(memory: long, given: bool, r: Reservation, from: string) -> st
 // holding where that is more. A job holding more than it reserved delays the next start; one
 // holding less keeps its reservation, for the peak it has not reached yet.
 holding(reserved: long, rss: long) -> long = if rss > reserved then rss else reserved
+
+// The learned peaks, kept in `<home>/memory.json` so that they outlive the daemon, a restart, an
+// upgrade and `marshal clean` trimming the event log:
+//
+//   {"version": 1, "peaks": {"<key>": [bytes, ...], ...}}
+//
+// Each key is a `memoryKey` or `memoryDirKey` and holds its last `MemoryKept` peaks, oldest first.
+// A file of another version, or one that does not read, is not used: the daemon learns again from
+// the event log.
+val MemoryFileVersion: long = 1
+
+val MemoryKept: int = 20
+
+encodeMemory(peaks: Map[string, Vector[long]]) -> string
+  val keys = peaks.keys.toVector.sorted
+  val members = keys.map(k -> (k, Json.Arr(peaks(k).takeRight(MemoryKept).map(p -> Json.num(p)))))
+  Json.obj(("version", Json.num(MemoryFileVersion)), ("peaks", Json.Obj(members))).render + "\n"
+
+decodeMemory(text: string) -> Result[Map[string, Vector[long]], string]
+  val j = json.parse(text) match
+    Ok(v) -> v
+    Err(e) -> return Err(s"not JSON: $e")
+  val version = j.get("version").flatMap(v -> v.asLong)
+  if version != Some(MemoryFileVersion) then return Err(s"version ${version.map(v -> v.toString()).getOrElse("missing")}, not $MemoryFileVersion")
+  val members = j.get("peaks").flatMap(v -> v.asMembers) match
+    Some(ms) -> ms
+    None -> return Err("`peaks` is not an object")
+  val out = Buffer[(string, Vector[long])]()
+  for (k, v) in members
+    val items = v.asVector.getOrElse([])
+    if v.asVector.isEmpty || !items.forall(i -> i.asLong.exists(n -> n > 0))
+      return Err(s"the peaks of `$k` are not sizes")
+    out += (k, items.map(i -> i.asLong.get))
+  Ok(out.toVector.toMap)
+
+// The learned peaks in `file`, or why they cannot be used (a missing file among the reasons).
+loadMemory(file: string) -> Result[Map[string, Vector[long]], string] = fs.readText(file) match
+  Ok(text) -> decodeMemory(text)
+  Err(e) -> Err(s"cannot be read: ${e.kind}")
+
+// Writes `peaks` to `file` in one step. Each write has a temporary file of its own, so writers never
+// share one, and the rename leaves the whole of one write or of another, never a mixture.
+saveMemory(file: string, peaks: Map[string, Vector[long]]) -> Result[unit, IoError] =
+  writeAtomicVia(file, encodeMemory(peaks), s"$file.tmp-${process.pid()}-${memoryWrites.add(1)}")
+
+private val memoryWrites: Atomic[long] = Atomic[long](0)

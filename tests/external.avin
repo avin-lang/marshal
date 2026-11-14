@@ -295,10 +295,11 @@ externalPeakNotLearned()
     [("run_ms", Json.num(1000)), ("exit", Json.num(0))]
   )
   val r = marshal.recover([ext, ext.replace("\"id\":3", "\"id\":5"), own])
-  assertEq(r.peaks.get("linux"), Some([long(2048)]))
+  assertEq(r.peaks.get(marshal.memoryKey("linux", false, "make")), Some([long(2048)]))
+  assertEq(r.peaks.get(marshal.memoryKey("linux", false, "docker run img")), None)
   // its run time still teaches the kind's deadline
   assertEq(r.histories.get("linux").map(h -> h.length), Some(3))
-  assertEq(marshal.recover([ext]).peaks.get("linux"), None)
+  assertEq(marshal.recover([ext]).peaks.isEmpty, true)
   val l = marshal.Ledger()
   l.add(ext)
   val st = marshal.kindStats(l, marshal.HistoryFilter(None, None, false))

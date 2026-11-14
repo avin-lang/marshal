@@ -55,13 +55,13 @@ lacks a field or has one of the wrong type, names no job, or asks for a job that
 ```
 
 `mem` is the memory the job declared; `resv` the memory the scheduler counts for it, its effective
-reservation: `mem`, or with `resv_learned` true its learned peak (the most of the last 10 measured
-peaks of its kind in its `dir` plus a tenth, once there are two; while the directory has fewer, the
-same of its kind's peaks in every directory; held to the budget). A job without `resv` (from an
+reservation: `mem`, or with `resv_learned` true its learned peak (the most of the last 5 measured
+peaks of the same command, by kind and command signature, in its `dir` once it has run there and
+in every directory before that, plus a tenth; held to the budget). A job without `resv` (from an
 older daemon or log) reserves its `mem`, not learned. `resv_from` says where the reservation came
-from: `given` (`mem` was given, `0` among them), `kind+dir` (its kind's peaks in its directory),
-`kind` (its kind's peaks in every directory) or `none` (nothing learned yet); absent from an older
-daemon or log. `external` is present, and true, only for a job submitted with it: its `resv` is its `mem`, admission counts it as holding that whatever its
+from: `given` (`mem` was given, `0` among them), `cmd+dir` (its command's peaks in its directory),
+`cmd` (its command's peaks in every directory) or `none` (nothing learned yet); `kind+dir` and
+`kind` from a daemon that learned per kind; absent from an older daemon or log. `external` is present, and true, only for a job submitted with it: its `resv` is its `mem`, admission counts it as holding that whatever its
 `rss`, and its ending event's `peak_rss` is never learned from (nor counted by `stats`).
 
 `expected_ms` is how long the job is expected to run: the median of its kind's recent runs, or half
@@ -225,9 +225,9 @@ missing reads as `[]`). Each job holds `id`, `spec` (the fields of a `submit` re
 orders the band; 0 outside it), `paused_ms` (how long the job's earlier pauses lasted),
 `paused_at` (when its current pause began, 0 while it is not paused; a job saved with one stays
 paused), `attempt` and `retry_at` (when a job waiting to retry queues again), `reserved` and
-`reserved_learned` (its effective reservation, and whether its kind's peaks taught it; a job saved
+`reserved_learned` (its effective reservation, and whether learned peaks taught it; a job saved
 without them reads as -1 and false, and the new program learns its reservation again from the
-peaks it read in the event log), `reserved_from` (where the reservation came from, as `resv_from`
+peaks it read from `memory.json` or the event log), `reserved_from` (where the reservation came from, as `resv_from`
 in a listing; absent or `""` reads as `kind` for a learned one, else `given` or `none`), `quiet_stopped` (a job being stopped, `timed_out`, is stopped
 for its quiet timeout rather than its deadline; false when absent), and `duration_learned` (whether
 `expected_ms` was learned from its kind's runs; false when absent, so a drain counts the job by its

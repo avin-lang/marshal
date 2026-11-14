@@ -127,6 +127,19 @@ caffeinate -dimsu marshal run --dir . --label "ed: parser tests" --deadline 20m 
 - `--units` is the parallelism the job really uses. Asking for more starves everyone else; asking
   for less oversubscribes the machine.
 
+**Let memory be learned, and give `--mem` to heavy work marshal has not seen.** Memory is learned
+per command (`sysl test compiler`, `zsh gate.zsh`), not per kind, so a run of a command it knows
+reserves what that command peaked at recently, wherever it runs. A command it has never run reserves
+nothing until it has run once; marshal counts what it measures the job holding, but several new heavy
+commands started together can still outgrow the machine before they are measured. So:
+
+- Give the first run of a new heavy command, or a script under a new name, an honest `--mem`
+  (`--mem 34G` for a compiler gate); after one run marshal knows it.
+- Keep the names of recurring scripts stable (`gate.zsh`, not `gate4.zsh`): the script's name is
+  what its memory is learned under.
+- Do not give `--mem` to work marshal already knows: a learned reservation follows the work up and
+  down, while a given one stays wrong once the work changes.
+
 **Wait once.** Start the run in the background and wait for it with one waiter that exits, on the job
 (`marshal wait <id>`) or on its PID. Never poll `marshal ls` or the log in a loop, and never stack
 `sleep` loops. For an AI agent every poll re-sends its whole context, so polling spends tokens and
@@ -273,7 +286,7 @@ Options of `submit` and `run`:
 | --- | --- |
 | `--kind <k>` | What the job is, for learning its deadline. Default: `test` when a word of the command is `test`, otherwise `build`. |
 | `--units <n>` | Its weight. Default: 4 for a `test`, 1 for anything else. |
-| `--mem <size>` | Memory it needs: `29G`, `512M` (powers of 1024). Default: the learned peak of its kind in its directory, or of its kind while the directory has fewer than two measured runs (see Budget); 0 until two runs of the kind were measured. `--mem 0` reserves nothing and learns nothing. |
+| `--mem <size>` | Memory it needs: `29G`, `512M` (powers of 1024). Default: the learned peak of the same command in its directory, or anywhere while it has not run in that directory (see Budget); 0 until the command has run once. `--mem 0` reserves nothing and learns nothing. |
 | `--external` | Its work runs outside its own processes: `docker run`, a VM, or a command run as another account through `sudo` (see Work outside the job's processes). It needs `--mem`, and is refused without it; it reserves exactly that and holds it whatever its process tree measures; its measured peak is never learned from, so its kind's later jobs are not taught a near-zero peak. `ls` and `top` show its RESV with `@` before it (`@29G`), `status --json` gives `"external": true`, and `rerun` keeps it. A command whose first word (or the first after `sudo`) is `docker` with `run`, `compose`, `build` or `buildx`, or `docker-compose`, submitted without it gets a warning on stderr and is submitted all the same. |
 | `--landing` | The landing lane: starts before every development job, outside the unit budget, at normal priority, once its memory fits beside what runs; until then nothing else starts, so the running jobs drain for it. One landing job runs at a time. One whose memory alone exceeds the budget starts when nothing else runs. |
 | `--quick` | The quick lane, for a short job such as the tests of a small package: it starts at once, outside the unit budget, rather than queue for units behind long builds. At most 2 quick jobs run at a time; a third waits in the quick lane, ahead of development jobs, and `ls` shows it `queued (quick lane full)`. Its memory still counts: it starts only when its reservation (`--mem`, or its kind's learned peak) fits in the budget's free memory, and holds it while it runs, so a development job may wait for it; until then it waits `queued (no memory)` and development jobs leave that memory to it. It is niced like a development job, never passes a landing job (one that drains the machine holds the quick lane too), and its deadline is at most 2 minutes: 2m by default, a shorter `--deadline` kept, a longer one refused. Past it, it is stopped as any job past its deadline (`timeout`). `ls` and `top` mark its kind with `^`, `top` says `quick` for it running and `quick: 1/2` in the header; `status` names the lane while a quick job runs, and `status --json` has `quick` (running) and `quick_slots`, and `"quick":true` on the job. `rerun` keeps it; `run-type` and `train` take `--quick` too (a type's own deadline over the cap gives way to the cap). Not with `--landing`. When a job submitted without `--quick` is of a kind whose recent successful runs took under 2 minutes at p90 (at least 3 runs learned), `submit`, `run` and `run-type` print a one-line hint on stderr suggesting `--quick`; nothing moves the job into the lane but the option. |
@@ -435,17 +448,25 @@ ends: nothing polls.
   `queued (draining)` and the jobs it holds back `queued (draining for <id>)`. Landing and quick
   jobs go on beside it. Time queued never counts against a job's deadline, which runs from its
   start.
-- **Memory reservations.** A job without `--mem` reserves its learned peak: the most memory any of
-  the last 10 measured jobs of its kind in its directory (`--dir`) held, whatever their outcome,
-  plus a tenth, once two have been measured there. A directory with fewer than two learns from the
-  kind's jobs in every directory instead, and with fewer than two of those reserves 0. So a small
-  package's `test` suite does not reserve what a compiler's `test` suite peaks at. A landing job of
-  a kind learns apart from the development ones. `status --json` says which in `resv_from`. A
-  learned reservation above the whole budget is held to the budget, so the job starts once nothing
-  else holds memory and runs alone. `--mem 0` opts out. A running job counts as holding its
-  reservation or what it was last measured holding, whichever is more, so a job that reserved
-  nothing but holds 27G keeps a 30G one out of a 56G budget. A job submitted with `--external`
-  holds exactly its `--mem`, and its peak is never learned.
+- **Memory reservations.** A job without `--mem` reserves the learned peak of what it runs: the
+  most memory any of the last 5 measured runs of the same command held, whatever their outcome,
+  plus a tenth. The command is its signature: the program, its subcommand and its target, each as
+  the last part of a path (`sysl test compiler`, `sysl test .`, `gradlew test`), or a shell and its
+  script's name (`zsh gate.zsh`), with wrappers such as `env`, `nice` and `caffeinate` and
+  `NAME=value` settings passed over, and a `zsh -c` as the command it runs. So a compiler's suite
+  and a small package's suite learn apart, and every worktree of a repository shares what a command
+  has learned. Runs of the command in the job's own directory (`--dir`) come first once there is
+  one; then its runs anywhere. A kind (`build`, `test`) is never learned from on its own: a command
+  never run before reserves 0, and a landing job learns apart from development ones. Because only
+  the last 5 runs count, a reservation follows the work: a run that peaks higher raises the next
+  reservation at once (and the reservations of jobs still queued), and once a command needs less,
+  its reservation comes down within 5 runs. `status --json` says where a reservation came from in
+  `resv_from`: `cmd+dir`, `cmd`, `given` or `none`. A learned reservation above the whole budget is
+  held to the budget, so the job starts once nothing else holds memory and runs alone. `--mem 0`
+  opts out. A running job counts as holding its reservation or what it was last measured holding,
+  whichever is more, so a job that reserved nothing but holds 27G keeps a 30G one out of a 56G
+  budget. A job submitted with `--external` holds exactly its `--mem`, and its peak is never
+  learned. What has been learned is kept in `memory.json` in marshal's home (below).
 - **Work outside the job's processes.** Marshal measures a job's own process tree, so work that a
   job hands to something else is invisible to it: `docker run` leaves only the docker client in the
   tree while the container uses the VM's CPU and memory. Such a job is submitted with
@@ -506,6 +527,16 @@ ends: nothing polls.
   exits 2. `$MARSHAL_RESTART_PROGRAM`, in the daemon's environment, names another program.
   `restart` prints the version before and after; `version` prints this marshal's and the
   daemon's, and neither starts a daemon.
+- **Learned memory is kept in `memory.json`.** After every job that ends, the daemon writes the
+  peaks it has learned to `memory.json` in marshal's home: `{"version": 1, "peaks": {...}}`, each
+  key a kind (`+landing` for the landing lane), a line feed and a command's signature, with a line
+  feed and a directory after it for runs in that directory, holding that key's last 20 peaks in
+  bytes, oldest first. It is written to a temporary file and renamed into place, so a reader sees
+  the whole of one write, never part. A starting daemon reads it, so what was learned survives
+  `stop`, `restart`, an upgrade, a reboot and `marshal clean` trimming the event log. When the file
+  is missing, does not read, or is of another version, the daemon says so on stderr (a missing one
+  silently), learns again from the event log's ending events (the `cmd`, `dir` and `peak_rss` each
+  records) and writes the file at once. Removing it is safe.
 
 `config.json` in marshal's home changes the defaults: `units`, `memory` (`"56G"` or bytes),
 `reserve`, `deadline_floor` (`"5m"`), `learn_window`, `learn_min_runs`, `drain_after` (`"10m"`, or
@@ -589,7 +620,7 @@ against its own budget. `marshal status` shows what take-slot holds.
   budget, what the running jobs reserve in cyan and what they hold beyond their reservations in
   blue, then the reserved total, what they hold in RAM (`rss`) and the machine's memory.
 - **Memory**: RESV is the memory a job reserves: what it declared with `--mem`, or with `~` before
-  it (`~29G`) its learned peak (its kind's in its directory, or its kind's), or with `@` before it
+  it (`~29G`) the learned peak of its command (in its directory, or anywhere), or with `@` before it
   (`@29G`) what a job submitted with `--external` declared. RSS is what a running job's whole
   process tree holds in RAM, measured by the daemon every second, and PEAK the most it was measured
   holding, kept once it ends; `-` where there is none.

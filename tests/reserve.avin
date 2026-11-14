@@ -1,6 +1,6 @@
 module tests
 
-// Reservations learned from a kind's peaks, and admission counting each running job as its
+// Reservations learned from the peaks of a command's runs, and admission counting each running job as its
 // reservation or its measured memory, whichever is more.
 import dev.avinlang.json
 import dev.avinlang.marshal
@@ -23,14 +23,18 @@ import dev.avinlang.marshal.{
 val M: long = 1024 * 1024
 val learning0: MemoryLearning = marshal.defaultMemoryLearning
 
-@test("too little history learns nothing: no peaks, and one peak, reserve 0")
+@test("no history learns nothing and reserves 0; one measured run is enough")
 littleHistory()
   assertEq(marshal.learnedPeak(learning0, []), None)
-  assertEq(marshal.learnedPeak(learning0, [20 * G]), None)
   assertEq(marshal.reservationFor(learning0, 0, false, [], 56 * G), Reservation(0, false))
-  assertEq(marshal.reservationFor(learning0, 0, false, [20 * G], 56 * G), Reservation(0, false))
   // peaks of 0 (jobs never measured) are not history
-  assertEq(marshal.learnedPeak(learning0, [0, 20 * G, 0]), None)
+  assertEq(marshal.learnedPeak(learning0, [0, 0]), None)
+  assertEq(marshal.learnedPeak(learning0, [20 * G]), Some(22 * G))
+  assertEq(marshal.learnedPeak(learning0, [0, 20 * G, 0]), Some(22 * G))
+  assertEq(marshal.reservationFor(learning0, 0, false, [20 * G], 56 * G), Reservation(22 * G, true))
+  // the least history follows minRuns, exactly at the boundary
+  assertEq(marshal.learnedPeak(MemoryLearning(5, 2, 10), [20 * G]), None)
+  assertEq(marshal.learnedPeak(MemoryLearning(5, 2, 10), [10 * G, 20 * G]), Some(22 * G))
 
 @test("enough history reserves the most of the recent peaks plus a tenth, rounded up to a mebibyte")
 enoughHistory()
@@ -45,10 +49,12 @@ enoughHistory()
   assert(learned >= odd + odd / 10, s"$learned")
   assert(learned < odd + odd / 10 + M, s"$learned")
 
-@test("only the last ten peaks count: an old big peak is forgotten")
+@test("only the last five peaks count: an old big peak is forgotten, one in the window is not")
 resvWindow()
-  val old: Vector[long] = [50 * G] ++ (0 ..< 10).map(_ -> 10 * G).toVector
+  val old: Vector[long] = [50 * G] ++ (0 ..< 5).map(_ -> 10 * G).toVector
   assertEq(marshal.learnedPeak(learning0, old), Some(11 * G))
+  val edge: Vector[long] = [50 * G] ++ (0 ..< 4).map(_ -> 10 * G).toVector
+  assertEq(marshal.learnedPeak(learning0, edge), Some(55 * G))
   val recent: Vector[long] = (0 ..< 9).map(_ -> 10 * G).toVector ++ [50 * G]
   assertEq(marshal.learnedPeak(learning0, recent), Some(55 * G))
   assertEq(marshal.learnedPeak(MemoryLearning(3, 1, 0), [9 * G, G, 2 * G, 3 * G]), Some(3 * G))
@@ -104,55 +110,62 @@ resvAdmission()
     [long(1), long(2)]
   )
 
-@test("a directory with two peaks learns from its own; with fewer, from its kind's")
+@test("a command with history in its directory learns from that; without, from the command anywhere")
 dirHistory()
   val small: Vector[long] = [G, 2 * G]
   val big: Vector[long] = [26 * G, 20 * G, G, 2 * G]
-  assertEq(marshal.memoryHistory(learning0, small, big), MemoryHistory(small, "kind+dir"))
-  assertEq(marshal.memoryHistory(learning0, [G], big), MemoryHistory(big, "kind"))
-  assertEq(marshal.memoryHistory(learning0, [], big), MemoryHistory(big, "kind"))
-  // peaks of 0 do not count toward the two
-  assertEq(marshal.memoryHistory(learning0, [0, G, 0], big), MemoryHistory(big, "kind"))
-  // a kind with too few peaks still learns nothing through the fallback
-  val fallback = marshal.memoryHistory(learning0, [G], [G])
-  assertEq(marshal.reservationFor(learning0, 0, false, fallback.peaks, 60 * G), Reservation(0, false))
-  // the directory's estimate is the same rule: the most of its last ten, a tenth more
-  val own = marshal.memoryHistory(learning0, small, big)
-  assertEq(
-    marshal.reservationFor(learning0, 0, false, own.peaks, 60 * G),
-    Reservation(marshal.learnedPeak(learning0, small).get, true)
-  )
+  assertEq(marshal.memoryHistory(learning0, small, big), MemoryHistory(small, "cmd+dir"))
+  assertEq(marshal.memoryHistory(learning0, [G], big), MemoryHistory([G], "cmd+dir"))
+  assertEq(marshal.memoryHistory(learning0, [], big), MemoryHistory(big, "cmd"))
+  // peaks of 0 are not history
+  assertEq(marshal.memoryHistory(learning0, [0, 0], big), MemoryHistory(big, "cmd"))
+  // a command never run reserves nothing: there is no wider fallback
+  val fresh = marshal.memoryHistory(learning0, [], [])
+  assertEq(fresh.from, "cmd")
+  assertEq(marshal.reservationFor(learning0, 0, false, fresh.peaks, 60 * G), Reservation(0, false))
+  assertEq(marshal.reservationSource(0, false, Reservation(0, false), fresh.from), "none")
+  // the directory's estimate is the same rule: the most of its last five, a tenth more
   assertEq(marshal.learnedPeak(learning0, small), Some(2 * G + 205 * M))
   // the minimum follows the learning's minRuns
-  assertEq(marshal.memoryHistory(MemoryLearning(10, 1, 10), [G], big).from, "kind+dir")
-  assertEq(marshal.memoryHistory(MemoryLearning(10, 3, 10), small, big).from, "kind")
+  assertEq(marshal.memoryHistory(MemoryLearning(5, 2, 10), [G], big).from, "cmd")
+  assertEq(marshal.memoryHistory(MemoryLearning(5, 2, 10), small, big).from, "cmd+dir")
+  assertEq(marshal.memoryHistory(MemoryLearning(5, 3, 10), small, big).from, "cmd")
 
-@test("a directory key never equals a kind's key, and differs by lane and directory")
+@test("keys are kind, lane and command, then directory; a kind alone is never a key")
 dirKey()
-  assertEq(marshal.memoryDirKey("test", false, "/a"), "test\n/a")
-  assertEq(marshal.memoryDirKey("test", true, "/a"), "test+landing\n/a")
-  assert(marshal.memoryDirKey("test", false, "/a") != marshal.memoryDirKey("test", false, "/b"), "dirs")
-  assert(marshal.memoryDirKey("test", false, "") != marshal.historyKey("test", false), "empty dir")
+  assertEq(marshal.memoryKey("test", false, "sysl test ."), "test\nsysl test .")
+  assertEq(marshal.memoryKey("test", true, "sysl test ."), "test+landing\nsysl test .")
+  assertEq(marshal.memoryDirKey("test", false, "sysl test .", "/a"), "test\nsysl test .\n/a")
+  assert(marshal.memoryDirKey("test", false, "s", "/a") != marshal.memoryDirKey("test", false, "s", "/b"), "dirs")
+  assert(marshal.memoryKey("test", false, "sysl test .") != marshal.memoryKey("test", false, "sysl test compiler"), "targets")
+  assertEq(marshal.memoryKeys("test", false, ["sysl", "test", "."], "/a"), ["test\nsysl test .", "test\nsysl test .\n/a"])
+  assertEq(marshal.memoryKeys("test", false, ["sysl", "test", "."], ""), ["test\nsysl test ."])
+  // a command with no signature teaches nothing, the kind included
+  assertEq(marshal.memoryKeys("test", false, [], "/a"), [])
+  assertEq(marshal.memoryKeys("test", false, ["env", "A=1"], "/a"), [])
 
 @test("where a reservation came from: given (--mem, 0 among them) wins, else the key learned from, else none")
 resvSource()
   val learned = Reservation(22 * G, true)
-  assertEq(marshal.reservationSource(4 * G, true, Reservation(4 * G, false), "kind+dir"), "given")
-  assertEq(marshal.reservationSource(0, true, Reservation(0, false), "kind+dir"), "given")
-  assertEq(marshal.reservationSource(4 * G, false, Reservation(4 * G, false), "kind"), "given")
-  assertEq(marshal.reservationSource(0, false, learned, "kind+dir"), "kind+dir")
-  assertEq(marshal.reservationSource(0, false, learned, "kind"), "kind")
-  assertEq(marshal.reservationSource(0, false, Reservation(0, false), "kind"), "none")
+  assertEq(marshal.reservationSource(4 * G, true, Reservation(4 * G, false), "cmd+dir"), "given")
+  assertEq(marshal.reservationSource(0, true, Reservation(0, false), "cmd+dir"), "given")
+  assertEq(marshal.reservationSource(4 * G, false, Reservation(4 * G, false), "cmd"), "given")
+  assertEq(marshal.reservationSource(0, false, learned, "cmd+dir"), "cmd+dir")
+  assertEq(marshal.reservationSource(0, false, learned, "cmd"), "cmd")
+  assertEq(marshal.reservationSource(0, false, Reservation(0, false), "cmd"), "none")
 
-// An ending event of job `id` of kind `test`, in `dir` (none for an event that names no directory).
-peakEvent(id: long, peak: long, dir: Option[string]) -> string =
+// An ending event of job `id` of kind `test` running `cmd` (a JSON array, or none), in `dir` (none
+// for an event that names no directory).
+peakEvent(id: long, peak: long, dir: Option[string], cmd: Option[string] = Some("[\"sysl\",\"test\",\".\"]")) -> string =
   val d = dir.map(x -> s",\"dir\":\"$x\"").getOrElse("")
-  s"{\"ts\":1,\"event\":\"finished\",\"id\":$id,\"kind\":\"test\",\"landing\":false$d,\"exit\":0,\"run_ms\":10,\"peak_rss\":$peak}"
+  val c = cmd.map(x -> s",\"cmd\":$x").getOrElse("")
+  s"{\"ts\":1,\"event\":\"finished\",\"id\":$id,\"kind\":\"test\",\"landing\":false$d$c,\"exit\":0,\"run_ms\":10,\"peak_rss\":$peak}"
 
 @test(
-  "the log's peaks are recovered under the kind and under the kind in each directory; an event without dir teaches its kind only"
+  "the log's peaks are recovered under the recorded command and under it in each directory; no kind-wide key"
 )
 recoverDirPeaks()
+  val sig = marshal.memoryKey("test", false, "sysl test .")
   val r = marshal.recover(
     [
       peakEvent(1, 26 * G, Some("/c")),
@@ -160,20 +173,22 @@ recoverDirPeaks()
       peakEvent(3, 25 * G, Some("/c")),
       peakEvent(4, 2 * G, Some("/g")),
       peakEvent(5, 3 * G, None),
-      peakEvent(6, 0, Some("/g"))
+      peakEvent(6, 0, Some("/g")),
+      peakEvent(7, 30 * G, Some("/c"), Some("[\"/w/sysl-x/stage1\",\"test\",\"compiler\",\"--jobs\",\"4\"]"))
     ]
   )
-  assertEq(r.peaks.get("test"), Some([26 * G, G, 25 * G, 2 * G, 3 * G]))
-  assertEq(r.peaks.get(marshal.memoryDirKey("test", false, "/c")), Some([26 * G, 25 * G]))
-  assertEq(r.peaks.get(marshal.memoryDirKey("test", false, "/g")), Some([G, 2 * G]))
-  assertEq(r.peaks.get(marshal.memoryDirKey("test", false, "")), None)
-  // a log written before directories were learned (no dir) still teaches the kind
-  val old = marshal.recover([peakEvent(1, 26 * G, None), peakEvent(2, 20 * G, None)])
-  assertEq(old.peaks.keys.toVector, ["test"])
-  assertEq(
-    marshal.reservationFor(learning0, 0, false, marshal.memoryHistory(learning0, [], old.peaks("test")).peaks, 60 * G),
-    Reservation(marshal.learnedPeak(learning0, [26 * G, 20 * G]).get, true)
-  )
+  assertEq(r.peaks.get(sig), Some([26 * G, G, 25 * G, 2 * G, 3 * G]))
+  assertEq(r.peaks.get(marshal.memoryDirKey("test", false, "sysl test .", "/c")), Some([26 * G, 25 * G]))
+  assertEq(r.peaks.get(marshal.memoryDirKey("test", false, "sysl test .", "/g")), Some([G, 2 * G]))
+  assertEq(r.peaks.get(marshal.memoryKey("test", false, "stage1 test compiler")), Some([30 * G]))
+  assertEq(r.peaks.get("test"), None)
+  // events without a command (none was ever recorded without one, but a hand-edited log may) teach
+  // nothing; those without a directory teach their command
+  val old = marshal.recover([peakEvent(1, 26 * G, None, None), peakEvent(2, 20 * G, None)])
+  assertEq(old.peaks.keys.toVector, [sig])
+  assertEq(old.peaks(sig), [20 * G])
+  // a command that is not an array of strings teaches nothing either
+  assertEq(marshal.recover([peakEvent(1, G, None, Some("\"sysl test\""))]).peaks.isEmpty, true)
 
 job(memory: long, reserved: long, learned: bool) -> JobInfo =
   JobInfo(
@@ -207,7 +222,7 @@ resvText()
 
 @test("a job's resv_from reads back; one that is \"\" is left out, and a listing without it reads as \"\"")
 resvFromProtocol()
-  for from in ["given", "kind+dir", "kind", "none"]
+  for from in ["given", "cmd+dir", "cmd", "none", "kind+dir", "kind"]
     val j = JobInfo(
       1,
       "build",

@@ -31,8 +31,9 @@ eventLine(ts: long, event: string, job: JobInfo, extra: Vector[(string, Json)]) 
 // - `unreadable`: how many lines were not events.
 // - `ended`: the last `keep` jobs the log saw end, as their ending events describe them, by id.
 // - `peaks`: the `peak_rss` of every ending event that has one above 0, oldest first, whatever the
-//   outcome: what reservations are learned from. Each is kept under its `historyKey` and, where the
-//   event names its `dir`, under its `memoryDirKey` too.
+//   outcome: what reservations are learned from when `memory.json` cannot be used. Each is kept
+//   under the `memoryKey` of its recorded `cmd` and, where the event names its `dir`, under its
+//   `memoryDirKey` too; an event without a command teaches nothing.
 data Recovered(
     nextId: long,
     open: Vector[Json],
@@ -73,11 +74,13 @@ recover(lines: Iterable[string], keep: int = 10) -> Recovered
     if endings.contains(kind) && peak > 0 && ev.get("external").flatMap(v -> v.asBool) != Some(true)
       val evKind = ev.get("kind").flatMap(v -> v.asString).getOrElse("")
       val evLanding = ev.get("landing").flatMap(v -> v.asBool).getOrElse(false)
-      // an event without a directory teaches its kind only
-      val keys = [historyKey(evKind, evLanding)] ++ ev.get("dir").flatMap(v -> v.asString).map(
-        d -> [memoryDirKey(evKind, evLanding, d)]
+      // the signature comes from the recorded command; an event without one teaches nothing, and
+      // one without a directory teaches its command only
+      val cmd = ev.get("cmd").flatMap(v -> v.asVector).map(
+        items -> items.map(i -> i.asString.getOrElse(""))
       ).getOrElse(Vector[string]())
-      for key in keys
+      val dir = ev.get("dir").flatMap(v -> v.asString).getOrElse("")
+      for key in memoryKeys(evKind, evLanding, cmd, dir)
         peaks.get(key) match
           Some(b) -> b += peak
           None ->

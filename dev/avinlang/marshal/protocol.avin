@@ -151,10 +151,12 @@ retryable(_, _) = false
 // says a running job's processes are stopped by `pause`; its `elapsedMs` leaves its pauses out.
 // `after` is what a waiting job still waits for, the jobs that have not ended yet; `attempt` counts
 // its runs from 1. `reserved` is the memory the scheduler counts for it, its effective reservation:
-// the memory it declared, or, with `reservedLearned`, what its kind's peaks taught (memory.avin).
+// the memory it declared, or, with `reservedLearned`, what the peaks of the same command taught
+// (memory.avin).
 // `label` is the text its submitter gave it, "" for none; `quietMs` its quiet timeout, 0 for none.
-// `reservedFrom` says where the reservation came from (`reservationSource`: `given`, `kind+dir`,
-// `kind` or `none`), "" from a daemon that does not say.
+// `reservedFrom` says where the reservation came from (`reservationSource`: `given`, `cmd+dir`,
+// `cmd` or `none`; `kind+dir` and `kind` from daemons that learned per kind), "" from a daemon that
+// does not say.
 // `external` says its work runs outside its process tree (`JobSpec`); `quick` says it is in the
 // quick lane. `expectedMs` is how long it is expected to run (0 where not said), `durationLearned`
 // whether that is learned from its kind's runs rather than guessed from the default deadline, and

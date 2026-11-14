@@ -1,0 +1,243 @@
+module tests
+
+// Memory learned per command: what a command's signature is, how a reservation follows a command's
+// peaks up and down, that a heavy command no longer poisons the reservations of light ones of the
+// same kind, and the learned peaks kept in memory.json.
+import avin.fs
+import avin.threads.spawn
+import dev.avinlang.marshal
+import dev.avinlang.marshal.{Budget, MemoryLearning, Reservation, Started, Waiting}
+
+private val MiB: long = 1024 * 1024
+private val memDefaults: MemoryLearning = marshal.defaultMemoryLearning
+
+private sig(words: string) -> string = marshal.commandSignature(words.split(" ").toVector)
+
+@test("a signature is the program, its subcommand and its target, each as a last path component")
+signatures()
+  assertEq(sig("sysl test ."), "sysl test .")
+  assertEq(sig("sysl test compiler"), "sysl test compiler")
+  assertEq(sig("sysl build compiler -o sysl"), "sysl build compiler")
+  assertEq(sig("sysl build . -o sysl"), "sysl build .")
+  // options and numbers are passed over, wherever they are
+  assertEq(sig("sysl test . --jobs 4 --file tests_a.sysl"), "sysl test .")
+  assertEq(sig("sysl test --jobs 4 compiler"), "sysl test compiler")
+  assertEq(sig("./gradlew test"), "gradlew test")
+  // worktrees of one repository share a signature
+  assertEq(sig("/w/sysl-a/stage1 test /w/sysl-a/compiler"), sig("/w/sysl-b/stage1 test /w/sysl-b/compiler"))
+  assertEq(sig("make"), "make")
+  assertEq(sig("sleep 30"), "sleep")
+  assertEq(sig("sleep 0.5"), "sleep")
+  assertEq(marshal.commandSignature([]), "")
+
+@test("wrappers and settings before the program are passed over")
+wrapped()
+  assertEq(sig("env -u SYSL_LIB sysl build compiler"), "sysl build compiler")
+  assertEq(sig("env SYSL_LIB=/w/x/library ./sysl test ."), "sysl test .")
+  assertEq(sig("SYSL_LIB=/l nice -n 10 sysl test ."), "sysl test .")
+  assertEq(sig("caffeinate -dimsu nice sysl test compiler"), "sysl test compiler")
+  assertEq(sig("timeout 5m sysl test ."), "sysl test .")
+  assertEq(sig("env -- sysl test ."), "sysl test .")
+  // a wrapper with nothing after it has no signature
+  assertEq(sig("env -u X"), "")
+  assertEq(sig("nice"), "")
+
+@test("a shell is its script's name, without the script's arguments; -c is the command it runs")
+shellsLearnTheirScript()
+  assertEq(sig("zsh /tmp/s/gate.zsh tests_a tests_b"), "zsh gate.zsh")
+  assertEq(sig("zsh scripts/release.sh 0.0.21 --out"), "zsh release.sh")
+  assertEq(sig("sh -e /x/train.zsh branch"), "sh train.zsh")
+  assertEq(sig("zsh -o pipefail run.zsh"), "zsh run.zsh")
+  assertEq(marshal.commandSignature(["zsh", "-c", "env -u SYSL_LIB sysl build . -o sysl && ./sysl test ."]), "sysl build .")
+  assertEq(marshal.commandSignature(["zsh", "-c", "cd /w/x && export A=1; sysl test compiler --jobs 4"]), "sysl test compiler")
+  assertEq(marshal.commandSignature(["sh", "-ec", "make -j 8 all"]), "make all")
+  // a -c that runs only preparation, or nothing, or a shell inside it, stops there
+  assertEq(marshal.commandSignature(["zsh", "-c", "cd /w"]), "zsh -c")
+  assertEq(marshal.commandSignature(["zsh", "-c"]), "zsh -c")
+  assertEq(marshal.commandSignature(["zsh", "-c", "zsh -c 'sysl test .'"]), "zsh -c")
+  assertEq(sig("zsh"), "zsh")
+
+// Today's poisoning, as the event log had it: kind `build` covering compiler gates that peaked at
+// 33G (under many scratch and worktree directories), beside ordinary builds that peak near 6G.
+private poisonedLog() -> Vector[string] =
+  val lines = Buffer[string]()
+  for i in 0 ..< 8
+    lines += peakLine(long(i + 1), s"/scratch/s$i", "[\"zsh\",\"/scratch/s$i/gate.zsh\",\"tests_a\"]", 33 * G)
+  for i in 0 ..< 3
+    lines += peakLine(long(i + 20), s"/w/sysl-b$i", "[\"env\",\"-u\",\"SYSL_LIB\",\"sysl\",\"build\",\".\",\"-o\",\"sysl\"]", 6 * G)
+  lines.toVector
+
+private peakLine(id: long, dir: string, cmd: string, peak: long) -> string =
+  s"{\"ts\":1,\"event\":\"finished\",\"id\":$id,\"kind\":\"build\",\"units\":1,\"landing\":false,\"dir\":\"$dir\",\"cmd\":$cmd,\"exit\":0,\"run_ms\":10,\"peak_rss\":$peak}"
+
+// The reservation the daemon would give a job of kind `build` running `cmd` in `dir`.
+private reserveIn(peaks: Map[string, Vector[long]], cmd: Vector[string], dir: string) -> (Reservation, string)
+  val s = marshal.commandSignature(cmd)
+  val h = marshal.memoryHistory(
+    memDefaults,
+    peaks.get(marshal.memoryDirKey("build", false, s, dir)).getOrElse([]),
+    peaks.get(marshal.memoryKey("build", false, s)).getOrElse([])
+  )
+  val r = marshal.reservationFor(memDefaults, 0, false, h.peaks, 56 * G)
+  (r, marshal.reservationSource(0, false, r, h.from))
+
+@test("a heavy command no longer poisons its kind: light builds in new directories reserve their own peak and run together")
+noPoisoning()
+  val peaks = marshal.recover(poisonedLog()).peaks
+  val build = ["sysl", "build", ".", "-o", "sysl"]
+  val (r, from) = reserveIn(peaks, build, "/w/sysl-fresh")
+  // 6G and a tenth, from the same command run in other worktrees
+  assertEq((r, from), (Reservation(6759 * MiB, true), "cmd"))
+  // five of them fit in 56G at once, where each reserved 37G before
+  val b = Budget(12, 56 * G)
+  val waiting = (1 .. 5).map(i -> Waiting(long(i), 1, r.bytes, false, hour, long(i * 10))).toVector
+  assertEq(marshal.schedule(b, [], waiting, 0), [long(1), long(2), long(3), long(4), long(5)])
+  // the gate itself still reserves its own 33G, so two of them never start together
+  val (g, gFrom) = reserveIn(peaks, ["zsh", "/scratch/new/gate.zsh"], "/scratch/new")
+  assertEq((g.bytes > 33 * G, gFrom), (true, "cmd"))
+  val gates = [Waiting(1, 1, g.bytes, false, hour, 10), Waiting(2, 1, g.bytes, false, hour, 20)]
+  assertEq(marshal.schedule(b, [], gates, 0), [long(1)])
+  // a command never run, whatever its kind ran before, reserves nothing
+  assertEq(reserveIn(peaks, ["./gradlew", "publishPlugins"], "/w/plugin"), (Reservation(0, false), "none"))
+  assertEq(peaks.get("build"), None)
+
+@test("history in the job's own directory refines the command's: cmd+dir before cmd, cmd before nothing")
+fallbackOrder()
+  val lines = poisonedLog() ++ [peakLine(40, "/w/big", "[\"sysl\",\"build\",\".\"]", 4 * G)]
+  val peaks = marshal.recover(lines).peaks
+  val build: Vector[string] = ["sysl", "build", "."]
+  // its own directory's 4G, a tenth more
+  assertEq(reserveIn(peaks, build, "/w/big"), (Reservation(4506 * MiB, true), "cmd+dir"))
+  // elsewhere, the most of the command's last five anywhere, 6G, a tenth more
+  assertEq(reserveIn(peaks, build, "/w/other"), (Reservation(6759 * MiB, true), "cmd"))
+  // a different target is a different command
+  assertEq(reserveIn(peaks, ["sysl", "build", "compiler"], "/w/big"), (Reservation(0, false), "none"))
+
+// The reservation after each of `runs` peaks, in GiB tenths, learned one run at a time.
+private following(runs: Vector[long]) -> Vector[long]
+  val seen = Buffer[long]()
+  val out = Buffer[long]()
+  for p in runs
+    seen += p * G
+    out += marshal.learnedPeak(memDefaults, seen.toVector).get * 10 / (1024 * MiB)
+  out.toVector
+
+@test("a step up raises the very next reservation to the new peak and a tenth")
+stepUp()
+  assertEq(following([10, 10, 10, 20]), [long(110), long(110), long(110), long(220)])
+
+@test("a step down reaches the new level in five runs")
+stepDown()
+  val after = following([20, 20, 20, 20, 20, 10, 10, 10, 10, 10])
+  assertEq(after.take(5).toSet, {long(220)})
+  // still high while any old peak is among the last five; the new level once none is
+  assertEq(after.drop(5).take(4).toSet, {long(220)})
+  assertEq(after.last, long(110))
+
+@test("one spike raises the next reservation and is forgotten five runs later")
+spike()
+  assertEq(
+    following([10, 10, 30, 10, 10, 10, 10, 10]),
+    [long(110), long(110), long(330), long(330), long(330), long(330), long(330), long(110)]
+  )
+
+@test("noisy peaks keep a steady reservation that covers their range")
+noisy()
+  // peaks that wander between 8G and 10G, the top one now and then
+  val runs: Vector[long] = [9, 10, 8, 9, 8, 9, 10, 8, 9, 8, 10, 9, 8, 9, 9]
+  val after = following(runs)
+  // every reservation covers every peak of the last five runs
+  for i in 0 ..< runs.length
+    val recent = runs.take(i + 1).takeRight(5)
+    assert(after(i) >= recent.max * 10, s"$i: ${after(i)}")
+  // and it changes on few runs: only when the top leaves the window and comes back
+  var moves = 0
+  for i in 1 ..< after.length
+    if after(i) != after(i - 1) then moves += 1
+  assert(moves <= 2, s"$after")
+  assert(after.forall(a -> a == 99 || a == 110), s"$after")
+
+@test("a job measured above its reservation while it still runs holds what it measured, and delays the next start")
+aboveWhileRunning()
+  val b = Budget(12, 56 * G)
+  // reserved 6G from its history, now measured at 40G: a 20G job does not fit beside it
+  val grown = Started(1, 1, marshal.holding(6 * G, 40 * G), false, 0, hour)
+  assertEq(marshal.schedule(b, [grown], [Waiting(2, 1, 20 * G, false, hour, 20)], 0), [])
+  // at 30G it does
+  val less = Started(1, 1, marshal.holding(6 * G, 30 * G), false, 0, hour)
+  assertEq(marshal.schedule(b, [less], [Waiting(2, 1, 20 * G, false, hour, 20)], 0), [long(2)])
+  // and once it ends, the next run of its command reserves that peak
+  assertEq(marshal.learnedPeak(memDefaults, [6 * G, 40 * G]), Some(44 * G))
+
+@test("--mem overrides learned memory, 0 among them")
+memGiven()
+  val peaks: Vector[long] = [30 * G]
+  assertEq(marshal.reservationFor(memDefaults, 2 * G, true, peaks, 56 * G), Reservation(2 * G, false))
+  assertEq(marshal.reservationFor(memDefaults, 0, true, peaks, 56 * G), Reservation(0, false))
+
+@test("the learned peaks read back from memory.json as they were written, only the last twenty of a key")
+memoryFileRoundTrip()
+  val many = (1 .. 30).map(i -> long(i) * MiB).toVector
+  val peaks = [("build\nsysl build .", [G, 2 * G]), ("build\nsysl build .\n/w/a", [G]), ("test\nzsh t.zsh", many)].toMap
+  val back = marshal.decodeMemory(marshal.encodeMemory(peaks)).ok.get
+  assertEq(back("build\nsysl build ."), [G, 2 * G])
+  assertEq(back("build\nsysl build .\n/w/a"), [G])
+  assertEq(back("test\nzsh t.zsh"), many.takeRight(20))
+  val none = Vector[(string, Vector[long])]().toMap
+  assertEq(marshal.decodeMemory(marshal.encodeMemory(none)), Ok(none))
+
+@test("a missing, corrupt, truncated or other-version memory.json is refused with the reason")
+memoryFileRefused()
+  val dir = fs.createTempDir("marshal-memory-").ok.get
+  val file = dir + "/memory.json"
+  assert(marshal.loadMemory(file).err.get.contains("cannot be read"), "missing")
+  val good = marshal.encodeMemory([("build\nmake", [G])].toMap)
+  fs.writeText(file, good.take(good.byteLength / 2)).ok.get
+  assert(marshal.loadMemory(file).err.get.startsWith("not JSON"), "truncated")
+  fs.writeText(file, "").ok.get
+  assert(marshal.loadMemory(file).isErr, "empty")
+  fs.writeText(file, "{\"peaks\":{}}").ok.get
+  assertEq(marshal.loadMemory(file).err, Some("version missing, not 1"))
+  fs.writeText(file, "{\"version\":0,\"peaks\":{}}").ok.get
+  assertEq(marshal.loadMemory(file).err, Some("version 0, not 1"))
+  fs.writeText(file, "{\"version\":2,\"peaks\":{}}").ok.get
+  assertEq(marshal.loadMemory(file).err, Some("version 2, not 1"))
+  fs.writeText(file, "{\"version\":1,\"peaks\":[]}").ok.get
+  assertEq(marshal.loadMemory(file).err, Some("`peaks` is not an object"))
+  fs.writeText(file, "{\"version\":1,\"peaks\":{\"k\":[1,\"x\"]}}").ok.get
+  assertEq(marshal.loadMemory(file).err, Some("the peaks of `k` are not sizes"))
+  fs.writeText(file, "{\"version\":1,\"peaks\":{\"k\":[0]}}").ok.get
+  assertEq(marshal.loadMemory(file).err, Some("the peaks of `k` are not sizes"))
+  fs.writeText(file, good).ok.get
+  assertEq(marshal.loadMemory(file), Ok([("build\nmake", [G])].toMap))
+  val _ = fs.removeDirAll(dir)
+
+// Writer `w` writing `file` fifty times, each write 200 copies of one number of its own; whether
+// every write succeeded.
+private writeMany(file: string, w: int) -> bool
+  var ok = true
+  for i in 0 ..< 50
+    val peaks = [(s"build\nw$w", (0 ..< 200).map(_ -> long(w * 1000 + i + 1)).toVector)].toMap
+    if marshal.saveMemory(file, peaks).isErr then ok = false
+  ok
+
+@test("concurrent writes of memory.json never interleave: the file is always one whole write")
+memoryFileConcurrent()
+  val dir = fs.createTempDir("marshal-memory-").ok.get
+  val file = dir + "/memory.json"
+  val writers = (0 ..< 8).map(w -> spawn(() -> writeMany(file, w))).toVector
+  var reads = 0
+  for _ in 0 ..< 200
+    if fs.exists(file)
+      val m = marshal.loadMemory(file)
+      assert(m.isOk, s"${m.err}")
+      val one = m.ok.get
+      assertEq(one.size, 1)
+      // every peak of a write is the same number: no write's peaks mixed with another's
+      for (_, ps) in one do assertEq(ps.toSet.size, 1)
+      reads += 1
+  for t in writers do assert(t.join(), "a write failed")
+  assert(marshal.loadMemory(file).isOk)
+  // no temporary file is left behind
+  assertEq(fs.listDir(dir).ok.get, ["memory.json"])
+  val _ = fs.removeDirAll(dir)
