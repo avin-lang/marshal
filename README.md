@@ -298,7 +298,7 @@ Options of `submit` and `run`:
 | `--quick` | The quick lane, for a short job such as the tests of a small package: it starts at once, outside the unit budget, rather than queue for units behind long builds. At most 2 quick jobs run at a time; a third waits in the quick lane, ahead of development jobs, and `ls` shows it `queued (quick lane full)`. Its memory still counts: it starts only when its reservation (`--mem`, or its kind's learned peak) fits in the budget's free memory, and holds it while it runs, so a development job may wait for it; until then it waits `queued (no memory)` and development jobs leave that memory to it. It is niced like a development job, never passes a landing job (one that drains the machine holds the quick lane too), and its deadline is at most 2 minutes: 2m by default, a shorter `--deadline` kept, a longer one refused. Past it, it is stopped as any job past its deadline (`timeout`). `ls` and `top` mark its kind with `^`, `top` says `quick` for it running and `quick: 1/2` in the header; `status` names the lane while a quick job runs, and `status --json` has `quick` (running) and `quick_slots`, and `"quick":true` on the job. `rerun` keeps it; `run-type` and `train` take `--quick` too (a type's own deadline over the cap gives way to the cap). Not with `--landing`. When a job submitted without `--quick` is of a kind whose recent successful runs took under 2 minutes at p90 (at least 3 runs learned), `submit`, `run` and `run-type` print a one-line hint on stderr suggesting `--quick`; nothing moves the job into the lane but the option. |
 | `--exclusive` | The job owns the machine, for a benchmark. It starts only when no other marshal job runs, in any lane (development, quick, landing) and take-slot holds nothing; while it runs, nothing else starts, a landing job included. It never pauses or kills a running job: it waits for them, `queued (emptying)`, behind any job queued ahead of it that still waits (`queued (behind N)`). Every job queued after it waits for it, `queued (exclusive N)`, so no stream of short jobs can keep the machine from emptying — except a landing job: one queued before the exclusive job starts goes first, so a benchmark never holds up a release train. It weighs the whole unit budget (`--units` is ignored), is not niced, and keeps its `--deadline`. Its log begins with a line `marshal exclusive: load 1.52 1.4 1.31; busiest outside marshal: WindowServer 412 12.3%, mds 88 5%` (the load averages, and the 5 busiest processes that are not marshal's or the job's own), and gets another every 30 s, so a result can tell whether anything disturbed it. `ls` and `top` mark its kind with `#`, `top` says `exclusive` for it running, `status` says `exclusive job N owns the machine`, and `status --json` has `exclusive` (the running one's id) and `"exclusive":true` on the job. Two exclusive jobs run one after the other; `rerun` keeps it. Not with `--landing` or `--quick`. |
 | `--quiet-load <n>` | With `--exclusive`: also wait, before starting, until the 1-minute load average has stayed below `n` for a whole minute — work outside marshal it cannot stop but can wait out. The load is read every second; `ls` shows `queued (load 7.9 ≥ 4)` while it is at or above `n` and `queued (load 3.5 < 4 for 20.0s)` while the minute runs; a reading at or above `n` starts the minute again. Where the load cannot be read, it does not hold the job. `--quiet-load auto` is a quarter of the processors (`sysctl hw.ncpu`), at least 1: 4.5 on an 18-core Mac, whose desktop alone keeps the load near 2–3. While the load holds it, it holds nothing back: jobs queued after it run, and only once the load has settled does it reserve the machine as above. After `load_wait` (`config.json`, 15 minutes) it stops waiting for the load and starts once the machine empties; its log then begins `marshal exclusive: started after waiting 15m00s for the load to fall below 2; the load was 2.13`. |
-| `--urgent` | Queues it in its lane's urgent band: ahead of every job not urgent, behind the urgent jobs already queued. `ls` and `top` mark its kind with `!` (`test!`), after the lane's mark when it has one (`test^!` quick, `test*!` landing); the mark stays while it runs and after it ends, and `priority <id> --urgent` adds it too. |
+| `--urgent` | Queues it in its lane's urgent band: ahead of every job not urgent, behind the urgent jobs already queued. It runs un-niced, as a landing job does, backfilled or not; it still weighs its learned units, or its kind's default without `--units`. `ls` and `top` mark its kind with `!` (`test!`), after the lane's mark when it has one (`test^!` quick, `test*!` landing); the mark stays while it runs and after it ends, and `priority <id> --urgent` adds it too. |
 | `--dir <d>` | Where it runs, relative to the current directory. Default: the current directory. |
 | `--deadline <t>` | Stops it after `t`: a number of minutes, or `90s`, `30m`, `2h`. Default: learned for its kind. |
 | `--quiet-timeout <t>` | Stops it once its log has had no new output for `t`, written as `--deadline` writes one: a hung job ends then rather than at its deadline. It is sampled and stopped as a deadline stops it, but its outcome is `quiet`: `wait` says `killed after 10m00s without output (quiet timeout)`, its log ends with that line, the event is `quiet`, and `ls` and `history` show `quiet`. Time paused does not count, and the quiet clock starts again on `resume` and on `marshal restart`. `status --json` gives it as `quiet_ms`; `rerun` keeps it; `run-type` and `train` take it too. Default: none. |
@@ -344,7 +344,9 @@ type's own, `--quiet-timeout`, `--label` and `--quick`, and `--submit`, which pr
 waiting. A type's parameters may not use those names.
 
 A job runs with the caller's environment, plus `MARSHAL_JOB` (its id) and `MARSHAL_HOME`, in a
-process group of its own, under `nice -n 15` unless it is a landing job, with its standard output
+process group of its own, under `nice -n 15` unless it is a landing, exclusive or urgent job (one in
+the urgent band as it starts, by `--urgent` or `priority --urgent`, whether it starts in its turn or
+backfilled ahead of a draining job), which runs un-niced, with its standard output
 and error in `~/.marshal/jobs/<id>.log`.
 
 **Exit statuses.** `wait` and `run` exit with the job's own code; 128 + the signal for a job ended by
@@ -460,10 +462,14 @@ ends: nothing polls.
   most memory any of the last 5 measured runs of the same command held, whatever their outcome,
   plus a tenth. The command is its signature: the program, its subcommand and its target, each as
   the last part of a path (`sysl test compiler`, `sysl test .`, `gradlew test`), or a shell and its
-  script's name (`zsh gate.zsh`), with wrappers such as `env`, `nice` and `caffeinate` and
-  `NAME=value` settings passed over, and a `zsh -c` as the command it runs. So a compiler's suite
-  and a small package's suite learn apart, and every worktree of a repository shares what a command
-  has learned. Runs of the command in the job's own directory (`--dir`) come first once there is
+  script's path as written (`zsh /tmp/rel/gate2.zsh`, a leading `./` left out), with wrappers such
+  as `env`, `nice` and `caffeinate` and `NAME=value` settings passed over, and a `zsh -c` as the
+  command it runs. An interpreter (`python3`, `perl`, `ruby`, `node`, ...) running a script is the
+  interpreter, the script's path and its first argument, and a program that is itself a script
+  (`./gate.zsh`) its path and first argument. So a compiler's suite and a small package's suite
+  learn apart, two scripts of one name in two directories learn apart, and every worktree of a
+  repository shares what a command (or a script named by a relative path) has learned. A job's
+  `--label` is not part of it: the same script under another label is the same work. Runs of the command in the job's own directory (`--dir`) come first once there is
   one; then its runs anywhere. A kind (`build`, `test`) is never learned from on its own: a command
   never run before reserves 0, and a landing job learns apart from development ones. Because only
   the last 5 runs count, a reservation follows the work: a run that peaks higher raises the next
@@ -594,14 +600,19 @@ ends: nothing polls.
   daemon's, and neither starts a daemon.
 - **Learned memory, cores and durations are kept in `memory.json`.** After every job that ends, the
   daemon writes what it has learned to `memory.json` in marshal's home:
-  `{"version": 3, "peaks": {...}, "cores": {...}, "durations": {...}}`, each key a kind (`+landing`
+  `{"version": 4, "peaks": {...}, "cores": {...}, "durations": {...}}`, each key a kind (`+landing`
   for the landing lane), a line feed and a command's signature, with a line feed and a directory
   after it for runs in that directory, holding that key's last 20 memory peaks in bytes (`peaks`),
   peak cores as numbers (`cores`, such as `1.25`) and run times of successful runs in milliseconds
-  (`durations`), oldest first. An older file is read without loss: a version 2 file keeps its peaks
+  (`durations`), oldest first. An older file is read: a version 2 file keeps its peaks
   and cores and its durations are learned from the event log's successful `finished` events
   (`run_ms`); a version 1 file, which has only `peaks`, keeps them and learns the cores (from
-  `peak_cores`) and the durations so; either is written again as version 3. It is written to a temporary file and renamed into place, so a reader sees
+  `peak_cores`) and the durations so. Before version 4 a script's signature was its name alone
+  (`zsh gate.zsh`), so one key could mix the runs of several scripts of that name: a file of
+  version 1, 2 or 3 drops those keys (a shell, an interpreter or a script running a script) and
+  keeps every other, and the scripts' runs still in the event log are learned again under their
+  paths; what the event log no longer has of them is gone. Any older file is written again as
+  version 4 at once. It is written to a temporary file and renamed into place, so a reader sees
   the whole of one write, never part. A starting daemon reads it, so what was learned survives
   `stop`, `restart`, an upgrade, a reboot and `marshal clean` trimming the event log. When the file
   is missing, does not read, or is of another version, the daemon says so on stderr (a missing one

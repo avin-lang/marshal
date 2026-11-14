@@ -97,7 +97,8 @@ Options of submit and run:
                     account's daemon): it reserves exactly --mem, which it must give, and its
                     measured peak is never learned (@ in RESV)
   --landing         run it in the landing lane: first, outside the unit budget, not niced
-  --urgent          queue it ahead of every job not urgent in its lane, behind the urgent ones already queued
+  --urgent          queue it ahead of every job not urgent in its lane, behind the urgent ones already queued;
+                    not niced, backfilled or not
   --quick           run it in the quick lane: at once, outside the unit budget, niced, while its
                     memory fits; at most 2 at a time, and a deadline of at most 2m (default 2m;
                     a shorter --deadline is kept, a longer one refused). Not with --landing

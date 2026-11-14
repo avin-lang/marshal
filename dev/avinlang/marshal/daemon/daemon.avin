@@ -1022,10 +1022,12 @@ class Daemon(
   // `started` event say.
   start(job: Job, ahead: Option[long] = None)
     val spec = job.spec
-    // a landing job, and an exclusive one (a benchmark, alone on the machine), is not niced
-    val program = if spec.landing || spec.exclusive then Command(spec.cmd(0), spec.cmd.drop(1)*) else Command(
+    // a landing job, an exclusive one (a benchmark, alone on the machine) and an urgent one are not
+    // niced, backfilled or not
+    val level = marshal.niceFor(spec.landing, spec.exclusive, job.urgentAt > 0)
+    val program = if level == 0 then Command(spec.cmd(0), spec.cmd.drop(1)*) else Command(
       "nice",
-      (["-n", "15"] ++ spec.cmd)*
+      (["-n", level.toString()] ++ spec.cmd)*
     )
     // A retry's output follows the earlier attempts' in the job's log.
     // (a note a log cannot take is lost; the job itself is not affected)
@@ -2131,15 +2133,17 @@ run(home: string, resume: Option[string] = None) -> int
   loaded.err.foreach(
     why -> if fs.exists(memoryFile) then eprintln(s"marshal: $memoryFile $why; learning again from the event log")
   )
-  val learned = loaded.getOrElse(marshal.Learned(recovered.peaks, recovered.cores, false, recovered.durations))
+  val read = loaded.getOrElse(marshal.Learned(recovered.peaks, recovered.cores, false, recovered.durations))
+  // a version 1 or 2 file kept no durations, and a version 1 file no cores: they come from the
+  // event log, as do the scripts' runs a file before version 4 kept under a key of their name only
+  val learned = marshal.withRecovered(read, recovered.peaks, recovered.cores, recovered.durations)
   for (key, peaks) in learned.peaks
     for p in peaks do daemon.rememberPeak(key, p)
-  for (key, cores) in if learned.fromVersion1 then recovered.cores else learned.cores
+  for (key, cores) in learned.cores
     for c in cores do daemon.rememberCores(key, c)
-  // a version 1 or 2 file kept no durations: they come from the event log
-  for (key, runs) in if learned.withoutDurations then recovered.durations else learned.durations
+  for (key, runs) in learned.durations
     for ms in runs do daemon.rememberDuration(key, ms)
-  if loaded.isErr || learned.fromVersion1 || learned.withoutDurations then daemon.saveMemory()
+  if loaded.isErr || read.fromVersion1 || read.withoutDurations || read.staleScripts then daemon.saveMemory()
   // the free disk is known before the first job can start
   daemon.diskFree = marshal.diskFree(daemon.diskDirs()).getOrElse(-1)
   for s in saved

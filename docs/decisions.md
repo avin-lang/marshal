@@ -1804,3 +1804,41 @@ max(reservation, measured) are unchanged.
 - **`resv_from` says `cmd+dir`, `cmd`, `given` or `none`**, and `ls`/`top` keep `~` for a learned
   reservation. A state saved by an earlier daemon, mid-restart, keeps the `kind+dir` or `kind` it
   recorded until its job ends, so readers accept both old words.
+
+## An urgent job is not niced, and a script is learned by its path (branch `urgent-nice`)
+
+Reported by the sysl session during a release: an `--urgent` gate without `--units` ran its whole
+process tree at nice 15, backfilled ahead of a draining job, while a landing job's processes ran at
+nice 0; and it reserved 34G and expected 10 minutes learned from five other scripts that were all
+called `gate2.zsh`, each in a scratch directory of its own.
+
+- **An urgent job runs un-niced, as a landing and an exclusive job do, however it starts** (in its
+  turn, or backfilled). What decides is the urgent band as it starts, so `priority <id> --urgent`
+  un-nices a job too, and `priority <id> <n>`, which takes a job out of the band, leaves it niced.
+  Why: `--urgent` is for a release's critical path, the work every other session is waiting on; at
+  nice 15 its compilers lost the processors to every development job beside it, which defeats the
+  band. Alternatives: un-nice only a job submitted with `--urgent` (the band, not the flag, is what
+  `ls` and the queue show as urgent); a level between (it would still lose to un-niced work).
+- **A script keeps its path in the command signature.** A shell running a script is the shell and
+  the script's path as written (a leading `./` left out), an interpreter (`python3`, `perl`,
+  `ruby`, `node`, ...) the script's path and its first argument, and a program that is itself a
+  script (by its ending: `.sh`, `.zsh`, `.py`, ...) its path and first argument. Why: a script's
+  name says little: sessions write `gate2.zsh` into a scratch directory per item, and each is
+  different work. A relative path stays relative, so `zsh scripts/test.sh` in every worktree of a
+  repository is still one command. Alternatives: the path resolved against `--dir` (worktrees would
+  stop sharing a relative script's history); the label in the signature (a label names the run,
+  `rel0110 gate2`, so the same script run under a new label would never learn); hashing the
+  script's contents (an edit to a gate would forget its history).
+- **memory.json is version 4; an older file drops its scripts' keys and keeps the rest.** A key
+  under the old form could hold several scripts' runs mixed, so it cannot be split; every other key
+  is the same under both forms and is kept. A key is a script's when its signature begins with a
+  shell or an interpreter followed by a script, or with a script. The scripts' runs the event log
+  still has are learned again under their new keys at the daemon's start, and the file is written
+  as version 4 at once; what the event log has trimmed of them is gone. Alternatives: drop the
+  whole file and learn everything from the event log (it would lose every command's history the log
+  has trimmed); keep the old keys as a fallback (it is the mixing being removed).
+- **Not changed: an urgent job's default units.** A job without `--units` and without learned
+  cores weighs its kind's default, 4 for a `test` and 1 for anything else, urgent or not; the
+  reported job's 1 unit was that default (none of the `gate2.zsh` runs had cores learned), not a
+  learned value. Urgency orders the queue; it does not size a job, and a job that knows it is big
+  says so with `--units`, or learns it after its first measured run.
