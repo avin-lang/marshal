@@ -6,7 +6,7 @@ import dev.avinlang.json
 import dev.avinlang.json.Json
 
 // marshal's version, as `avin.hocon` gives it: what `marshal version` and `marshal restart` print.
-val Version: string = "0.3.8"
+val Version: string = "0.3.9"
 
 // What a job is to run and how much of the machine it takes. `urgent` queues it in its lane's urgent
 // band, behind the urgent jobs already queued and ahead of every other. `after` names the jobs it
@@ -278,6 +278,8 @@ reservedText(j: JobInfo) -> string
 // those of the running jobs among them, both in hundredths and -1 where not measured. `diskFree` is
 // the free space of the fullest volume holding marshal's home or a job's directory, -1 where not
 // known; `diskMin` the least `disk_min` lets new jobs start beside (0: no guard; disk.avin).
+// `nofile` is the soft limit on open files every job inherits from the daemon, 0 where not known
+// (nofile.avin).
 data Usage(
     units: int,
     unitBudget: int,
@@ -296,12 +298,13 @@ data Usage(
     cpu: long = -1,
     jobCpu: long = -1,
     diskFree: long = -1,
-    diskMin: long = 0
+    diskMin: long = 0,
+    nofile: long = 0
 )
 
 // The members `status`, `status --json` and the snapshot add for the machine's processors and disk:
-// `cpu` and `job_cpu` in cores, `disk_free` and `disk_min` in bytes and `disk_low`; a value not
-// measured is left out.
+// `cpu` and `job_cpu` in cores, `disk_free` and `disk_min` in bytes and `disk_low`, and the jobs'
+// limit on open files `nofile`; a value not measured is left out.
 private machineMembers(u: Usage) -> Vector[(string, Json)]
   val out = Buffer[(string, Json)]()
   if u.cpu >= 0 then out += ("cpu", coresJson(u.cpu))
@@ -309,21 +312,23 @@ private machineMembers(u: Usage) -> Vector[(string, Json)]
   if u.diskFree >= 0 then out += ("disk_free", Json.num(u.diskFree))
   out += ("disk_min", Json.num(u.diskMin))
   out += ("disk_low", Json.Bool(diskLow(u.diskFree, u.diskMin)))
+  if u.nofile > 0 then out += ("nofile", Json.num(u.nofile))
   out.toVector
 
-// The four values `machineMembers` writes, read back.
-private machineOf(j: Json) -> Result[(long, long, long, long), string] =
+// The five values `machineMembers` writes, read back.
+private machineOf(j: Json) -> Result[(long, long, long, long, long), string] =
   Ok(
     (
       optional(j, "cpu", centiOf, "a number of cores", long(-1))?,
       optional(j, "job_cpu", centiOf, "a number of cores", long(-1))?,
       optional(j, "disk_free", wholeNumber, "a whole number", long(-1))?,
-      optional(j, "disk_min", wholeNumber, "a whole number", long(0))?
+      optional(j, "disk_min", wholeNumber, "a whole number", long(0))?,
+      optional(j, "nofile", wholeNumber, "a whole number", long(0))?
     )
   )
 
-// `u` with the machine's processors and disk as `m` gives them.
-private withMachine(u: Usage, m: (long, long, long, long)) -> Usage =
+// `u` with the machine's processors, disk and limit on open files as `m` gives them.
+private withMachine(u: Usage, m: (long, long, long, long, long)) -> Usage =
   Usage(
     u.units,
     u.unitBudget,
@@ -342,7 +347,8 @@ private withMachine(u: Usage, m: (long, long, long, long)) -> Usage =
     m.0,
     m.1,
     m.2,
-    m.3
+    m.3,
+    m.4
   )
 
 // What take-slot.zsh holds in the directory `dir` that marshal shares: units its runs hold, how many

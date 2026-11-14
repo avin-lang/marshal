@@ -93,7 +93,8 @@ The `status` reply and the snapshot also carry the machine's processors and disk
 before the first measurement), `disk_free`, the least free bytes of the volumes holding marshal's
 home and the jobs' directories (absent before it is measured), `disk_min`, the guard's threshold (0
 for none), and `disk_low`, whether new jobs are held for it. A queued job held for the disk `waits`
-`disk-low`, with `disk_free` beside it.
+`disk-low`, with `disk_free` beside it. `nofile` is the soft limit on open files every job inherits
+from the daemon (absent where it could not be read).
 
 `state` is `waiting` (for the jobs in `after` to end), `queued`, `running`, `retrying` (waiting out
 its retry delay) or `done`. `after` is what a waiting job still waits for; `attempt` counts its runs

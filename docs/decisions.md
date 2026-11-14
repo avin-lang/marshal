@@ -1897,3 +1897,39 @@ per command since 0.3.5; deadlines were still learned per kind.
 - **`--deadline` overrides everything**, as before. `stats`' DEADLINE is still per kind: the
   deadline a job of the kind gets while its command has too few runs of its own, now with the same
   margin over the longest run.
+
+## The daemon raises its jobs' limit on open files (branch `nofile-limit`)
+
+**Settled on the user's delegation 2026-11-14.** Reported by the slate session: every job ran with
+the soft `RLIMIT_NOFILE` 256 (hard unlimited), launchd's default, inherited by the daemon, while a
+login shell has 1048576; slate's test spawning 1024 actors, a libuv loop each, failed with `EMFILE`
+under marshal and passed outside it.
+
+- **The daemon raises its soft limit at start-up, before any job starts, and every job inherits
+  it.** A restarted image raises it again (it is already raised: nothing changes). The start line
+  names it (`open files 10240`), `status` ends with it and `status --json` has `nofile`. Why: the
+  limit is a process attribute a child inherits, so the one place that sets it covers every job,
+  however it is started. Alternatives: setting it in each job's child before `exec` (the daemon
+  starts jobs through `Command`, which has no hook there, and a limit on the daemon itself is what
+  its own sockets and logs want too); a `ulimit` wrapper around each command (a shell between
+  marshal and every job, for one setting).
+- **Raised to the hard limit where it is a number; to `OPEN_MAX` (10240) where the hard limit is
+  unlimited; a soft limit already higher is kept.** Why: on macOS 27 `setrlimit` accepts an
+  unlimited soft limit for open files and `getrlimit` reports it, so `ulimit -n` says `unlimited`,
+  while the kernel still opens no more than `kern.maxfilesperproc`; a program sizing a table or a
+  close-every-descriptor loop by that limit is then misled. The setrlimit manual's answer is
+  `min(OPEN_MAX, rlim_max)`, which is also what is asked where the system refuses the target.
+  Alternatives: `kern.maxfilesperproc` (245760 here), as Go's runtime uses: it needs
+  `sysctlbyname`, whose `void *` result Avin's C bindings refuse (a `void *` other than a callback's
+  `userdata`); reported as a gap for Avin to close, after which the fallback can become
+  `min(hard, kern.maxfilesperproc)`. Review with the user if 10240 by default is too few: the
+  `nofile` setting below asks for more today.
+- **`nofile` in config.json asks for a soft limit of its own**, a whole number at least 1, held to
+  the hard limit, lower than the inherited one too. Why: a machine whose work needs more than
+  OPEN_MAX (or wants less) says so once. Alternatives: no setting (10240 would be the most any job
+  could have under an unlimited hard limit).
+- **The limits are reached through `@c` bindings of `getrlimit` and `setrlimit`** with `struct
+  rlimit` mirrored and `RLIMIT_NOFILE`, `RLIM_INFINITY` and `OPEN_MAX` bound as constants, checked
+  against `<sys/resource.h>` and `<limits.h>` (`nofile.avin`); libc needs no `pkg-config`.
+  `OPEN_MAX` is a macOS header's (glibc defines none), so this ties the build to macOS, as the
+  `sample` at a deadline already ties that behaviour.

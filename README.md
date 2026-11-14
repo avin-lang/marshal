@@ -42,9 +42,9 @@ marshal: job 1 exited 0 after 2m12s; log /Users/me/.marshal/jobs/1.log
 
 The first command starts the daemon. `marshal run` waits and exits with the job's own status;
 `marshal submit` queues the job and prints its id, for `marshal wait <id>` later. `marshal top`
-shows what runs and waits, live. Its header gives the daemon's version after the name (`marshal 0.3.8`);
+shows what runs and waits, live. Its header gives the daemon's version after the name (`marshal 0.3.9`);
 when the top you are running is another version it adds it in yellow with a hint,
-`marshal 0.3.8 (top 0.3.7, restart top)`, and `marshal ?` stands for a daemon too old to say.
+`marshal 0.3.9 (top 0.3.8, restart top)`, and `marshal ?` stands for a daemon too old to say.
 
 ## A first train
 
@@ -536,6 +536,13 @@ ends: nothing polls.
   disk is under disk_min 20G: nothing new starts`; `status --json` has `disk_free`, `disk_min` and
   `disk_low`, and `top`'s header shows the free space, yellow under twice `disk_min` and red under
   it.
+- **Open files.** A daemon launchd starts inherits launchd's soft limit of 256 open files, far under
+  a login shell's, and a job inherits the daemon's. So the daemon raises its soft limit when it
+  starts, before any job: to the hard limit where that is a number, and to `OPEN_MAX` (10240) where
+  the hard limit is unlimited, keeping a soft limit that is already higher. A job's `ulimit -n` is
+  that limit. `nofile` in `config.json` asks for another, held to the hard limit. The daemon's start
+  line names it (`open files 10240`), `status` ends with `open files 10240` and `status --json` has
+  `nofile`.
 - **The machine's processors.** The `ps` listing the jobs are measured from each second lists every
   process, so the daemon measures the whole machine's processor use from it the same way, and the
   running jobs' share of it. `status` says `cpu 8.4 (jobs 4.9)`, `status --json` has `cpu` and
@@ -631,8 +638,8 @@ ends: nothing polls.
 `"never"`: how long a job waits before the machine drains for it), `load_wait` (`"15m"`, or `"never"`:
 how long an exclusive job waits for its `--quiet-load` before it starts anyway), `disk_min` (`"20G"`,
 or `"0"` for no guard: the least free disk new jobs start beside), `projects` (an absolute
-directory, `~/dev` by default: where a job's owner is named from) and `take_slot` (below), and the
-retention settings (next).
+directory, `~/dev` by default: where a job's owner is named from), `nofile` (a number of open files:
+the soft limit every job inherits) and `take_slot` (below), and the retention settings (next).
 
 **Retention.** Marshal's home would grow for ever, so the daemon removes old files when it starts
 and every hour, and `marshal clean` does it on request. Only a job that has ended for good is ever

@@ -172,12 +172,13 @@ usageLine(u: Usage) -> string
   s"units ${formatUnits(u.units)}/${formatUnits(u.unitBudget)}, memory $memory, ${u.running} running, ${u.queued} queued, landing lane $lane$quick$outside$exclusive$held${machineText(u)}"
 
 // What `status` says of the machine's processors and disk, after the rest: `; cpu 7.4 (jobs 5.1),
-// disk 120G free`, and that nothing new starts while the disk is under `disk_min`. Nothing for what
+// disk 120G free, open files 10240` (the jobs' soft limit on open files), and that nothing new starts while the disk is under `disk_min`. Nothing for what
 // was not measured.
 machineText(u: Usage) -> string
   val parts = Buffer[string]()
   if u.cpu >= 0 then parts += s"cpu ${formatCores(u.cpu)} (jobs ${formatCores(if u.jobCpu < 0 then 0 else u.jobCpu)})"
   if u.diskFree >= 0 then parts += s"disk ${roundSize(u.diskFree)} free"
+  if u.nofile > 0 then parts += s"open files ${u.nofile}"
   val low = if diskLow(
     u.diskFree,
     u.diskMin

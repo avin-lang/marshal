@@ -297,6 +297,9 @@ class Daemon(
   // and whether a measurement of it is under way.
   var diskFree: long = -1
   var measuringDisk = false
+  // The soft limit on open files the daemon raised at start-up and every job inherits, 0 where it
+  // could not be read (nofile.avin).
+  var nofile: long = 0
   var began: long = time.monotonic().toMillis
   // Replies given and not yet written by their connections.
   var unwritten = 0
@@ -1609,7 +1612,8 @@ class Daemon(
       machineMeter.now,
       if machineMeter.now < 0 then -1 else running.map(j -> if j.meter.now > 0 then j.meter.now else 0).sum,
       diskFree,
-      config.diskMin
+      config.diskMin,
+      nofile
     )
 
   // A stop asks for the daemon to end: at once when nothing is queued or running; with `force`,
@@ -2066,6 +2070,8 @@ run(home: string, resume: Option[string] = None) -> int
       val _ = listener.close()
       val _ = fs.remove(home + "/sock")
       return 1
+  // before any job starts, so that every job inherits it
+  val nofile = marshal.raiseNofile(config.nofile).getOrElse(0)
   val takeSlot = marshal.takeSlotDir(process.env("MARSHAL_TAKE_SLOT_DIR"), config.takeSlot)
   for dir in takeSlot
     if !fs.isDir(dir)
@@ -2148,8 +2154,9 @@ run(home: string, resume: Option[string] = None) -> int
       events.send(Sample)
     ())
   val sharing = takeSlot.map(dir -> s", sharing take-slot's $dir").getOrElse("")
+  val files = if nofile > 0 then s", open files $nofile" else ""
   eprintln(
-    s"marshal: daemon ${process.pid()} listening at $home/sock; units ${marshal.formatUnits(config.budget.units)}, memory ${marshal.formatSize(config.budget.memory)}$sharing, ${orphans.length} jobs lost"
+    s"marshal: daemon ${process.pid()} listening at $home/sock; units ${marshal.formatUnits(config.budget.units)}, memory ${marshal.formatSize(config.budget.memory)}$files$sharing, ${orphans.length} jobs lost"
   )
   // the jobs earlier daemons ended, the ones just recorded as lost among them; a restarted
   // daemon holds its own recent ones
@@ -2160,6 +2167,7 @@ run(home: string, resume: Option[string] = None) -> int
     ).filter(r -> r.isOk).map(r -> marshal.asLost(r.ok.get))
   ).sortBy(j -> j.id).takeRight(Recent)
   val daemon = Daemon(home, config, events, recovered.nextId, histories, slots, earlier, machine)
+  daemon.nofile = nofile
   // the learned peaks, cores and durations are memory.json's; where it is missing, unreadable or of
   // another version, they are learned again from the event log and written there at once. A
   // version 1 file keeps its peaks, and the cores, which it never had, come from the event log.

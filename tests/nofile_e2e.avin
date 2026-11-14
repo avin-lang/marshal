@@ -1,0 +1,73 @@
+module tests
+
+// End to end, the limit on open files: a daemon started where the soft limit is launchd's 256 raises
+// it before any job starts, so a job's `ulimit -n` is the raised limit, which the daemon's start line
+// and `status` both name; a finite hard limit is raised to, an unlimited one gives OPEN_MAX, and
+// config.json's `nofile` is the limit asked for, held to the hard one. The helpers are e2e.avin's.
+import avin.fs
+import dev.avinlang.marshal
+
+// Runs one job printing its soft limit on open files into `home`, through a command line started
+// with the soft limit 256 and, where `hard` says one, that hard limit, so that the daemon it starts
+// inherits them as one launchd starts does; the limit the job saw.
+private jobNofile(home: string, hard: Option[long]) -> long
+  // the soft limit first, since a hard limit under the soft one is refused; and `set -e`, so that a
+  // limit refused fails the test rather than passing on the inherited one
+  val limits = "set -e; ulimit -Sn 256; " + hard.map(h -> s"ulimit -Hn $h; ").getOrElse("")
+  val ran = mFrom(
+    "/bin/sh",
+    home,
+    [],
+    "-c",
+    limits + "exec \"$0\" \"$@\"",
+    bin(),
+    "run",
+    "--",
+    "sh",
+    "-c",
+    s"ulimit -n > $home/nofile.out"
+  )
+  assert(ran.code == 0, ran.out)
+  fs.readText(home + "/nofile.out").ok.get.trim.toLong()
+
+// The limit `status --json` names, and the one the daemon's start line names.
+private shownNofile(home: string) -> (long, Option[long])
+  val status = statusOf(home).get("nofile").flatMap(v -> v.asLong).getOrElse(0)
+  val log = fs.readText(home + "/daemon.log").ok.get
+  val line = log.lines.find(l -> l.contains("listening")).getOrElse("")
+  val named = line.split(", open files ").drop(1).headOption.flatMap(
+    rest -> rest.takeWhile(c -> '0' <= c <= '9').toLongOption()
+  )
+  (status, named)
+
+@test(
+  "a daemon started with launchd's soft limit of 256 raises it, and a job's ulimit -n is the raised limit, as status and the start line say"
+)
+nofileRaisedE2e()
+  val home = newHome()
+  val (_, hard) = marshal.nofileLimits().get
+  val n = jobNofile(home, None)
+  assert(n > 256, n.toString())
+  assertEq(n, marshal.nofileTarget(256, hard, None))
+  // where the hard limit is unlimited, a job is given OPEN_MAX, not an unlimited limit
+  if hard == marshal.RlimInfinity then assertEq(n, marshal.OpenMax)
+  assertEq(shownNofile(home), (n, Some(n)))
+  cleanUp(home)
+
+@test("a daemon whose hard limit on open files is a number raises the soft limit to it")
+nofileFiniteHardE2e()
+  val home = newHome()
+  assertEq(jobNofile(home, Some(1000)), long(1000))
+  assertEq(shownNofile(home), (long(1000), Some(long(1000))))
+  cleanUp(home)
+
+@test("config.json's nofile is the limit a job inherits, and is held to the hard limit")
+nofileConfiguredE2e()
+  val home = newHome("{\"nofile\": 4096}")
+  assertEq(jobNofile(home, None), long(4096))
+  assertEq(shownNofile(home), (long(4096), Some(long(4096))))
+  cleanUp(home)
+  val held = newHome("{\"nofile\": 5000}")
+  assertEq(jobNofile(held, Some(1000)), long(1000))
+  assertEq(shownNofile(held), (long(1000), Some(long(1000))))
+  cleanUp(held)
