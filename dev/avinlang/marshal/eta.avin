@@ -1,0 +1,182 @@
+module dev.avinlang.marshal
+
+// How long jobs are expected to take, learned per command, and what that says of when they end and
+// start.
+//
+// Each run of a command that exits 0 is remembered under the keys its memory is learned under
+// (`memoryKeys`: its command, and its command in its directory), and kept in memory.json. A job's
+// expected duration is the median of the last `DurationWindow` such runs of its command in its
+// directory, or of its command anywhere while its directory has none; before any, the median of its
+// kind's runs (deadline.avin), which is guessed rather than learned until the kind has enough. The
+// scheduler's backfill and drains read the expected duration whichever it is; an ETA is shown only
+// for one learned from the command's own runs, since a kind's runs (every test of every project)
+// say little of when one of them ends.
+//
+// A running job's ETA is its expected duration less the time it has run, nothing once it is past
+// it. A queued job's expected start is reckoned from the running jobs' expected ends: the jobs of
+// each lane, in their queue's order, each start at the earliest end after which its units and
+// memory fit beside what runs and what is reckoned to have started before it. Only where every end
+// that start waits for is known: a job waiting for something no duration measures (take-slot, the
+// load, an exclusive job, a held queue, a low disk) has none, and neither has any job behind it.
+import avin.collections.mutable.{Map as MutableMap}
+
+// How many of a command's latest successful runs its duration is learned from.
+val DurationWindow: int = 5
+
+// A duration learned of a command and the key it came from (`cmd+dir` or `cmd`).
+data LearnedDuration(ms: long, from: string)
+
+// The duration the runs of a command in its directory (`dirRuns`) and anywhere (`cmdRuns`), oldest
+// first, teach; None while there are none.
+learnedDuration(dirRuns: Vector[long], cmdRuns: Vector[long]) -> Option[LearnedDuration]
+  if dirRuns.nonEmpty then return Some(LearnedDuration(median(dirRuns.takeRight(DurationWindow)), "cmd+dir"))
+  if cmdRuns.nonEmpty then return Some(LearnedDuration(median(cmdRuns.takeRight(DurationWindow)), "cmd"))
+  None
+
+// How long a job is expected to run, whether that is learned rather than guessed, and where it came
+// from (`durationSource`).
+data Expectation(ms: long, learned: bool, from: string)
+
+// What a job of `kind` is expected to take: its command's learned duration where there is one,
+// else its kind's (`expectedMs`, `durationLearned`, given the kind's `history`); never more than
+// its `deadline`, nor less than a millisecond.
+expectationFor(
+    learning: Learning,
+    kind: string,
+    landing: bool,
+    history: Vector[long],
+    command: Option[LearnedDuration],
+    deadline: long
+) -> Expectation
+  val (ms, learned, from) = command match
+    Some(d) -> (d.ms, true, d.from)
+    None ->
+      val known = durationLearned(learning, history)
+      (expectedMs(learning, kind, landing, history), known, if known then "kind" else "none")
+  val held = if ms < deadline then ms else deadline
+  Expectation(if held < 1 then 1 else held, learned, from)
+
+// Whether a duration from `from` is a command's own, which an ETA may be given from.
+commandLearned(from: string) -> bool = from == "cmd" || from == "cmd+dir"
+
+// A running job's expected time left, in milliseconds: none past its expected duration, and -1 for
+// a job that is not running or whose duration is not its command's own.
+etaLeft(j: JobInfo) -> long
+  if j.state != "running" || !commandLearned(j.durationFrom) || j.expectedMs <= 0 then return -1
+  val left = j.expectedMs - j.elapsedMs
+  if left < 0 then 0 else left
+
+// A time to come, roughly: `<1m`, `~6m` (minutes rounded up), `~1h05`.
+etaText(ms: long) -> string
+  if ms < 60000 then return "<1m"
+  val minutes = (ms + 59999) / 60000
+  if minutes < 60 then s"~${minutes}m" else f"~${minutes / 60}%dh${minutes % 60}%02d"
+
+// A queued job's expected start as a listing shows it: `in ~3m`, and from an hour on to the nearest
+// hour, `in ~2h`, which is as near as a start reckoned from other jobs' estimates is; `-` where it
+// is not known.
+startText(ms: long) -> string
+  if ms < 0 then return "-"
+  if ms < 3600000 then return "in " + etaText(ms)
+  s"in ~${(ms + 1800000) / 3600000}h"
+
+// The ETA column of `ls` and `top`: a running job's time left, a queued job's expected start, `-`
+// otherwise. `since` is how long after the listing was made it is shown (a paused job stands still).
+etaColumn(j: JobInfo, since: long = 0) -> string
+  val left = etaLeft(j)
+  if left >= 0
+    val passed = if j.paused then 0 else since
+    return etaText(if left > passed then left - passed else 0)
+  if j.state == "queued" && j.startsInMs >= 0
+    return startText(if j.startsInMs > since then j.startsInMs - since else 0)
+  "-"
+
+// A running job as a start estimate weighs it: what it holds, its lane, and how long it is expected
+// to run yet (-1 where not known).
+data EtaRunning(units: int, memory: long, landing: bool, quick: bool, leftMs: long)
+
+// A queued job as a start estimate weighs it: what it needs, its lane, its place in its lane's
+// queue, why it waits, and how long it is expected to run (-1 where not known).
+data EtaQueued(
+    id: long,
+    units: int,
+    memory: long,
+    landing: bool,
+    quick: bool,
+    position: int,
+    why: Why,
+    expectedMs: long
+)
+
+private val Never: long = long.MaxValue
+
+// Whether a job waiting for `why` waits only for running jobs to end, so its start can be reckoned.
+private reckonable(why: Why) -> bool = why match
+  NoUnits | NoMemory | Behind(_) | Starting | Draining | DrainingFor(_) | LaneBusy -> true
+  _ -> false
+
+// When each queued job is expected to start, in milliseconds from now, by job id; a job whose start
+// cannot be reckoned is left out. `used` is the development units held now (marshal's and
+// take-slot's), and `memory` what admission counts the running jobs holding; take-slot's units never
+// free in the reckoning, since nothing says when its runs end.
+startEstimates(
+    budget: Budget,
+    used: int,
+    memory: long,
+    running: Vector[EtaRunning],
+    queued: Vector[EtaQueued]
+) -> Map[long, long]
+  val out = MutableMap[long, long]()
+  // the development lane: (time, units, memory) freed at each time, or taken where negative
+  val changes = Buffer[(long, int, long)]()
+  for r in running
+    if r.quick then continue
+    changes += (if r.leftMs < 0 then Never else r.leftMs, if r.landing then 0 else r.units, r.memory)
+  val freeUnits = budget.units - used
+  val freeMemory = budget.memory - memory
+  var floor: long = 0
+  for q in queued.filter(q -> !q.landing && !q.quick).sortBy(q -> q.position)
+    if q.why == Held then continue
+    if !reckonable(q.why) || q.why == LaneBusy then floor = Never
+    if floor == Never then continue
+    val at = earliest(changes, freeUnits, freeMemory, floor, q.units, q.memory)
+    if at == Never
+      floor = Never
+      continue
+    out(q.id) = at
+    floor = at
+    changes += (at, -q.units, -q.memory)
+    changes += (if q.expectedMs < 0 then Never else at + q.expectedMs, q.units, q.memory)
+  // the landing lane: one job at a time
+  var laneFree: long = 0
+  for r in running
+    if r.landing then laneFree = if r.leftMs < 0 then Never else r.leftMs
+  for q in queued.filter(q -> q.landing).sortBy(q -> q.position)
+    if q.why == Held then continue
+    if !(q.why == LaneBusy || q.why == Starting) then laneFree = Never
+    if laneFree == Never then continue
+    out(q.id) = laneFree
+    laneFree = if q.expectedMs < 0 then Never else laneFree + q.expectedMs
+  out.toMap
+
+// The earliest time from `floor` at which `units` and `memory` fit, given what is free now and the
+// `changes` to come; `Never` where they never do. Every start already reckoned is at or before
+// `floor`, so from there on what is free only grows, and the first time it fits it stays fitting.
+private earliest(
+    changes: Buffer[(long, int, long)],
+    freeUnits: int,
+    freeMemory: long,
+    floor: long,
+    units: int,
+    memory: long
+) -> long
+  val times = ([floor] ++ changes.filter(c -> c.0 > floor && c.0 != Never).map(c -> c.0).toVector).distinct.sorted
+  for t in times
+    var u = freeUnits
+    var m = freeMemory
+    for (at, du, dm) in changes
+      if at <= t
+        u += du
+        m += dm
+    if units <= u && memory <= m then return t
+  Never

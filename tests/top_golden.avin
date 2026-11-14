@@ -68,7 +68,12 @@ gjob(
     learned: bool = false,
     quick: bool = false,
     urgent: bool = false,
-    exclusive: bool = false
+    exclusive: bool = false,
+    cores: long = -1,
+    owner: string = "",
+    expected: long = 0,
+    from: string = "",
+    startsIn: long = -1
 ) -> JobInfo =
   JobInfo(
     id,
@@ -96,7 +101,12 @@ gjob(
     label = label,
     quick = quick,
     urgent = urgent,
-    exclusive = exclusive
+    exclusive = exclusive,
+    cores = cores,
+    owner = owner,
+    expectedMs = expected,
+    durationFrom = from,
+    startsInMs = startsIn
   )
 
 // A busy daemon: a landing job, a paused one, take-slot holding units with runs waiting, the queue
@@ -113,7 +123,11 @@ busy() -> Overview
       memory = 4 * G,
       rss = 3 * G,
       peak = 5 * G,
-      label = "release 0.3 train"
+      label = "release 0.3 train",
+      cores = 175,
+      owner = "sysl",
+      expected = 31 * minuteMs,
+      from = "cmd+dir"
     ),
     gjob(
       22,
@@ -122,7 +136,11 @@ busy() -> Overview
       elapsed = 29 * minuteMs + 30000,
       memory = 2 * G,
       rss = 2 * G + G / 2,
-      peak = 3 * G
+      peak = 3 * G,
+      cores = 312,
+      owner = "nex",
+      expected = 95 * minuteMs,
+      from = "cmd"
     ),
     gjob(
       23,
@@ -137,8 +155,12 @@ busy() -> Overview
     gjob(24, kind = "lint", cmd = ["eslint", "."], elapsed = 26 * minuteMs, deadline = 30 * minuteMs)
   ]
   val queuedJobs = [
-    QueuedJob(gjob(30, state = "queued", deadline = 45 * minuteMs, units = 4), 1, Why.NoUnits),
-    QueuedJob(gjob(31, state = "queued", memory = 8 * G), 2, Why.NoMemory),
+    QueuedJob(
+      gjob(30, state = "queued", deadline = 45 * minuteMs, units = 4, owner = "avin", startsIn = 6 * minuteMs),
+      1,
+      Why.NoUnits
+    ),
+    QueuedJob(gjob(31, state = "queued", memory = 8 * G, owner = "avin", startsIn = 75 * minuteMs), 2, Why.NoMemory),
     QueuedJob(gjob(32, kind = "test", state = "queued", landing = true), 3, Why.LaneBusy),
     QueuedJob(gjob(33, state = "queued"), 4, Why.Draining),
     QueuedJob(gjob(34, state = "queued"), 5, Why.ForTakeSlot),
@@ -168,7 +190,11 @@ busy() -> Overview
       6 * G,
       64 * G,
       true,
-      10 * G
+      10 * G,
+      cpu = 840,
+      jobCpu = 487,
+      diskFree = 31 * G,
+      diskMin = 20 * G
     ),
     90061000,
     running,
@@ -361,8 +387,8 @@ goldenUrgentMarks()
   val o = Overview(Usage(32, 48, 0, 16 * G, 5, 3, Some(53), None, quick = 1), 60000, running, queued, ended)
   golden("urgent-marks", drawn(viewing(o), 120, 20))
   golden("urgent-marks-80", drawn(viewing(o), 80, 20))
-  assert(drawn(viewing(o), 120, 20).rowText(5).contains("test!"))
-  assert(drawn(viewing(o), 120, 20).rowText(8).contains("funl-t…!"))
+  assert(drawn(viewing(o), 120, 20).rowText(6).contains("test!"))
+  assert(drawn(viewing(o), 120, 20).rowText(9).contains("funl-t…!"))
 
 @test("golden: an exclusive job's kind is marked #, running, queued and ended, with ! after it")
 goldenExclusiveMarks()
@@ -374,8 +400,70 @@ goldenExclusiveMarks()
   val ended = [gjob(60, kind = "bench", state = "done", outcome = Some(Outcome.Exited(0)), exclusive = true)]
   val o = Overview(Usage(32, 48, 0, 16 * G, 5, 3, None, None), 60000, running, queued, ended)
   golden("exclusive-marks", drawn(viewing(o), 100, 16))
-  assert(drawn(viewing(o), 100, 16).rowText(5).contains("bench#"))
-  assert(drawn(viewing(o), 100, 16).rowText(6).contains("bench#!"))
+  assert(drawn(viewing(o), 100, 16).rowText(6).contains("bench#"))
+  assert(drawn(viewing(o), 100, 16).rowText(7).contains("bench#!"))
+
+// A daemon whose disk is under `disk_min`, with jobs of two owners.
+lowDisk() -> Overview
+  val running = [
+    gjob(70, cores = 120, owner = "sysl", expected = 10 * minuteMs, from = "cmd", elapsed = 4 * minuteMs),
+    gjob(71, owner = "avin", cmd = ["avin", "test", "."], cores = 0, expected = minuteMs, from = "kind")
+  ]
+  val queued = [
+    QueuedJob(gjob(72, state = "queued", owner = "sysl"), 1, Why.DiskLow(14 * G)),
+    QueuedJob(gjob(73, state = "queued", owner = "avin"), 2, Why.Held)
+  ]
+  Overview(
+    Usage(8, 48, 0, 16 * G, 2, 2, None, None, cpu = 300, jobCpu = 120, diskFree = 14 * G, diskMin = 20 * G),
+    60000,
+    running,
+    queued,
+    []
+  )
+
+@test(
+  "golden: a low disk holds the queue and is red in the header; o shows one owner's jobs, then the next's, then all"
+)
+goldenDiskAndOwner()
+  golden("disk-low", drawn(viewing(lowDisk()), 140, 12))
+  golden("disk-low-100", drawn(viewing(lowDisk()), 100, 12))
+  val app = viewing(lowDisk())
+  app.handle(key('o'))
+  assertEq(app.owner, Some("avin"))
+  golden("owner-avin", drawn(app, 140, 12))
+  assertEq(app.shown.map(l -> l.job.id), [71, 73])
+  app.handle(key('o'))
+  assertEq(app.shown.map(l -> l.job.id), [70, 72])
+  app.handle(key('o'))
+  assertEq(app.owner, None)
+  assertEq(app.shown.length, 4)
+
+@test("golden: the disk's free space is plain above twice disk_min, yellow under it, red under disk_min")
+goldenDiskLevels()
+  for (free, level) in [(41 * G, "plenty"), (39 * G, "near"), (14 * G, "low")]
+    val o = lowDisk()
+    val u = o.usage
+    val at = Overview(
+      Usage(
+        u.units,
+        u.unitBudget,
+        u.memory,
+        u.memoryBudget,
+        u.running,
+        u.queued,
+        None,
+        None,
+        cpu = 300,
+        jobCpu = 120,
+        diskFree = free,
+        diskMin = 20 * G
+      ),
+      o.uptimeMs,
+      o.running,
+      [],
+      []
+    )
+    golden(s"disk-level-$level", drawn(viewing(at), 120, 6))
 
 // A daemon running only a landing job of `units`, with take-slot's use if any.
 landingOnly(units: int, takeSlot: Option[TakeSlotUse]) -> Overview =

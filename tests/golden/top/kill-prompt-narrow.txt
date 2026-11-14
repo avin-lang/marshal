@@ -1,14 +1,14 @@
 |marshal  up 25:01:01   4 runnfilter: all|
 |units [██████████···] 6 + take-slot 3 / |
 |mem   [█████▊██▏    ] 7G / 16G   rss 6.0|
+|cpu   [█████▎███▏   ] 4.9 jobs + 3.5 oth|
 |                                        |
 |   ID STATE          KIND     UNITS   RE|
 |   21 landing        test*        2    █|
-|   22 running        build        3    █|
+|   22 running        build        3    │|
 |   23 paused         bench        1  ~1│|
 |   24 running        lint         1    │|
 |   30 #1 no units    build        4    │|
-|   31 #2 no memory   build        1    │|
 |Kill job 21 (sysl test compiler --timeou|
 --
 0 0..7 Default/Default/1
@@ -20,16 +20,18 @@
 2 7..13 Basic(6)/Default/0
 2 13..16 Basic(4)/Default/0
 2 16..20 Basic(8)/Default/0
-4 0..40 Default/Default/17
-5 0..6 Default/Default/16
-5 6..20 Basic(2)/Default/17
-5 20..39 Default/Default/16
-6 6..20 Basic(2)/Default/1
-7 6..20 Basic(3)/Default/17
+3 7..13 Basic(2)/Default/0
+3 13..17 Basic(3)/Default/0
+3 17..20 Basic(8)/Default/0
+5 0..40 Default/Default/17
+6 0..6 Default/Default/16
+6 6..20 Basic(2)/Default/17
+6 20..39 Default/Default/16
+7 6..20 Basic(2)/Default/1
 7 39..40 Basic(8)/Default/0
-8 6..20 Basic(2)/Default/1
+8 6..20 Basic(3)/Default/17
 8 39..40 Basic(8)/Default/0
-9 6..20 Basic(3)/Default/0
+9 6..20 Basic(2)/Default/1
 9 39..40 Basic(8)/Default/0
 10 6..20 Basic(3)/Default/0
 10 39..40 Basic(8)/Default/0

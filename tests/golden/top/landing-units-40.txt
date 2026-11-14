@@ -1,13 +1,13 @@
 |marshal  up 1:00   1 running filter: all|
 |units [·············] 0 / 12   landing 1|
 |mem   [             ] 0 / 16G   rss 0   |
+|cpu   [             ] - / 12            |
 |                                        |
 |   ID STATE          KIND     UNITS   RE|
 |    7 landing        test*        1     |
 |                                        |
 |                                        |
-|                                        |
-|hHelp EnterLog kKill fFilter qQuit      |
+|hHelp EnterLog kKill fFilter oOwner qQui|
 --
 0 0..7 Default/Default/1
 0 19..28 Basic(2)/Default/0
@@ -15,10 +15,11 @@
 1 7..20 Basic(8)/Default/0
 1 31..40 Basic(6)/Default/0
 2 7..20 Basic(8)/Default/0
-4 0..40 Default/Default/17
-5 0..6 Default/Default/16
-5 6..20 Basic(2)/Default/17
-5 20..40 Default/Default/16
+3 7..20 Basic(8)/Default/0
+5 0..40 Default/Default/17
+6 0..6 Default/Default/16
+6 6..20 Basic(2)/Default/17
+6 20..40 Default/Default/16
 9 0..1 Default/Default/1
 9 1..6 Basic(0)/Basic(6)/0
 9 6..11 Default/Default/1
@@ -28,4 +29,6 @@
 9 21..22 Default/Default/1
 9 22..29 Basic(0)/Basic(6)/0
 9 29..30 Default/Default/1
-9 30..35 Basic(0)/Basic(6)/0
+9 30..36 Basic(0)/Basic(6)/0
+9 36..37 Default/Default/1
+9 37..40 Basic(0)/Basic(6)/0

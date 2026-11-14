@@ -18,7 +18,7 @@ import dev.avinlang.marshal.{Outcome, Overview, Reply, Why}
 topIn(home: string, keys: string, zone: string = "") -> string
   val script = "(sleep 3; printf '"
     + keys
-    + "'; sleep 2) | script -q /dev/null sh -c 'stty cols 100 rows 30; \"$M\" top; echo STATUS=$?'"
+    + "'; sleep 2) | script -q /dev/null sh -c 'stty cols 130 rows 30; \"$M\" top; echo STATUS=$?'"
   val base = Command("sh", "-c", script).withEnv("M", bin()).withEnv("MARSHAL_HOME", home).withEnv(
     "MARSHAL_TAKE_SLOT_DIR",
     slots(home)
@@ -30,7 +30,7 @@ topIn(home: string, keys: string, zone: string = "") -> string
 // commands `steps` (sleeps and `printf`s of keys) in front of it: everything it wrote, escape
 // sequences and all.
 topRaw(home: string, steps: string, idleMs: int) -> string
-  val script = "(" + steps + ") | script -q /dev/null sh -c 'stty cols 100 rows 30; \"$M\" top; echo STATUS=$?'"
+  val script = "(" + steps + ") | script -q /dev/null sh -c 'stty cols 130 rows 30; \"$M\" top; echo STATUS=$?'"
   val base = Command("sh", "-c", script).withEnv("M", bin()).withEnv("MARSHAL_HOME", home).withEnv(
     "MARSHAL_TAKE_SLOT_DIR",
     slots(home)

@@ -1,6 +1,7 @@
 |marshal  up 25:01:01   4 running  9 queued (held)   landing: job 21 (2 units) filter: all|
 |units [██████████████████████·······] 6 + take-slot 3 / 12, 2 waiting   landing 2        |
 |mem   [████████████▊█████▏          ] 7G / 16G   rss 6.0G   machine 64G                  |
+|cpu   [███████████▊████████▎        ] 4.9 jobs + 3.5 other / 12   disk 31G free          |
 |                                                                                         |
 |   ID STATE          KIND     UNITS   RESV   RSS STARTED  ELAPSED DEADLINE COMMAND       |
 |   21 landing        test*        2     4G  3.0G -          25:00     5:00 sysl test com…|
@@ -24,8 +25,7 @@
 |   16 signal 9       build        1      -     - -           2:00        - make -j4      |
 |   15 exit 0         build        1      -     - -           2:00        - make -j4      |
 |                                                                                         |
-|                                                                                         |
-|hHelp EnterLog kKill fFilter qQuit                                                       |
+|hHelp EnterLog kKill fFilter oOwner qQuit                                                |
 --
 0 0..7 Default/Default/1
 0 23..32 Basic(2)/Default/0
@@ -40,20 +40,22 @@
 2 7..20 Basic(6)/Default/0
 2 20..26 Basic(4)/Default/0
 2 26..36 Basic(8)/Default/0
-4 0..89 Default/Default/17
-5 0..6 Default/Default/16
-5 6..20 Basic(2)/Default/17
-5 20..66 Default/Default/16
-5 66..74 Basic(3)/Default/16
-5 74..89 Default/Default/16
-6 6..20 Basic(2)/Default/1
-6 66..74 Basic(1)/Default/1
-7 6..20 Basic(3)/Default/17
-7 66..74 Basic(3)/Default/0
-8 6..20 Basic(2)/Default/1
+3 7..19 Basic(2)/Default/0
+3 19..28 Basic(3)/Default/0
+3 28..36 Basic(8)/Default/0
+3 66..79 Basic(3)/Default/0
+5 0..89 Default/Default/17
+6 0..6 Default/Default/16
+6 6..20 Basic(2)/Default/17
+6 20..66 Default/Default/16
+6 66..74 Basic(3)/Default/16
+6 74..89 Default/Default/16
+7 6..20 Basic(2)/Default/1
+7 66..74 Basic(1)/Default/1
+8 6..20 Basic(3)/Default/17
 8 66..74 Basic(3)/Default/0
-9 6..20 Basic(3)/Default/0
-9 66..74 Basic(8)/Default/0
+9 6..20 Basic(2)/Default/1
+9 66..74 Basic(3)/Default/0
 10 6..20 Basic(3)/Default/0
 10 66..74 Basic(8)/Default/0
 11 6..20 Basic(3)/Default/0
@@ -74,16 +76,18 @@
 18 66..74 Basic(8)/Default/0
 19 6..20 Basic(3)/Default/0
 19 66..74 Basic(8)/Default/0
-20 6..20 Basic(1)/Default/17
+20 6..20 Basic(3)/Default/0
 20 66..74 Basic(8)/Default/0
-21 6..20 Basic(8)/Default/0
+21 6..20 Basic(1)/Default/17
 21 66..74 Basic(8)/Default/0
-22 6..20 Basic(1)/Default/1
+22 6..20 Basic(8)/Default/0
 22 66..74 Basic(8)/Default/0
 23 6..20 Basic(1)/Default/1
 23 66..74 Basic(8)/Default/0
-24 6..20 Basic(2)/Default/0
+24 6..20 Basic(1)/Default/1
 24 66..74 Basic(8)/Default/0
+25 6..20 Basic(2)/Default/0
+25 66..74 Basic(8)/Default/0
 27 0..1 Default/Default/1
 27 1..6 Basic(0)/Basic(6)/0
 27 6..11 Default/Default/1
@@ -93,4 +97,6 @@
 27 21..22 Default/Default/1
 27 22..29 Basic(0)/Basic(6)/0
 27 29..30 Default/Default/1
-27 30..35 Basic(0)/Basic(6)/0
+27 30..36 Basic(0)/Basic(6)/0
+27 36..37 Default/Default/1
+27 37..42 Basic(0)/Basic(6)/0

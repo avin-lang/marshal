@@ -71,13 +71,29 @@ up to a quarter). `cores` is how many cores a running job kept busy over the las
 running job that has been measured, `peak_cores` and `cpu_ms` on any job that has (an ending event's
 `peak_cores` is what units are learned from).
 
-`expected_ms` is how long the job is expected to run: the median of its kind's recent runs, or half
-its kind's default deadline while too few are known, never more than its deadline; and
-`duration_learned` says which (true for the median). A drain counts a job by `expected_ms` when it
-is learned and by `deadline_ms` otherwise. `expected_start_at` is present only on the queued job the
-machine drains for (`waits` `draining`): when it is expected to start, in milliseconds since 1970,
-absent while that is not known (it waits for take-slot). The three are absent from an older
-daemon's replies and events, and read as 0, false and 0.
+`expected_ms` is how long the job is expected to run: the median of the last 5 successful runs of
+its command in its directory, or anywhere; else the median of its kind's recent runs, or half its
+kind's default deadline while too few are known; never more than its deadline. `duration_learned`
+says whether it is learned (true for either median), and `duration_from` where it came from:
+`cmd+dir`, `cmd`, `kind` or `none`. A drain counts a job by `expected_ms` when it is learned and by
+`deadline_ms` otherwise. `eta_ms` is present on a running job whose duration is its command's
+(`cmd+dir` or `cmd`): its expected time left, 0 once it is past it. `starts_in_ms` is present on a
+queued job whose start can be reckoned from the running jobs' expected ends: how long after the
+reply it is expected to start. `expected_start_at` is present only on the queued job the machine
+drains for (`waits` `draining`): when it is expected to start, in milliseconds since 1970, absent
+while that is not known (it waits for take-slot). All of these are absent from an older daemon's
+replies and events, and read as 0, false, "", -1 and 0. `owner` is who the job is for (its spec's
+`owner`, given by `--owner`, else its project or its label), absent for none.
+
+A spec's `owner` is present only where `--owner` named one: one word of letters, digits, `-`, `_`
+and `.`.
+
+The `status` reply and the snapshot also carry the machine's processors and disk: `cpu` and
+`job_cpu`, the cores every process and the running jobs kept busy over the last two seconds (absent
+before the first measurement), `disk_free`, the least free bytes of the volumes holding marshal's
+home and the jobs' directories (absent before it is measured), `disk_min`, the guard's threshold (0
+for none), and `disk_low`, whether new jobs are held for it. A queued job held for the disk `waits`
+`disk-low`, with `disk_free` beside it.
 
 `state` is `waiting` (for the jobs in `after` to end), `queued`, `running`, `retrying` (waiting out
 its retry delay) or `done`. `after` is what a waiting job still waits for; `attempt` counts its runs

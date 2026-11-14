@@ -25,14 +25,31 @@ bin() -> string = process.env("MARSHAL_BIN").getOrElse(
   fail("MARSHAL_BIN names the marshal executable to test; scripts/test.sh sets it")
 )
 
-// A home of its own, with `config` as its config.json when it is not empty, and a take-slot
-// directory of its own (`slots`), never the real one.
+// A home of its own, with `config` as its config.json when it is not empty, a take-slot directory of
+// its own (`slots`), never the real one, and a stand-in for `df` (`FakeDf`), so the disk guard sees
+// the free space a test gives it (`setDiskFree`) and never the real disk's.
 newHome(config: string = "") -> string
   val home = fs.createTempDir("marshal-").ok.get
   fs.createDir(slots(home)).ok.get
   register(home, process.pid())
   if config.nonEmpty then fs.writeText(home + "/config.json", config).ok.get
+  fs.writeText(home + "/df.sh", FakeDf).ok.get
+  assertEq(Command("chmod", "+x", home + "/df.sh").run().ok, Some(ExitStatus.Exited(0)))
   home
+
+// A stand-in for `df -k -P`: one volume, with the kibibytes free that `df.free` beside it holds, or
+// a tebibyte.
+private val FakeDf: string = """
+#!/bin/sh
+free=$(cat "$(dirname "$0")/df.free" 2>/dev/null || echo 1073741824)
+echo "Filesystem 1024-blocks Used Available Capacity Mounted on"
+echo "fake 2147483648 0 $free 0% /"
+"""
+
+// Gives the stand-in for `df` in `home` `bytes` free.
+setDiskFree(home: string, bytes: long) = fs.writeText(home + "/df.free.tmp", (bytes / 1024).toString()).flatMap(
+  _ -> fs.rename(home + "/df.free.tmp", home + "/df.free")
+).ok.get
 
 // Runs the command line with `args` against `home`; its standard output and error, together.
 m(home: string, args: string*) -> Ran = mWith(home, [], args*)
@@ -61,7 +78,7 @@ homed(command: Command, home: string) -> Command =
   command.withEnv("MARSHAL_HOME", home).withEnv("MARSHAL_TAKE_SLOT_DIR", slots(home)).withEnv(
     "MARSHAL_TEST_WATCH_PID",
     process.pid().toString()
-  )
+  ).withEnv("MARSHAL_TEST_DF", home + "/df.sh")
 
 // Where the homes of a test run are recorded, next to the executable under test, so that a
 // teardown, or the script that ran the tests, can find the daemons a dead test left.

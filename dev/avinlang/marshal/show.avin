@@ -85,6 +85,7 @@ whyText(Emptying) = "emptying"
 whyText(Load(load, limit, calmMs)) =
   if load >= limit then s"load ${loadText(load)} ≥ ${loadText(limit)}" else s"load ${loadText(load)} < ${loadText(limit)} for ${formatMillis(calmMs)}"
 whyText(ForExclusive(id)) = s"exclusive $id"
+whyText(DiskLow(free)) = s"disk low: ${roundSize(free)} free"
 
 // A job's state cell in `ls`: `stateColumn`, and for a job that is plainly `queued` and has a reason
 // in `whys` (job id, reason), the reason after it: `queued (draining)`. A job held by hand already
@@ -99,11 +100,14 @@ stateWithWhy(j: JobInfo, whys: Vector[(long, Why)]) -> string
 
 // The listing `ls` prints: a header, then one row per job. A LABEL column stands before COMMAND, and
 // always, empty for a job without a label. UNITS is what a job weighs (`unitsText`) and USED the cores
-// it was measured using beside it (`usedText`). `whys` gives the queued jobs' reasons to wait; with
-// none, a queued job shows plain `queued`.
+// it was measured using beside it (`usedText`). ETA is a running job's expected time left or a
+// queued one's expected start (`etaColumn`), and OWNER who the job is for (`ownerText`). `whys`
+// gives the queued jobs' reasons to wait; with none, a queued job shows plain `queued`.
 listing(jobs: Vector[JobInfo], whys: Vector[(long, Why)] = []) -> string
   val zone = time.localZone()
-  val rows = [["ID", "STATE", "KIND", "UNITS", "USED", "RESV", "STARTED", "ELAPSED", "LABEL", "COMMAND"]] ++ jobs.map(
+  val rows = [
+    ["ID", "STATE", "KIND", "UNITS", "USED", "RESV", "STARTED", "ELAPSED", "ETA", "OWNER", "LABEL", "COMMAND"]
+  ] ++ jobs.map(
     j -> [
       j.id.toString(),
       stateWithWhy(j, whys),
@@ -113,6 +117,8 @@ listing(jobs: Vector[JobInfo], whys: Vector[(long, Why)] = []) -> string
       reservedText(j),
       startedColumn(j, zone),
       elapsedColumn(j, j.elapsedMs),
+      etaColumn(j),
+      ownerText(j),
       j.label,
       j.cmd.mkString(" ")
     ]
@@ -120,6 +126,9 @@ listing(jobs: Vector[JobInfo], whys: Vector[(long, Why)] = []) -> string
   val last = rows(0).length - 1
   val widths = (0 ..< last).map(c -> rows.map(r -> r(c).charCount).max)
   rows.map(r -> (0 ..< last).map(c -> r(c).padEnd(widths(c), ' ')).mkString("  ") + "  " + r(last)).mkString("\n")
+
+// Who a job is for, as a listing shows it: `-` for none.
+ownerText(j: JobInfo) -> string = if j.owner.isEmpty then "-" else j.owner
 
 // A job's kind as a listing shows it, marked with its lane: `*` after a landing job's, `^` after a
 // quick job's, `#` after an exclusive job's, and `!` after that for a job in the urgent band
@@ -160,4 +169,17 @@ usageLine(u: Usage) -> string
   val held = if u.queueHeld then "; the queue is held: nothing new starts" else ""
   val quick = if u.quick > 0 then s", quick lane ${u.quick}/$QuickSlots" else ""
   val exclusive = u.exclusive.map(id -> s"; exclusive job $id owns the machine: nothing else starts").getOrElse("")
-  s"units ${formatUnits(u.units)}/${formatUnits(u.unitBudget)}, memory $memory, ${u.running} running, ${u.queued} queued, landing lane $lane$quick$outside$exclusive$held"
+  s"units ${formatUnits(u.units)}/${formatUnits(u.unitBudget)}, memory $memory, ${u.running} running, ${u.queued} queued, landing lane $lane$quick$outside$exclusive$held${machineText(u)}"
+
+// What `status` says of the machine's processors and disk, after the rest: `; cpu 7.4 (jobs 5.1),
+// disk 120G free`, and that nothing new starts while the disk is under `disk_min`. Nothing for what
+// was not measured.
+machineText(u: Usage) -> string
+  val parts = Buffer[string]()
+  if u.cpu >= 0 then parts += s"cpu ${formatCores(u.cpu)} (jobs ${formatCores(if u.jobCpu < 0 then 0 else u.jobCpu)})"
+  if u.diskFree >= 0 then parts += s"disk ${roundSize(u.diskFree)} free"
+  val low = if diskLow(
+    u.diskFree,
+    u.diskMin
+  ) then s"; the disk is under disk_min ${formatSize(u.diskMin)}: nothing new starts" else ""
+  (if parts.isEmpty then "" else "; " + parts.mkString(", ")) + low

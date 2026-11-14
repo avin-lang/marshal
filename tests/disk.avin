@@ -1,0 +1,175 @@
+module tests
+
+// The disk guard's parts (disk.avin): what `df` prints read as the least free space, when that is
+// low and how the header colours it, `disk_min` and `projects` in config.json, and the machine's
+// processors and disk, owners, ETAs and the disk-low reason carried through the protocol and shown
+// by `status`.
+import dev.avinlang.json
+import dev.avinlang.marshal
+import dev.avinlang.marshal.top
+import dev.avinlang.marshal.{JobInfo, JobSpec, Overview, QueuedJob, Usage, Why}
+import dev.avinlang.marshal.{Using, Viewed, Ended}
+
+@test("df's output reads as the least free space of the volumes it lists, in bytes")
+dfOutput()
+  val text = "Filesystem   1024-blocks      Used Available Capacity  Mounted on\n/dev/disk3s5   971298980 808442496 135026672    86%    /System/Volumes/Data\n/dev/disk4 100 50 20 50% /Volumes/x\n"
+  assertEq(marshal.diskFreeOf(text), Some(long(20 * 1024)))
+  assertEq(marshal.diskFreeOf("Filesystem 1024-blocks Used Available Capacity Mounted on\n"), None)
+  assertEq(marshal.diskFreeOf(""), None)
+  // a line that does not read is passed over
+  assertEq(marshal.diskFreeOf("head\nbroken line\nfs 1 1 x 1% /\nfs 1 1 7 1% /\n"), Some(long(7 * 1024)))
+  // a directory that is not there is not measured, and nothing to measure is no measurement
+  assertEq(marshal.diskFree(["/no/such/dir/anywhere"]), None)
+
+@test("the disk is low under disk_min, never with no guard or no measurement; yellow under twice it, red under it")
+diskLevels()
+  assertEq(marshal.diskLow(19 * G, 20 * G), true)
+  assertEq(marshal.diskLow(20 * G, 20 * G), false)
+  assertEq(marshal.diskLow(0, 20 * G), true)
+  assertEq(marshal.diskLow(-1, 20 * G), false)
+  assertEq(marshal.diskLow(G, 0), false)
+  assertEq(marshal.diskLevel(14 * G, 20 * G), 2)
+  assertEq(marshal.diskLevel(39 * G, 20 * G), 1)
+  assertEq(marshal.diskLevel(40 * G, 20 * G), 0)
+  assertEq(marshal.diskLevel(G, 0), 0)
+  assertEq(marshal.diskLevel(-1, 20 * G), 0)
+
+@test("config.json's disk_min is a size, 20G unless it says, 0 for no guard; projects is a directory")
+diskConfig()
+  assertEq(marshal.readConfig("", 0).ok.get.diskMin, 20 * G)
+  assertEq(marshal.readConfig("{\"disk_min\": \"50G\"}", 0).ok.get.diskMin, 50 * G)
+  assertEq(marshal.readConfig("{\"disk_min\": \"0\"}", 0).ok.get.diskMin, 0)
+  assertEq(marshal.readConfig("{\"disk_min\": 1024}", 0).ok.get.diskMin, 1024)
+  assertEq(
+    marshal.readConfig("{\"disk_min\": \"lots\"}", 0).err,
+    Some("config.json: `disk_min` is a size such as \"56G\" or a number of bytes")
+  )
+  assertEq(marshal.readConfig("", 0).ok.get.projects, None)
+  assertEq(marshal.readConfig("{\"projects\": \"/u/dev\"}", 0).ok.get.projects, Some("/u/dev"))
+  assertEq(
+    marshal.readConfig("{\"projects\": \"dev\"}", 0).err,
+    Some("config.json: `projects` is a directory, such as \"/Users/me/dev\"")
+  )
+
+private machineUsage(cpu: long, jobCpu: long, free: long, min: long) -> Usage =
+  Usage(8, 48, 0, 16 * G, 1, 1, None, None, cpu = cpu, jobCpu = jobCpu, diskFree = free, diskMin = min)
+
+@test("status, status --json and the snapshot carry the machine's cores and its free disk, read back as given")
+machineThroughProtocol()
+  for u in [machineUsage(840, 487, 31 * G, 20 * G), machineUsage(-1, -1, -1, 0), machineUsage(0, 0, 0, 20 * G)]
+    assertEq(marshal.decodeReply(marshal.encodeReply(Using(u)).render), Ok(Using(u)))
+    assertEq(
+      machineOf(marshal.decodeReply(marshal.encodeReply(Viewed(Overview(u, 1000, [], [], []))).render)),
+      Some((u.cpu, u.jobCpu, u.diskFree, u.diskMin))
+    )
+  val j = marshal.statusJson(machineUsage(840, 487, 31 * G, 20 * G), [])
+  assertEq(j.get("cpu").flatMap(v -> v.asReal), Some(8.4))
+  assertEq(j.get("job_cpu").flatMap(v -> v.asReal), Some(4.87))
+  assertEq(j.get("disk_free").flatMap(v -> v.asLong), Some(31 * G))
+  assertEq(j.get("disk_min").flatMap(v -> v.asLong), Some(20 * G))
+  assertEq(j.get("disk_low").flatMap(v -> v.asBool), Some(false))
+  assertEq(
+    marshal.statusJson(machineUsage(840, 487, 14 * G, 20 * G), []).get("disk_low").flatMap(v -> v.asBool),
+    Some(true)
+  )
+  // what was not measured is left out
+  val none = marshal.statusJson(machineUsage(-1, -1, -1, 20 * G), [])
+  assertEq((none.get("cpu"), none.get("job_cpu"), none.get("disk_free")), (None, None, None))
+
+// The machine's values of the snapshot a reply holds.
+private machineOf(r: Result[marshal.Reply, string]) -> Option[(long, long, long, long)] = r.ok match
+  Some(Viewed(v)) -> Some((v.usage.cpu, v.usage.jobCpu, v.usage.diskFree, v.usage.diskMin))
+  _ -> None
+
+@test("status says the cores in use and the free disk, and that nothing starts while the disk is low")
+statusLine()
+  val line = marshal.usageLine(machineUsage(840, 487, 31 * G, 20 * G))
+  assert(line.endsWith("; cpu 8.4 (jobs 4.9), disk 31G free"), line)
+  val low = marshal.usageLine(machineUsage(840, 487, 14 * G, 20 * G))
+  assert(low.endsWith("disk 14G free; the disk is under disk_min 20G: nothing new starts"), low)
+  assert(!marshal.usageLine(machineUsage(-1, -1, -1, 20 * G)).contains("cpu"))
+
+@test("a queued job waiting for the disk says so with its free space, in ls, the protocol and top")
+diskLowReason()
+  assertEq(marshal.whyText(Why.DiskLow(14 * G)), "disk low: 14G free")
+  assertEq(top.whyText(Why.DiskLow(14 * G)), "disk low")
+  val q = QueuedJob(diskJob("queued"), 1, Why.DiskLow(14 * G))
+  val o = Overview(machineUsage(-1, -1, 14 * G, 20 * G), 1, [], [q], [])
+  val back = marshal.decodeReply(marshal.encodeReply(Viewed(o)).render).ok
+  val whys = back match
+    Some(Viewed(v)) -> v.queued.map(x -> x.why)
+    _ -> []
+  assertEq(whys, [Why.DiskLow(14 * G)])
+  assertEq(marshal.stateWithWhy(diskJob("queued"), [(7, Why.DiskLow(14 * G))]), "queued (disk low: 14G free)")
+  val j = marshal.statusJson(machineUsage(-1, -1, 14 * G, 20 * G), [diskJob("queued")], [(7, Why.DiskLow(14 * G))])
+  val first = j.get("queued").flatMap(v -> v.asVector).get(0)
+  assertEq(
+    (first.get("why").flatMap(v -> v.asString), first.get("disk_free").flatMap(v -> v.asLong)),
+    (Some("disk-low"), Some(14 * G))
+  )
+
+private diskJob(
+    state: string,
+    owner: string = "",
+    from: string = "",
+    expected: long = 0,
+    startsIn: long = -1
+) -> JobInfo =
+  JobInfo(
+    7,
+    "build",
+    4,
+    0,
+    false,
+    "/w",
+    ["make"],
+    state,
+    None,
+    false,
+    0,
+    if state == "running" then 60000 else 0,
+    1800000,
+    "/l",
+    None,
+    owner = owner,
+    expectedMs = expected,
+    durationFrom = from,
+    startsInMs = startsIn
+  )
+
+@test("a job's owner, where its duration came from, its ETA and its expected start go through the protocol")
+jobFieldsThroughProtocol()
+  for j in [
+    diskJob("running", "sysl", "cmd+dir", 300000),
+    diskJob("queued", "avin", "cmd", 60000, 120000),
+    diskJob("queued")
+  ]
+    assertEq(marshal.decodeReply(marshal.encodeReply(Ended(j)).render), Ok(Ended(j)))
+  val e = marshal.encodeJob(diskJob("running", "sysl", "cmd+dir", 300000))
+  assertEq(e.get("owner").flatMap(v -> v.asString), Some("sysl"))
+  assertEq(e.get("duration_from").flatMap(v -> v.asString), Some("cmd+dir"))
+  assertEq(e.get("eta_ms").flatMap(v -> v.asLong), Some(240000))
+  assertEq(
+    marshal.encodeJob(diskJob("queued", "avin", "cmd", 60000, 120000)).get("starts_in_ms").flatMap(v -> v.asLong),
+    Some(120000)
+  )
+  // nothing to say leaves the fields out
+  val bare = marshal.encodeJob(diskJob("queued"))
+  assertEq(
+    (bare.get("owner"), bare.get("duration_from"), bare.get("eta_ms"), bare.get("starts_in_ms")),
+    (None, None, None, None)
+  )
+  // a kind's duration gives no ETA
+  assertEq(marshal.encodeJob(diskJob("running", "", "kind", 300000)).get("eta_ms"), None)
+
+@test("--owner travels in the job's spec, and a spec without one reads as before")
+ownerInSpec()
+  val spec = JobSpec("build", 4, 0, false, "/w", None, ["make"], [], owner = "porthole")
+  val back = marshal.decodeSpec(marshal.encodeSpec(spec))
+  assertEq(back.map(s -> s.owner), Ok("porthole"))
+  assertEq(
+    marshal.decodeSpec(marshal.encodeSpec(JobSpec("build", 4, 0, false, "/w", None, ["make"], []))).map(s -> s.owner),
+    Ok("")
+  )
+  val bad = json.parse("{\"kind\":\"b\",\"units\":1,\"mem\":0,\"dir\":\"/w\",\"cmd\":[\"x\"],\"owner\":\"a b\"}").ok.get
+  assert(marshal.decodeSpec(bad).isErr)

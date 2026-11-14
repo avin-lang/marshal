@@ -8,7 +8,7 @@
 |│ Enter  l        the selected job's log, followi│|
 |│                 (open: PgUp PgDn Home End scrol│|
 |│ k               kill the selected job, after y │|
-|│ f               show all jobs, running, queued │|
+|│ f  o            all, running, queued or finishe│|
 |│ h  ?            this help                      │|
 |│ q               quit                           │|
 |╰────────────────────────────────────────────────╯|

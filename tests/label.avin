@@ -347,10 +347,10 @@ labelOptions()
 @test("ls always has a LABEL column before COMMAND, empty for a job without a label")
 labelListing()
   val none = marshal.listing([labelled(1, ""), labelled(2, "")]).lines.toVector
-  assertEq(none(0), "ID  STATE    KIND   UNITS  USED  RESV  STARTED  ELAPSED  LABEL  COMMAND")
+  assertEq(none(0), "ID  STATE    KIND   UNITS  USED  RESV  STARTED  ELAPSED  ETA  OWNER  LABEL  COMMAND")
   assertEq(none(1).indexOf("sleep 30"), none(0).indexOf("COMMAND"))
   val rows = marshal.listing([labelled(1, "train 209"), labelled(2, ""), labelled(30, "a longer label")]).lines.toVector
-  assert(rows(0).contains("ELAPSED  LABEL"), rows(0))
+  assert(rows(0).contains("ELAPSED  ETA  OWNER  LABEL"), rows(0))
   assert(rows(0).endsWith("LABEL           COMMAND"), rows(0))
   assertEq(rows(1).indexOf("train 209"), rows(0).indexOf("LABEL"))
   assertEq(rows(3).indexOf("a longer label"), rows(0).indexOf("LABEL"))
@@ -361,15 +361,16 @@ labelListing()
 labelColumnWidth()
   val base = top.columnsFor(120, 7)
   val withLabel = top.withLabelColumn(base)
-  assertEq(withLabel.map(c -> c.title).takeRight(2), ["LABEL", "COMMAND"])
-  assertEq(withLabel.length, base.length + 1)
+  assertEq(withLabel.map(c -> c.title).takeRight(3), ["OWNER", "LABEL", "COMMAND"])
+  assertEq(withLabel.length, base.length + 2)
   val cells = [Span("1"), Span("cmd")]
   // the label is whole in its cell: the table sizes the column to the longest and cuts it with an ellipsis
-  assertEq(top.withLabelCell(cells, "a long label"), [Span("1"), Span("a long label"), Span("cmd")])
-  // 120 cells: the fixed columns take 75 and 11 separators, and COMMAND keeps 20, leaving 14
+  assertEq(top.withLabelCell(cells, "-", "a long label"), [Span("1"), Span("-"), Span("a long label"), Span("cmd")])
+  // 120 cells: the fixed columns take 73 and 12 separators, OWNER its heading's 5, and COMMAND
+  // keeps 20, leaving 10
   assertEq(labelCells("abc", 120), 5)
   assertEq(labelCells("123456789", 120), 9)
-  assertEq(labelCells("12345678901234567890", 120), 14)
+  assertEq(labelCells("12345678901234567890", 120), 10)
   assertEq(labelCells("12345678901234567890", 200), 20)
   assertEq(labelCells("1234567890123456789012345678901234567890", 200), top.LabelCap)
   // a narrow screen leaves the column out; a screen where no job has a label keeps it, at its heading's width
@@ -385,7 +386,7 @@ labelWideCharacters()
   assertEq(labelCells("日本語のラベル", 200), 14)
   // 13 characters are 26 cells, cut at the cap of 24; the same label is narrowed by a narrow screen
   assertEq(labelCells("日本語のラベルはとても長い", 200), top.LabelCap)
-  assertEq(labelCells("日本語のラベルはとても長い", 120), 14)
+  assertEq(labelCells("日本語のラベルはとても長い", 120), 10)
   assertEq(labelCells("abc日", 200), 5)
 
 // The cells the LABEL column takes in a table `width` cells wide drawing a row with `label`; 0 where
@@ -393,7 +394,7 @@ labelWideCharacters()
 labelCells(label: string, width: int) -> int
   val base = top.columnsFor(width, 7)
   val withLabel = top.withLabelColumn(base)
-  Table(withLabel).widths(width, [top.withLabelCell(base.map(c -> Span("x")), label)])(withLabel.length - 2)
+  Table(withLabel).widths(width, [top.withLabelCell(base.map(c -> Span("x")), "-", label)])(withLabel.length - 2)
 
 // An overview of the jobs given, all running.
 overviewOf(jobs: Vector[JobInfo]) -> Overview =

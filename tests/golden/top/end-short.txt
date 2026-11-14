@@ -1,17 +1,17 @@
 |marshal  up 25:01:01   4 running  9 queued (held)   landing: job 21 (2 units)            filter: all|
 |units [█████████████████████████········] 6 + take-slot 3 / 12, 2 waiting   landing 2               |
 |mem   [██████████████▌█████▋            ] 7G / 16G   rss 6.0G   machine 64G                         |
+|cpu   [█████████████▍█████████▏         ] 4.9 jobs + 3.5 other / 12   disk 31G free                 |
 |                                                                                                    |
-|   ID STATE          KIND     UNITS   RESV   RSS  PEAK STARTED      ELAPSED DEADLINE COMMAND        |
-|   38 #9 queue held  build        1      -     -     - -                  -    30:00 make -j4      │|
-|   40 after 21,22    build        1      -     -     - -                  -    30:00 make -j4      │|
-|   41 retry 2        build        1      -     -     - -                  -    30:00 make -j4      │|
-|   19 quiet          build        1      -     -     - -               2:00        - make -j4      │|
-|   18 dep 17 failed  build        1      -     -     - -               2:00        - make -j4      │|
-|   17 exit 1         build        1      -     -     - -               2:00        - make -j4      █|
-|   16 signal 9       build        1      -     -     - -               2:00        - make -j4      █|
-|   15 exit 0         build        1      -     -  700M -               2:00        - make -j4      █|
-|hHelp EnterLog kKill fFilter qQuit                                                  jobs 13–20 of 20|
+|   ID STATE          KIND     UNITS   RESV   RSS STARTED  ELAPSED     ETA DEADLINE COMMAND          |
+|   40 after 21,22    build        1      -     - -              -       -    30:00 make -j4        │|
+|   41 retry 2        build        1      -     - -              -       -    30:00 make -j4        │|
+|   19 quiet          build        1      -     - -           2:00       -        - make -j4        │|
+|   18 dep 17 failed  build        1      -     - -           2:00       -        - make -j4        │|
+|   17 exit 1         build        1      -     - -           2:00       -        - make -j4        │|
+|   16 signal 9       build        1      -     - -           2:00       -        - make -j4        █|
+|   15 exit 0         build        1      -     - -           2:00       -        - make -j4        █|
+|hHelp EnterLog kKill fFilter oOwner qQuit                                           jobs 14–20 of 20|
 --
 0 0..7 Default/Default/1
 0 23..32 Basic(2)/Default/0
@@ -26,31 +26,41 @@
 2 7..22 Basic(6)/Default/0
 2 22..28 Basic(4)/Default/0
 2 28..40 Basic(8)/Default/0
-4 0..100 Default/Default/17
-5 6..20 Basic(3)/Default/0
-5 76..84 Basic(8)/Default/0
-5 99..100 Basic(8)/Default/0
+3 7..21 Basic(2)/Default/0
+3 21..31 Basic(3)/Default/0
+3 31..40 Basic(8)/Default/0
+3 70..83 Basic(3)/Default/0
+5 0..100 Default/Default/17
 6 6..20 Basic(3)/Default/0
-6 76..84 Basic(8)/Default/0
+6 66..73 Basic(8)/Default/0
+6 74..82 Basic(8)/Default/0
 6 99..100 Basic(8)/Default/0
 7 6..20 Basic(3)/Default/0
-7 76..84 Basic(8)/Default/0
+7 66..73 Basic(8)/Default/0
+7 74..82 Basic(8)/Default/0
 7 99..100 Basic(8)/Default/0
 8 6..20 Basic(1)/Default/17
-8 76..84 Basic(8)/Default/0
+8 66..73 Basic(8)/Default/0
+8 74..82 Basic(8)/Default/0
 8 99..100 Basic(8)/Default/0
 9 6..20 Basic(8)/Default/0
-9 76..84 Basic(8)/Default/0
+9 66..73 Basic(8)/Default/0
+9 74..82 Basic(8)/Default/0
 9 99..100 Basic(8)/Default/0
 10 6..20 Basic(1)/Default/1
-10 76..84 Basic(8)/Default/0
+10 66..73 Basic(8)/Default/0
+10 74..82 Basic(8)/Default/0
+10 99..100 Basic(8)/Default/0
 11 6..20 Basic(1)/Default/1
-11 76..84 Basic(8)/Default/0
+11 66..73 Basic(8)/Default/0
+11 74..82 Basic(8)/Default/0
 12 0..6 Default/Default/16
 12 6..20 Basic(2)/Default/16
-12 20..76 Default/Default/16
-12 76..84 Basic(8)/Default/16
-12 84..99 Default/Default/16
+12 20..66 Default/Default/16
+12 66..73 Basic(8)/Default/16
+12 73..74 Default/Default/16
+12 74..82 Basic(8)/Default/16
+12 82..99 Default/Default/16
 13 0..1 Default/Default/1
 13 1..6 Basic(0)/Basic(6)/0
 13 6..11 Default/Default/1
@@ -60,5 +70,7 @@
 13 21..22 Default/Default/1
 13 22..29 Basic(0)/Basic(6)/0
 13 29..30 Default/Default/1
-13 30..35 Basic(0)/Basic(6)/0
+13 30..36 Basic(0)/Basic(6)/0
+13 36..37 Default/Default/1
+13 37..42 Basic(0)/Basic(6)/0
 13 84..100 Basic(8)/Default/0

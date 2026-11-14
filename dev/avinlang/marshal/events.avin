@@ -39,6 +39,9 @@ eventLine(ts: long, event: string, job: JobInfo, extra: Vector[(string, Json)]) 
 // - `cores`: the `peak_cores` of every ending event that has one, in hundredths of a core, oldest
 //   first, kept under the same keys as `peaks`: what units are learned from when `memory.json`
 //   cannot be used.
+// - `durations`: the run time of each job that exited 0, oldest first, kept under the same keys as
+//   `peaks`: what expected durations are learned from when `memory.json` cannot be used or kept
+//   none.
 data Recovered(
     nextId: long,
     open: Vector[Json],
@@ -46,7 +49,8 @@ data Recovered(
     unreadable: int,
     ended: Vector[JobInfo],
     peaks: Map[string, Vector[long]],
-    cores: Map[string, Vector[long]] = Map()
+    cores: Map[string, Vector[long]] = Map(),
+    durations: Map[string, Vector[long]] = Map()
 )
 
 recover(lines: Iterable[string], keep: int = 10) -> Recovered
@@ -57,6 +61,7 @@ recover(lines: Iterable[string], keep: int = 10) -> Recovered
   val histories = MutableMap[string, Buffer[long]]()
   val peaks = MutableMap[string, Buffer[long]]()
   val cores = MutableMap[string, Buffer[long]]()
+  val durations = MutableMap[string, Buffer[long]]()
   for line in lines
     if line.trim.isEmpty then continue
     val ev = json.parse(line) match
@@ -107,6 +112,15 @@ recover(lines: Iterable[string], keep: int = 10) -> Recovered
               val b = Buffer[long]()
               b += ms
               histories(key) = b
+          for k in memoryKeys(
+            ev.get("kind").flatMap(v -> v.asString).getOrElse(""),
+            ev.get("landing").flatMap(v -> v.asBool).getOrElse(false),
+            ev.get("cmd").flatMap(v -> v.asVector).map(items -> items.map(i -> i.asString.getOrElse(""))).getOrElse(
+              Vector[string]()
+            ),
+            ev.get("dir").flatMap(v -> v.asString).getOrElse("")
+          )
+            appendTo(durations, k, ms)
         None -> ()
   val open = last.filter(e -> !endings.contains(e.1.get("event").flatMap(v -> v.asString).getOrElse(""))).map(e -> e.1)
   val learned = histories.keys.map(k -> (k, histories(k).toVector)).toMap
@@ -115,7 +129,8 @@ recover(lines: Iterable[string], keep: int = 10) -> Recovered
   ).map(e -> decodeJob(e.1)).filter(r -> r.isOk).map(r -> r.ok.get)
   val peaked = peaks.keys.map(k -> (k, peaks(k).toVector)).toMap
   val busy = cores.keys.map(k -> (k, cores(k).toVector)).toMap
-  Recovered(maxId + 1, open.toVector, learned, unreadable, ended.takeRight(keep).toVector, peaked, busy)
+  val took = durations.keys.map(k -> (k, durations(k).toVector)).toMap
+  Recovered(maxId + 1, open.toVector, learned, unreadable, ended.takeRight(keep).toVector, peaked, busy, took)
 
 private appendTo(m: MutableMap[string, Buffer[long]], key: string, value: long)
   m.get(key) match

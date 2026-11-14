@@ -5,7 +5,7 @@
 |                                                                                |
 |                                                                                |
 |                                                                                |
-|hHelp EnterLog kKill fFilter qQuit                                              |
+|hHelp EnterLog kKill fFilter oOwner qQuit                                       |
 --
 0 0..11 Default/Default/1
 2 0..33 Basic(3)/Default/0
@@ -19,4 +19,6 @@
 7 21..22 Default/Default/1
 7 22..29 Basic(0)/Basic(6)/0
 7 29..30 Default/Default/1
-7 30..35 Basic(0)/Basic(6)/0
+7 30..36 Basic(0)/Basic(6)/0
+7 36..37 Default/Default/1
+7 37..42 Basic(0)/Basic(6)/0

@@ -1,33 +1,33 @@
 |marshal  up 0:05   1 running  0 queued   landing: free                                                       filter: all|
 |units [███·····································] 1 / 12                                                                 |
 |mem   [                                        ] 0 / 16G   rss 0                                                        |
+|cpu   [                                        ] - / 12                                                                 |
 |                                                                                                                        |
-|   ID STATE          KIND     UNITS   RESV   RSS  PEAK STARTED      ELAPSED DEADLINE LABEL COMMAND                      |
-|  994 exit 0         build        1      -     -     - -               1:00        -       sleep 30                    │|
-|  993 exit 0         build        1      -     -     - -               1:00        -       sleep 30                    │|
-|  992 exit 0         build        1      -     -     - -               1:00        -       sleep 30                    │|
-|  991 exit 0         build        1      -     -     - -               1:00        -       sleep 30                    │|
-|  990 exit 0         build        1      -     -     - -               1:00        -       sleep 30                    █|
-|  989 exit 0         build        1      -     -     - -               1:00        -       sleep 30                    █|
-|  988 exit 0         build        1      -     -     - -               1:00        -       sleep 30                    █|
-|  987 exit 0         build        1      -     -     - -               1:00        -       sleep 30                    █|
-|  986 exit 0         build        1      -     -     - -               1:00        -       sleep 30                    █|
-|  985 exit 0         build        1      -     -     - -               1:00        -       sleep 30                    │|
-|  984 exit 0         build        1      -     -     - -               1:00        -       sleep 30                    │|
-|  983 exit 0         build        1      -     -     - -               1:00        -       sleep 30                    │|
-|  982 exit 0         build        1      -     -     - -               1:00        -       sleep 30                    │|
-|  981 exit 0         build        1      -     -     - -               1:00        -       sleep 30                    │|
-|  980 exit 0         build        1      -     -     - -               1:00        -       sleep 30                    │|
-|  979 exit 0         build        1      -     -     - -               1:00        -       sleep 30                    │|
-|  978 exit 0         build        1      -     -     - -               1:00        -       sleep 30                    │|
-|  977 exit 0         build        1      -     -     - -               1:00        -       sleep 30                    │|
-|  976 exit 0         build        1      -     -     - -               1:00        -       sleep 30                    │|
-|  975 exit 0         build        1      -     -     - -               1:00        -       sleep 30                    │|
-|  974 exit 0         build        1      -     -     - -               1:00        -       sleep 30                    │|
-|  973 exit 0         build        1      -     -     - -               1:00        -       sleep 30                    │|
-|  972 exit 0         build        1      -     -     - -               1:00        -       sleep 30                    │|
-|  971 exit 0         build        1      -     -     - -               1:00        -       sleep 30                    │|
-|hHelp EnterLog kKill fFilter qQuit                                                                   jobs 18–41 of 1,011|
+|   ID STATE          KIND     UNITS   RESV   RSS STARTED  ELAPSED     ETA DEADLINE OWNER LABEL COMMAND                  |
+|  993 exit 0         build        1      -     - -           1:00       -        - -           sleep 30                │|
+|  992 exit 0         build        1      -     - -           1:00       -        - -           sleep 30                │|
+|  991 exit 0         build        1      -     - -           1:00       -        - -           sleep 30                │|
+|  990 exit 0         build        1      -     - -           1:00       -        - -           sleep 30                │|
+|  989 exit 0         build        1      -     - -           1:00       -        - -           sleep 30                █|
+|  988 exit 0         build        1      -     - -           1:00       -        - -           sleep 30                █|
+|  987 exit 0         build        1      -     - -           1:00       -        - -           sleep 30                █|
+|  986 exit 0         build        1      -     - -           1:00       -        - -           sleep 30                █|
+|  985 exit 0         build        1      -     - -           1:00       -        - -           sleep 30                █|
+|  984 exit 0         build        1      -     - -           1:00       -        - -           sleep 30                │|
+|  983 exit 0         build        1      -     - -           1:00       -        - -           sleep 30                │|
+|  982 exit 0         build        1      -     - -           1:00       -        - -           sleep 30                │|
+|  981 exit 0         build        1      -     - -           1:00       -        - -           sleep 30                │|
+|  980 exit 0         build        1      -     - -           1:00       -        - -           sleep 30                │|
+|  979 exit 0         build        1      -     - -           1:00       -        - -           sleep 30                │|
+|  978 exit 0         build        1      -     - -           1:00       -        - -           sleep 30                │|
+|  977 exit 0         build        1      -     - -           1:00       -        - -           sleep 30                │|
+|  976 exit 0         build        1      -     - -           1:00       -        - -           sleep 30                │|
+|  975 exit 0         build        1      -     - -           1:00       -        - -           sleep 30                │|
+|  974 exit 0         build        1      -     - -           1:00       -        - -           sleep 30                │|
+|  973 exit 0         build        1      -     - -           1:00       -        - -           sleep 30                │|
+|  972 exit 0         build        1      -     - -           1:00       -        - -           sleep 30                │|
+|  971 exit 0         build        1      -     - -           1:00       -        - -           sleep 30                │|
+|hHelp EnterLog kKill fFilter oOwner qQuit                                                            jobs 19–41 of 1,011|
 --
 0 0..7 Default/Default/1
 0 19..28 Basic(2)/Default/0
@@ -37,76 +37,98 @@
 1 7..10 Basic(2)/Default/0
 1 10..47 Basic(8)/Default/0
 2 7..47 Basic(8)/Default/0
-4 0..120 Default/Default/17
-5 6..20 Basic(2)/Default/0
-5 76..84 Basic(8)/Default/0
-5 119..120 Basic(8)/Default/0
+3 7..47 Basic(8)/Default/0
+5 0..120 Default/Default/17
 6 6..20 Basic(2)/Default/0
-6 76..84 Basic(8)/Default/0
+6 66..73 Basic(8)/Default/0
+6 74..82 Basic(8)/Default/0
 6 119..120 Basic(8)/Default/0
 7 6..20 Basic(2)/Default/0
-7 76..84 Basic(8)/Default/0
+7 66..73 Basic(8)/Default/0
+7 74..82 Basic(8)/Default/0
 7 119..120 Basic(8)/Default/0
 8 6..20 Basic(2)/Default/0
-8 76..84 Basic(8)/Default/0
+8 66..73 Basic(8)/Default/0
+8 74..82 Basic(8)/Default/0
 8 119..120 Basic(8)/Default/0
 9 6..20 Basic(2)/Default/0
-9 76..84 Basic(8)/Default/0
+9 66..73 Basic(8)/Default/0
+9 74..82 Basic(8)/Default/0
+9 119..120 Basic(8)/Default/0
 10 6..20 Basic(2)/Default/0
-10 76..84 Basic(8)/Default/0
+10 66..73 Basic(8)/Default/0
+10 74..82 Basic(8)/Default/0
 11 6..20 Basic(2)/Default/0
-11 76..84 Basic(8)/Default/0
+11 66..73 Basic(8)/Default/0
+11 74..82 Basic(8)/Default/0
 12 6..20 Basic(2)/Default/0
-12 76..84 Basic(8)/Default/0
+12 66..73 Basic(8)/Default/0
+12 74..82 Basic(8)/Default/0
 13 6..20 Basic(2)/Default/0
-13 76..84 Basic(8)/Default/0
+13 66..73 Basic(8)/Default/0
+13 74..82 Basic(8)/Default/0
 14 6..20 Basic(2)/Default/0
-14 76..84 Basic(8)/Default/0
-14 119..120 Basic(8)/Default/0
+14 66..73 Basic(8)/Default/0
+14 74..82 Basic(8)/Default/0
 15 6..20 Basic(2)/Default/0
-15 76..84 Basic(8)/Default/0
+15 66..73 Basic(8)/Default/0
+15 74..82 Basic(8)/Default/0
 15 119..120 Basic(8)/Default/0
 16 6..20 Basic(2)/Default/0
-16 76..84 Basic(8)/Default/0
+16 66..73 Basic(8)/Default/0
+16 74..82 Basic(8)/Default/0
 16 119..120 Basic(8)/Default/0
 17 6..20 Basic(2)/Default/0
-17 76..84 Basic(8)/Default/0
+17 66..73 Basic(8)/Default/0
+17 74..82 Basic(8)/Default/0
 17 119..120 Basic(8)/Default/0
 18 6..20 Basic(2)/Default/0
-18 76..84 Basic(8)/Default/0
+18 66..73 Basic(8)/Default/0
+18 74..82 Basic(8)/Default/0
 18 119..120 Basic(8)/Default/0
 19 6..20 Basic(2)/Default/0
-19 76..84 Basic(8)/Default/0
+19 66..73 Basic(8)/Default/0
+19 74..82 Basic(8)/Default/0
 19 119..120 Basic(8)/Default/0
 20 6..20 Basic(2)/Default/0
-20 76..84 Basic(8)/Default/0
+20 66..73 Basic(8)/Default/0
+20 74..82 Basic(8)/Default/0
 20 119..120 Basic(8)/Default/0
 21 6..20 Basic(2)/Default/0
-21 76..84 Basic(8)/Default/0
+21 66..73 Basic(8)/Default/0
+21 74..82 Basic(8)/Default/0
 21 119..120 Basic(8)/Default/0
 22 6..20 Basic(2)/Default/0
-22 76..84 Basic(8)/Default/0
+22 66..73 Basic(8)/Default/0
+22 74..82 Basic(8)/Default/0
 22 119..120 Basic(8)/Default/0
 23 6..20 Basic(2)/Default/0
-23 76..84 Basic(8)/Default/0
+23 66..73 Basic(8)/Default/0
+23 74..82 Basic(8)/Default/0
 23 119..120 Basic(8)/Default/0
 24 6..20 Basic(2)/Default/0
-24 76..84 Basic(8)/Default/0
+24 66..73 Basic(8)/Default/0
+24 74..82 Basic(8)/Default/0
 24 119..120 Basic(8)/Default/0
 25 6..20 Basic(2)/Default/0
-25 76..84 Basic(8)/Default/0
+25 66..73 Basic(8)/Default/0
+25 74..82 Basic(8)/Default/0
 25 119..120 Basic(8)/Default/0
 26 6..20 Basic(2)/Default/0
-26 76..84 Basic(8)/Default/0
+26 66..73 Basic(8)/Default/0
+26 74..82 Basic(8)/Default/0
 26 119..120 Basic(8)/Default/0
 27 6..20 Basic(2)/Default/0
-27 76..84 Basic(8)/Default/0
+27 66..73 Basic(8)/Default/0
+27 74..82 Basic(8)/Default/0
 27 119..120 Basic(8)/Default/0
 28 0..6 Default/Default/16
 28 6..20 Basic(2)/Default/16
-28 20..76 Default/Default/16
-28 76..84 Basic(8)/Default/16
-28 84..119 Default/Default/16
+28 20..66 Default/Default/16
+28 66..73 Basic(8)/Default/16
+28 73..74 Default/Default/16
+28 74..82 Basic(8)/Default/16
+28 82..119 Default/Default/16
 28 119..120 Basic(8)/Default/0
 29 0..1 Default/Default/1
 29 1..6 Basic(0)/Basic(6)/0
@@ -117,5 +139,7 @@
 29 21..22 Default/Default/1
 29 22..29 Basic(0)/Basic(6)/0
 29 29..30 Default/Default/1
-29 30..35 Basic(0)/Basic(6)/0
+29 30..36 Basic(0)/Basic(6)/0
+29 36..37 Default/Default/1
+29 37..42 Basic(0)/Basic(6)/0
 29 101..120 Basic(8)/Default/0

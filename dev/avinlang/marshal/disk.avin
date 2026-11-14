@@ -1,0 +1,54 @@
+module dev.avinlang.marshal
+
+// The disk guard. Every few seconds the daemon measures the free space of each volume that holds
+// marshal's home or the directory of a job that runs or waits, and keeps the least of them. While
+// that is under `disk_min` (config.json, 20G unless it says), no new job starts in any lane: the
+// queued ones wait `disk low: 14G free`, and the running ones go on, since stopping a build halfway
+// frees nothing it has written. Once the space is back, the queue moves again by itself. A
+// measurement that cannot be made is not low: the guard never holds the queue on a guess.
+import avin.fs
+import avin.process
+import avin.process.Command
+
+private val Gibi: long = 1024 * 1024 * 1024
+
+// The least free space new jobs start beside, unless config.json says (`disk_min`).
+val DefaultDiskMin: long = 20 * Gibi
+
+// How often the daemon measures the free space, in milliseconds.
+val DiskEveryMs: long = 3000
+
+// Whether `free` bytes are under the guard's `min`: never with no guard (`min` 0) or with nothing
+// measured (`free` below 0).
+diskLow(free: long, min: long) -> bool = min > 0 && free >= 0 && free < min
+
+// How the free space is shown: 2 (red) under `min`, 1 (yellow) under twice it, 0 otherwise, and 0
+// with no guard or nothing measured.
+diskLevel(free: long, min: long) -> int
+  if min <= 0 || free < 0 then return 0
+  if free < min then 2 elif free / 2 < min then 1 else 0
+
+// The least free space, in bytes, of the volumes `df -k -P` lists in `text`: the fourth field of
+// each line after the heading, in kibibytes. None where no line reads.
+diskFreeOf(text: string) -> Option[long]
+  var least: Option[long] = None
+  for line in text.lines.drop(1)
+    val words = line.trim.split(" ").filter(w -> w.nonEmpty).toVector
+    if words.length < 4 then continue
+    for kib in words(3).toLongOption()
+      if kib >= 0
+        val bytes = kib * 1024
+        least = Some(least.map(l -> if l < bytes then l else bytes).getOrElse(bytes))
+  least
+
+// The least free space of the volumes holding `dirs` (those that are directories), as `df` gives
+// it; None where it cannot be measured. A test names a program that prints what `df -k -P` prints
+// instead (`$MARSHAL_TEST_DF`), so the guard can be tried without filling a disk.
+diskFree(dirs: Vector[string]) -> Option[long]
+  val there = dirs.distinct.filter(d -> fs.isDir(d))
+  if there.isEmpty then return None
+  val program = process.env("MARSHAL_TEST_DF") match
+    Some(p) if p.nonEmpty -> p
+    _ -> "df"
+  val args = if program == "df" then ["-k", "-P"] ++ there else there
+  diskFreeOf(Command(program, args*).output().getOrElse(""))

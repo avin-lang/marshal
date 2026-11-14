@@ -55,7 +55,9 @@ drainBackfillE2e()
   assert(within(2000, () -> started(home, a)))
   val big = submitted(home, "--units", "3", "--", "sleep", "0.2")
   assert(within(4000, () -> whyOf(home, big) == Some(Why.Draining)), s"${whyOf(home, big)}")
-  val lengthy = submitted(home, "--units", "1", "--deadline", "120s", "--", "sleep", "0.2")
+  // a kind of its own, so the brief job's run teaches it nothing: once its command's runs say it
+  // takes 0.2s, it would rightly backfill too
+  val lengthy = submitted(home, "--kind", "lengthy", "--units", "1", "--deadline", "120s", "--", "sleep", "0.2")
   val brief = submitted(home, "--units", "1", "--deadline", "10s", "--", "sleep", "0.2")
   assert(within(2000, () -> started(home, brief)), eventsOf(home, brief).mkString(" "))
   assertEq(whyOf(home, lengthy), Some(Why.DrainingFor(big)))

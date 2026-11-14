@@ -1,0 +1,126 @@
+module tests
+
+// End to end, the disk guard, owners and durations learned per command: with the stand-in for `df`
+// (e2e.avin's `FakeDf`) under `disk_min` no new job starts while the running ones go on, and the
+// queue moves again once space is back; a job's owner comes from `--owner`, its project or its
+// label; a command's successful runs give its next run an ETA and a queued one an expected start,
+// kept in memory.json version 3, and a version 2 file is read without losing what it holds. The
+// helpers are e2e.avin's and reserve_e2e.avin's.
+import avin.fs
+import avin.threads
+import avin.time.millis
+import dev.avinlang.json
+import dev.avinlang.json.Json
+
+@test(
+  "under disk_min no new job starts and the running one goes on; ls, status and the snapshot say so; space back, it starts"
+)
+diskGuard()
+  val home = newHome()
+  val running = submitted(home, "--", "sleep", "4")
+  assert(within(10000, () -> started(home, running)), "the first job starts while there is space")
+  setDiskFree(home, 5 * Gi)
+  // the guard measures every few seconds
+  assert(
+    within(10000, () -> statusOf(home).get("disk_low").flatMap(v -> v.asBool) == Some(true)),
+    m(home, "status").out
+  )
+  val held = submitted(home, "--", "sleep", "0")
+  threads.sleep(millis(1500))
+  assert(!started(home, held), "a job submitted while the disk is low waits")
+  assert(lsRowOf(home, held).contains("queued (disk low: 5.0G free)"), lsRowOf(home, held))
+  val status = statusOf(home)
+  assertEq(status.get("disk_free").flatMap(v -> v.asLong), Some(5 * Gi))
+  assertEq(status("queued").asVector.get(0).get("why").flatMap(v -> v.asString), Some("disk-low"))
+  assert(m(home, "status").out.contains("the disk is under disk_min 20G: nothing new starts"), m(home, "status").out)
+  // the running job is never stopped: it ends as it would have
+  assertEq(m(home, "wait", running.toString()).code, 0)
+  assert(!started(home, held), "the job still waits once the running one has ended")
+  setDiskFree(home, 100 * Gi)
+  assert(within(10000, () -> ended(home, held)), m(home, "ls").out)
+  assert(daemonLog(home).contains("no new job starts"), daemonLog(home))
+  assert(daemonLog(home).contains("free again: jobs start"), daemonLog(home))
+  assertEq(m(home, "stop").code, 0)
+  cleanUp(home)
+
+@test("disk_min 0 turns the guard off: jobs start however little the disk has free")
+diskGuardOff()
+  val home = newHome("{\"disk_min\": \"0\"}")
+  setDiskFree(home, 0)
+  assertEq(m(home, "run", "--", "sleep", "0").code, 0)
+  assertEq(statusOf(home).get("disk_low").flatMap(v -> v.asBool), Some(false))
+  assertEq(m(home, "stop").code, 0)
+  cleanUp(home)
+
+@test("a job's owner is the one --owner names, else its project under config.json's projects, else its label")
+owners()
+  val home = newHome()
+  fs.createDirAll(home + "/dev/proj/.git").ok.get
+  fs.createDirAll(home + "/dev/proj/sub").ok.get
+  fs.writeText(home + "/config.json", s"{\"projects\": \"$home/dev\"}").ok.get
+  val named = submitted(home, "--owner", "porthole", "--", "sleep", "30")
+  val project = submitted(home, "--dir", home + "/dev/proj/sub", "--", "sleep", "30")
+  val labelled = submitted(home, "--label", "train 7", "--", "sleep", "30")
+  val none = submitted(home, "--", "sleep", "30")
+  assertEq(statusJob(home, named).get("owner").flatMap(v -> v.asString), Some("porthole"))
+  assertEq(statusJob(home, project).get("owner").flatMap(v -> v.asString), Some("proj"))
+  assertEq(statusJob(home, labelled).get("owner").flatMap(v -> v.asString), Some("train 7"))
+  assertEq(statusJob(home, none).get("owner"), None)
+  val header = m(home, "ls").out.lines.toVector(0)
+  assert(header.contains("ETA  OWNER") && header.indexOf("OWNER") < header.indexOf("LABEL"), header)
+  assert(lsRowOf(home, named).contains(" porthole "), lsRowOf(home, named))
+  assert(lsRowOf(home, project).contains(" proj "), lsRowOf(home, project))
+  // an owner that is not one word is refused before anything is submitted
+  val bad = m(home, "submit", "--owner", "two words", "--", "true")
+  assertEq(bad.code, 2)
+  assert(bad.out.contains("`--owner`"), bad.out)
+  assertEq(m(home, "stop", "--force").code, 0)
+  cleanUp(home)
+
+@test("a command's successful run gives its next run an ETA and a job queued behind it an expected start")
+etaLearned()
+  val home = newHome("{\"units\": 1}")
+  assertEq(m(home, "run", "--units", "1", "--", "sleep", "2").code, 0)
+  val text = fs.readText(home + "/memory.json").ok.get
+  assert(text.contains("\"version\":3") && text.contains("\"durations\":{") && text.contains("sleep"), text)
+  val first = submitted(home, "--units", "1", "--", "sleep", "20")
+  assert(within(10000, () -> started(home, first)), "it starts")
+  val next = submitted(home, "--units", "1", "--", "sleep", "20")
+  val running = statusJob(home, first)
+  assertEq(running.get("duration_from").flatMap(v -> v.asString), Some("cmd+dir"))
+  // about two seconds were learned, so the ETA is under two seconds
+  assert(running.get("eta_ms").flatMap(v -> v.asLong).exists(ms -> 0 <= ms && ms <= 2500), s"$running")
+  val queued = statusJob(home, next)
+  assert(queued.get("starts_in_ms").flatMap(v -> v.asLong).exists(ms -> 0 <= ms && ms <= 2500), s"$queued")
+  assert(lsRowOf(home, next).contains(" in <1m "), lsRowOf(home, next))
+  // a command never run has no ETA: its kind's guess is not one
+  val other = submitted(home, "--kind", "other", "--units", "1", "--", "sleep", "20")
+  assertEq(statusJob(home, other).get("duration_from").flatMap(v -> v.asString), Some("none"))
+  assertEq(statusJob(home, other).get("eta_ms"), None)
+  assertEq(m(home, "stop", "--force").code, 0)
+  cleanUp(home)
+
+@test(
+  "a version 2 memory.json keeps its peaks and cores, learns its durations from the event log and is written as version 3"
+)
+memoryVersion2()
+  val home = newHome()
+  assertEq(m(home, "run", "--kind", "v", "--", "sleep", "1").code, 0)
+  stopDaemon(home)
+  val three = json.parse(fs.readText(home + "/memory.json").ok.get).ok.get
+  val peaks = three("peaks")
+  val cores = three("cores")
+  // the same knowledge as version 2 wrote it: no durations
+  fs.writeText(
+    home + "/memory.json",
+    Json.obj(("version", Json.num(2)), ("peaks", peaks), ("cores", cores)).render
+  ).ok.get
+  val id = submitted(home, "--kind", "v", "--", "sleep", "30")
+  assertEq(statusJob(home, id).get("duration_from").flatMap(v -> v.asString), Some("cmd+dir"))
+  val again = json.parse(fs.readText(home + "/memory.json").ok.get).ok.get
+  assertEq(again("version").asLong, Some(3))
+  assertEq(again("peaks"), peaks)
+  assertEq(again("cores"), cores)
+  assert(again("durations").asMembers.exists(ms -> ms.nonEmpty), again.render)
+  assertEq(m(home, "stop", "--force").code, 0)
+  cleanUp(home)

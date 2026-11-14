@@ -244,32 +244,46 @@ reservationSource(memory: long, given: bool, r: Reservation, from: string) -> st
 holding(reserved: long, rss: long) -> long = if rss > reserved then rss else reserved
 
 // What is learned of earlier runs, kept in `<home>/memory.json` so that it outlives the daemon, a
-// restart, an upgrade and `marshal clean` trimming the event log: the memory peaks, and the peak
-// cores (cores.avin), each by key:
+// restart, an upgrade and `marshal clean` trimming the event log: the memory peaks, the peak cores
+// (cores.avin) and the durations of the runs that succeeded (eta.avin), each by key:
 //
-//   {"version": 2, "peaks": {"<key>": [bytes, ...], ...}, "cores": {"<key>": [1.25, ...], ...}}
+//   {"version": 3, "peaks": {"<key>": [bytes, ...], ...}, "cores": {"<key>": [1.25, ...], ...},
+//    "durations": {"<key>": [milliseconds, ...], ...}}
 //
 // Each key is a `memoryKey` or `memoryDirKey` and holds its last `MemoryKept` values, oldest first.
-// A file of version 1 has no `cores`: its peaks are used, and the cores are learned again from the
-// event log (`fromVersion1`). A file of another version, or one that does not read, is not used: the
-// daemon learns both again from the event log.
-val MemoryFileVersion: long = 2
+// A file of version 2 has no `durations`, and one of version 1 neither those nor `cores`: what it
+// has is used, and what it lacks is learned again from the event log (`fromVersion1`,
+// `withoutDurations`). A file of another version, or one that does not read, is not used: the
+// daemon learns everything again from the event log.
+val MemoryFileVersion: long = 3
 
 val MemoryKept: int = 20
 
-// `peaks` in bytes and `cores` in hundredths of a core, by key, oldest first. `fromVersion1` says
-// they were read from a version 1 file, which kept no cores.
-data Learned(peaks: Map[string, Vector[long]], cores: Map[string, Vector[long]], fromVersion1: bool = false)
+// `peaks` in bytes, `cores` in hundredths of a core and `durations` in milliseconds, by key, oldest
+// first. `fromVersion1` says they were read from a version 1 file, which kept no cores, and
+// `withoutDurations` from a file of version 1 or 2, which kept no durations.
+data Learned(
+    peaks: Map[string, Vector[long]],
+    cores: Map[string, Vector[long]],
+    fromVersion1: bool = false,
+    durations: Map[string, Vector[long]] = Map(),
+    withoutDurations: bool = false
+)
 
 encodeMemory(learned: Learned) -> string
   val peakKeys = learned.peaks.keys.toVector.sorted
   val peaks = peakKeys.map(k -> (k, Json.Arr(learned.peaks(k).takeRight(MemoryKept).map(p -> Json.num(p)))))
   val coreKeys = learned.cores.keys.toVector.sorted
   val cores = coreKeys.map(k -> (k, Json.Arr(learned.cores(k).takeRight(MemoryKept).map(c -> coresJson(c)))))
+  val durationKeys = learned.durations.keys.toVector.sorted
+  val durations = durationKeys.map(
+    k -> (k, Json.Arr(learned.durations(k).takeRight(MemoryKept).map(d -> Json.num(d))))
+  )
   Json.obj(
     ("version", Json.num(MemoryFileVersion)),
     ("peaks", Json.Obj(peaks)),
-    ("cores", Json.Obj(cores))
+    ("cores", Json.Obj(cores)),
+    ("durations", Json.Obj(durations))
   ).render + "\n"
 
 decodeMemory(text: string) -> Result[Learned, string]
@@ -277,7 +291,7 @@ decodeMemory(text: string) -> Result[Learned, string]
     Ok(v) -> v
     Err(e) -> return Err(s"not JSON: $e")
   val version = j.get("version").flatMap(v -> v.asLong)
-  if version != Some(MemoryFileVersion) && version != Some(long(1)) then return Err(
+  if version != Some(MemoryFileVersion) && version != Some(long(2)) && version != Some(long(1)) then return Err(
     s"version ${version.map(v -> v.toString()).getOrElse("missing")}, not $MemoryFileVersion"
   )
   val members = j.get("peaks").flatMap(v -> v.asMembers) match
@@ -289,7 +303,7 @@ decodeMemory(text: string) -> Result[Learned, string]
     if v.asVector.isEmpty || !items.forall(i -> i.asLong.exists(n -> n > 0))
       return Err(s"the peaks of `$k` are not sizes")
     out += (k, items.map(i -> i.asLong.get))
-  if version == Some(long(1)) then return Ok(Learned(out.toVector.toMap, Map(), true))
+  if version == Some(long(1)) then return Ok(Learned(out.toVector.toMap, Map(), true, Map(), true))
   val coreMembers = j.get("cores").flatMap(v -> v.asMembers) match
     Some(ms) -> ms
     None -> return Err("`cores` is not an object")
@@ -299,7 +313,17 @@ decodeMemory(text: string) -> Result[Learned, string]
     if v.asVector.isEmpty || !items.forall(i -> centiOf(i).isDefined)
       return Err(s"the cores of `$k` are not numbers of cores")
     cores += (k, items.map(i -> centiOf(i).get))
-  Ok(Learned(out.toVector.toMap, cores.toVector.toMap))
+  if version == Some(long(2)) then return Ok(Learned(out.toVector.toMap, cores.toVector.toMap, false, Map(), true))
+  val durationMembers = j.get("durations").flatMap(v -> v.asMembers) match
+    Some(ms) -> ms
+    None -> return Err("`durations` is not an object")
+  val durations = Buffer[(string, Vector[long])]()
+  for (k, v) in durationMembers
+    val items = v.asVector.getOrElse([])
+    if v.asVector.isEmpty || !items.forall(i -> i.asLong.exists(n -> n >= 0))
+      return Err(s"the durations of `$k` are not milliseconds")
+    durations += (k, items.map(i -> i.asLong.get))
+  Ok(Learned(out.toVector.toMap, cores.toVector.toMap, false, durations.toVector.toMap))
 
 // What `file` holds learned, or why it cannot be used (a missing file among the reasons).
 loadMemory(file: string) -> Result[Learned, string] = fs.readText(file) match

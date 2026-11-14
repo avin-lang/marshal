@@ -1,6 +1,7 @@
 |marshal  up 1:02:03   2 running  3 queued   landifilter: all|
 |units [███████████████·····] 5 + take-slot 4 / 12, 1 waiting|
 |mem   [█████               ] 1G / 4G   rss 0                |
+|cpu   [                    ] - / 12                         |
 |                                                            |
 |   ID STATE          KIND     UNITS   RESV   RSS STARTED  EL|
 |    1 running        build        4     1G     - -         █|
@@ -10,10 +11,9 @@
 |   12 #3 take-slot   build        1      -     - -         █|
 |    9 exit 0         build        1      -     - -         █|
 |    8 exit 3         build        1      -     - -         █|
-|    7 timeout        build        1      -     - -         █|
-|    6 killed         build        1      -     - -         █|
-|    5 lost           build        1      -     - -         │|
-|hHelp EnterLog kKill fFilter qQuit           jobs 1–10 of 11|
+|    7 timeout        build        1      -     - -         │|
+|    6 killed         build        1      -     - -         │|
+|hHelp EnterLog kKill fFilter oOwner qQuit     jobs 1–9 of 11|
 --
 0 0..7 Default/Default/1
 0 22..31 Basic(2)/Default/0
@@ -24,19 +24,20 @@
 1 22..27 Basic(8)/Default/0
 2 7..12 Basic(6)/Default/0
 2 12..27 Basic(8)/Default/0
-4 0..60 Default/Default/17
-5 0..6 Default/Default/16
-5 6..20 Basic(2)/Default/17
-5 20..59 Default/Default/16
-6 6..20 Basic(2)/Default/1
-7 6..20 Basic(3)/Default/0
+3 7..27 Basic(8)/Default/0
+5 0..60 Default/Default/17
+6 0..6 Default/Default/16
+6 6..20 Basic(2)/Default/17
+6 20..59 Default/Default/16
+7 6..20 Basic(2)/Default/1
 8 6..20 Basic(3)/Default/0
 9 6..20 Basic(3)/Default/0
-10 6..20 Basic(2)/Default/0
-11 6..20 Basic(1)/Default/1
-12 6..20 Basic(1)/Default/17
-13 6..20 Basic(5)/Default/1
-14 6..20 Basic(5)/Default/17
+10 6..20 Basic(3)/Default/0
+11 6..20 Basic(2)/Default/0
+12 6..20 Basic(1)/Default/1
+13 6..20 Basic(1)/Default/17
+13 59..60 Basic(8)/Default/0
+14 6..20 Basic(5)/Default/1
 14 59..60 Basic(8)/Default/0
 15 0..1 Default/Default/1
 15 1..6 Basic(0)/Basic(6)/0
@@ -47,5 +48,7 @@
 15 21..22 Default/Default/1
 15 22..29 Basic(0)/Basic(6)/0
 15 29..30 Default/Default/1
-15 30..35 Basic(0)/Basic(6)/0
-15 45..60 Basic(8)/Default/0
+15 30..36 Basic(0)/Basic(6)/0
+15 36..37 Default/Default/1
+15 37..42 Basic(0)/Basic(6)/0
+15 46..60 Basic(8)/Default/0

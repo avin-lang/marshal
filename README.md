@@ -308,6 +308,7 @@ Options of `submit` and `run`:
 | `--retries <n>` | Runs it again, up to `n` times, when it exits nonzero, is ended by a signal it was not sent by `kill`, or passes its deadline or its quiet timeout. Default 0. |
 | `--retry-delay <t>` | Waits `t` before each retry. Default: none. |
 | `--label <text>` | A note to find the job by, such as `train 209`: one line of 1 to 80 characters, no control characters (newline, tab), no space at either end; a longer or malformed label is refused, not cut. It shows in `ls`, `history`, `top` (a LABEL column, empty for a job without one; the whole label beside the kind in the log pane) and `status --json`, and is in the events. `rerun` keeps it; `run-type` and `train` take `--label` too. Default: none. |
+| `--owner <name>` | Who the job is for, such as the session or project that submits it: one word of 1 to 40 letters, digits, `-`, `_` and `.`. Without it the owner is the project the job's `--dir` is in, under the directory projects live in (`~/dev`, or `config.json`'s `projects`): the first directory under it (`~/dev/nex/src` is `nex`), or, where that is an organisation's directory holding repositories rather than one itself, the repository under it (`~/dev/avin-lang/avin/compiler` is `avin`); a git worktree named `<repo>-<branch>` beside its repository is its repository's (`~/dev/sysl-lang/sysl-fix-x` is `sysl`), and a repository with a dash in its name stays itself (`sysl-bootstrap`). Outside that directory the owner is the job's label, and without one there is none (`-`). It shows in OWNER in `ls` and `top`, whose `o` key shows one owner's jobs, and in `status --json` as `owner`; `rerun` keeps it. |
 
 **Accounting.** `history` and `stats` read `events.jsonl` directly, a line at a time, so they answer
 with no daemon running and change nothing. Lines that are not events are skipped and counted on
@@ -443,7 +444,8 @@ ends: nothing polls.
   development job has waited `drain_after` (10 minutes by default; `config.json`) since it queued,
   it goes ahead of every other development job, and while it does not fit the machine drains for it.
   The drained job is expected to start once enough running jobs have ended, each counted by its
-  kind's learned duration, or by its deadline when nothing is learned. Meanwhile another development
+  learned duration (its command's, else its kind's; see Durations learned per command), or by its
+  deadline when nothing is learned. Meanwhile another development
   job that fits starts (backfills) when it too is expected to end by then, or when it takes only
   units and memory the drained job will leave spare; its log's first line and its `started` event
   say `backfilled ahead of <id>` (`backfilled_ahead_of`). A job that was running before the drain
@@ -497,6 +499,39 @@ ends: nothing polls.
   USED the cores a running job keeps busy or an ended job's peak (`-` where nothing was measured);
   `status --json` gives `units` as a number (`1.25`), `units_learned`, and `cores`, `peak_cores`
   and `cpu_ms` once measured; `top`'s UNITS shows the same units with `~`.
+- **Durations learned per command, and ETAs.** Every run that exits 0 is remembered under its
+  command, as memory is (the command's signature, in its directory and anywhere). A job's expected
+  duration is the median of the last 5 such runs of its command in its directory, or anywhere while
+  it has not run there; before any, its kind's (the median of the kind's last runs once it has 3,
+  half its default deadline until then); never more than its deadline. The scheduler's backfill and
+  drains read it, whichever it is, and a command's own runs make them sharper. A queued job
+  estimates again when a run of its command ends. Only a duration learned from the command's own
+  runs gives an ETA, since a kind's runs (every test of every project) say little of when one of them
+  ends: a running job's ETA is its expected duration less the time it has run (`~6m`, `~1h05`, and
+  `<1m` once it is past it). A queued job's expected start is reckoned from the running jobs'
+  expected ends: the jobs of each lane, in queue order, each start at the earliest end after which
+  its units and memory fit beside what runs and what is reckoned to start before it (`in ~3m`, and
+  to the hour from an hour on, `in ~2h`). Where a start waits on an end that is not known (a running
+  job whose command has no learned duration), or on what no duration measures (take-slot, the load,
+  an exclusive job, a held queue, a low disk), that job and every one behind it in its lane have
+  none (`-`); a held job is passed over. `ls` and `top` show both in ETA; `status --json` gives
+  `duration_from` (`cmd+dir`, `cmd`, `kind` or `none`), a running job's `eta_ms` and a queued job's
+  `starts_in_ms` (from when the daemon answered), each where it is known.
+- **Disk guard.** Every 3 seconds the daemon measures the free space (`df`) of each volume holding
+  marshal's home or the directory of a job that runs or waits, and keeps the least. While that is
+  under `disk_min` (`config.json`, `"20G"` by default; `"0"` turns the guard off) no new job starts
+  in any lane, the landing lane included: the queued ones wait `queued (disk low: 14G free)` (`top`:
+  `disk low`), and the running ones go on, since stopping a build halfway frees nothing it has
+  written. Nothing is ever killed. Once the space is back the queue moves again by itself. The
+  daemon's log says when the guard holds the queue and when it lets go. A measurement that cannot
+  be made holds nothing back. `status` ends with `disk 120G free` and, while the guard holds, `the
+  disk is under disk_min 20G: nothing new starts`; `status --json` has `disk_free`, `disk_min` and
+  `disk_low`, and `top`'s header shows the free space, yellow under twice `disk_min` and red under
+  it.
+- **The machine's processors.** The `ps` listing the jobs are measured from each second lists every
+  process, so the daemon measures the whole machine's processor use from it the same way, and the
+  running jobs' share of it. `status` says `cpu 8.4 (jobs 4.9)`, `status --json` has `cpu` and
+  `job_cpu` in cores, and `top` draws them against the unit budget (a unit is about a core).
 - **Work outside the job's processes.** Marshal measures a job's own process tree, so work that a
   job hands to something else is invisible to it: `docker run` leaves only the docker client in the
   tree while the container uses the VM's CPU and memory. Such a job is submitted with
@@ -557,14 +592,16 @@ ends: nothing polls.
   exits 2. `$MARSHAL_RESTART_PROGRAM`, in the daemon's environment, names another program.
   `restart` prints the version before and after; `version` prints this marshal's and the
   daemon's, and neither starts a daemon.
-- **Learned memory and cores are kept in `memory.json`.** After every job that ends, the daemon
-  writes what it has learned to `memory.json` in marshal's home:
-  `{"version": 2, "peaks": {...}, "cores": {...}}`, each key a kind (`+landing` for the landing
-  lane), a line feed and a command's signature, with a line feed and a directory after it for runs
-  in that directory, holding that key's last 20 memory peaks in bytes (`peaks`) and peak cores as
-  numbers (`cores`, such as `1.25`), oldest first. A version 1 file, which has only `peaks`, is read
-  without loss: its peaks are kept, the cores are learned from the event log's `peak_cores`, and
-  the file is written again as version 2. It is written to a temporary file and renamed into place, so a reader sees
+- **Learned memory, cores and durations are kept in `memory.json`.** After every job that ends, the
+  daemon writes what it has learned to `memory.json` in marshal's home:
+  `{"version": 3, "peaks": {...}, "cores": {...}, "durations": {...}}`, each key a kind (`+landing`
+  for the landing lane), a line feed and a command's signature, with a line feed and a directory
+  after it for runs in that directory, holding that key's last 20 memory peaks in bytes (`peaks`),
+  peak cores as numbers (`cores`, such as `1.25`) and run times of successful runs in milliseconds
+  (`durations`), oldest first. An older file is read without loss: a version 2 file keeps its peaks
+  and cores and its durations are learned from the event log's successful `finished` events
+  (`run_ms`); a version 1 file, which has only `peaks`, keeps them and learns the cores (from
+  `peak_cores`) and the durations so; either is written again as version 3. It is written to a temporary file and renamed into place, so a reader sees
   the whole of one write, never part. A starting daemon reads it, so what was learned survives
   `stop`, `restart`, an upgrade, a reboot and `marshal clean` trimming the event log. When the file
   is missing, does not read, or is of another version, the daemon says so on stderr (a missing one
@@ -574,7 +611,9 @@ ends: nothing polls.
 `config.json` in marshal's home changes the defaults: `units`, `memory` (`"56G"` or bytes),
 `reserve`, `deadline_floor` (`"5m"`), `learn_window`, `learn_min_runs`, `drain_after` (`"10m"`, or
 `"never"`: how long a job waits before the machine drains for it), `load_wait` (`"15m"`, or `"never"`:
-how long an exclusive job waits for its `--quiet-load` before it starts anyway) and `take_slot` (below), and the
+how long an exclusive job waits for its `--quiet-load` before it starts anyway), `disk_min` (`"20G"`,
+or `"0"` for no guard: the least free disk new jobs start beside), `projects` (an absolute
+directory, `~/dev` by default: where a job's owner is named from) and `take_slot` (below), and the
 retention settings (next).
 
 **Retention.** Marshal's home would grow for ever, so the daemon removes old files when it starts
@@ -603,13 +642,15 @@ declared or learned), `mem_budget`, `rss` (what the running jobs hold in RAM, in
 (what admission counts them holding: each job's reservation or its `rss`, whichever is more),
 `machine_mem` (the machine's memory, 0 if unknown), `landing` (the landing
 job's id or null), `take_slot` (`dir`, `units`, `waiting`, `landing`, or null when none is shared),
-`queue_held`, and `running` and `queued`, arrays of jobs as [the protocol](docs/protocol.md) writes
-them; a queued job also has `why`, the protocol's word for why it has not started (`units`,
+`queue_held`, `cpu` and `job_cpu` (cores, once measured), `disk_free` (bytes, once measured),
+`disk_min` and `disk_low`, and `running` and `queued`, arrays of jobs as [the protocol](docs/protocol.md) writes
+them (with `owner`, `duration_from`, `eta_ms` and `starts_in_ms` where there are any); a queued job also has `why`, the protocol's word for why it has not started (`units`,
 `memory`, `lane`, `draining`, `take-slot`, `behind`, `draining-for`, `starting`, `held`,
-`queue-held`), and `behind`, the job's id, when `why` is `behind`, or `draining_for` when it is
-`draining-for`. In `marshal ls` the same reason follows `queued` in the state cell, in the words
+`queue-held`, `disk-low`), and `behind`, the job's id, when `why` is `behind`, `draining_for` when it is
+`draining-for`, or `disk_free` when it is `disk-low`. In `marshal ls` the same reason follows `queued` in the state cell, in the words
 `top` shows: `queued (no units)`, `queued (behind 405)`, `queued (draining for 1567)`,
-`queued (queue held)`.
+`queued (queue held)`, `queued (disk low: 14G free)`. `ls`'s ETA and OWNER columns stand
+before LABEL.
 A job held by hand says just `held`.
 
 ## Sharing the machine with take-slot.zsh
@@ -651,7 +692,19 @@ against its own budget. `marshal status` shows what take-slot holds.
   filter; a bar of the unit budget, marshal's development units in green
   and take-slot's share after them in magenta, with take-slot's waiting runs; a bar of the memory
   budget, what the running jobs reserve in cyan and what they hold beyond their reservations in
-  blue, then the reserved total, what they hold in RAM (`rss`) and the machine's memory.
+  blue, then the reserved total, what they hold in RAM (`rss`) and the machine's memory; and a bar
+  of the machine's processor use, from the same one-second `ps` sample the jobs are measured from,
+  against the unit budget (a unit is about a core): the cores marshal's running jobs keep busy in
+  green and every other process's in yellow, then both (`4.9 jobs + 3.5 other / 12`; `-` before
+  the first measurement) and the free disk (`disk 31G free`), yellow under twice `disk_min` and red
+  under it, where it says `< 20G: nothing starts`. With an owner chosen, `owner: sysl` follows the
+  filter.
+- **Cores, ETA and owner**: CORES is the cores a running job keeps busy now, as `ls`'s USED has it
+  (`-` for any other). ETA is a running job's expected time left (`~6m`) or a queued job's expected
+  start (`in ~3m`, dim), counting on between snapshots, `-` where it is not known (see Durations
+  learned per command). OWNER is who the job is for (`--owner`, its project, or its label; `-` for
+  none), up to 10 cells, cut with `…`; it stands before LABEL, and LABEL gives way first on a
+  narrow screen.
 - **Memory**: RESV is the memory a job reserves: what it declared with `--mem`, or with `~` before
   it (`~29G`) the learned peak of its command (in its directory, or anywhere), or with `@` before it
   (`@29G`) what a job submitted with `--external` declared. RSS is what a running job's whole
@@ -659,8 +712,10 @@ against its own budget. `marshal status` shows what take-slot holds.
   holding, kept once it ends; `-` where there is none.
 - **Started**: STARTED is when the job started, in the terminal's local time zone (`TZ`, else the
   system's) to the minute, as `MM-DD hh:mm` (`11-07 08:31`); `-` for a job that has not started.
-  `marshal ls` has the same column. Under 90 columns `top` leaves PEAK out and shows just `hh:mm` for
-  a job that started today, so STARTED and the rest keep their room; `--json` carries `started_at` and the peak as before.
+  `marshal ls` has the same column. A narrow screen leaves columns out so that OWNER, LABEL and
+  COMMAND keep their room: under 140 columns `top` leaves CORES out, and under 130 PEAK too, and
+  shows just `hh:mm` for a job that started today; `ls` and `--json` carry `started_at`, the cores
+  and the peak as before.
 - **Jobs**: running jobs, then queued ones, then the last ten that ended, the latest first, then the
   earlier ones scrolled back to (see Scrolling back). ELAPSED
   is the time since the job started (a paused job's stands still), `-` for a job that has not started,
@@ -675,14 +730,17 @@ against its own budget. `marshal status` shows what take-slot holds.
   the queue, `draining for N` (job N has waited past `drain_after` and goes first), `held` (`marshal hold`), `queue held` (`marshal pause`), `quick lane full` (a
   `--quick` job, both quick slots taken), `emptying` (an `--exclusive` job waiting for the running
   jobs to end), `load 7.9 ≥ 4` or `load 3.5 < 4 for 20.0s` (an exclusive job's `--quiet-load`) or
-  `exclusive N` (exclusive job N runs, or waits ahead of it). A running quick job shows `quick`, a
+  `exclusive N` (exclusive job N runs, or waits ahead of it), `disk low` (the disk is under
+  `disk_min`; the header shows how much is free). A running quick job shows `quick`, a
   running exclusive job `exclusive`. A job waiting for others
   shows `after 3,4`, one waiting to retry `retry 2`. An ended job shows `exit N` (green for 0, red
   otherwise), `killed`, `timeout`, `lost`, `cancelled`, `dep N failed` or `signal N`.
 - **Keys**: Up, Down, PgUp, PgDn, Home, End select a job; Enter or `l` opens its log in a pane under
   the table, following the end as it grows (PgUp, PgDn, Home, End scroll it while it is open, Esc
   closes it); `k` kills the selected job after `y`; `f` shows all jobs, the running, the queued or
-  the ended ones; `h` the keys; `q` quits.
+  the ended ones; `o` shows only the first owner's jobs (in alphabetical order, among the jobs
+  listed and loaded), the next owner's at the next press, and every owner's again after the last,
+  with whichever `f` filter is on; `h` the keys; `q` quits.
 - **Scrolling back**: the snapshot carries only the last ten ended jobs. Down or PgDn on the last
   line loads the next 100 that ended before them from the event log (what `marshal history` reads)
   and selects the first of them; End loads every page and goes to the very oldest job; Home goes

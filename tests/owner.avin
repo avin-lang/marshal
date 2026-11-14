@@ -1,0 +1,92 @@
+module tests
+
+// Who a job is for (owner.avin): the owner `--owner` names; else the project of its directory under
+// the projects directory, an organisation's repository or a worktree's repository among them; else
+// its label.
+import avin.fs
+import dev.avinlang.marshal
+
+// A tree of repositories as `ownerOf` asks of it: `repos` hold a `.git` directory, `worktrees` a
+// `.git` file, and `orgs` hold repositories without being one.
+private data Tree(repos: Vector[string], worktrees: Vector[string])
+
+private isDirIn(t: Tree) -> (string) -> bool = p -> t.repos.exists(r -> p == r + "/.git")
+
+private existsIn(t: Tree) -> (string) -> bool = p -> t.repos.exists(
+  r -> p == r + "/.git"
+) || t.worktrees.exists(w -> p == w + "/.git")
+
+private val tree: Tree = Tree(
+  [
+    "/u/dev/nex",
+    "/u/dev/avin-lang/avin",
+    "/u/dev/avin-lang/marshal",
+    "/u/dev/sysl-lang/sysl",
+    "/u/dev/sysl-lang/sysl-bootstrap",
+    "/u/dev/slate-language/slate"
+  ],
+  [
+    "/u/dev/avin-lang/marshal-top-disk",
+    "/u/dev/sysl-lang/sysl-fix-x",
+    "/u/dev/sysl-lang/sysl-bootstrap-fix",
+    "/u/dev/nex-ui"
+  ]
+)
+
+private ownerIn(dir: string, label: string = "", named: string = "") -> string =
+  marshal.ownerOf(named, dir, label, "/u/dev", isDirIn(tree), existsIn(tree))
+
+@test("a job's owner is the project its directory is in: the first level, or an organisation's repository")
+ownerProjects()
+  assertEq(ownerIn("/u/dev/nex"), "nex")
+  assertEq(ownerIn("/u/dev/nex/src/deep"), "nex")
+  assertEq(ownerIn("/u/dev/avin-lang/avin"), "avin")
+  assertEq(ownerIn("/u/dev/avin-lang/avin/compiler"), "avin")
+  assertEq(ownerIn("/u/dev/sysl-lang/sysl/library"), "sysl")
+  assertEq(ownerIn("/u/dev/slate-language/slate"), "slate")
+  // a directory that is neither a repository nor holds one deeper still names its first level
+  assertEq(ownerIn("/u/dev/scratch"), "scratch")
+
+@test("a worktree beside its repository is the repository's; a repository with a dash in its name stays itself")
+ownerWorktrees()
+  assertEq(ownerIn("/u/dev/avin-lang/marshal-top-disk"), "marshal")
+  assertEq(ownerIn("/u/dev/sysl-lang/sysl-fix-x/compiler"), "sysl")
+  assertEq(ownerIn("/u/dev/sysl-lang/sysl-bootstrap"), "sysl-bootstrap")
+  // the longest repository before a dash wins
+  assertEq(ownerIn("/u/dev/sysl-lang/sysl-bootstrap-fix"), "sysl-bootstrap")
+  assertEq(ownerIn("/u/dev/nex-ui"), "nex")
+
+@test("a named owner wins; outside the projects directory the label is the owner, and none without one")
+ownerFallbacks()
+  assertEq(ownerIn("/u/dev/nex", named = "porthole"), "porthole")
+  assertEq(ownerIn("/tmp/x", "train 209"), "train 209")
+  assertEq(ownerIn("/tmp/x"), "")
+  // the projects directory itself, and a sibling that only starts like it, are not under it
+  assertEq(ownerIn("/u/dev", "l"), "l")
+  assertEq(ownerIn("/u/devices/x", "l"), "l")
+  assertEq(marshal.ownerOf("", "/u/dev/nex", "l", "", isDirIn(tree), existsIn(tree)), "l")
+  assertEq(marshal.ownerOf("", "/u/dev/nex", "l", "/u/dev/", isDirIn(tree), existsIn(tree)), "nex")
+
+@test("the owner's own files decide: a real tree with a repository, a worktree and an organisation")
+ownerOnDisk()
+  val root = fs.createTempDir("marshal-owner-").ok.get
+  fs.createDirAll(root + "/org/repo/.git").ok.get
+  fs.createDirAll(root + "/org/repo-branch").ok.get
+  fs.writeText(root + "/org/repo-branch/.git", "gitdir: x").ok.get
+  fs.createDirAll(root + "/solo/.git").ok.get
+  assertEq(marshal.ownerHere("", root + "/org/repo-branch/src", "", root), "repo")
+  assertEq(marshal.ownerHere("", root + "/org/repo", "", root), "repo")
+  assertEq(marshal.ownerHere("", root + "/solo/a", "", root), "solo")
+  fs.removeDirAll(root).ok.get
+
+@test("--owner is one word: letters, digits, -, _ and ., at most 40 characters")
+ownerOption()
+  assertEq(marshal.checkOwner("sysl"), Ok("sysl"))
+  assertEq(marshal.checkOwner("avin-lang_2.x"), Ok("avin-lang_2.x"))
+  assertEq(marshal.checkOwner("").isErr, true)
+  assertEq(marshal.checkOwner("two words").isErr, true)
+  assertEq(marshal.checkOwner("a/b").isErr, true)
+  assertEq(marshal.checkOwner(xs(41)).isErr, true)
+  assertEq(marshal.checkOwner(xs(40)).isOk, true)
+
+private xs(n: int) -> string = (1 .. n).map(_ -> "x").mkString("")

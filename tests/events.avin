@@ -329,16 +329,19 @@ resultLines()
 listings()
   val rows = marshal.listing([info(1, state = "running"), info(12, "build", true)]).lines.toVector
   assertEq(rows.length, 3)
-  assertEq(rows(0), "ID  STATE    KIND    UNITS  USED  RESV  STARTED  ELAPSED  LABEL  COMMAND")
-  assertEq(rows(1), "1   running  test    4      -     -     -        0ms             make it")
-  assertEq(rows(2), "12  queued   build*  4      -     -     -        -               make it")
-  assertEq(marshal.listing([]), "ID  STATE  KIND  UNITS  USED  RESV  STARTED  ELAPSED  LABEL  COMMAND")
+  assertEq(rows(0), "ID  STATE    KIND    UNITS  USED  RESV  STARTED  ELAPSED  ETA  OWNER  LABEL  COMMAND")
+  assertEq(rows(1), "1   running  test    4      -     -     -        0ms      -    -             make it")
+  assertEq(rows(2), "12  queued   build*  4      -     -     -        -        -    -             make it")
+  assertEq(
+    marshal.listing([]),
+    "ID  STATE  KIND  UNITS  USED  RESV  STARTED  ELAPSED  ETA  OWNER  LABEL  COMMAND"
+  )
 
 @test("ELAPSED is - for a job that has not started, whatever its wait, and the run time for the rest")
 elapsedColumn()
   val cell = (j: JobInfo) ->
     val rows = marshal.listing([j]).lines.toVector
-    rows(1).slice(rows(0).indexOf("ELAPSED"), rows(0).indexOf("LABEL")).trim
+    rows(1).slice(rows(0).indexOf("ELAPSED"), rows(0).indexOf("ETA")).trim
   for state in ["queued", "waiting", "retrying"] do assertEq(cell(info(1, state = state, elapsed = 90000)), "-")
   assertEq(cell(info(1, state = "running", elapsed = 90000)), marshal.formatMillis(90000))
   assertEq(
@@ -383,9 +386,9 @@ startedOnAnotherDay()
 listingStarted()
   val rows = marshal.listing([info(1, state = "running", started = 1794058290000), info(2)]).lines.toVector
   val expected = time.epochMillis(1794058290000).atZone(time.localZone()).format("MM-DD hh:mm")
-  assertEq(rows(0), "ID  STATE    KIND  UNITS  USED  RESV  STARTED      ELAPSED  LABEL  COMMAND")
-  assertEq(rows(1), s"1   running  test  4      -     -     $expected  0ms             make it")
-  assertEq(rows(2), "2   queued   test  4      -     -     -            -               make it")
+  assertEq(rows(0), "ID  STATE    KIND  UNITS  USED  RESV  STARTED      ELAPSED  ETA  OWNER  LABEL  COMMAND")
+  assertEq(rows(1), s"1   running  test  4      -     -     $expected  0ms      -    -             make it")
+  assertEq(rows(2), "2   queued   test  4      -     -     -            -        -    -             make it")
 
 @test("the status line shows units, memory, counts and the landing lane")
 usageLines()

@@ -200,7 +200,7 @@ externalInTop()
     reservedLearned = true
   )
   val o = marshal.Overview(marshal.Usage(3, 12, 33 * Gi, long.MaxValue, 2, 1, None, None), 0, [ext, learned], [], [])
-  val g = drawn(viewing(o), 100, 30)
+  val g = drawn(viewing(o), 130, 30)
   val head = rowOf(g, "ID STATE")
   assertEq(g.rowText(head).slice(36, 54), "  RESV   RSS  PEAK")
   assertEq(memoryCells(g, head + 1), ("@29G", "300M", "300M"))

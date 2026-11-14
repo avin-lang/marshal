@@ -6,7 +6,7 @@ import dev.avinlang.json
 import dev.avinlang.json.Json
 
 // marshal's version, as `avin.hocon` gives it: what `marshal version` and `marshal restart` print.
-val Version: string = "0.3.4"
+val Version: string = "0.3.5"
 
 // What a job is to run and how much of the machine it takes. `urgent` queues it in its lane's urgent
 // band, behind the urgent jobs already queued and ahead of every other. `after` names the jobs it
@@ -25,7 +25,9 @@ val Version: string = "0.3.4"
 // to stay below it for a minute first (0 for none). `units` is in quarters (cores.avin), and
 // `unitsGiven` says the submitter gave them (`--units`, or a job type's file): units not given are
 // the default for the kind until runs of the same command teach better (`learnedUnits`). What
-// marshal wrote before it learned units does not say, and reads as given.
+// marshal wrote before it learned units does not say, and reads as given. `owner` is who submitted
+// it as `--owner` named them, "" where it was not named and is derived from the directory and the
+// label (`ownerOf`).
 data JobSpec(
     kind: string,
     units: int,
@@ -47,7 +49,8 @@ data JobSpec(
     quick: bool = false,
     exclusive: bool = false,
     quietLoad: real = 0.0,
-    unitsGiven: bool = true
+    unitsGiven: bool = true,
+    owner: string = ""
 )
 
 // `s` weighing `units` quarters instead of its own.
@@ -73,7 +76,8 @@ withUnits(s: JobSpec, units: int) -> JobSpec =
     s.quick,
     s.exclusive,
     s.quietLoad,
-    s.unitsGiven
+    s.unitsGiven,
+    s.owner
   )
 
 // The longest label, in characters.
@@ -195,7 +199,12 @@ retryable(_, _) = false
 // spec's. `units` is in quarters, and `unitsLearned` says they were learned from the cores earlier
 // runs of its command used. `cores` is how many cores a running job keeps busy, as last measured, and
 // `peakCores` the most it has, both in hundredths and -1 where it has not been measured; `cpuMs` is
-// the processor time measured, in milliseconds (cores.avin).
+// the processor time measured, in milliseconds (cores.avin). `owner` is who submitted it: the owner
+// it named, or the one derived from its directory or label (`ownerOf`), "" where there is none.
+// `durationFrom` says where `expectedMs` came from (`durationSource`: `cmd+dir`, `cmd`, `kind` or
+// `none`), "" from a daemon that does not say; only a duration learned from its command's own runs
+// gives it an ETA (eta.avin). `startsInMs` is how long a queued job is expected to wait before it
+// starts, as the daemon reckoned it when it answered; -1 where that is not known.
 data JobInfo(
     id: long,
     kind: string,
@@ -236,7 +245,10 @@ data JobInfo(
     unitsLearned: bool = false,
     cores: long = -1,
     peakCores: long = -1,
-    cpuMs: long = 0
+    cpuMs: long = 0,
+    owner: string = "",
+    durationFrom: string = "",
+    startsInMs: long = -1
 )
 
 // The units a listing shows for a job: `~` before units learned from earlier runs' cores.
@@ -262,6 +274,10 @@ reservedText(j: JobInfo) -> string
 // machine has, 0 where it is not known; `queueHeld` says the queue is held: nothing new starts in
 // either lane; `quick` is how many quick jobs run, of the quick lane's `QuickSlots`; `exclusive` the
 // exclusive job that runs, owning the machine, if one does. `units` and `unitBudget` are in quarters.
+// `cpu` is the cores every process on the machine kept busy over the last measurement, and `jobCpu`
+// those of the running jobs among them, both in hundredths and -1 where not measured. `diskFree` is
+// the free space of the fullest volume holding marshal's home or a job's directory, -1 where not
+// known; `diskMin` the least `disk_min` lets new jobs start beside (0: no guard; disk.avin).
 data Usage(
     units: int,
     unitBudget: int,
@@ -276,8 +292,58 @@ data Usage(
     queueHeld: bool = false,
     held: long = 0,
     quick: int = 0,
-    exclusive: Option[long] = None
+    exclusive: Option[long] = None,
+    cpu: long = -1,
+    jobCpu: long = -1,
+    diskFree: long = -1,
+    diskMin: long = 0
 )
+
+// The members `status`, `status --json` and the snapshot add for the machine's processors and disk:
+// `cpu` and `job_cpu` in cores, `disk_free` and `disk_min` in bytes and `disk_low`; a value not
+// measured is left out.
+private machineMembers(u: Usage) -> Vector[(string, Json)]
+  val out = Buffer[(string, Json)]()
+  if u.cpu >= 0 then out += ("cpu", coresJson(u.cpu))
+  if u.jobCpu >= 0 then out += ("job_cpu", coresJson(u.jobCpu))
+  if u.diskFree >= 0 then out += ("disk_free", Json.num(u.diskFree))
+  out += ("disk_min", Json.num(u.diskMin))
+  out += ("disk_low", Json.Bool(diskLow(u.diskFree, u.diskMin)))
+  out.toVector
+
+// The four values `machineMembers` writes, read back.
+private machineOf(j: Json) -> Result[(long, long, long, long), string] =
+  Ok(
+    (
+      optional(j, "cpu", centiOf, "a number of cores", long(-1))?,
+      optional(j, "job_cpu", centiOf, "a number of cores", long(-1))?,
+      optional(j, "disk_free", wholeNumber, "a whole number", long(-1))?,
+      optional(j, "disk_min", wholeNumber, "a whole number", long(0))?
+    )
+  )
+
+// `u` with the machine's processors and disk as `m` gives them.
+private withMachine(u: Usage, m: (long, long, long, long)) -> Usage =
+  Usage(
+    u.units,
+    u.unitBudget,
+    u.memory,
+    u.memoryBudget,
+    u.running,
+    u.queued,
+    u.landing,
+    u.takeSlot,
+    u.rss,
+    u.machineMemory,
+    u.queueHeld,
+    u.held,
+    u.quick,
+    u.exclusive,
+    m.0,
+    m.1,
+    m.2,
+    m.3
+  )
 
 // What take-slot.zsh holds in the directory `dir` that marshal shares: units its runs hold, how many
 // of its runs wait, and whether one of them holds the landing lane. `units` is in quarters.
@@ -293,7 +359,9 @@ data TakeSlotUse(dir: string, units: int, waiting: int, landing: bool)
 // The job the machine drains for waits `Draining` too. An exclusive job waits `Emptying` while other
 // jobs run or start, and `Load` while the load average has not stayed below its `--quiet-load`
 // (`load` the last read, `limit` its quiet load, `calmMs` how long it has been below); every job
-// queued behind it, and every job while one runs, waits `ForExclusive(id)`.
+// queued behind it, and every job while one runs, waits `ForExclusive(id)`. While the disk has less
+// free than `disk_min`, every queued job not held by hand waits `DiskLow(free)`, `free` the bytes
+// free when it was last measured (disk.avin).
 data Why
   NoUnits
   NoMemory
@@ -309,6 +377,7 @@ data Why
   Emptying
   Load(load: real, limit: real, calmMs: long)
   ForExclusive(id: long)
+  DiskLow(free: long)
 
 // A queued job, its place in its lane's queue (from 1; landing jobs, quick jobs and development jobs
 // each have a queue), and why it waits.
@@ -447,8 +516,34 @@ encodeSpec(s: JobSpec) -> Json = Json.Obj(
     ("mem_given", Json.Bool(s.memoryGiven))
   ).asMembers.get ++ labelMember(s.label) ++ quietMember(s.quietMs) ++ externalMember(
     s.external
-  ) ++ quickMember(s.quick) ++ exclusiveMembers(s.exclusive, s.quietLoad)
+  ) ++ quickMember(s.quick) ++ exclusiveMembers(s.exclusive, s.quietLoad) ++ ownerMember(s.owner)
 )
+
+// An owner's member of an object: none for no owner, as with a label.
+private ownerMember(owner: string) -> Vector[(string, Json)] = if owner.isEmpty then [] else [
+  ("owner", Json.str(owner))
+]
+
+// The longest owner, in characters.
+val MaxOwner: int = 40
+
+// An owner as `--owner` may name one: a word of 1 to `MaxOwner` letters, digits, `-`, `_` or `.`,
+// or why it is not.
+checkOwner(text: string) -> Result[string, string]
+  if text.isEmpty then return Err("an owner is a word, not empty")
+  if text.charCount > MaxOwner then return Err(s"an owner is at most $MaxOwner characters, not ${text.charCount}")
+  if !text.chars.forall(
+    c -> ('a' <= c <= 'z') || ('A' <= c <= 'Z') || ('0' <= c <= '9') || c == '-' || c == '_' || c == '.'
+  )
+    return Err("an owner is one word of letters, digits, `-`, `_` and `.`")
+  Ok(text)
+
+// An owner read from an object: "" where it is absent, an error where it is not an owner.
+private ownerOf(j: Json) -> Result[string, string] = j.get("owner") match
+  None | Some(Json.Null) -> Ok("")
+  Some(v) -> v.asString match
+    Some(s) -> checkOwner(s).mapErr(e -> s"`owner`: $e")
+    None -> Err("`owner` is not a string")
 
 // An exclusive job's members of an object, `exclusive` and its `quiet_load` when it has one: none
 // for a job that is not exclusive, as with a label.
@@ -524,7 +619,9 @@ decodeSpec(j: Json) -> Result[JobSpec, string]
       optional(j, "exclusive", v -> v.asBool, "a bool", false)?,
       quietLoadOf(j)?,
       // absent from what marshal wrote before it learned units: given
-      optional(j, "units_given", v -> v.asBool, "a bool", true)?))
+      optional(j, "units_given", v -> v.asBool, "a bool", true)?,
+      // absent from what marshal wrote before owners, and for a job whose owner was not named
+      ownerOf(j)?))
 
 // What a `units` field must be.
 private val unitsWanted: string = "a number of units in steps of 0.25"
@@ -659,8 +756,19 @@ encodeJob(i: JobInfo) -> Json = Json.Obj(
   ) ++ externalMember(i.external) ++ quickMember(i.quick) ++ expectedMembers(i) ++ exclusiveMembers(
     i.exclusive,
     i.quietLoad
-  ) ++ coresMembers(i)
+  ) ++ coresMembers(i) ++ ownerMember(i.owner) ++ etaMembers(i)
 )
+
+// `duration_from` is left out where the daemon did not say; `eta_ms`, a running job's expected time
+// left, only where its command's runs teach it (`etaLeft`); `starts_in_ms` only on a queued job
+// whose start can be reckoned.
+private etaMembers(i: JobInfo) -> Vector[(string, Json)]
+  val out = Buffer[(string, Json)]()
+  if i.durationFrom.nonEmpty then out += ("duration_from", Json.str(i.durationFrom))
+  val left = etaLeft(i)
+  if left >= 0 then out += ("eta_ms", Json.num(left))
+  if i.startsInMs >= 0 then out += ("starts_in_ms", Json.num(i.startsInMs))
+  out.toVector
 
 // `units_learned` is there only for learned units; `cores` only while a measured job runs, and
 // `peak_cores` and `cpu_ms` once a job has been measured.
@@ -747,7 +855,11 @@ decodeJob(j: Json) -> Result[JobInfo, string]
       optional(j, "units_learned", v -> v.asBool, "a bool", false)?,
       optional(j, "cores", centiOf, "a number of cores", long(-1))?,
       optional(j, "peak_cores", centiOf, "a number of cores", long(-1))?,
-      optional(j, "cpu_ms", wholeNumber, "a whole number", 0)?))
+      optional(j, "cpu_ms", wholeNumber, "a whole number", 0)?,
+      // absent from what marshal wrote before owners, ETAs and learned durations per command
+      optional(j, "owner", v -> v.asString, "a string", "")?,
+      optional(j, "duration_from", v -> v.asString, "a string", "")?,
+      optional(j, "starts_in_ms", wholeNumber, "a whole number", long(-1))?))
 
 encodeTakeSlot(t: TakeSlotUse) -> Json = Json.obj(
   ("dir", Json.str(t.dir)),
@@ -772,23 +884,25 @@ private decodeTakeSlot(j: Json) -> Result[Option[TakeSlotUse], string]
 // What `status --json` prints: the budget in use, what take-slot holds (null when no directory is
 // shared), and the running and queued jobs, each as the protocol gives a job. A queued job in `whys`
 // (job id, reason) also has `why`, the protocol's word for the reason, and `behind`, the job it
-// waits behind, when that is the reason.
-statusJson(u: Usage, jobs: Vector[JobInfo], whys: Vector[(long, Why)] = []) -> Json = Json.obj(
-  ("units", unitsJson(u.units)),
-  ("unit_budget", unitsJson(u.unitBudget)),
-  ("mem", Json.num(u.memory)),
-  ("mem_budget", Json.num(u.memoryBudget)),
-  ("rss", Json.num(u.rss)),
-  ("mem_held", Json.num(u.held)),
-  ("machine_mem", Json.num(u.machineMemory)),
-  ("landing", u.landing.map(id -> Json.num(id)).getOrElse(Json.Null)),
-  ("take_slot", u.takeSlot.map(encodeTakeSlot).getOrElse(Json.Null)),
-  ("queue_held", Json.Bool(u.queueHeld)),
-  ("quick", Json.num(u.quick)),
-  ("quick_slots", Json.num(QuickSlots)),
-  ("exclusive", u.exclusive.map(id -> Json.num(id)).getOrElse(Json.Null)),
-  ("running", Json.Arr(jobs.filter(j -> j.state == "running").map(encodeJob))),
-  ("queued", Json.Arr(jobs.filter(j -> j.state == "queued").map(j -> withWhy(j, whys))))
+// waits behind, when that is the reason. The machine's processors and disk follow (`machineMembers`).
+statusJson(u: Usage, jobs: Vector[JobInfo], whys: Vector[(long, Why)] = []) -> Json = Json.Obj(
+  Json.obj(
+    ("units", unitsJson(u.units)),
+    ("unit_budget", unitsJson(u.unitBudget)),
+    ("mem", Json.num(u.memory)),
+    ("mem_budget", Json.num(u.memoryBudget)),
+    ("rss", Json.num(u.rss)),
+    ("mem_held", Json.num(u.held)),
+    ("machine_mem", Json.num(u.machineMemory)),
+    ("landing", u.landing.map(id -> Json.num(id)).getOrElse(Json.Null)),
+    ("take_slot", u.takeSlot.map(encodeTakeSlot).getOrElse(Json.Null)),
+    ("queue_held", Json.Bool(u.queueHeld)),
+    ("quick", Json.num(u.quick)),
+    ("quick_slots", Json.num(QuickSlots)),
+    ("exclusive", u.exclusive.map(id -> Json.num(id)).getOrElse(Json.Null)),
+    ("running", Json.Arr(jobs.filter(j -> j.state == "running").map(encodeJob))),
+    ("queued", Json.Arr(jobs.filter(j -> j.state == "queued").map(j -> withWhy(j, whys))))
+  ).asMembers.get ++ machineMembers(u)
 )
 
 private withWhy(j: JobInfo, whys: Vector[(long, Why)]) -> Json = whys.find(w -> w.0 == j.id) match
@@ -806,7 +920,21 @@ encodeReply(Submitted(id, log, hint)) = Json.Obj(
 )
 encodeReply(Ended(job)) = Json.obj(("ok", Json.Bool(true)), ("job", encodeJob(job)))
 encodeReply(Jobs(jobs)) = Json.obj(("ok", Json.Bool(true)), ("jobs", Json.Arr(jobs.map(encodeJob))))
-encodeReply(Using(u)) = Json.obj(
+encodeReply(Using(u)) = Json.Obj(usageMembers(u))
+encodeReply(Viewed(o)) = Json.obj(("ok", Json.Bool(true)), ("snapshot", encodeOverview(o)))
+encodeReply(Hi(version, pid)) = Json.obj(
+  ("ok", Json.Bool(true)),
+  ("version", Json.str(version)),
+  ("pid", Json.num(pid))
+)
+encodeReply(Streamed(event)) = Json.obj(("ok", Json.Bool(true)), ("event", event))
+encodeReply(Replayed(events)) = Json.obj(("ok", Json.Bool(true)), ("events", Json.Arr(events)))
+encodeReply(Cleaned(report)) = Json.obj(("ok", Json.Bool(true)), ("cleaned", encodeReport(report)))
+encodeReply(Done) = Json.obj(("ok", Json.Bool(true)))
+encodeReply(Failed(message)) = Json.obj(("ok", Json.Bool(false)), ("error", Json.str(message)))
+
+// The members of a `status` reply.
+private usageMembers(u: Usage) -> Vector[(string, Json)] = Json.obj(
   ("ok", Json.Bool(true)),
   ("units", unitsJson(u.units)),
   ("unit_budget", unitsJson(u.unitBudget)),
@@ -822,18 +950,7 @@ encodeReply(Using(u)) = Json.obj(
   ("queue_held", Json.Bool(u.queueHeld)),
   ("quick", Json.num(u.quick)),
   ("exclusive", u.exclusive.map(id -> Json.num(id)).getOrElse(Json.Null))
-)
-encodeReply(Viewed(o)) = Json.obj(("ok", Json.Bool(true)), ("snapshot", encodeOverview(o)))
-encodeReply(Hi(version, pid)) = Json.obj(
-  ("ok", Json.Bool(true)),
-  ("version", Json.str(version)),
-  ("pid", Json.num(pid))
-)
-encodeReply(Streamed(event)) = Json.obj(("ok", Json.Bool(true)), ("event", event))
-encodeReply(Replayed(events)) = Json.obj(("ok", Json.Bool(true)), ("events", Json.Arr(events)))
-encodeReply(Cleaned(report)) = Json.obj(("ok", Json.Bool(true)), ("cleaned", encodeReport(report)))
-encodeReply(Done) = Json.obj(("ok", Json.Bool(true)))
-encodeReply(Failed(message)) = Json.obj(("ok", Json.Bool(false)), ("error", Json.str(message)))
+).asMembers.get ++ machineMembers(u)
 
 decodeReply(text: string) -> Result[Reply, string]
   val j = json.parse(text) match
@@ -854,21 +971,24 @@ decodeReply(text: string) -> Result[Reply, string]
   if j.has("unit_budget")
     return Ok(
       Using(
-        Usage(
-          field(j, "units", quartersOf, unitsWanted)?,
-          field(j, "unit_budget", quartersOf, unitsWanted)?,
-          field(j, "mem", v -> v.asLong, "a whole number")?,
-          field(j, "mem_budget", v -> v.asLong, "a whole number")?,
-          field(j, "running", v -> v.asInt, "an int")?,
-          field(j, "queued", v -> v.asInt, "an int")?,
-          optional(j, "landing", someLong, "a whole number", None)?,
-          decodeTakeSlot(j.get("take_slot").getOrElse(Json.Null))?,
-          optional(j, "rss", wholeNumber, "a whole number", 0)?,
-          optional(j, "machine_mem", wholeNumber, "a whole number", 0)?,
-          optional(j, "queue_held", v -> v.asBool, "a bool", false)?,
-          optional(j, "mem_held", wholeNumber, "a whole number", 0)?,
-          optional(j, "quick", v -> v.asInt, "an int", 0)?,
-          optional(j, "exclusive", someLong, "a whole number", None)?
+        withMachine(
+          Usage(
+            field(j, "units", quartersOf, unitsWanted)?,
+            field(j, "unit_budget", quartersOf, unitsWanted)?,
+            field(j, "mem", v -> v.asLong, "a whole number")?,
+            field(j, "mem_budget", v -> v.asLong, "a whole number")?,
+            field(j, "running", v -> v.asInt, "an int")?,
+            field(j, "queued", v -> v.asInt, "an int")?,
+            optional(j, "landing", someLong, "a whole number", None)?,
+            decodeTakeSlot(j.get("take_slot").getOrElse(Json.Null))?,
+            optional(j, "rss", wholeNumber, "a whole number", 0)?,
+            optional(j, "machine_mem", wholeNumber, "a whole number", 0)?,
+            optional(j, "queue_held", v -> v.asBool, "a bool", false)?,
+            optional(j, "mem_held", wholeNumber, "a whole number", 0)?,
+            optional(j, "quick", v -> v.asInt, "an int", 0)?,
+            optional(j, "exclusive", someLong, "a whole number", None)?
+          ),
+          machineOf(j)?
         )
       )
     )
@@ -902,6 +1022,7 @@ whyWord(QuickFull) = "quick-lane"
 whyWord(Emptying) = "emptying"
 whyWord(Load(_, _, _)) = "load"
 whyWord(ForExclusive(_)) = "exclusive"
+whyWord(DiskLow(_)) = "disk-low"
 
 // The job a reason names, as the field beside its word: `behind` for `Behind`, `draining_for` for
 // `DrainingFor`, `exclusive_id` for `ForExclusive` (beside the job's own `exclusive`); and for `Load`, `load`, `load_limit` and
@@ -910,6 +1031,7 @@ private whyId(why: Why) -> Vector[(string, Json)]
 whyId(Behind(id)) = [("behind", Json.num(id))]
 whyId(DrainingFor(id)) = [("draining_for", Json.num(id))]
 whyId(ForExclusive(id)) = [("exclusive_id", Json.num(id))]
+whyId(DiskLow(free)) = [("disk_free", Json.num(free))]
 whyId(Load(load, limit, calmMs)) = [
   ("load", Json.num(load)),
   ("load_limit", Json.num(limit)),
@@ -947,29 +1069,32 @@ private decodeWhy(j: Json) -> Result[Why, string]
       )
     )
     "exclusive" -> Ok(ForExclusive(field(j, "exclusive_id", v -> v.asLong, "a whole number")?))
+    "disk-low" -> Ok(DiskLow(field(j, "disk_free", v -> v.asLong, "a whole number")?))
     other -> Err(s"no such reason to wait: `$other`")
 
 private decodeQueued(j: Json) -> Result[QueuedJob, string] =
   Ok(QueuedJob(decodeJob(j)?, field(j, "position", v -> v.asInt, "an int")?, decodeWhy(j)?))
 
-encodeOverview(o: Overview) -> Json = Json.obj(
-  ("units", unitsJson(o.usage.units)),
-  ("unit_budget", unitsJson(o.usage.unitBudget)),
-  ("mem", Json.num(o.usage.memory)),
-  ("mem_budget", Json.num(o.usage.memoryBudget)),
-  ("rss", Json.num(o.usage.rss)),
-  ("mem_held", Json.num(o.usage.held)),
-  ("machine_mem", Json.num(o.usage.machineMemory)),
-  ("landing", o.usage.landing.map(id -> Json.num(id)).getOrElse(Json.Null)),
-  ("take_slot", o.usage.takeSlot.map(encodeTakeSlot).getOrElse(Json.Null)),
-  ("queue_held", Json.Bool(o.usage.queueHeld)),
-  ("quick", Json.num(o.usage.quick)),
-  ("exclusive", o.usage.exclusive.map(id -> Json.num(id)).getOrElse(Json.Null)),
-  ("uptime_ms", Json.num(o.uptimeMs)),
-  ("running", Json.Arr(o.running.map(encodeJob))),
-  ("queued", Json.Arr(o.queued.map(encodeQueued))),
-  ("recent", Json.Arr(o.recent.map(encodeJob))),
-  ("waiting", Json.Arr(o.waiting.map(encodeJob)))
+encodeOverview(o: Overview) -> Json = Json.Obj(
+  Json.obj(
+    ("units", unitsJson(o.usage.units)),
+    ("unit_budget", unitsJson(o.usage.unitBudget)),
+    ("mem", Json.num(o.usage.memory)),
+    ("mem_budget", Json.num(o.usage.memoryBudget)),
+    ("rss", Json.num(o.usage.rss)),
+    ("mem_held", Json.num(o.usage.held)),
+    ("machine_mem", Json.num(o.usage.machineMemory)),
+    ("landing", o.usage.landing.map(id -> Json.num(id)).getOrElse(Json.Null)),
+    ("take_slot", o.usage.takeSlot.map(encodeTakeSlot).getOrElse(Json.Null)),
+    ("queue_held", Json.Bool(o.usage.queueHeld)),
+    ("quick", Json.num(o.usage.quick)),
+    ("exclusive", o.usage.exclusive.map(id -> Json.num(id)).getOrElse(Json.Null)),
+    ("uptime_ms", Json.num(o.uptimeMs)),
+    ("running", Json.Arr(o.running.map(encodeJob))),
+    ("queued", Json.Arr(o.queued.map(encodeQueued))),
+    ("recent", Json.Arr(o.recent.map(encodeJob))),
+    ("waiting", Json.Arr(o.waiting.map(encodeJob)))
+  ).asMembers.get ++ machineMembers(o.usage)
 )
 
 private each[T](j: Json, key: string, read: (Json) -> Result[T, string]) -> Result[Vector[T], string]
@@ -983,21 +1108,24 @@ decodeOverview(j: Json) -> Result[Overview, string]
   val queued = each(j, "queued", decodeQueued)?
   Ok(
     Overview(
-      Usage(
-        field(j, "units", quartersOf, unitsWanted)?,
-        field(j, "unit_budget", quartersOf, unitsWanted)?,
-        field(j, "mem", v -> v.asLong, "a whole number")?,
-        field(j, "mem_budget", v -> v.asLong, "a whole number")?,
-        running.length,
-        queued.length,
-        optional(j, "landing", someLong, "a whole number", None)?,
-        decodeTakeSlot(j.get("take_slot").getOrElse(Json.Null))?,
-        optional(j, "rss", wholeNumber, "a whole number", 0)?,
-        optional(j, "machine_mem", wholeNumber, "a whole number", 0)?,
-        optional(j, "queue_held", v -> v.asBool, "a bool", false)?,
-        optional(j, "mem_held", wholeNumber, "a whole number", 0)?,
-        optional(j, "quick", v -> v.asInt, "an int", 0)?,
-        optional(j, "exclusive", someLong, "a whole number", None)?
+      withMachine(
+        Usage(
+          field(j, "units", quartersOf, unitsWanted)?,
+          field(j, "unit_budget", quartersOf, unitsWanted)?,
+          field(j, "mem", v -> v.asLong, "a whole number")?,
+          field(j, "mem_budget", v -> v.asLong, "a whole number")?,
+          running.length,
+          queued.length,
+          optional(j, "landing", someLong, "a whole number", None)?,
+          decodeTakeSlot(j.get("take_slot").getOrElse(Json.Null))?,
+          optional(j, "rss", wholeNumber, "a whole number", 0)?,
+          optional(j, "machine_mem", wholeNumber, "a whole number", 0)?,
+          optional(j, "queue_held", v -> v.asBool, "a bool", false)?,
+          optional(j, "mem_held", wholeNumber, "a whole number", 0)?,
+          optional(j, "quick", v -> v.asInt, "an int", 0)?,
+          optional(j, "exclusive", someLong, "a whole number", None)?
+        ),
+        machineOf(j)?
       ),
       field(j, "uptime_ms", v -> v.asLong, "a whole number")?,
       running,

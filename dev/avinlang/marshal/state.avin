@@ -25,7 +25,8 @@ import dev.avinlang.json.Json
 // `expectedMs` was learned from its kind's runs rather than guessed; false when absent, so a drain
 // counts such a job by its deadline. `unitsLearned` says its units were learned from earlier runs'
 // cores (false when absent); `cores`, `peakCores` (hundredths of a core, -1 when absent or never
-// measured) and `cpuMs` are its processor use as measured (cores.avin).
+// measured) and `cpuMs` are its processor use as measured (cores.avin). `durationFrom` is where
+// `expectedMs` came from (eta.avin); "" when absent.
 data SavedJob(
     id: long,
     spec: JobSpec,
@@ -60,7 +61,8 @@ data SavedJob(
     unitsLearned: bool = false,
     cores: long = -1,
     peakCores: long = -1,
-    cpuMs: long = 0
+    cpuMs: long = 0,
+    durationFrom: string = ""
 )
 
 // The whole daemon: the version and process that saved it, when, when the daemon first began, the
@@ -117,7 +119,8 @@ encodeSavedJob(j: SavedJob) -> Json = Json.obj(
   ("units_learned", Json.Bool(j.unitsLearned)),
   ("cores", Json.num(j.cores)),
   ("peak_cores", Json.num(j.peakCores)),
-  ("cpu_ms", Json.num(j.cpuMs))
+  ("cpu_ms", Json.num(j.cpuMs)),
+  ("duration_from", Json.str(j.durationFrom))
 )
 
 private whole(j: Json, key: string) -> Result[long, string] = j.get(key).flatMap(v -> v.asLong) match
@@ -200,7 +203,8 @@ decodeSavedJob(j: Json) -> Result[SavedJob, string]
       truthOr(j, "units_learned", false)?,
       wholeOr(j, "cores", -1)?,
       wholeOr(j, "peak_cores", -1)?,
-      wholeOrZero(j, "cpu_ms")?
+      wholeOrZero(j, "cpu_ms")?,
+      maybeText(j, "duration_from")?.getOrElse("")
     )
   )
 

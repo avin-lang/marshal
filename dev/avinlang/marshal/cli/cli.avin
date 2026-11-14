@@ -125,6 +125,9 @@ Options of submit and run:
   --retry-delay <t> wait t before each retry: 90s, 30m, 2h (default: none)
   --label <text>    a note to find the job by, shown in ls, history and top: one line of at most 80
                     characters, no control characters (default: none; run-type and train take it too)
+  --owner <name>    who the job is for, shown in OWNER in ls and top: one word (default: the
+                    project its --dir is in under ~/dev, such as avin for ~/dev/avin-lang/avin,
+                    else its label)
   --                the command begins after this; nothing after it is an option\
 """
 
@@ -325,6 +328,7 @@ parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]
   var retries = 0
   var retryDelay: long = 0
   var label = ""
+  var owner = ""
   var external = false
   var exclusive = false
   var quietLoad = 0.0
@@ -384,6 +388,7 @@ parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]
         Some(ms) -> retryDelay = ms
         None -> return Err(s"`--retry-delay $value`: a delay is minutes, or a number with s, m or h, such as 90s")
       "--label" -> label = marshal.checkLabel(value).mapErr(e -> s"`--label`: $e")?
+      "--owner" -> owner = marshal.checkOwner(value).mapErr(e -> s"`--owner`: $e")?
       "--quiet-load" -> quietLoad = marshal.parseQuietLoad(
         value,
         if value == "auto" then marshal.coreCount() else None
@@ -417,7 +422,8 @@ parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]
     quick,
     exclusive,
     quietLoad,
-    units.isDefined
+    units.isDefined,
+    owner
   )
   for why in marshal.exclusiveRefusal(spec) do return Err(why)
   Ok(spec)

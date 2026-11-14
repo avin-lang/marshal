@@ -1,0 +1,60 @@
+module dev.avinlang.marshal
+
+// Who a job is for: the session or project that submitted it, as `top`'s OWNER column shows it and
+// its `o` key filters by. A job's owner is the one `--owner` named; otherwise the project its
+// directory is in, under the directory projects live in (`~/dev` unless config.json's `projects`
+// says); otherwise its label; otherwise none.
+//
+// The project is the first directory under that one (`~/dev/nex/src` is `nex`), or, where that
+// directory is not a repository but holds them (an organisation's, `~/dev/avin-lang`), the one under
+// it (`~/dev/avin-lang/avin/compiler` is `avin`). A git worktree beside its repository, named
+// `<repo>-<branch>`, is its repository's project (`~/dev/sysl-lang/sysl-fix-x` is `sysl`), and a
+// repository whose name has a dash in it stays itself (`sysl-bootstrap`).
+import avin.fs
+import avin.process
+
+// What a job's owner is: `named` where it was named, else the project of `dir` under `root`, else
+// `label`. `isDir` and `exists` are asked of paths, so the rule can be tried on a tree that is not
+// there.
+ownerOf(
+    named: string,
+    dir: string,
+    label: string,
+    root: string,
+    isDir: (string) -> bool,
+    exists: (string) -> bool
+) -> string
+  if named.nonEmpty then return named
+  projectOf(dir, root, isDir, exists).getOrElse(label)
+
+// The project `dir` is in under `root`, or None where it is not under it.
+projectOf(dir: string, root: string, isDir: (string) -> bool, exists: (string) -> bool) -> Option[string]
+  val base = if root.endsWith("/") then root.dropRight(1) else root
+  if base.isEmpty || !dir.startsWith(base + "/") then return None
+  val parts = dir.drop(base.charCount + 1).split("/").filter(p -> p.nonEmpty).toVector
+  if parts.isEmpty then return None
+  val repo = (p: string) -> isDir(p + "/.git")
+  val worktree = (p: string) -> exists(p + "/.git") && !isDir(p + "/.git")
+  // an organisation's directory holds repositories and is not one itself
+  val (parent, name) = if parts.length > 1 && !exists(base + "/" + parts(0) + "/.git") then (
+    base + "/" + parts(0),
+    parts(1)
+  ) else (base, parts(0))
+  if !worktree(parent + "/" + name) then return Some(name)
+  // the longest `<repo>` before a dash that is a repository beside it
+  val words = name.split("-").toVector
+  var best = name
+  var prefix = ""
+  for (w, n) in words.dropRight(1).zipWithIndex
+    prefix = if n == 0 then w else prefix + "-" + w
+    if prefix.nonEmpty && repo(parent + "/" + prefix) then best = prefix
+  Some(best)
+
+// The directory projects live in: config.json's `projects`, else `~/dev`; "" where there is no home.
+projectsRoot(configured: Option[string]) -> string = configured match
+  Some(dir) -> dir
+  None -> process.env("HOME").map(h -> h + "/dev").getOrElse("")
+
+// A job's owner on this machine's files.
+ownerHere(named: string, dir: string, label: string, root: string) -> string =
+  ownerOf(named, dir, label, root, p -> fs.isDir(p), p -> fs.exists(p))

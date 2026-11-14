@@ -21,19 +21,25 @@ module dev.avinlang.marshal
 //                   "never" never drains (see `Fairness`)
 //   load_wait       how long an exclusive job waits for its `--quiet-load` before it starts anyway
 //                   ("15m"); "never" waits for the load for ever (see `settleWhy`)
+//   disk_min        the least free disk new jobs start beside ("20G"); "0" for no guard (disk.avin)
+//   projects        the directory projects live in, whose first level names a job's owner ("~/dev";
+//                   owner.avin)
 import dev.avinlang.json
 import dev.avinlang.json.Json
 
 // `takeSlot` is what config.json says, None where it says nothing. `drainAfterMs` is the bound on a
 // development job's wait, None for none. `loadWaitMs` is the bound on an exclusive job's wait for
-// the load, None for none.
+// the load, None for none. `diskMin` is the disk guard's threshold in bytes, 0 for none; `projects`
+// the directory owners are named under, None where config.json does not say.
 data Config(
     budget: Budget,
     learning: Learning,
     takeSlot: Option[string],
     retention: Retention = defaultRetention,
     drainAfterMs: Option[long] = Some(DefaultDrainAfter),
-    loadWaitMs: Option[long] = Some(DefaultLoadWait)
+    loadWaitMs: Option[long] = Some(DefaultLoadWait),
+    diskMin: long = DefaultDiskMin,
+    projects: Option[string] = None
 )
 
 // How long a development job waits before the machine drains for it, unless config.json says.
@@ -61,7 +67,7 @@ readConfig(text: string, machineMemory: long) -> Result[Config, string]
   for key in j.keys
     if ![
       "units", "memory", "reserve", "deadline_floor", "learn_window", "learn_min_runs", "take_slot", "keep_logs",
-      "keep_jobs", "keep_events", "keep_steps", "drain_after", "load_wait"
+      "keep_jobs", "keep_events", "keep_steps", "drain_after", "load_wait", "disk_min", "projects"
     ].contains(key)
       return Err(s"config.json: no setting `$key`")
   val units = whole(j, "units", 12)?
@@ -91,6 +97,12 @@ readConfig(text: string, machineMemory: long) -> Result[Config, string]
   )
   val drainAfter = waitSetting(j, "drain_after", DefaultDrainAfter)?
   val loadWait = waitSetting(j, "load_wait", DefaultLoadWait)?
+  val diskMin = size(j, "disk_min", DefaultDiskMin)?
+  val projects = j.get("projects") match
+    None -> None
+    Some(v) -> v.asString match
+      Some(dir) if dir.startsWith("/") -> Some(dir)
+      _ -> return Err("config.json: `projects` is a directory, such as \"/Users/me/dev\"")
   Ok(
     Config(
       Budget(wholeUnits(units), memory),
@@ -98,7 +110,9 @@ readConfig(text: string, machineMemory: long) -> Result[Config, string]
       takeSlot,
       retention,
       drainAfter,
-      loadWait
+      loadWait,
+      diskMin,
+      projects
     )
   )
 

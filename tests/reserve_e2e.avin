@@ -273,7 +273,7 @@ learnedPersists()
   val first = statusJob(home, submitted(home, "--kind", "live", "--", "sleep", "30"))
   assertEq(first("resv_learned").asBool, Some(true))
   val text = fs.readText(home + "/memory.json").ok.get
-  assert(text.contains("\"version\":2") && text.contains("live\\nsleep"), text)
+  assert(text.contains("\"version\":3") && text.contains("live\\nsleep"), text)
   assertEq(first("resv_from").asString, Some("cmd+dir"))
   stopDaemon(home)
   // the event log goes; a new daemon learns from the file alone, the job stopped above included

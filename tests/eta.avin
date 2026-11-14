@@ -1,0 +1,250 @@
+module tests
+
+// Durations learned per command and what they say of when jobs end and start (eta.avin): the median
+// of a command's last five successful runs, in its directory before anywhere, before its kind's; a
+// running job's time left; a queued job's start, reckoned from the running jobs' expected ends in
+// queue order, and none where something no duration measures stands in the way.
+import dev.avinlang.marshal
+import dev.avinlang.marshal.{Budget, EtaQueued, EtaRunning, JobInfo, LearnedDuration, Why}
+
+private val Min: long = 60000
+
+@test("a command's duration is the median of its last five successful runs, in its directory before anywhere")
+learnedDurations()
+  assertEq(marshal.learnedDuration([], []), None)
+  assertEq(marshal.learnedDuration([], [3 * Min]), Some(LearnedDuration(3 * Min, "cmd")))
+  assertEq(marshal.learnedDuration([5 * Min], [3 * Min, 4 * Min]), Some(LearnedDuration(5 * Min, "cmd+dir")))
+  // the oldest of seven are left out: the median of 3, 4, 5, 6, 100 is 5
+  assertEq(
+    marshal.learnedDuration([], [90 * Min, 91 * Min, 3 * Min, 4 * Min, 5 * Min, 6 * Min, 100 * Min]).map(d -> d.ms),
+    Some(5 * Min)
+  )
+  // an even count takes the mean of the middle two
+  assertEq(marshal.learnedDuration([Min, 2 * Min, 3 * Min, 4 * Min], []).map(d -> d.ms), Some(150000))
+
+@test("a job's expectation is its command's duration, else its kind's, never above its deadline nor below 1ms")
+expectations()
+  val learning = marshal.defaultLearning
+  val cmd = Some(LearnedDuration(7 * Min, "cmd"))
+  assertEq(
+    marshal.expectationFor(learning, "build", false, [], cmd, 20 * Min),
+    marshal.Expectation(7 * Min, true, "cmd")
+  )
+  // held to the deadline
+  assertEq(marshal.expectationFor(learning, "build", false, [], cmd, 5 * Min).ms, 5 * Min)
+  // a run of no time still expects a millisecond
+  assertEq(marshal.expectationFor(learning, "build", false, [], Some(LearnedDuration(0, "cmd+dir")), Min).ms, 1)
+  // nothing learned of the command: the kind's guess, half its default deadline
+  assertEq(
+    marshal.expectationFor(learning, "build", false, [], None, 20 * Min),
+    marshal.Expectation(10 * Min, false, "none")
+  )
+  // the kind's median once it has three runs
+  assertEq(
+    marshal.expectationFor(learning, "build", false, [Min, 2 * Min, 3 * Min], None, 20 * Min),
+    marshal.Expectation(2 * Min, true, "kind")
+  )
+
+private runningEta(elapsed: long, expected: long, from: string, paused: bool = false) -> JobInfo =
+  JobInfo(
+    1,
+    "build",
+    4,
+    0,
+    false,
+    "/w",
+    ["make"],
+    "running",
+    None,
+    false,
+    0,
+    elapsed,
+    30 * Min,
+    "/l",
+    None,
+    paused = paused,
+    expectedMs = expected,
+    durationFrom = from
+  )
+
+private queuedJob(startsIn: long) -> JobInfo =
+  JobInfo(
+    2,
+    "build",
+    4,
+    0,
+    false,
+    "/w",
+    ["make"],
+    "queued",
+    None,
+    false,
+    0,
+    0,
+    30 * Min,
+    "/l",
+    None,
+    startsInMs = startsIn
+  )
+
+@test(
+  "a running job's ETA is its command's expected duration less its run time, none past it, and only from its command"
+)
+etaLeft()
+  assertEq(marshal.etaLeft(runningEta(2 * Min, 8 * Min, "cmd")), 6 * Min)
+  assertEq(marshal.etaLeft(runningEta(2 * Min, 8 * Min, "cmd+dir")), 6 * Min)
+  assertEq(marshal.etaLeft(runningEta(9 * Min, 8 * Min, "cmd")), 0)
+  // a kind's duration, a guessed one, and one a daemon did not say give none
+  assertEq(marshal.etaLeft(runningEta(2 * Min, 8 * Min, "kind")), -1)
+  assertEq(marshal.etaLeft(runningEta(2 * Min, 8 * Min, "none")), -1)
+  assertEq(marshal.etaLeft(runningEta(2 * Min, 8 * Min, "")), -1)
+  assertEq(marshal.etaLeft(queuedJob(Min)), -1)
+
+@test("an ETA reads roughly: <1m, minutes rounded up, then hours and minutes; a start from an hour on in hours")
+etaTexts()
+  assertEq(marshal.etaText(0), "<1m")
+  assertEq(marshal.etaText(59999), "<1m")
+  assertEq(marshal.etaText(Min), "~1m")
+  assertEq(marshal.etaText(Min + 1), "~2m")
+  assertEq(marshal.etaText(59 * Min), "~59m")
+  assertEq(marshal.etaText(60 * Min), "~1h00")
+  assertEq(marshal.etaText(65 * Min + 1), "~1h06")
+  assertEq(marshal.etaText(600 * Min), "~10h00")
+  assertEq(marshal.startText(-1), "-")
+  assertEq(marshal.startText(0), "in <1m")
+  assertEq(marshal.startText(3 * Min), "in ~3m")
+  assertEq(marshal.startText(89 * Min), "in ~1h")
+  assertEq(marshal.startText(91 * Min), "in ~2h")
+
+@test("the ETA column counts down from the listing, stands still while paused, and is - where nothing is known")
+etaColumn()
+  assertEq(marshal.etaColumn(runningEta(2 * Min, 8 * Min, "cmd")), "~6m")
+  assertEq(marshal.etaColumn(runningEta(2 * Min, 8 * Min, "cmd"), 3 * Min), "~3m")
+  assertEq(marshal.etaColumn(runningEta(2 * Min, 8 * Min, "cmd"), 10 * Min), "<1m")
+  assertEq(marshal.etaColumn(runningEta(2 * Min, 8 * Min, "cmd", paused = true), 3 * Min), "~6m")
+  assertEq(marshal.etaColumn(runningEta(2 * Min, 8 * Min, "kind")), "-")
+  assertEq(marshal.etaColumn(queuedJob(5 * Min)), "in ~5m")
+  assertEq(marshal.etaColumn(queuedJob(5 * Min), 2 * Min), "in ~3m")
+  assertEq(marshal.etaColumn(queuedJob(-1)), "-")
+
+private val etaBudget: Budget = Budget(48, 16 * G)
+
+private runEta(units: int, left: long, memory: long = 0, landing: bool = false, quick: bool = false) -> EtaRunning =
+  EtaRunning(units, memory, landing, quick, left)
+
+private waitingEta(
+    id: long,
+    units: int,
+    position: int,
+    why: Why,
+    expected: long,
+    memory: long = 0,
+    landing: bool = false,
+    quick: bool = false
+) -> EtaQueued = EtaQueued(id, units, memory, landing, quick, position, why, expected)
+
+@test("a queued job starts when enough running jobs have ended for its units; the next one after it, beside it")
+startsInOrder()
+  // 40 of 48 quarters run: 24 end in 5 minutes and 16 in 8
+  val runs = [runEta(24, 5 * Min), runEta(16, 8 * Min)]
+  val queued = [
+    waitingEta(10, 16, 1, Why.NoUnits, 10 * Min),
+    waitingEta(11, 16, 2, Why.Behind(10), 3 * Min),
+    waitingEta(12, 40, 3, Why.Behind(10), Min)
+  ]
+  val got = marshal.startEstimates(etaBudget, 40, 0, runs, queued)
+  // 10 fits once the first ends; 11 then fits beside 10 at once; 12 needs 40 free: after 10 ends at 15
+  assertEq(got.get(10), Some(5 * Min))
+  assertEq(got.get(11), Some(5 * Min))
+  assertEq(got.get(12), Some(15 * Min))
+
+@test("a job that fits now starts in no time, and one held by hand is passed over and gets no start")
+startsNowAndHeld()
+  val got = marshal.startEstimates(
+    etaBudget,
+    0,
+    0,
+    [],
+    [waitingEta(1, 8, 1, Why.Held, Min), waitingEta(2, 8, 2, Why.Starting, Min)]
+  )
+  assertEq(got.get(1), None)
+  assertEq(got.get(2), Some(0))
+
+@test("an end that is not known stops the reckoning: that job and every one behind it have no start")
+unknownEnds()
+  // the running job's duration is not its command's own
+  val blocked = marshal.startEstimates(
+    etaBudget,
+    48,
+    0,
+    [runEta(48, -1)],
+    [waitingEta(1, 4, 1, Why.NoUnits, Min), waitingEta(2, 4, 2, Why.Behind(1), Min)]
+  )
+  assertEq(blocked, Vector[(long, long)]().toMap)
+  // a queued job of unknown duration starts, but what needs its units after it does not
+  val after = marshal.startEstimates(
+    etaBudget,
+    40,
+    0,
+    [runEta(40, 2 * Min)],
+    [waitingEta(1, 48, 1, Why.NoUnits, -1), waitingEta(2, 4, 2, Why.Behind(1), Min)]
+  )
+  assertEq(after.get(1), Some(2 * Min))
+  assertEq(after.get(2), None)
+
+@test("a job waiting for what no duration measures has no start, nor has any job behind it")
+unreckonable()
+  for why in [Why.ForTakeSlot, Why.QueueHeld, Why.Emptying, Why.ForExclusive(3), Why.DiskLow(G), Why.Load(9.0, 4.0, 0)]
+    val got = marshal.startEstimates(
+      etaBudget,
+      0,
+      0,
+      [],
+      [waitingEta(1, 4, 1, why, Min), waitingEta(2, 4, 2, Why.Starting, Min)]
+    )
+    assertEq((why, got.get(1), got.get(2)), (why, None, None))
+
+@test("memory counts as units do: a job waits for the running jobs whose memory it needs to end")
+startsForMemory()
+  val got = marshal.startEstimates(
+    etaBudget,
+    8,
+    12 * G,
+    [runEta(4, 3 * Min, memory = 8 * G), runEta(4, 9 * Min, memory = 4 * G)],
+    [waitingEta(1, 4, 1, Why.NoMemory, Min, memory = 10 * G)]
+  )
+  assertEq(got.get(1), Some(3 * Min))
+
+@test("take-slot's units never free in the reckoning; quick jobs neither weigh nor get a start")
+outsideAndQuick()
+  // 40 quarters are take-slot's (in `used`, never ending), so 16 do not fit until never
+  val got = marshal.startEstimates(
+    etaBudget,
+    40,
+    0,
+    [runEta(4, Min, quick = true)],
+    [waitingEta(1, 16, 1, Why.NoUnits, Min), waitingEta(2, 4, 1, Why.QuickFull, Min, quick = true)]
+  )
+  assertEq(got.get(1), None)
+  assertEq(got.get(2), None)
+
+@test("the landing lane runs one job at a time: each queued landing job starts as the one before it ends")
+landingStarts()
+  val got = marshal.startEstimates(
+    etaBudget,
+    0,
+    0,
+    [runEta(8, 4 * Min, landing = true)],
+    [
+      waitingEta(1, 8, 1, Why.LaneBusy, 10 * Min, landing = true),
+      waitingEta(2, 8, 2, Why.LaneBusy, -1, landing = true),
+      waitingEta(3, 8, 3, Why.LaneBusy, Min, landing = true)
+    ]
+  )
+  assertEq(got.get(1), Some(4 * Min))
+  assertEq(got.get(2), Some(14 * Min))
+  // 2's duration is not known, so 3 has no start
+  assertEq(got.get(3), None)
+  // a landing job draining for memory waits on what no duration says
+  val draining = marshal.startEstimates(etaBudget, 0, 0, [], [waitingEta(1, 8, 1, Why.Draining, Min, landing = true)])
+  assertEq(draining.get(1), None)

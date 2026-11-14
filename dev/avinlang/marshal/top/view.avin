@@ -46,17 +46,32 @@ data Action
 data Line(job: JobInfo, queued: Option[(int, Why)])
 
 // The table's lines for `o` under `f`: running jobs, then queued ones in queue order, then the jobs
-// that ended last, the latest first.
-lines(o: Overview, f: Filter) -> Vector[Line]
+// that ended last, the latest first; with `owner`, only that owner's jobs.
+lines(o: Overview, f: Filter, owner: Option[string] = None) -> Vector[Line]
   val running = o.running.map(j -> Line(j, None))
   val queued = o.queued.map(q -> Line(q.job, Some((q.position, q.why))))
   val waits = o.waiting.map(j -> Line(j, None))
   val recent = o.recent.map(j -> Line(j, None))
-  f match
+  val all = f match
     ShowAll -> running ++ queued ++ waits ++ recent
     ShowRunning -> running
     ShowQueued -> queued ++ waits
     ShowFinished -> recent
+  all.filter(l -> ownedBy(l.job, owner))
+
+// Whether `j` is `owner`'s, as `o` filters: every job with no owner chosen.
+ownedBy(j: JobInfo, owner: Option[string]) -> bool = owner.forall(o -> marshal.ownerText(j) == o)
+
+// The owner `o` moves to from `current`, among the owners of `jobs` in order: the first after it,
+// none after the last (every job shows again), the first from none.
+nextOwner(current: Option[string], jobs: Vector[JobInfo]) -> Option[string]
+  val owners = jobs.map(j -> marshal.ownerText(j)).distinct.sorted
+  if owners.isEmpty then return None
+  current match
+    None -> Some(owners(0))
+    Some(o) ->
+      val at = owners.indexOf(o)
+      if at < 0 then Some(owners(0)) elif at + 1 < owners.length then Some(owners(at + 1)) else None
 
 // Whether the table under `f` lists ended jobs, and so the earlier ones scrolled back to.
 admitsHistory(f: Filter) -> bool = f == ShowAll || f == ShowFinished
@@ -79,9 +94,11 @@ waiting(l: Line) -> bool = l.job.outcome.isEmpty && (l.job.state == "waiting" ||
 
 // Why a queued job waits, in the words of its STATE cell.
 // The words are `ls`'s too, so they are kept in one place, but for a full quick lane, which `ls`
-// says in full and the 14-cell column, after the queue position, says as `quick full`.
+// says in full and the 14-cell column, after the queue position, says as `quick full`, and for a low
+// disk, whose free space the header shows.
 whyText(w: Why) -> string
 whyText(Why.QuickFull) = "quick full"
+whyText(Why.DiskLow(_)) = "disk low"
 whyText(w) = marshal.whyText(w)
 
 // A time as a clock: `0:07`, `18:12`, `1:02:03`; a negative time is shown as none.
@@ -157,30 +174,54 @@ val columns: Vector[Column] = [
   Column("STATE", 14),
   Column("KIND", KindWidth),
   Column("UNITS", 5, 1),
+  Column("CORES", 5, 1),
   Column("RESV", 6, 1),
   Column("RSS", 5, 1),
   Column("PEAK", 5, 1),
   Column("STARTED", 11),
   Column("ELAPSED", 8, 1),
+  Column("ETA", 7, 1),
   Column("DEADLINE", 8, 1),
   Column("COMMAND", 0, keep = CommandMin)
 ]
 
-// The column PEAK sits at, and the narrowest screen that shows it: the fixed columns with it take 85
-// cells, so under 90 the table is drawn without PEAK (the peak is still in `stats` and the JSON) and
-// keeps STARTED and every other column.
-val PeakColumn: int = 6
-val PeakWidth: int = 90
+// The columns CORES, PEAK and ETA sit at, and the narrowest screens that show them. A narrower
+// screen leaves CORES out first, then PEAK, then ETA (all are still in `ls` and the JSON), so that
+// OWNER, LABEL and COMMAND keep their room: every fixed column takes 99 cells, which leaves a
+// 140-cell screen 20 for OWNER and LABEL beside COMMAND's 20.
+val CoresColumn: int = 4
+val PeakColumn: int = 7
+val StartedColumn: int = 8
+val EtaColumn: int = 10
+val CoresWidth: int = 140
+val PeakWidth: int = 130
+val EtaWidth: int = 90
 
-// Whether a screen `width` cells wide shows the PEAK column.
+// Whether a screen `width` cells wide shows the CORES column, the PEAK column, and the ETA column.
+// Under 90 cells, without all three, the table is the one marshal drew before it had them.
+showsCores(width: int) -> bool = width >= CoresWidth
 showsPeak(width: int) -> bool = width >= PeakWidth
+showsEta(width: int) -> bool = width >= EtaWidth
 
-// The columns a screen `width` cells wide draws, and where DEADLINE sits among them. Under 90 cells
-// STARTED is 7 wide (its heading and `hh:mm`), or 11 where a shown job started on another day.
-columnsFor(width: int, startedWidth: int) -> Vector[Column]
-  if showsPeak(width) then return columns
-  val narrow = columns.slice(0, PeakColumn) ++ columns.slice(PeakColumn + 1, columns.length)
-  narrow.map(c -> if c.title == "STARTED" then Column("STARTED", startedWidth) else c)
+// Which of `columns` a screen `width` cells wide draws.
+private shownOn(width: int) -> Vector[bool] =
+  (0 ..< columns.length).map(
+    i -> (
+      i != CoresColumn || showsCores(width)
+    ) && (i != PeakColumn || showsPeak(width)) && (i != EtaColumn || showsEta(width))
+  ).toVector
+
+// `all`, one for each of `columns`, without those a screen `width` cells wide leaves out.
+private onScreen[T](all: Vector[T], width: int) -> Vector[T] =
+  all.zip(shownOn(width)).filter(p -> p.1).map(p -> p.0)
+
+// The columns a screen `width` cells wide draws. Without PEAK, STARTED is 7 wide (its heading and
+// `hh:mm`), or 11 where a shown job started on another day.
+columnsFor(width: int, startedWidth: int) -> Vector[Column] =
+  onScreen(
+    columns.map(c -> if c.title == "STARTED" && !showsPeak(width) then Column("STARTED", startedWidth) else c),
+    width
+  )
 
 // A measured size for the RSS and PEAK columns: `-` where nothing was measured.
 measuredText(bytes: long) -> string = if bytes <= 0 then "-" else marshal.roundSize(bytes)
@@ -190,40 +231,55 @@ styled(p: (string, Style)) -> Span = Span(p.0, Some(p.1))
 
 // A line's cells on a screen `width` cells wide, the start time read in `zone`: STATE and DEADLINE in
 // their colours, the rest in the table's.
-cells(l: Line, since: long, zone: time.Zone, today: string, width: int) -> Vector[Span]
+cells(l: Line, since: long, zone: time.Zone, today: string, width: int) -> Vector[Span] =
+  onScreen(allCells(l, since, zone, today, width), width)
+
+// A line's cells, one for each of `columns`. CORES is a running job's latest measurement (`ls`'s
+// USED); ETA its expected time left, or a queued job's expected start (`etaOf`).
+allCells(l: Line, since: long, zone: time.Zone, today: string, width: int) -> Vector[Span]
   val j = l.job
-  val all = [
+  [
     Span(j.id.toString()),
     styled(stateOf(l)),
     Span(marshal.fittedKind(j, KindWidth)),
     Span(marshal.unitsText(j)),
+    Span(if j.state == "running" then marshal.formatCores(j.cores) else "-"),
     Span(marshal.reservedText(j)),
     Span(measuredText(if j.state == "running" then j.rss else 0)),
     Span(measuredText(j.peakRss)),
     Span(if showsPeak(width) then marshal.startedColumn(j, zone) else marshal.startedShort(j, zone, today)),
     Span(if marshal.notRunYet(j) then "-" else clock(elapsedOf(l, since))),
+    styled(etaOf(l, since)),
     styled(deadlineOf(l, since)),
     Span(j.cmd.mkString(" "))
   ]
-  if showsPeak(width) then all else all.slice(0, PeakColumn) ++ all.slice(PeakColumn + 1, all.length)
+
+// A line's ETA cell and its style: a running job's expected time left (`~6m`, `<1m` once it is past
+// its expected duration), plain; a queued job's expected start (`in ~3m`), dim; `-` where neither
+// is known.
+etaOf(l: Line, since: long) -> (string, Style)
+  val text = marshal.etaColumn(l.job, if l.job.outcome.isDefined then 0 else since)
+  if text == "-" || l.job.state != "running" then (text, Style.fg(BrightBlack)) else (text, Style.plain())
 
 // The LABEL column: as wide as the longest label drawn, measured in display cells, between its heading
 // and `LabelCap`, cut with an ellipsis; always drawn, empty for a job without a label, except where the
-// screen would leave COMMAND under `CommandMin` cells.
+// screen would leave COMMAND under `CommandMin` cells. The OWNER column before it is fitted the same
+// way, up to `OwnerCap`; LABEL gives way first, then OWNER.
 val LabelColumn: Column = Column("LABEL", 0, min = LabelMin, max = LabelCap, fit = true)
+val OwnerCap: int = 10
+val OwnerColumn: Column = Column("OWNER", 0, min = LabelMin, max = OwnerCap, fit = true)
 
-// The columns `base` (the last of them COMMAND) with LABEL put before COMMAND.
+// The columns `base` (the last of them COMMAND) with OWNER and LABEL put before COMMAND.
 withLabelColumn(base: Vector[Column]) -> Vector[Column] = base.slice(0, base.length - 1) ++ [
+  OwnerColumn,
   LabelColumn,
   base(base.length - 1)
 ]
 
-// A row of `cells` with the label put before the command, the last cell; empty for a job without a
-// label, which the table still draws at its heading's width.
-withLabelCell(cells: Vector[Span], label: string) -> Vector[Span] = cells.slice(0, cells.length - 1) ++ [
-  Span(label),
-  cells(cells.length - 1)
-]
+// A row of `cells` with the owner and the label put before the command, the last cell; the label
+// empty for a job without one, which the table still draws at its heading's width.
+withLabelCell(cells: Vector[Span], owner: string, label: string) -> Vector[Span] =
+  cells.slice(0, cells.length - 1) ++ [Span(owner), Span(label), cells(cells.length - 1)]
 
 // How long, in milliseconds, the selected row stays highlighted after the last key.
 val IdleHideMs: long = 5000
@@ -250,6 +306,8 @@ class App(val sock: string)
   // Whether `s` may start a daemon: there is none.
   var noDaemon = false
   var filter: Filter = ShowAll
+  // The owner whose jobs alone show (`o`), None for every owner's.
+  var owner: Option[string] = None
   // The help, while it is open.
   val modals: ModalStack = ModalStack()
   var confirming: Option[JobInfo] = None
@@ -305,8 +363,10 @@ class App(val sock: string)
   // follows the top (the start, and wherever a key last left the selection on the first line) keeps
   // the first line selected, so it goes on showing the newest jobs as more arrive above.
   private refresh()
-    val live = overview.map(o -> lines(o, filter)).getOrElse([])
-    shown = if admitsHistory(filter) && older.nonEmpty then live ++ earlier(live) else live
+    val live = overview.map(o -> lines(o, filter, owner)).getOrElse([])
+    shown = if admitsHistory(filter) && older.nonEmpty then live ++ earlier(live).filter(
+      l -> ownedBy(l.job, owner)
+    ) else live
     val at = selectedId match
       Some(id) -> if followsTop then 0 else shown.indexWhere(l -> l.job.id == id)
       None -> if followsTop then 0 else -1
@@ -409,6 +469,7 @@ class App(val sock: string)
   key(Char('h')) = showHelp()
   key(Char('?')) = showHelp()
   key(Char('f')) = cycleFilter()
+  key(Char('o')) = cycleOwner()
   key(Char('k')) = askKill()
   key(Char('l')) = toggleLog()
   key(Enter) = toggleLog()
@@ -430,6 +491,17 @@ class App(val sock: string)
     filter = nextFilter(filter)
     older = []
     olderLeft = None
+    followsTop = false
+    refresh()
+    followsTop = table.selected <= 0
+    Stay
+
+  // `o`: the next owner's jobs alone, among the owners of the jobs listed and loaded; after the last,
+  // every owner's again. The pages of earlier jobs stay.
+  private cycleOwner() -> Action
+    val listed = overview.map(o -> lines(o, ShowAll).map(l -> l.job)).getOrElse([]) ++ older
+    owner = nextOwner(owner, listed)
+    if overview.isDefined && owner.isEmpty && listed.isEmpty then message = "no jobs to filter by owner"
     followsTop = false
     refresh()
     followsTop = table.selected <= 0
@@ -495,15 +567,16 @@ class App(val sock: string)
     if overview is Some(o)
       // the header, the body, and the bottom line; with the log open, the table takes half the
       // body (at least two rows) and the pane the rest
-      val screen = g.area().rows([Fixed(drawHeader(g, o, since, filter)), Fill(), Fixed(1)])
+      val screen = g.area().rows([Fixed(drawHeader(g, o, since, filter, owner)), Fill(), Fixed(1)])
       val body = screen(1)
       val parts = body.rows([Fixed(if logOf.isDefined then maxInt(body.h / 2, 2) else body.h), Fill()])
       val area = parts(0)
       page = if area.h > 2 then area.h - 1 else 1
       val zone = time.localZone()
       val today = time.now().atZone(zone).format("YYYY-MM-DD")
-      val rows = shown.map(l -> cells(l, since, zone, today, area.w))
-      val startedWidth = if rows.exists(r -> r(PeakColumn).text.charCount > 7) then 11 else 7
+      val full = shown.map(l -> allCells(l, since, zone, today, area.w))
+      val rows = full.map(r -> onScreen(r, area.w))
+      val startedWidth = if full.exists(r -> r(StartedColumn).text.charCount > 7) then 11 else 7
       val base = columnsFor(area.w, startedWidth)
       val drawing = Table(withLabelColumn(base))
       // a bar down the right edge while the lines overflow the rows, over the lines loaded
@@ -511,7 +584,11 @@ class App(val sock: string)
       drawing.selected = table.selected
       drawing.offset = table.offset
       drawing.selectedStyle = if highlighted(now) then Style.plain().with(Reverse) else drawing.rowStyle
-      drawing.drawSpans(g, area, rows.zip(shown).map(p -> withLabelCell(p.0, p.1.job.label)))
+      drawing.drawSpans(
+        g,
+        area,
+        rows.zip(shown).map(p -> withLabelCell(p.0, marshal.ownerText(p.1.job), p.1.job.label))
+      )
       table.selected = drawing.selected
       table.offset = drawing.offset
       remember()
@@ -669,6 +746,7 @@ val footerKeys: Vector[(string, string)] = [
   ("Enter", "Log "),
   ("k", "Kill "),
   ("f", "Filter "),
+  ("o", "Owner "),
   ("q", "Quit ")
 ]
 
@@ -683,7 +761,7 @@ val helpLines: Vector[string] = [
   "Enter  l        the selected job's log, following its end",
   "                (open: PgUp PgDn Home End scroll it, Esc closes)",
   "k               kill the selected job, after y",
-  "f               show all jobs, running, queued or finished",
+  "f  o            all, running, queued or finished jobs; o: one owner's, then all",
   "h  ?            this help",
   "q               quit",
   "",
@@ -697,14 +775,17 @@ val helpLines: Vector[string] = [
   "*! and #! together).",
   "after 3,4 waits for jobs 3 and 4",
   "to end; retry 2 waits to make its second attempt.",
-  "DEADLINE is the time left; yellow, then red, as it nears."
+  "DEADLINE is the time left; yellow, then red, as it nears. ETA is",
+  "the expected time left (~6m) or start (in ~3m); CORES those in use;",
+  "OWNER who it is for; disk low: under disk_min, nothing starts."
 ]
 
-// The header, three lines and a blank one, and the first row under it.
+// The header, four lines and a blank one, and the first row under it.
 //   marshal  up 1:02:03   3 running  2 queued   landing: job 7            filter: all
 //   units [██████▒▒▒·······]  5 + take-slot 4 / 12, 1 waiting
 //   mem   [███·············]  12G / 56G   rss 9.4G   machine 64G
-drawHeader(g: Grid, o: Overview, since: long, f: Filter) -> int
+//   cpu   [████▒▒··········]  5.2 jobs + 3.1 other / 12   disk 120G free
+drawHeader(g: Grid, o: Overview, since: long, f: Filter, owner: Option[string] = None) -> int
   val u = o.usage
   val held = if u.queueHeld then [Span(" (held)", Some(Style.fg(Red).with(Bold)))] else []
   g.spans(
@@ -718,7 +799,7 @@ drawHeader(g: Grid, o: Overview, since: long, f: Filter) -> int
       Span(s"${u.queued} queued", Some(Style.fg(Yellow)))
     ] ++ held ++ [Span("   landing: "), styled(laneText(o))] ++ quickText(u)
   )
-  val shown = s"filter: ${filterName(f)}"
+  val shown = s"filter: ${filterName(f)}" + owner.map(o -> s"  owner: $o").getOrElse("")
   if g.width > textWidth(shown) then g.text(g.width - textWidth(shown), 0, shown, Style.fg(BrightBlack))
   val barWidth = minInt(maxInt(g.width / 3, 10), 40)
   val outside = u.takeSlot.map(t -> t.units).getOrElse(0)
@@ -737,7 +818,50 @@ drawHeader(g: Grid, o: Overview, since: long, f: Filter) -> int
   memBar(g, 6, 2, barWidth, u.memory, u.held, if bounded then u.memoryBudget else 0)
   val mem = if bounded then s"${marshal.formatSize(u.memory)} / ${marshal.formatSize(u.memoryBudget)}" else marshal.formatSize(u.memory)
   g.text(6 + barWidth + 3, 2, mem + memoryText(u))
-  4
+  g.text(0, 3, "cpu   ")
+  val cores = u.unitBudget * int(marshal.Centi) / marshal.QuartersPerUnit
+  cpuBar(g, 6, 3, barWidth, u.jobCpu, u.cpu, cores)
+  val afterCpu = g.text(6 + barWidth + 3, 3, cpuText(u))
+  diskText(g, afterCpu, 3, u)
+  5
+
+// What the header says after the processor meter: the cores the jobs keep busy, and the rest of the
+// machine's, against the unit budget (a unit is about a core): `5.2 jobs + 3.1 other / 12`; `-`
+// before the first measurement.
+cpuText(u: Usage) -> string
+  val budget = marshal.formatUnits(u.unitBudget)
+  if u.cpu < 0 then return s"- / $budget"
+  val jobs = if u.jobCpu < 0 then long(0) else u.jobCpu
+  val other = if u.cpu > jobs then u.cpu - jobs else long(0)
+  s"${marshal.formatCores(jobs)} jobs + ${marshal.formatCores(other)} other / $budget"
+
+// The free disk after the processor line from column `x` of row `y`: `   disk 120G free`, yellow
+// under twice `disk_min`, red under it, with what that means beside it; nothing before it is
+// measured, and nothing where it does not fit.
+diskText(g: Grid, x: int, y: int, u: Usage)
+  if u.diskFree < 0 then return
+  val level = marshal.diskLevel(u.diskFree, u.diskMin)
+  val text = s"disk ${marshal.roundSize(u.diskFree)} free" + (
+    if level == 2 then s" < ${marshal.formatSize(u.diskMin)}: nothing starts" else ""
+  )
+  val style = if level == 2 then Style.fg(Red).with(Bold) elif level == 1 then Style.fg(Yellow) else Style.plain()
+  if x + 3 + textWidth(text) <= g.width then g.text(x + 3, y, text, style)
+
+// The processor meter, `width` cells between brackets from column `x` of row `y`: the cores the
+// running jobs keep busy (`jobs`) in green and the rest of the machine's (`all` less them) in
+// yellow, as shares of `budget`, all in hundredths of a core; empty before the first measurement.
+cpuBar(g: Grid, x: int, y: int, width: int, jobs: long, all: long, budget: int)
+  val ours = if jobs < 0 then long(0) else jobs
+  val others = if all > ours then all - ours else long(0)
+  g.gauge(
+    x,
+    y,
+    width + 2,
+    [Segment(real(ours), Style.fg(Green)), Segment(real(others), Style.fg(Yellow))],
+    real(if budget > 0 then budget else 1),
+    rest = ' ',
+    eighths = true
+  )
 
 // What the header says after the memory the running jobs reserve: what they hold, as last measured,
 // and the memory the machine has, where it is known.
