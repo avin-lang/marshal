@@ -93,7 +93,9 @@ reservationFor(learning: MemoryLearning, memory: long, given: bool, peaks: Vecto
 // command, which learns nothing.
 commandSignature(cmd: Vector[string]) -> string = signatureOf(cmd, true)
 
-private val wrappers: Set[string] = {"env", "nice", "nohup", "caffeinate", "time", "timeout", "gtimeout", "sudo", "exec", "command"}
+private val wrappers: Set[string] = {
+  "env", "nice", "nohup", "caffeinate", "time", "timeout", "gtimeout", "sudo", "exec", "command"
+}
 
 private val shells: Set[string] = {"sh", "bash", "zsh", "dash", "ksh"}
 
@@ -263,7 +265,9 @@ decodeMemory(text: string) -> Result[Map[string, Vector[long]], string]
     Ok(v) -> v
     Err(e) -> return Err(s"not JSON: $e")
   val version = j.get("version").flatMap(v -> v.asLong)
-  if version != Some(MemoryFileVersion) then return Err(s"version ${version.map(v -> v.toString()).getOrElse("missing")}, not $MemoryFileVersion")
+  if version != Some(MemoryFileVersion) then return Err(
+    s"version ${version.map(v -> v.toString()).getOrElse("missing")}, not $MemoryFileVersion"
+  )
   val members = j.get("peaks").flatMap(v -> v.asMembers) match
     Some(ms) -> ms
     None -> return Err("`peaks` is not an object")

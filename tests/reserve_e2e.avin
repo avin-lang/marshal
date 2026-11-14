@@ -294,7 +294,10 @@ learnedFallsBack()
   val bads = ["", "{\"version\":1,\"peaks\":{\"big\\nsle", "{\"version\":0,\"peaks\":{}}", "missing"]
   for i in 0 ..< bads.length
     val bad = bads(i)
-    if bad == "missing" then fs.remove(home + "/memory.json").ok.get else fs.writeText(home + "/memory.json", bad).ok.get
+    if bad == "missing" then fs.remove(home + "/memory.json").ok.get else fs.writeText(
+      home + "/memory.json",
+      bad
+    ).ok.get
     // a directory of its own each time, so the job stopped at the end teaches the next nothing there
     val dir = home + s"/d$i"
     fs.createDir(dir).ok.get

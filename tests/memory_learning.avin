@@ -48,8 +48,14 @@ shellsLearnTheirScript()
   assertEq(sig("zsh scripts/release.sh 0.0.21 --out"), "zsh release.sh")
   assertEq(sig("sh -e /x/train.zsh branch"), "sh train.zsh")
   assertEq(sig("zsh -o pipefail run.zsh"), "zsh run.zsh")
-  assertEq(marshal.commandSignature(["zsh", "-c", "env -u SYSL_LIB sysl build . -o sysl && ./sysl test ."]), "sysl build .")
-  assertEq(marshal.commandSignature(["zsh", "-c", "cd /w/x && export A=1; sysl test compiler --jobs 4"]), "sysl test compiler")
+  assertEq(
+    marshal.commandSignature(["zsh", "-c", "env -u SYSL_LIB sysl build . -o sysl && ./sysl test ."]),
+    "sysl build ."
+  )
+  assertEq(
+    marshal.commandSignature(["zsh", "-c", "cd /w/x && export A=1; sysl test compiler --jobs 4"]),
+    "sysl test compiler"
+  )
   assertEq(marshal.commandSignature(["sh", "-ec", "make -j 8 all"]), "make all")
   // a -c that runs only preparation, or nothing, or a shell inside it, stops there
   assertEq(marshal.commandSignature(["zsh", "-c", "cd /w"]), "zsh -c")
@@ -64,7 +70,12 @@ private poisonedLog() -> Vector[string] =
   for i in 0 ..< 8
     lines += peakLine(long(i + 1), s"/scratch/s$i", "[\"zsh\",\"/scratch/s$i/gate.zsh\",\"tests_a\"]", 33 * G)
   for i in 0 ..< 3
-    lines += peakLine(long(i + 20), s"/w/sysl-b$i", "[\"env\",\"-u\",\"SYSL_LIB\",\"sysl\",\"build\",\".\",\"-o\",\"sysl\"]", 6 * G)
+    lines += peakLine(
+      long(i + 20),
+      s"/w/sysl-b$i",
+      "[\"env\",\"-u\",\"SYSL_LIB\",\"sysl\",\"build\",\".\",\"-o\",\"sysl\"]",
+      6 * G
+    )
   lines.toVector
 
 private peakLine(id: long, dir: string, cmd: string, peak: long) -> string =
@@ -81,7 +92,9 @@ private reserveIn(peaks: Map[string, Vector[long]], cmd: Vector[string], dir: st
   val r = marshal.reservationFor(memDefaults, 0, false, h.peaks, 56 * G)
   (r, marshal.reservationSource(0, false, r, h.from))
 
-@test("a heavy command no longer poisons its kind: light builds in new directories reserve their own peak and run together")
+@test(
+  "a heavy command no longer poisons its kind: light builds in new directories reserve their own peak and run together"
+)
 noPoisoning()
   val peaks = marshal.recover(poisonedLog()).peaks
   val build = ["sysl", "build", ".", "-o", "sysl"]

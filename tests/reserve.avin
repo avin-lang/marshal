@@ -127,8 +127,14 @@ dirKey()
   assertEq(marshal.memoryKey("test", true, "sysl test ."), "test+landing\nsysl test .")
   assertEq(marshal.memoryDirKey("test", false, "sysl test .", "/a"), "test\nsysl test .\n/a")
   assert(marshal.memoryDirKey("test", false, "s", "/a") != marshal.memoryDirKey("test", false, "s", "/b"), "dirs")
-  assert(marshal.memoryKey("test", false, "sysl test .") != marshal.memoryKey("test", false, "sysl test compiler"), "targets")
-  assertEq(marshal.memoryKeys("test", false, ["sysl", "test", "."], "/a"), ["test\nsysl test .", "test\nsysl test .\n/a"])
+  assert(
+    marshal.memoryKey("test", false, "sysl test .") != marshal.memoryKey("test", false, "sysl test compiler"),
+    "targets"
+  )
+  assertEq(
+    marshal.memoryKeys("test", false, ["sysl", "test", "."], "/a"),
+    ["test\nsysl test .", "test\nsysl test .\n/a"]
+  )
   assertEq(marshal.memoryKeys("test", false, ["sysl", "test", "."], ""), ["test\nsysl test ."])
   // a command with no signature teaches nothing, the kind included
   assertEq(marshal.memoryKeys("test", false, [], "/a"), [])
@@ -146,7 +152,12 @@ resvSource()
 
 // An ending event of job `id` of kind `test` running `cmd` (a JSON array, or none), in `dir` (none
 // for an event that names no directory).
-peakEvent(id: long, peak: long, dir: Option[string], cmd: Option[string] = Some("[\"sysl\",\"test\",\".\"]")) -> string =
+peakEvent(
+    id: long,
+    peak: long,
+    dir: Option[string],
+    cmd: Option[string] = Some("[\"sysl\",\"test\",\".\"]")
+) -> string =
   val d = dir.map(x -> s",\"dir\":\"$x\"").getOrElse("")
   val c = cmd.map(x -> s",\"cmd\":$x").getOrElse("")
   s"{\"ts\":1,\"event\":\"finished\",\"id\":$id,\"kind\":\"test\",\"landing\":false$d$c,\"exit\":0,\"run_ms\":10,\"peak_rss\":$peak}"
