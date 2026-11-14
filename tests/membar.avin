@@ -77,7 +77,7 @@ both()
 // A meter 12 columns wide, ten cells of eighths, against a budget of 80 so an amount is its eighths.
 eighths(segments: Vector[Segment]) -> Grid
   val g = Grid(12, 1)
-  top.eighthGauge(g, 0, 0, 12, segments, 80.0)
+  g.gauge(0, 0, 12, segments, 80.0, rest = ' ', eighths = true)
   g
 
 // Each cell of the ten, whole blocks `#`, empty `.`, anything else as its glyph.
