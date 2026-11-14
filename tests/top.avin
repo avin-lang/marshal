@@ -9,42 +9,12 @@ import dev.avinlang.marshal.cli
 import dev.avinlang.marshal.top
 
 import dev.avinlang.marshal.top.{
-  App,
-  IdleHideMs,
-  KillJob,
-  Quit,
-  StartDaemon,
-  Stay,
-  ShowAll,
-  ShowRunning,
-  ShowQueued,
-  ShowFinished
+  App, IdleHideMs, KillJob, Quit, StartDaemon, Stay, ShowAll, ShowRunning, ShowQueued, ShowFinished
 }
 
 import dev.avinlang.tui.{
-  BrightBlack,
-  Char,
-  Ctrl,
-  Down,
-  End,
-  Enter,
-  Escape,
-  Event,
-  Green,
-  Grid,
-  Home,
-  Key,
-  KeyPress,
-  Magenta,
-  PageDown,
-  PageUp,
-  Red,
-  Resize,
-  Reverse,
-  Stop,
-  Up,
-  Yellow,
-  wrapChars
+  BrightBlack, Char, Ctrl, Down, End, Enter, Escape, Event, Green, Grid, Home, Key, KeyPress, Magenta, PageDown, PageUp,
+  Red, Resize, Reverse, Stop, Up, Yellow, wrapChars
 }
 
 val minuteMs: long = 60000

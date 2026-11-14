@@ -8,16 +8,7 @@ import dev.avinlang.marshal.{GrepSpec, GrepPlain}
 import dev.avinlang.marshal.cli
 
 val log: Vector[string] = [
-  "alpha",
-  "ERR one",
-  "beta",
-  "gamma",
-  "delta",
-  "ERR two",
-  "epsilon",
-  "zeta",
-  "eta",
-  "ERR three"
+  "alpha", "ERR one", "beta", "gamma", "delta", "ERR two", "epsilon", "zeta", "eta", "ERR three"
 ]
 
 // The matches and the printed lines for `pattern` over `lines`.
@@ -112,15 +103,7 @@ grepContextTouching()
   assertEq(
     r,
     [
-      "1-alpha",
-      "2:ERR one",
-      "3-beta",
-      "4-gamma",
-      "5-delta",
-      "6:ERR two",
-      "7-epsilon",
-      "8-zeta",
-      "9-eta",
+      "1-alpha", "2:ERR one", "3-beta", "4-gamma", "5-delta", "6:ERR two", "7-epsilon", "8-zeta", "9-eta",
       "10:ERR three"
     ]
   )

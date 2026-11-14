@@ -195,7 +195,6 @@ asksHelp(_, args) = args.takeWhile(a -> a != "--").exists(isHelp)
 
 private optionsAskHelp(args: Vector[string], i: int) -> bool
 optionsAskHelp(args, i) | i >= args.length = false
-
 optionsAskHelp(args, i)
   | args(i) == "--" = false
   | isHelp(args(i)) = true
@@ -283,11 +282,9 @@ complain(message: string) -> int
   Trouble
 
 withId(args: Vector[string], body: (long) -> int) -> int
-
 withId([word], body) = word.toLongOption() match
   Some(id) -> body(id)
   None -> complain(s"marshal: `$word` is not a job id")
-
 withId(_, _) = complain("marshal: give one job id")
 
 // `priority <id> <n>` or `priority <id> --urgent`.
@@ -1013,11 +1010,9 @@ grep(args: Vector[string]) -> int
     Err(e) -> complain(e)
 
 reportEnd(result: Result[Reply, string]) -> int
-
 reportEnd(Ok(Ended(j))) =
   println(marshal.resultLine(j))
   j.outcome.map(marshal.exitCode).getOrElse(Trouble)
-
 reportEnd(Ok(Failed(e))) = complain(s"marshal: $e")
 reportEnd(Ok(other)) = complain(s"marshal: unexpected reply $other")
 reportEnd(Err(e)) = complain(e)

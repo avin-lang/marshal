@@ -404,16 +404,7 @@ jsonShape()
   assertEq(
     k.keys,
     [
-      "kind",
-      "count",
-      "ok",
-      "success_pct",
-      "timeouts",
-      "p50_ms",
-      "p90_ms",
-      "max_ms",
-      "deadline_ms",
-      "peak_p50",
+      "kind", "count", "ok", "success_pct", "timeouts", "p50_ms", "p90_ms", "max_ms", "deadline_ms", "peak_p50",
       "peak_max"
     ]
   )
