@@ -20,7 +20,8 @@ info(
   JobInfo(
     id,
     kind,
-    4,
+    // 4 units, in quarters
+    16,
     0,
     landing,
     "/d",
@@ -240,9 +241,10 @@ endings()
 @test("an empty settings file is every default: 12 units, the machine's memory less 8G")
 configDefaults()
   val c = marshal.readConfig("", 64 * G).ok.get
-  assertEq(c.budget, Budget(12, 56 * G))
+  // the budget counts quarters of a unit
+  assertEq(c.budget, Budget(48, 56 * G))
   assertEq(c.learning, marshal.defaultLearning)
-  assertEq(marshal.readConfig("  \n", 64 * G).ok.get.budget, Budget(12, 56 * G))
+  assertEq(marshal.readConfig("  \n", 64 * G).ok.get.budget, Budget(48, 56 * G))
 
 @test("a machine whose memory is unknown has no memory budget; a small one keeps half")
 configMachines()
@@ -255,7 +257,7 @@ configSettings()
     "{\"units\": 3, \"memory\": \"10G\", \"deadline_floor\": \"7s\", \"learn_window\": 5, \"learn_min_runs\": 2}",
     64 * G
   ).ok.get
-  assertEq(c.budget, Budget(3, 10 * G))
+  assertEq(c.budget, Budget(12, 10 * G))
   assertEq(c.learning, Learning(5, 2, 2, 7000))
   assertEq(marshal.readConfig("{\"reserve\": \"16G\"}", 64 * G).ok.get.budget.memory, 48 * G)
   assertEq(marshal.readConfig("{\"memory\": 1000}", 64 * G).ok.get.budget.memory, long(1000))
@@ -327,10 +329,10 @@ resultLines()
 listings()
   val rows = marshal.listing([info(1, state = "running"), info(12, "build", true)]).lines.toVector
   assertEq(rows.length, 3)
-  assertEq(rows(0), "ID  STATE    KIND    UNITS  RESV  STARTED  ELAPSED  LABEL  COMMAND")
-  assertEq(rows(1), "1   running  test    4      -     -        0ms             make it")
-  assertEq(rows(2), "12  queued   build*  4      -     -        -               make it")
-  assertEq(marshal.listing([]), "ID  STATE  KIND  UNITS  RESV  STARTED  ELAPSED  LABEL  COMMAND")
+  assertEq(rows(0), "ID  STATE    KIND    UNITS  USED  RESV  STARTED  ELAPSED  LABEL  COMMAND")
+  assertEq(rows(1), "1   running  test    4      -     -     -        0ms             make it")
+  assertEq(rows(2), "12  queued   build*  4      -     -     -        -               make it")
+  assertEq(marshal.listing([]), "ID  STATE  KIND  UNITS  USED  RESV  STARTED  ELAPSED  LABEL  COMMAND")
 
 @test("ELAPSED is - for a job that has not started, whatever its wait, and the run time for the rest")
 elapsedColumn()
@@ -381,29 +383,34 @@ startedOnAnotherDay()
 listingStarted()
   val rows = marshal.listing([info(1, state = "running", started = 1794058290000), info(2)]).lines.toVector
   val expected = time.epochMillis(1794058290000).atZone(time.localZone()).format("MM-DD hh:mm")
-  assertEq(rows(0), "ID  STATE    KIND  UNITS  RESV  STARTED      ELAPSED  LABEL  COMMAND")
-  assertEq(rows(1), s"1   running  test  4      -     $expected  0ms             make it")
-  assertEq(rows(2), "2   queued   test  4      -     -            -               make it")
+  assertEq(rows(0), "ID  STATE    KIND  UNITS  USED  RESV  STARTED      ELAPSED  LABEL  COMMAND")
+  assertEq(rows(1), s"1   running  test  4      -     -     $expected  0ms             make it")
+  assertEq(rows(2), "2   queued   test  4      -     -     -            -               make it")
 
 @test("the status line shows units, memory, counts and the landing lane")
 usageLines()
   assertEq(
-    marshal.usageLine(Usage(8, 12, 2 * G, 56 * G, 3, 2, Some(5), None)),
+    marshal.usageLine(Usage(32, 48, 2 * G, 56 * G, 3, 2, Some(5), None)),
     "units 8/12, memory 2G/56G, 3 running, 2 queued, landing lane job 5"
   )
   assertEq(
-    marshal.usageLine(Usage(0, 12, 0, long.MaxValue, 0, 0, None, None)),
+    marshal.usageLine(Usage(0, 48, 0, long.MaxValue, 0, 0, None, None)),
     "units 0/12, memory 0, 0 running, 0 queued, landing lane free"
+  )
+  // fractional units, quarters adding up
+  assertEq(
+    marshal.usageLine(Usage(7, 48, 0, long.MaxValue, 2, 0, None, None)),
+    "units 1.75/12, memory 0, 2 running, 0 queued, landing lane free"
   )
 
 @test("the status line adds what a shared take-slot directory holds")
 usageLinesTakeSlot()
   assertEq(
-    marshal.usageLine(Usage(1, 12, 0, long.MaxValue, 1, 0, None, Some(TakeSlotUse("/d", 4, 2, false)))),
+    marshal.usageLine(Usage(4, 48, 0, long.MaxValue, 1, 0, None, Some(TakeSlotUse("/d", 16, 2, false)))),
     "units 1/12, memory 0, 1 running, 0 queued, landing lane free; take-slot holds 4 units, 2 waiting"
   )
   assertEq(
-    marshal.usageLine(Usage(0, 12, 0, long.MaxValue, 0, 0, None, Some(TakeSlotUse("/d", 0, 0, true)))),
+    marshal.usageLine(Usage(0, 48, 0, long.MaxValue, 0, 0, None, Some(TakeSlotUse("/d", 0, 0, true)))),
     "units 0/12, memory 0, 0 running, 0 queued, landing lane free; take-slot holds 0 units, 0 waiting, the landing lane"
   )
 
@@ -420,11 +427,11 @@ submissions()
   val env = [("A", "1")]
   assertEq(
     cli.parseSubmission(["--", "sysl", "test", "x"], "/w", env),
-    Ok(marshal.JobSpec("test", 4, 0, false, "/w", None, ["sysl", "test", "x"], env))
+    Ok(marshal.JobSpec("test", 16, 0, false, "/w", None, ["sysl", "test", "x"], env, unitsGiven = false))
   )
   assertEq(
     cli.parseSubmission(["make"], "/w", env),
-    Ok(marshal.JobSpec("build", 1, 0, false, "/w", None, ["make"], env))
+    Ok(marshal.JobSpec("build", 4, 0, false, "/w", None, ["make"], env, unitsGiven = false))
   )
   assertEq(
     cli.parseSubmission(
@@ -432,7 +439,7 @@ submissions()
       "/w",
       env
     ),
-    Ok(marshal.JobSpec("docs", 2, G, true, "/w/sub", Some(long(90000)), ["--x"], env, memoryGiven = true))
+    Ok(marshal.JobSpec("docs", 8, G, true, "/w/sub", Some(long(90000)), ["--x"], env, memoryGiven = true))
   )
   // without --mem the memory is not given, so the kind's learned peak is reserved; --mem 0 is given
   assertEq(cli.parseSubmission(["make"], "/w", env).map(s -> s.memoryGiven), Ok(false))
@@ -446,6 +453,10 @@ submissions()
     ["--"],
     ["--units"],
     ["--units", "x", "a"],
+    ["--units", "0", "a"],
+    ["--units", "0.3", "a"],
+    ["--units", "-1", "a"],
+    ["--units", "1.", "a"],
     ["--mem", "1.5G", "a"],
     ["--deadline", "0", "a"],
     ["--kind", "", "a"],

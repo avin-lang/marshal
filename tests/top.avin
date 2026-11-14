@@ -44,7 +44,7 @@ snapJob(
   JobInfo(
     id,
     if landing then "test" else "build",
-    units,
+    marshal.wholeUnits(units),
     memory,
     landing,
     "/w",
@@ -84,7 +84,7 @@ full() -> Overview
     snapJob(3, "done", Some(Outcome.Cancelled))
   ]
   Overview(
-    Usage(5, 12, 1073741824, 4294967296, 2, 3, Some(4), Some(TakeSlotUse("/s/.git", 4, 1, false))),
+    Usage(20, 48, 1073741824, 4294967296, 2, 3, Some(4), Some(TakeSlotUse("/s/.git", 16, 1, false))),
     3723000,
     running,
     queuedJobs,
@@ -133,7 +133,7 @@ header()
 
 @test("the header says when the lane is free or take-slot's, and when nothing is shared with take-slot")
 headerLane()
-  val free = Overview(Usage(0, 12, 0, long.MaxValue, 0, 0, None, None), 0, [], [], [])
+  val free = Overview(Usage(0, 48, 0, long.MaxValue, 0, 0, None, None), 0, [], [], [])
   val g = drawn(viewing(free), 80, 10)
   assert(g.rowText(0).contains("landing: free"), g.rowText(0))
   assert(g.rowText(1).contains("] 0 / 12"), g.rowText(1))
@@ -141,7 +141,7 @@ headerLane()
   assertEq(g.rowText(1).count(c -> c == '█'), 0)
   // an unbounded memory budget shows what is used, and no bar
   assert(g.rowText(2).trim.endsWith("] 0   rss 0"), g.rowText(2))
-  val theirs = Overview(Usage(0, 12, 0, 100, 0, 0, None, Some(TakeSlotUse("/s", 0, 0, true))), 0, [], [], [])
+  val theirs = Overview(Usage(0, 48, 0, 100, 0, 0, None, Some(TakeSlotUse("/s", 0, 0, true))), 0, [], [], [])
   assert(drawn(viewing(theirs), 80, 10).rowText(0).contains("landing: take-slot"))
 
 @test("the table lists running jobs, then queued ones with their place and reason, then ended ones, the latest first")
@@ -201,7 +201,7 @@ memoryColumns()
     snapJob(8, "done", Some(Outcome.Exited(1)), rss = 100 * M, peak = 100 * M),
     snapJob(7, "done", Some(Outcome.Cancelled))]
   val o = Overview(
-    Usage(3, 12, M * 30 * 1024, long.MaxValue, 3, 1, None, None),
+    Usage(12, 48, M * 30 * 1024, long.MaxValue, 3, 1, None, None),
     0,
     running,
     [queued(10, 1, Why.NoUnits)],
@@ -232,7 +232,7 @@ startedCells()
   val before: long = at - 400 * 86400000
   val earlier = time.epochMillis(before).atZone(time.localZone()).format("MM-DD hh:mm")
   val o = Overview(
-    Usage(2, 12, 0, long.MaxValue, 2, 1, None, None),
+    Usage(8, 48, 0, long.MaxValue, 2, 1, None, None),
     0,
     [snapJob(1, started = at), snapJob(2, started = before)],
     [queued(10, 1, Why.NoUnits)],
@@ -283,7 +283,7 @@ peakLeftOutWhenNarrow()
   )
   // a running job's start is on a narrow screen as on a wide one
   val at: long = 1794058290000 - 400 * 86400000
-  val started = Overview(Usage(1, 12, 0, long.MaxValue, 1, 0, None, None), 0, [snapJob(1, started = at)], [], [])
+  val started = Overview(Usage(4, 48, 0, long.MaxValue, 1, 0, None, None), 0, [snapJob(1, started = at)], [], [])
   val expected = time.epochMillis(at).atZone(time.localZone()).format("MM-DD hh:mm")
   for w in [80, 89, 90, 100]
     val g = drawn(viewing(started), w, 30)
@@ -298,12 +298,12 @@ peakLeftOutWhenNarrow()
 
 @test("the header adds what the running jobs hold and the machine's memory, which is left out where unknown")
 headerMemory()
-  val known = Overview(Usage(5, 12, G, 4 * G, 1, 0, None, None, 9 * G + 400 * 1024 * 1024, 64 * G), 0, [], [], [])
+  val known = Overview(Usage(20, 48, G, 4 * G, 1, 0, None, None, 9 * G + 400 * 1024 * 1024, 64 * G), 0, [], [], [])
   assert(
     drawn(viewing(known), 100, 10).rowText(2).trim.endsWith("] 1G / 4G   rss 9.4G   machine 64G"),
     drawn(viewing(known), 100, 10).rowText(2)
   )
-  val unknown = Overview(Usage(5, 12, G, 4 * G, 1, 0, None, None, 1536, 0), 0, [], [], [])
+  val unknown = Overview(Usage(20, 48, G, 4 * G, 1, 0, None, None, 1536, 0), 0, [], [], [])
   assert(
     drawn(viewing(unknown), 100, 10).rowText(2).trim.endsWith("] 1G / 4G   rss 1.5K"),
     drawn(viewing(unknown), 100, 10).rowText(2)
@@ -602,13 +602,13 @@ startedShortToday()
   val todayText = time.epochMillis(now).atZone(here).format("hh:mm")
   val old: long = now - 3 * 86400000
   val oldText = time.epochMillis(old).atZone(here).format("MM-DD hh:mm")
-  val onlyToday = Overview(Usage(1, 12, 0, long.MaxValue, 1, 0, None, None), 0, [snapJob(1, started = now)], [], [])
+  val onlyToday = Overview(Usage(4, 48, 0, long.MaxValue, 1, 0, None, None), 0, [snapJob(1, started = now)], [], [])
   val g = drawn(viewing(onlyToday), 80, 30)
   val head = rowOf(g, "ID STATE")
   assertEq(g.rowText(head).slice(49, 65), "STARTED  ELAPSED")
   assertEq(g.rowText(head + 1).slice(49, 56).trim, todayText)
   val mixed = Overview(
-    Usage(2, 12, 0, long.MaxValue, 2, 0, None, None),
+    Usage(8, 48, 0, long.MaxValue, 2, 0, None, None),
     0,
     [snapJob(1, started = now), snapJob(2, started = old)],
     [],
@@ -748,7 +748,7 @@ highlightHiddenKeepsSelection()
   assertEq(app.selected().map(j -> j.id), Some(long(4)))
   assertEq(litAt(app, IdleHideMs), -1)
   val without = Overview(
-    Usage(5, 12, 1073741824, 4294967296, 1, 1, Some(4), None),
+    Usage(20, 48, 1073741824, 4294967296, 1, 1, Some(4), None),
     0,
     [snapJob(4, units = 4, landing = true)],
     [queued(13, 1, Why.NoUnits)],
@@ -758,7 +758,7 @@ highlightHiddenKeepsSelection()
   assertEq(app.selected().map(j -> j.id), Some(long(4)))
   app.update(
     Overview(
-      Usage(5, 12, 1073741824, 4294967296, 2, 0, None, None),
+      Usage(20, 48, 1073741824, 4294967296, 2, 0, None, None),
       0,
       [snapJob(2), snapJob(3), snapJob(4, units = 4)],
       [],
@@ -799,7 +799,7 @@ highlightStaysForPanesAndPrompts()
 @test("with no jobs, or no snapshot, a hidden highlight draws and keys do no harm")
 highlightWithNothingToSelect()
   val empty = App("/h/sock")
-  empty.update(Overview(Usage(0, 12, 0, 4294967296, 0, 0, None, None), 0, [], [], []))
+  empty.update(Overview(Usage(0, 48, 0, 4294967296, 0, 0, None, None), 0, [], [], []))
   assertEq(empty.handle(press(Down), 100 * IdleHideMs), Stay)
   assertEq(empty.handle(press(Down), 100 * IdleHideMs), Stay)
   assertEq(empty.handle(press(Enter), 100 * IdleHideMs), Stay)

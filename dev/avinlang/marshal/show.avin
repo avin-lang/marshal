@@ -98,16 +98,18 @@ stateWithWhy(j: JobInfo, whys: Vector[(long, Why)]) -> string
     None -> state
 
 // The listing `ls` prints: a header, then one row per job. A LABEL column stands before COMMAND, and
-// always, empty for a job without a label. `whys`
-// gives the queued jobs' reasons to wait; with none, a queued job shows plain `queued`.
+// always, empty for a job without a label. UNITS is what a job weighs (`unitsText`) and USED the cores
+// it was measured using beside it (`usedText`). `whys` gives the queued jobs' reasons to wait; with
+// none, a queued job shows plain `queued`.
 listing(jobs: Vector[JobInfo], whys: Vector[(long, Why)] = []) -> string
   val zone = time.localZone()
-  val rows = [["ID", "STATE", "KIND", "UNITS", "RESV", "STARTED", "ELAPSED", "LABEL", "COMMAND"]] ++ jobs.map(
+  val rows = [["ID", "STATE", "KIND", "UNITS", "USED", "RESV", "STARTED", "ELAPSED", "LABEL", "COMMAND"]] ++ jobs.map(
     j -> [
       j.id.toString(),
       stateWithWhy(j, whys),
       laneKind(j),
-      j.units.toString(),
+      unitsText(j),
+      usedText(j),
       reservedText(j),
       startedColumn(j, zone),
       elapsedColumn(j, j.elapsedMs),
@@ -151,9 +153,11 @@ usageLine(u: Usage) -> string
   ) else s"${formatSize(u.memory)}/${formatSize(u.memoryBudget)}"
   val lane = u.landing.map(id -> s"job $id").getOrElse("free")
   val outside = u.takeSlot.map(
-    t -> s"; take-slot holds ${t.units} units, ${t.waiting} waiting" + (if t.landing then ", the landing lane" else "")
+    t -> s"; take-slot holds ${formatUnits(t.units)} units, ${t.waiting} waiting" + (
+      if t.landing then ", the landing lane" else ""
+    )
   ).getOrElse("")
   val held = if u.queueHeld then "; the queue is held: nothing new starts" else ""
   val quick = if u.quick > 0 then s", quick lane ${u.quick}/$QuickSlots" else ""
   val exclusive = u.exclusive.map(id -> s"; exclusive job $id owns the machine: nothing else starts").getOrElse("")
-  s"units ${u.units}/${u.unitBudget}, memory $memory, ${u.running} running, ${u.queued} queued, landing lane $lane$quick$outside$exclusive$held"
+  s"units ${formatUnits(u.units)}/${formatUnits(u.unitBudget)}, memory $memory, ${u.running} running, ${u.queued} queued, landing lane $lane$quick$outside$exclusive$held"

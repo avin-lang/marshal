@@ -243,29 +243,41 @@ reservationSource(memory: long, given: bool, r: Reservation, from: string) -> st
 // holding less keeps its reservation, for the peak it has not reached yet.
 holding(reserved: long, rss: long) -> long = if rss > reserved then rss else reserved
 
-// The learned peaks, kept in `<home>/memory.json` so that they outlive the daemon, a restart, an
-// upgrade and `marshal clean` trimming the event log:
+// What is learned of earlier runs, kept in `<home>/memory.json` so that it outlives the daemon, a
+// restart, an upgrade and `marshal clean` trimming the event log: the memory peaks, and the peak
+// cores (cores.avin), each by key:
 //
-//   {"version": 1, "peaks": {"<key>": [bytes, ...], ...}}
+//   {"version": 2, "peaks": {"<key>": [bytes, ...], ...}, "cores": {"<key>": [1.25, ...], ...}}
 //
-// Each key is a `memoryKey` or `memoryDirKey` and holds its last `MemoryKept` peaks, oldest first.
-// A file of another version, or one that does not read, is not used: the daemon learns again from
-// the event log.
-val MemoryFileVersion: long = 1
+// Each key is a `memoryKey` or `memoryDirKey` and holds its last `MemoryKept` values, oldest first.
+// A file of version 1 has no `cores`: its peaks are used, and the cores are learned again from the
+// event log (`fromVersion1`). A file of another version, or one that does not read, is not used: the
+// daemon learns both again from the event log.
+val MemoryFileVersion: long = 2
 
 val MemoryKept: int = 20
 
-encodeMemory(peaks: Map[string, Vector[long]]) -> string
-  val keys = peaks.keys.toVector.sorted
-  val members = keys.map(k -> (k, Json.Arr(peaks(k).takeRight(MemoryKept).map(p -> Json.num(p)))))
-  Json.obj(("version", Json.num(MemoryFileVersion)), ("peaks", Json.Obj(members))).render + "\n"
+// `peaks` in bytes and `cores` in hundredths of a core, by key, oldest first. `fromVersion1` says
+// they were read from a version 1 file, which kept no cores.
+data Learned(peaks: Map[string, Vector[long]], cores: Map[string, Vector[long]], fromVersion1: bool = false)
 
-decodeMemory(text: string) -> Result[Map[string, Vector[long]], string]
+encodeMemory(learned: Learned) -> string
+  val peakKeys = learned.peaks.keys.toVector.sorted
+  val peaks = peakKeys.map(k -> (k, Json.Arr(learned.peaks(k).takeRight(MemoryKept).map(p -> Json.num(p)))))
+  val coreKeys = learned.cores.keys.toVector.sorted
+  val cores = coreKeys.map(k -> (k, Json.Arr(learned.cores(k).takeRight(MemoryKept).map(c -> coresJson(c)))))
+  Json.obj(
+    ("version", Json.num(MemoryFileVersion)),
+    ("peaks", Json.Obj(peaks)),
+    ("cores", Json.Obj(cores))
+  ).render + "\n"
+
+decodeMemory(text: string) -> Result[Learned, string]
   val j = json.parse(text) match
     Ok(v) -> v
     Err(e) -> return Err(s"not JSON: $e")
   val version = j.get("version").flatMap(v -> v.asLong)
-  if version != Some(MemoryFileVersion) then return Err(
+  if version != Some(MemoryFileVersion) && version != Some(long(1)) then return Err(
     s"version ${version.map(v -> v.toString()).getOrElse("missing")}, not $MemoryFileVersion"
   )
   val members = j.get("peaks").flatMap(v -> v.asMembers) match
@@ -277,16 +289,26 @@ decodeMemory(text: string) -> Result[Map[string, Vector[long]], string]
     if v.asVector.isEmpty || !items.forall(i -> i.asLong.exists(n -> n > 0))
       return Err(s"the peaks of `$k` are not sizes")
     out += (k, items.map(i -> i.asLong.get))
-  Ok(out.toVector.toMap)
+  if version == Some(long(1)) then return Ok(Learned(out.toVector.toMap, Map(), true))
+  val coreMembers = j.get("cores").flatMap(v -> v.asMembers) match
+    Some(ms) -> ms
+    None -> return Err("`cores` is not an object")
+  val cores = Buffer[(string, Vector[long])]()
+  for (k, v) in coreMembers
+    val items = v.asVector.getOrElse([])
+    if v.asVector.isEmpty || !items.forall(i -> centiOf(i).isDefined)
+      return Err(s"the cores of `$k` are not numbers of cores")
+    cores += (k, items.map(i -> centiOf(i).get))
+  Ok(Learned(out.toVector.toMap, cores.toVector.toMap))
 
-// The learned peaks in `file`, or why they cannot be used (a missing file among the reasons).
-loadMemory(file: string) -> Result[Map[string, Vector[long]], string] = fs.readText(file) match
+// What `file` holds learned, or why it cannot be used (a missing file among the reasons).
+loadMemory(file: string) -> Result[Learned, string] = fs.readText(file) match
   Ok(text) -> decodeMemory(text)
   Err(e) -> Err(s"cannot be read: ${e.kind}")
 
-// Writes `peaks` to `file` in one step. Each write has a temporary file of its own, so writers never
-// share one, and the rename leaves the whole of one write or of another, never a mixture.
-saveMemory(file: string, peaks: Map[string, Vector[long]]) -> Result[unit, IoError] =
-  writeAtomicVia(file, encodeMemory(peaks), s"$file.tmp-${process.pid()}-${memoryWrites.add(1)}")
+// Writes `learned` to `file` in one step. Each write has a temporary file of its own, so writers
+// never share one, and the rename leaves the whole of one write or of another, never a mixture.
+saveMemory(file: string, learned: Learned) -> Result[unit, IoError] =
+  writeAtomicVia(file, encodeMemory(learned), s"$file.tmp-${process.pid()}-${memoryWrites.add(1)}")
 
 private val memoryWrites: Atomic[long] = Atomic[long](0)

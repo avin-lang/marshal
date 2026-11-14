@@ -249,11 +249,11 @@ quickListings()
   val q = JobInfo(2, "test", 4, 0, false, "/w", ["t"], "queued", None, false, 0, 0, 120000, "/l", None, quick = true)
   assertEq(marshal.stateWithWhy(q, [(long(2), QuickFull)]), "queued (quick lane full)")
   assertEq(
-    marshal.usageLine(Usage(0, 12, 0, long.MaxValue, 1, 0, None, None, quick = 1)),
+    marshal.usageLine(Usage(0, 48, 0, long.MaxValue, 1, 0, None, None, quick = 1)),
     "units 0/12, memory 0, 1 running, 0 queued, landing lane free, quick lane 1/2"
   )
   assertEq(
-    marshal.usageLine(Usage(0, 12, 0, long.MaxValue, 0, 0, None, None)),
+    marshal.usageLine(Usage(0, 48, 0, long.MaxValue, 0, 0, None, None)),
     "units 0/12, memory 0, 0 running, 0 queued, landing lane free"
   )
   val status = marshal.statusJson(Usage(0, 12, 0, 100, 1, 1, None, None, quick = 1), [j, q], [(long(2), QuickFull)])

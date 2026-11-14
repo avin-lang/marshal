@@ -6,7 +6,7 @@ module tests
 import avin.fs
 import avin.threads.spawn
 import dev.avinlang.marshal
-import dev.avinlang.marshal.{Budget, MemoryLearning, Reservation, Started, Waiting}
+import dev.avinlang.marshal.{Budget, Learned, MemoryLearning, Reservation, Started, Waiting}
 
 private val MiB: long = 1024 * 1024
 private val memDefaults: MemoryLearning = marshal.defaultMemoryLearning
@@ -188,33 +188,74 @@ memGiven()
   assertEq(marshal.reservationFor(memDefaults, 2 * G, true, peaks, 56 * G), Reservation(2 * G, false))
   assertEq(marshal.reservationFor(memDefaults, 0, true, peaks, 56 * G), Reservation(0, false))
 
+private val noCores: Map[string, Vector[long]] = Vector[(string, Vector[long])]().toMap
+
+private onlyPeaks(peaks: Map[string, Vector[long]]) -> Learned = Learned(peaks, noCores)
+
 @test("the learned peaks read back from memory.json as they were written, only the last twenty of a key")
 memoryFileRoundTrip()
   val many = (1 .. 30).map(i -> long(i) * MiB).toVector
   val peaks = [("build\nsysl build .", [G, 2 * G]), ("build\nsysl build .\n/w/a", [G]), ("test\nzsh t.zsh", many)].toMap
-  val back = marshal.decodeMemory(marshal.encodeMemory(peaks)).ok.get
+  val back = marshal.decodeMemory(marshal.encodeMemory(onlyPeaks(peaks))).ok.get.peaks
   assertEq(back("build\nsysl build ."), [G, 2 * G])
   assertEq(back("build\nsysl build .\n/w/a"), [G])
   assertEq(back("test\nzsh t.zsh"), many.takeRight(20))
-  val none = Vector[(string, Vector[long])]().toMap
-  assertEq(marshal.decodeMemory(marshal.encodeMemory(none)), Ok(none))
+  assertEq(marshal.decodeMemory(marshal.encodeMemory(onlyPeaks(noCores))), Ok(onlyPeaks(noCores)))
+
+@test("memory.json version 2 keeps the peak cores beside the peaks, as numbers of cores, the last twenty")
+memoryFileCores()
+  val many = (1 .. 30).map(i -> long(i) * 25).toVector
+  val cores: Map[string, Vector[long]] = [("build\nmake", [0, 120, 1250]), ("test\nzsh t.zsh", many)].toMap
+  val text = marshal.encodeMemory(Learned([("build\nmake", [G])].toMap, cores))
+  assert(text.contains("\"version\":2"), text)
+  assert(text.contains("[0,1.2,12.5]"), text)
+  val back = marshal.decodeMemory(text).ok.get
+  assertEq(back.cores("build\nmake"), [0, 120, 1250])
+  assertEq(back.cores("test\nzsh t.zsh"), many.takeRight(20))
+  assertEq(back.peaks("build\nmake"), [G])
+  assertEq(back.fromVersion1, false)
+
+@test("a version 1 memory.json keeps its peaks and has no cores: they are learned from the event log")
+memoryFileVersion1()
+  val back = marshal.decodeMemory("{\"version\":1,\"peaks\":{\"build\\nmake\":[1073741824]}}").ok.get
+  assertEq(back.peaks("build\nmake"), [G])
+  assertEq(back.cores, noCores)
+  assertEq(back.fromVersion1, true)
+  // a version 1 file's cores are not read even where there are some
+  val stray = marshal.decodeMemory("{\"version\":1,\"peaks\":{},\"cores\":{\"k\":[1]}}").ok.get
+  assertEq(stray.cores, noCores)
+
+@test("memory.json's cores that are not numbers of cores 0 or more refuse the file")
+memoryFileBadCores()
+  assertEq(marshal.decodeMemory("{\"version\":2,\"peaks\":{}}").err, Some("`cores` is not an object"))
+  assertEq(marshal.decodeMemory("{\"version\":2,\"peaks\":{},\"cores\":[]}").err, Some("`cores` is not an object"))
+  for bad in ["[-1]", "[\"x\"]", "3", "[1,null]"]
+    assertEq(
+      marshal.decodeMemory(s"{\"version\":2,\"peaks\":{},\"cores\":{\"k\":$bad}}").err,
+      Some("the cores of `k` are not numbers of cores")
+    )
+  // hundredths are kept to the nearest
+  assertEq(
+    marshal.decodeMemory("{\"version\":2,\"peaks\":{},\"cores\":{\"k\":[1.234,0.006]}}").ok.get.cores("k"),
+    [123, 1]
+  )
 
 @test("a missing, corrupt, truncated or other-version memory.json is refused with the reason")
 memoryFileRefused()
   val dir = fs.createTempDir("marshal-memory-").ok.get
   val file = dir + "/memory.json"
   assert(marshal.loadMemory(file).err.get.contains("cannot be read"), "missing")
-  val good = marshal.encodeMemory([("build\nmake", [G])].toMap)
+  val good = marshal.encodeMemory(onlyPeaks([("build\nmake", [G])].toMap))
   fs.writeText(file, good.take(good.byteLength / 2)).ok.get
   assert(marshal.loadMemory(file).err.get.startsWith("not JSON"), "truncated")
   fs.writeText(file, "").ok.get
   assert(marshal.loadMemory(file).isErr, "empty")
   fs.writeText(file, "{\"peaks\":{}}").ok.get
-  assertEq(marshal.loadMemory(file).err, Some("version missing, not 1"))
+  assertEq(marshal.loadMemory(file).err, Some("version missing, not 2"))
   fs.writeText(file, "{\"version\":0,\"peaks\":{}}").ok.get
-  assertEq(marshal.loadMemory(file).err, Some("version 0, not 1"))
-  fs.writeText(file, "{\"version\":2,\"peaks\":{}}").ok.get
-  assertEq(marshal.loadMemory(file).err, Some("version 2, not 1"))
+  assertEq(marshal.loadMemory(file).err, Some("version 0, not 2"))
+  fs.writeText(file, "{\"version\":3,\"peaks\":{},\"cores\":{}}").ok.get
+  assertEq(marshal.loadMemory(file).err, Some("version 3, not 2"))
   fs.writeText(file, "{\"version\":1,\"peaks\":[]}").ok.get
   assertEq(marshal.loadMemory(file).err, Some("`peaks` is not an object"))
   fs.writeText(file, "{\"version\":1,\"peaks\":{\"k\":[1,\"x\"]}}").ok.get
@@ -222,7 +263,7 @@ memoryFileRefused()
   fs.writeText(file, "{\"version\":1,\"peaks\":{\"k\":[0]}}").ok.get
   assertEq(marshal.loadMemory(file).err, Some("the peaks of `k` are not sizes"))
   fs.writeText(file, good).ok.get
-  assertEq(marshal.loadMemory(file), Ok([("build\nmake", [G])].toMap))
+  assertEq(marshal.loadMemory(file), Ok(onlyPeaks([("build\nmake", [G])].toMap)))
   val _ = fs.removeDirAll(dir)
 
 // Writer `w` writing `file` fifty times, each write 200 copies of one number of its own; whether
@@ -231,7 +272,7 @@ private writeMany(file: string, w: int) -> bool
   var ok = true
   for i in 0 ..< 50
     val peaks = [(s"build\nw$w", (0 ..< 200).map(_ -> long(w * 1000 + i + 1)).toVector)].toMap
-    if marshal.saveMemory(file, peaks).isErr then ok = false
+    if marshal.saveMemory(file, onlyPeaks(peaks)).isErr then ok = false
   ok
 
 @test("concurrent writes of memory.json never interleave: the file is always one whole write")
@@ -244,7 +285,7 @@ memoryFileConcurrent()
     if fs.exists(file)
       val m = marshal.loadMemory(file)
       assert(m.isOk, s"${m.err}")
-      val one = m.ok.get
+      val one = m.ok.get.peaks
       assertEq(one.size, 1)
       // every peak of a write is the same number: no write's peaks mixed with another's
       for (_, ps) in one do assertEq(ps.toSet.size, 1)

@@ -85,10 +85,10 @@ dependsProtocolDefaults()
   val text = "{\"op\": \"submit\", \"kind\": \"x\", \"units\": 1, \"mem\": 0, \"dir\": \"/\", \"cmd\": [\"a\"]}"
   assertEq(
     marshal.decodeRequest(text),
-    Ok(Request.Submit(JobSpec("x", 1, 0, false, "/", None, ["a"], [], false, [], false, 0, 0)))
+    Ok(Request.Submit(JobSpec("x", 4, 0, false, "/", None, ["a"], [], false, [], false, 0, 0)))
   )
   val nulls = "{\"op\": \"submit\", \"kind\": \"x\", \"units\": 1, \"mem\": 0, \"dir\": \"/\", \"cmd\": [\"a\"], \"after\": null, \"after_any\": null, \"retries\": null, \"retry_delay_ms\": null}"
-  assertEq(marshal.decodeRequest(nulls), Ok(Request.Submit(JobSpec("x", 1, 0, false, "/", None, ["a"], []))))
+  assertEq(marshal.decodeRequest(nulls), Ok(Request.Submit(JobSpec("x", 4, 0, false, "/", None, ["a"], []))))
   val job = "{\"id\":7,\"kind\":\"b\",\"units\":1,\"mem\":0,\"landing\":false,\"dir\":\"/\",\"cmd\":[\"a\"],\"state\":\"queued\",\"outcome\":null,\"killed\":false,\"queued_ms\":0,\"elapsed_ms\":0,\"deadline_ms\":1,\"log\":\"/l\"}"
   val read = marshal.decodeJob(json.parse(job).ok.get).ok.get
   assertEq(read.after, [])

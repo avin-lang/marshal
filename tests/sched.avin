@@ -247,10 +247,11 @@ neverFits()
 
 @test("a test weighs 4 units by default and anything else 1")
 defaultUnits()
-  assertEq(marshal.defaultUnits("test"), 4)
-  assertEq(marshal.defaultUnits("build"), 1)
-  assertEq(marshal.defaultUnits("release"), 1)
-  assertEq(marshal.defaultUnits(""), 1)
+  // in quarters
+  assertEq(marshal.defaultUnits("test"), 16)
+  assertEq(marshal.defaultUnits("build"), 4)
+  assertEq(marshal.defaultUnits("release"), 4)
+  assertEq(marshal.defaultUnits(""), 4)
 
 // take-slot's state: `units` held by its runs, waiters arriving at the given times (jobs arrive at
 // ten times their id), and the landing lock.

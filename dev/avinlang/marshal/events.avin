@@ -8,7 +8,9 @@ module dev.avinlang.marshal
 // `lost`; the last six end a job (`timeout` at its deadline, `quiet` at its quiet timeout).
 // An ending event adds `run_ms` and `exit` (the status `wait` exits with), and `started` adds
 // `pgid`, the job's process group. An ending event's `peak_rss` is the most memory the job's
-// process tree was measured holding, in bytes: what a kind's memory can be learned from.
+// process tree was measured holding, in bytes: what a kind's memory can be learned from. Its
+// `peak_cores` is the most cores the job was measured keeping busy and `cpu_ms` the processor time
+// counted (cores.avin), both absent where it was never measured: what its units are learned from.
 // `submitted` adds `spec`, the job's whole specification, which `rerun` submits again. A job that
 // is retried ends each attempt with an ending event that adds `"retrying": true`, and then records
 // `retry`, so its last event is an ending only once its last attempt has ended.
@@ -34,13 +36,17 @@ eventLine(ts: long, event: string, job: JobInfo, extra: Vector[(string, Json)]) 
 //   outcome: what reservations are learned from when `memory.json` cannot be used. Each is kept
 //   under the `memoryKey` of its recorded `cmd` and, where the event names its `dir`, under its
 //   `memoryDirKey` too; an event without a command teaches nothing.
+// - `cores`: the `peak_cores` of every ending event that has one, in hundredths of a core, oldest
+//   first, kept under the same keys as `peaks`: what units are learned from when `memory.json`
+//   cannot be used.
 data Recovered(
     nextId: long,
     open: Vector[Json],
     histories: Map[string, Vector[long]],
     unreadable: int,
     ended: Vector[JobInfo],
-    peaks: Map[string, Vector[long]]
+    peaks: Map[string, Vector[long]],
+    cores: Map[string, Vector[long]] = Map()
 )
 
 recover(lines: Iterable[string], keep: int = 10) -> Recovered
@@ -50,6 +56,7 @@ recover(lines: Iterable[string], keep: int = 10) -> Recovered
   val position = MutableMap[long, int]()
   val histories = MutableMap[string, Buffer[long]]()
   val peaks = MutableMap[string, Buffer[long]]()
+  val cores = MutableMap[string, Buffer[long]]()
   for line in lines
     if line.trim.isEmpty then continue
     val ev = json.parse(line) match
@@ -70,8 +77,9 @@ recover(lines: Iterable[string], keep: int = 10) -> Recovered
         position(id) = last.length
         last += (id, ev)
     val peak = ev.get("peak_rss").flatMap(v -> v.asLong).getOrElse(0)
-    // an external job's peak is its tree's, not its work's: never learned from
-    if endings.contains(kind) && peak > 0 && ev.get("external").flatMap(v -> v.asBool) != Some(true)
+    val busiest = ev.get("peak_cores").flatMap(centiOf).getOrElse(-1)
+    // an external job's peaks are its tree's, not its work's: never learned from
+    if endings.contains(kind) && (peak > 0 || busiest >= 0) && ev.get("external").flatMap(v -> v.asBool) != Some(true)
       val evKind = ev.get("kind").flatMap(v -> v.asString).getOrElse("")
       val evLanding = ev.get("landing").flatMap(v -> v.asBool).getOrElse(false)
       // the signature comes from the recorded command; an event without one teaches nothing, and
@@ -81,12 +89,8 @@ recover(lines: Iterable[string], keep: int = 10) -> Recovered
       ).getOrElse(Vector[string]())
       val dir = ev.get("dir").flatMap(v -> v.asString).getOrElse("")
       for key in memoryKeys(evKind, evLanding, cmd, dir)
-        peaks.get(key) match
-          Some(b) -> b += peak
-          None ->
-            val b = Buffer[long]()
-            b += peak
-            peaks(key) = b
+        if peak > 0 then appendTo(peaks, key, peak)
+        if busiest >= 0 then appendTo(cores, key, busiest)
     if kind == "finished" && ev.get("exit").flatMap(v -> v.asLong) == Some(long(0)) && !(
       ev.get("killed").flatMap(v -> v.asBool) == Some(true)
     )
@@ -110,7 +114,16 @@ recover(lines: Iterable[string], keep: int = 10) -> Recovered
     e -> endings.contains(e.1.get("event").flatMap(v -> v.asString).getOrElse(""))
   ).map(e -> decodeJob(e.1)).filter(r -> r.isOk).map(r -> r.ok.get)
   val peaked = peaks.keys.map(k -> (k, peaks(k).toVector)).toMap
-  Recovered(maxId + 1, open.toVector, learned, unreadable, ended.takeRight(keep).toVector, peaked)
+  val busy = cores.keys.map(k -> (k, cores(k).toVector)).toMap
+  Recovered(maxId + 1, open.toVector, learned, unreadable, ended.takeRight(keep).toVector, peaked, busy)
+
+private appendTo(m: MutableMap[string, Buffer[long]], key: string, value: long)
+  m.get(key) match
+    Some(b) -> b += value
+    None ->
+      val b = Buffer[long]()
+      b += value
+      m(key) = b
 
 // The `lost` event for a job whose last event is `ev`: done, its outcome `Lost`, and `group_alive`
 // saying whether its process group still had processes when the new daemon looked. None when `ev`
@@ -166,7 +179,10 @@ asLost(j: JobInfo) -> JobInfo = JobInfo(
   j.quietMs,
   j.reservedFrom,
   j.external,
-  j.quick
+  j.quick,
+  unitsLearned = j.unitsLearned,
+  peakCores = j.peakCores,
+  cpuMs = j.cpuMs
 )
 
 // Whether an event ends its job for good: an ending, and not one of an attempt that runs again.

@@ -12,6 +12,10 @@ module dev.avinlang.marshal
 // Every one of them names a pid, and one whose process has died is stale and removed by whoever
 // meets it, as take-slot does. marshal writes the same files for its own jobs, so take-slot counts
 // them without knowing marshal exists, and reads take-slot's so its scheduler counts them.
+//
+// The files count whole units, as take-slot does; marshal counts quarters (cores.avin). What it
+// reads is turned into quarters, and a job of a fraction of a unit is written as the whole units
+// that cover it, rounding up, so take-slot never counts less than marshal holds.
 import avin.fs
 import avin.io.IoError
 import avin.process
@@ -102,12 +106,12 @@ class TakeSlot(val dir: string, val me: long)
       if !alive(pid)
         val _ = fs.remove(held() + "/" + name)
       elif !ours.contains(pid)
-        units += fs.readText(held() + "/" + name).ok.flatMap(t -> t.trim.toIntOption()).getOrElse(0)
+        units += wholeUnits(fs.readText(held() + "/" + name).ok.flatMap(t -> t.trim.toIntOption()).getOrElse(0))
     for name in ["build.lock", "build2.lock", "build3.lock", "build4.lock", "build5.lock"]
       val lock = dir + "/" + name
       if !fs.isDir(lock) then continue
       if pidIn(lock + "/pid").exists(p -> alive(p))
-        units += 4
+        units += wholeUnits(4)
       else
         val _ = fs.remove(lock + "/pid")
         val _ = fs.removeDir(lock)
@@ -117,9 +121,11 @@ class TakeSlot(val dir: string, val me: long)
       parseTicket(name) match
         Some((arrived, pid)) if alive(pid) ->
           if pid != me
-            val wants = fs.readText(file).ok.flatMap(t -> t.lines.headOption).flatMap(
-              l -> l.trim.toIntOption()
-            ).getOrElse(1)
+            val wants = wholeUnits(
+              fs.readText(file).ok.flatMap(t -> t.lines.headOption).flatMap(
+                l -> l.trim.toIntOption()
+              ).getOrElse(1)
+            )
             tickets += Ticket(arrived, if wants > budget then budget else wants)
         // take-slot removes a ticket of a dead pid; a name it cannot read it never made
         Some(_) -> val _ = fs.remove(file)
@@ -138,10 +144,11 @@ class TakeSlot(val dir: string, val me: long)
     val _ = fs.removeDir(landLock())
     false
 
-  // Counts the job `pid` against take-slot's budget. Call with the mutex held.
+  // Counts the job `pid`, of `units` quarters, against take-slot's budget. Call with the mutex held.
   register(pid: long, units: int)
+    val whole = ceilUnits(units).toString()
     // a registration that cannot be written is not seen by take-slot, which then runs more than the budget allows
-    val _ = writeAtomicVia(held() + "/" + pid.toString(), units.toString() + "\n", s"$dir/.units-$pid.tmp")
+    val _ = writeAtomicVia(held() + "/" + pid.toString(), whole + "\n", s"$dir/.units-$pid.tmp")
 
   unregister(pid: long)
     val _ = fs.remove(held() + "/" + pid.toString())
@@ -164,13 +171,14 @@ class TakeSlot(val dir: string, val me: long)
       val _ = fs.remove(landLock() + "/pid")
       val _ = fs.removeDir(landLock())
 
-  // Writes the daemon's ticket for a job that arrived at `arrived` and waits for `units`; answers
-  // its name.
+  // Writes the daemon's ticket for a job that arrived at `arrived` and waits for `units` quarters;
+  // answers its name.
   putTicket(arrived: long, units: int) -> string
     val name = ticketName(arrived, me)
     val _ = fs.createDirAll(waiting())
+    val whole = ceilUnits(units).toString()
     // a ticket that cannot be written leaves the job waiting unseen by take-slot, as with no ticket
-    val _ = writeAtomicVia(waiting() + "/" + name, units.toString() + "\n" + TicketMark + "\n", s"$dir/.ticket-$me.tmp")
+    val _ = writeAtomicVia(waiting() + "/" + name, whole + "\n" + TicketMark + "\n", s"$dir/.ticket-$me.tmp")
     name
 
   removeTicket(name: string)

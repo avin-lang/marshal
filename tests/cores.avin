@@ -1,0 +1,391 @@
+module tests
+
+// Units in quarter steps and the cores a job is measured using: writing and reading units, the
+// sampling arithmetic, learning a command's units from its runs, the advice on given units, the
+// scheduler filling a budget with fractions, and how listings, the protocol, the event log and the
+// saved state carry it all.
+import dev.avinlang.json
+import dev.avinlang.json.Json
+import dev.avinlang.marshal
+import dev.avinlang.marshal.{Budget, CpuMeter, CpuSample, JobInfo, Outcome, Sizing, Started, Waiting}
+
+@test("units are written with no trailing zeros, in quarter steps")
+unitsWritten()
+  assertEq(marshal.formatUnits(0), "0")
+  assertEq(marshal.formatUnits(1), "0.25")
+  assertEq(marshal.formatUnits(2), "0.5")
+  assertEq(marshal.formatUnits(3), "0.75")
+  assertEq(marshal.formatUnits(4), "1")
+  assertEq(marshal.formatUnits(5), "1.25")
+  assertEq(marshal.formatUnits(6), "1.5")
+  assertEq(marshal.formatUnits(48), "12")
+  assertEq(marshal.formatUnits(-6), "-1.5")
+
+@test("units are read in quarter steps: whole numbers, .25, .5, .75 and trailing zeros")
+unitsRead()
+  assertEq(marshal.parseUnits("1"), Some(4))
+  assertEq(marshal.parseUnits("0.25"), Some(1))
+  assertEq(marshal.parseUnits(".5"), Some(2))
+  assertEq(marshal.parseUnits("1.50"), Some(6))
+  assertEq(marshal.parseUnits("2.750"), Some(11))
+  assertEq(marshal.parseUnits("3.0"), Some(12))
+  assertEq(marshal.parseUnits("0"), Some(0))
+  for bad in ["", ".", "1.", "0.3", "0.125", "1.2", "-1", "+1", "1e2", "x", "1,5", "1.5.0", "12345678"]
+    assertEq(marshal.parseUnits(bad), None)
+
+@test("--units takes a number above 0 in quarter steps and refuses anything else with a reason")
+unitsOptionRefusals()
+  assertEq(marshal.unitsOption("0.5"), Ok(2))
+  assertEq(marshal.unitsOption("12"), Ok(48))
+  for bad in ["0", "0.0", "0.3", "-1", "many", ""]
+    assertEq(
+      marshal.unitsOption(bad),
+      Err(s"`--units $bad`: units are a number above 0 in steps of 0.25, such as 1, 0.5 or 2.25")
+    )
+
+@test("units go out as a whole number or the fraction, and come back as quarters")
+unitsJson()
+  assertEq(marshal.unitsJson(8).render, "2")
+  assertEq(marshal.unitsJson(5).render, "1.25")
+  assertEq(marshal.unitsJson(2).render, "0.5")
+  for q in [0, 1, 2, 3, 4, 5, 47, 48, 400] do assertEq(marshal.quartersOf(marshal.unitsJson(q)), Some(q))
+  assertEq(marshal.quartersOf(Json.num(3.0)), Some(12))
+  assertEq(marshal.quartersOf(Json.num(0.3)), None)
+  assertEq(marshal.quartersOf(Json.str("1")), None)
+  assertEq(marshal.quartersOf(Json.num(long(3000000000))), None)
+
+@test("take-slot's whole units cover a fraction, rounding up")
+ceilUnits()
+  assertEq(marshal.ceilUnits(0), 0)
+  assertEq(marshal.ceilUnits(1), 1)
+  assertEq(marshal.ceilUnits(4), 1)
+  assertEq(marshal.ceilUnits(5), 2)
+  assertEq(marshal.ceilUnits(48), 12)
+
+@test("cores are written to one decimal, - for none, and read back to the nearest hundredth")
+coresWritten()
+  assertEq(marshal.formatCores(-1), "-")
+  assertEq(marshal.formatCores(0), "0")
+  assertEq(marshal.formatCores(4), "0")
+  assertEq(marshal.formatCores(5), "0.1")
+  assertEq(marshal.formatCores(120), "1.2")
+  assertEq(marshal.formatCores(124), "1.2")
+  assertEq(marshal.formatCores(125), "1.3")
+  assertEq(marshal.formatCores(1150), "11.5")
+  assertEq(marshal.formatCores(1200), "12")
+  assertEq(marshal.coresJson(120).render, "1.2")
+  assertEq(marshal.coresJson(300).render, "3")
+  assertEq(marshal.centiOf(Json.num(1.234)), Some(long(123)))
+  assertEq(marshal.centiOf(Json.num(2)), Some(long(200)))
+  assertEq(marshal.centiOf(Json.num(-0.5)), None)
+  assertEq(marshal.centiOf(Json.str("1")), None)
+
+@test("ps's grouped lines read as samples; a line that does not read is left out")
+cpuLines()
+  val text = "  101   100   0:01.50\n  102 100 1:02:03.04\nnot a line\n 103 7 x\n  104   104   0:00.00\n"
+  val table = marshal.groupedCpuTable(text)
+  assertEq(table.map(g -> g.pgid), [long(100), long(100), long(104)])
+  assertEq(table.map(g -> g.sample), [CpuSample(101, 150), CpuSample(102, 372304), CpuSample(104, 0)])
+  assertEq(marshal.groupedCpuTable(""), Vector[marshal.GroupedCpu]())
+
+private samples(pairs: Vector[(long, long)]) -> Vector[CpuSample] = pairs.map(p -> CpuSample(p.0, p.1))
+
+@test("processor time used since the last sample: seen processes their growth, new ones all of theirs")
+cpuUsed()
+  val before: Map[long, long] = [(long(1), long(100)), (long(2), long(50))].toMap
+  // nothing used
+  assertEq(marshal.cpuUsedSince(before, samples([(1, 100), (2, 50)])), long(0))
+  // growth of the seen, all of a new one
+  assertEq(marshal.cpuUsedSince(before, samples([(1, 130), (2, 60), (3, 25)])), long(65))
+  // a process that ended since counts nothing more, and does not go negative
+  assertEq(marshal.cpuUsedSince(before, samples([(1, 110)])), long(10))
+  // a pid whose time went down is a new process: all of its time
+  assertEq(marshal.cpuUsedSince(before, samples([(1, 40)])), long(40))
+  // nothing seen before: everything counts
+  assertEq(marshal.cpuUsedSince(Map(), samples([(5, 7), (6, 8)])), long(15))
+  // many processes
+  val many = (1 .. 200).map(i -> CpuSample(long(i), long(i))).toVector
+  assertEq(marshal.cpuUsedSince(Map(), many), long(20100))
+  assertEq(
+    marshal.cpuUsedSince(many.map(s -> (s.pid, s.cpu)).toMap, many.map(s -> CpuSample(s.pid, s.cpu + 1))),
+    long(200)
+  )
+
+@test("cores over an interval: processor time over wall time, to the nearest hundredth, 0 over no time")
+coresOver()
+  assertEq(marshal.coresOver(1000, 1000), long(100))
+  assertEq(marshal.coresOver(4000, 1000), long(400))
+  assertEq(marshal.coresOver(333, 1000), long(33))
+  assertEq(marshal.coresOver(335, 1000), long(34))
+  assertEq(marshal.coresOver(1000, 0), long(0))
+  assertEq(marshal.coresOver(1000, -5), long(0))
+
+@test("a meter's level is the last two intervals together, and its peak the most that level has been")
+meterSmooths()
+  val m0 = marshal.startMeter(0)
+  assertEq((m0.now, m0.peak, m0.cpuMs), (long(-1), long(-1), long(0)))
+  // one process using two cores over the first second (200 hundredths of a second)
+  val m1 = m0.sampled(samples([(1, 200)]), 1000)
+  assertEq((m1.now, m1.peak, m1.cpuMs), (long(200), long(200), long(2000)))
+  // idle for a second: the two intervals together are 1 core
+  val m2 = m1.sampled(samples([(1, 200)]), 2000)
+  assertEq((m2.now, m2.peak), (long(100), long(200)))
+  // a one-second spike of 8 cores between quiet ones counts at half
+  val m3 = m2.sampled(samples([(1, 1000)]), 3000)
+  assertEq((m3.now, m3.peak), (long(400), long(400)))
+  val m4 = m3.sampled(samples([(1, 1000)]), 4000)
+  assertEq((m4.now, m4.peak, m4.cpuMs), (long(400), long(400), long(10000)))
+  val m5 = m4.sampled(samples([(1, 1000)]), 5000)
+  assertEq((m5.now, m5.peak), (long(0), long(400)))
+
+@test("a sample no later than the last, or of no processes, counts nothing and keeps the baseline")
+meterIgnores()
+  val m1 = marshal.startMeter(1000).sampled(samples([(1, 100)]), 2000)
+  // the same time, and an earlier one
+  assertEq(m1.sampled(samples([(1, 900)]), 2000), m1)
+  assertEq(m1.sampled(samples([(1, 900)]), 1500), m1)
+  // no processes listed (they ended, or ps could not run): nothing counted, the time carries on
+  assertEq(m1.sampled([], 3000), m1)
+  val m2 = m1.sampled(samples([(1, 300)]), 4000)
+  // 2 seconds of processor time since the baseline, over the 2 seconds since, then with the first
+  assertEq(m2.cpuMs, long(3000))
+  assertEq(m2.now, long(100))
+  // a process that ended mid-interval leaves the rest, which count
+  val m3 = m2.sampled(samples([(2, 100)]), 5000)
+  assertEq(m3.cpuMs, long(4000))
+
+@test("a meter taken over in a restart keeps what it measured and takes its next sample as a baseline")
+meterResumed()
+  val r = marshal.resumedMeter(10000, 150, 320, 9000)
+  assertEq((r.now, r.peak, r.cpuMs, r.primed), (long(150), long(320), long(9000), false))
+  // whatever the processes had used before is not counted as used in the interval
+  val b = r.sampled(samples([(1, 500000)]), 11000)
+  assertEq((b.now, b.peak, b.cpuMs, b.primed), (long(150), long(320), long(9000), true))
+  val c = b.sampled(samples([(1, 500400)]), 12000)
+  assertEq((c.now, c.peak, c.cpuMs), (long(400), long(400), long(13000)))
+
+@test("units are the most of the last five measured peaks, rounded up to a quarter, at least a quarter")
+learnedFromPeaks()
+  assertEq(marshal.learnedUnits([], 48), None)
+  assertEq(marshal.learnedUnits([-1, -1], 48), None)
+  assertEq(marshal.learnedUnits([0], 48), Some(1))
+  assertEq(marshal.learnedUnits([1], 48), Some(1))
+  assertEq(marshal.learnedUnits([25], 48), Some(1))
+  assertEq(marshal.learnedUnits([26], 48), Some(2))
+  assertEq(marshal.learnedUnits([100], 48), Some(4))
+  assertEq(marshal.learnedUnits([120], 48), Some(5))
+  assertEq(marshal.learnedUnits([150], 48), Some(6))
+  assertEq(marshal.learnedUnits([151], 48), Some(7))
+
+@test("learned units follow the work: up at once, down once the high run leaves the last five")
+learnedUpAndDown()
+  val peaks = Buffer[long]()
+  peaks += 100
+  peaks += 100
+  assertEq(marshal.learnedUnits(peaks.toVector, 48), Some(4))
+  peaks += 400
+  assertEq(marshal.learnedUnits(peaks.toVector, 48), Some(16))
+  // four lighter runs leave the high one in the last five
+  for _ in 1 ..< 5
+    peaks += 50
+    assertEq(marshal.learnedUnits(peaks.toVector, 48), Some(16))
+  peaks += 50
+  assertEq(marshal.learnedUnits(peaks.toVector, 48), Some(2))
+
+@test("learned units are held to the budget")
+learnedClamped()
+  assertEq(marshal.learnedUnits([1700], 48), Some(48))
+  assertEq(marshal.learnedUnits([1200], 48), Some(48))
+  assertEq(marshal.learnedUnits([1199], 48), Some(48))
+  assertEq(marshal.learnedUnits([1175], 48), Some(47))
+  assertEq(marshal.learnedUnits([300], 4), Some(4))
+
+@test("the directory's peaks are used once it has any; the command's anywhere until then")
+coresFallback()
+  assertEq(marshal.coresHistory([], [100]), [long(100)])
+  assertEq(marshal.coresHistory([0], [100]), [long(0)])
+  assertEq(marshal.coresHistory([-1], [100]), [long(100)])
+  assertEq(marshal.coresHistory([], []), Vector[long]())
+
+@test("given units win; exclusive and quick jobs keep theirs; a never-seen command takes the default")
+sizing()
+  assertEq(marshal.sizeFor(true, 16, false, Some(2), 4), Sizing(16, false))
+  assertEq(marshal.sizeFor(false, 4, false, Some(2), 4), Sizing(2, true))
+  assertEq(marshal.sizeFor(false, 4, false, None, 16), Sizing(16, false))
+  assertEq(marshal.sizeFor(false, 48, true, Some(2), 4), Sizing(48, false))
+
+@test("the hint on given units is said only at least 2 units and twice apart, either way")
+hints()
+  // the example: 4 declared, about 1.2 used, which teaches 1.25
+  assertEq(marshal.unitsHint(16, 5, 120), "marshal: declared 4 units; recent runs used about 1.2")
+  // 2 units apart and twice: said
+  assertEq(marshal.unitsHint(16, 8, 200), "marshal: declared 4 units; recent runs used about 2")
+  // under 2 units apart
+  assertEq(marshal.unitsHint(8, 1, 25), "")
+  assertEq(marshal.unitsHint(12, 5, 120), "")
+  // 2 units apart, not twice
+  assertEq(marshal.unitsHint(24, 16, 400), "")
+  // declared too few
+  assertEq(marshal.unitsHint(4, 16, 400), "marshal: declared 1 units; recent runs used about 4")
+  assertEq(marshal.unitsHint(4, 8, 200), "")
+  assertEq(marshal.unitsHint(8, 8, 200), "")
+  // fractions say themselves
+  assertEq(marshal.unitsHint(2, 12, 300), "marshal: declared 0.5 units; recent runs used about 3")
+
+@test("quarters fill a budget exactly: 48 quarter-unit jobs fit 12 units, the 49th does not")
+quartersFillBudget()
+  val b = Budget(48, 64 * G)
+  val waiting = (1 .. 49).map(i -> Waiting(long(i), 1, 0, false, 1000, long(i))).toVector
+  val started = marshal.schedule(b, [], waiting, 0)
+  assertEq(started.length, 48)
+  assert(!started.contains(long(49)))
+  // 1.25 + 2.75 + 8 is 12 exactly
+  assertEq(
+    marshal.schedule(
+      b,
+      [],
+      [Waiting(1, 5, 0, false, 1000, 1), Waiting(2, 11, 0, false, 1000, 2), Waiting(3, 32, 0, false, 1000, 3)],
+      0
+    ),
+    [long(1), long(2), long(3)]
+  )
+
+@test("jobs of mixed fractions are admitted together while their quarters fit beside what runs")
+mixedFractions()
+  val b = Budget(48, 64 * G)
+  // 10.5 units run: 0.25, 0.5, 0.75 and 0.5 fit (2 units), 1.25 more does not
+  val running = [Started(1, 42, 0, false, 0, 100000)]
+  val waiting = [
+    Waiting(2, 1, 0, false, 1000, 1),
+    Waiting(3, 2, 0, false, 1000, 2),
+    Waiting(4, 3, 0, false, 1000, 3)
+  ]
+  assertEq(marshal.schedule(b, running, waiting, 0), [long(2), long(3), long(4)])
+  val over = waiting ++ [Waiting(5, 1, 0, false, 1000, 4)]
+  assertEq(marshal.schedule(b, running, over, 0), [long(2), long(3), long(4)])
+  assert(marshal.neverFits(b, 49, 0, false).get.contains("12.25 units and the budget is 12"))
+  assert(marshal.neverFits(b, 0, 0, false).get.contains("at least 0.25 units"))
+  assertEq(marshal.neverFits(b, 1, 0, false), None)
+
+private job(
+    state: string = "running",
+    units: int = 16,
+    learned: bool = false,
+    cores: long = -1,
+    peak: long = -1
+) -> JobInfo =
+  JobInfo(
+    3,
+    "build",
+    units,
+    0,
+    false,
+    "/w",
+    ["make"],
+    state,
+    if state == "done" then Some(Outcome.Exited(0)) else None,
+    false,
+    0,
+    1000,
+    60000,
+    "/l",
+    None,
+    unitsLearned = learned,
+    cores = cores,
+    peakCores = peak,
+    cpuMs = if peak >= 0 then 4200 else 0
+  )
+
+@test("UNITS marks learned units with ~, and USED is a running job's cores and an ended one's peak")
+shownInListing()
+  assertEq(marshal.unitsText(job(units = 5)), "1.25")
+  assertEq(marshal.unitsText(job(units = 5, learned = true)), "~1.25")
+  assertEq(marshal.usedText(job(cores = 120, peak = 300)), "1.2")
+  assertEq(marshal.usedText(job(state = "done", cores = 120, peak = 300)), "3")
+  assertEq(marshal.usedText(job()), "-")
+  assertEq(marshal.usedText(job(state = "queued", peak = 300)), "-")
+  val rows = marshal.listing(
+    [job(units = 2, learned = true, cores = 150, peak = 150), job(state = "done", peak = 0)]
+  ).lines.toVector
+  val at = rows(0).indexOf("USED")
+  assertEq(rows(0).slice(rows(0).indexOf("UNITS"), at).trim, "UNITS")
+  assertEq(rows(1).slice(rows(0).indexOf("UNITS"), at).trim, "~0.5")
+  assertEq(rows(1).slice(at, rows(0).indexOf("RESV")).trim, "1.5")
+  assertEq(rows(2).slice(at, rows(0).indexOf("RESV")).trim, "0")
+
+@test("a job's cores read back from the protocol, and a job never measured has none")
+coresInProtocol()
+  val running = job(units = 5, learned = true, cores = 120, peak = 340)
+  val j = marshal.encodeJob(running)
+  assertEq(j("units").asReal, Some(1.25))
+  assertEq(j("units_learned").asBool, Some(true))
+  assertEq(j("cores").asReal, Some(1.2))
+  assertEq(j("peak_cores").asReal, Some(3.4))
+  assertEq(j("cpu_ms").asLong, Some(long(4200)))
+  assertEq(marshal.decodeJob(j), Ok(running))
+  val none = marshal.encodeJob(job())
+  for key in ["units_learned", "cores", "peak_cores", "cpu_ms"] do assert(!none.has(key), key)
+  assertEq(marshal.decodeJob(none), Ok(job()))
+  // an ended job has no current cores, only its peak
+  val done = marshal.encodeJob(job(state = "done", cores = 120, peak = 300))
+  assert(!done.has("cores"))
+  assertEq(done("peak_cores").asLong, Some(long(3)))
+  // status --json carries them for the running jobs
+  val status = marshal.statusJson(marshal.Usage(5, 48, 0, 0, 1, 0, None, None), [running])
+  assertEq(status("running").asVector.get(0)("cores").asReal, Some(1.2))
+
+@test("the event log teaches peak cores under the command's keys; an external job and one never measured teach none")
+coresRecovered()
+  val ev = (id: long, extra: string) ->
+    s"{\"ts\":1,\"event\":\"finished\",\"id\":$id,\"kind\":\"k\",\"landing\":false,\"dir\":\"/w\",\"cmd\":[\"make\"],\"exit\":0,\"run_ms\":1000$extra}"
+  val lines = [
+    ev(1, ",\"peak_cores\":1.5"),
+    ev(2, ",\"peak_cores\":0"),
+    ev(3, ""),
+    ev(4, ",\"peak_cores\":7,\"external\":true"),
+    // a submitted event's cores are not a run's
+    "{\"ts\":1,\"event\":\"started\",\"id\":5,\"kind\":\"k\",\"landing\":false,\"dir\":\"/w\",\"cmd\":[\"make\"],\"peak_cores\":9}"
+  ]
+  val r = marshal.recover(lines)
+  assertEq(r.cores(marshal.memoryKey("k", false, "make")), [long(150), long(0)])
+  assertEq(r.cores(marshal.memoryDirKey("k", false, "make", "/w")), [long(150), long(0)])
+  assertEq(r.peaks.size, 0)
+
+@test("a lost job keeps the units learned and cores measured that its last event had")
+lostKeepsCores()
+  val lost = marshal.asLost(job(units = 6, learned = true, cores = 100, peak = 250))
+  assertEq((lost.units, lost.unitsLearned, lost.peakCores, lost.cpuMs), (6, true, long(250), long(4200)))
+
+@test("a restart hands over a job's learned units and measured cores; state saved without them reads as none")
+savedState()
+  val spec = marshal.JobSpec("build", 5, 0, false, "/w", None, ["make"], [], unitsGiven = false)
+  val saved = marshal.SavedJob(
+    3,
+    spec,
+    "running",
+    1,
+    2,
+    3,
+    0,
+    60000,
+    1000,
+    "/l",
+    40,
+    40,
+    None,
+    false,
+    false,
+    None,
+    0,
+    0,
+    unitsLearned = true,
+    cores = 120,
+    peakCores = 300,
+    cpuMs = 5000
+  )
+  assertEq(marshal.decodeSavedJob(json.parse(marshal.encodeSavedJob(saved).render).ok.get), Ok(saved))
+  val old = "{\"id\":3,\"spec\":{\"kind\":\"b\",\"units\":1,\"mem\":0,\"dir\":\"/\",\"cmd\":[\"a\"]},\"state\":\"queued\",\"submitted_at\":1,\"arrived\":2,\"started_at\":0,\"ended_at\":0,\"deadline_ms\":5,\"expected_ms\":6,\"log\":\"/l\",\"pid\":0,\"pgid\":0,\"outcome\":null,\"killed\":false,\"timed_out\":false,\"sample\":null}"
+  val read = marshal.decodeSavedJob(json.parse(old).ok.get).ok.get
+  assertEq((read.unitsLearned, read.cores, read.peakCores, read.cpuMs), (false, long(-1), long(-1), long(0)))
+  // what marshal saved before it learned units was given, and weighed whole units
+  assertEq((read.spec.units, read.spec.unitsGiven), (4, true))

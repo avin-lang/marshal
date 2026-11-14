@@ -23,7 +23,9 @@ import dev.avinlang.json.Json
 // from `reserved` and `reservedLearned`, a learned one being its kind's (`kind`, as daemons learned
 // before reservations were learned per command). `durationLearned` says
 // `expectedMs` was learned from its kind's runs rather than guessed; false when absent, so a drain
-// counts such a job by its deadline.
+// counts such a job by its deadline. `unitsLearned` says its units were learned from earlier runs'
+// cores (false when absent); `cores`, `peakCores` (hundredths of a core, -1 when absent or never
+// measured) and `cpuMs` are its processor use as measured (cores.avin).
 data SavedJob(
     id: long,
     spec: JobSpec,
@@ -54,7 +56,11 @@ data SavedJob(
     reservedLearned: bool = false,
     quietStopped: bool = false,
     reservedFrom: string = "",
-    durationLearned: bool = false
+    durationLearned: bool = false,
+    unitsLearned: bool = false,
+    cores: long = -1,
+    peakCores: long = -1,
+    cpuMs: long = 0
 )
 
 // The whole daemon: the version and process that saved it, when, when the daemon first began, the
@@ -107,7 +113,11 @@ encodeSavedJob(j: SavedJob) -> Json = Json.obj(
   ("reserved_learned", Json.Bool(j.reservedLearned)),
   ("quiet_stopped", Json.Bool(j.quietStopped)),
   ("reserved_from", Json.str(j.reservedFrom)),
-  ("duration_learned", Json.Bool(j.durationLearned))
+  ("duration_learned", Json.Bool(j.durationLearned)),
+  ("units_learned", Json.Bool(j.unitsLearned)),
+  ("cores", Json.num(j.cores)),
+  ("peak_cores", Json.num(j.peakCores)),
+  ("cpu_ms", Json.num(j.cpuMs))
 )
 
 private whole(j: Json, key: string) -> Result[long, string] = j.get(key).flatMap(v -> v.asLong) match
@@ -186,7 +196,11 @@ decodeSavedJob(j: Json) -> Result[SavedJob, string]
       truthOr(j, "reserved_learned", false)?,
       truthOr(j, "quiet_stopped", false)?,
       maybeText(j, "reserved_from")?.getOrElse(""),
-      truthOr(j, "duration_learned", false)?
+      truthOr(j, "duration_learned", false)?,
+      truthOr(j, "units_learned", false)?,
+      wholeOr(j, "cores", -1)?,
+      wholeOr(j, "peak_cores", -1)?,
+      wholeOrZero(j, "cpu_ms")?
     )
   )
 

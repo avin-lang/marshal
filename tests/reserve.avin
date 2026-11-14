@@ -282,7 +282,7 @@ protocol()
     marshal.decodeRequest(
       "{\"op\":\"submit\",\"kind\":\"build\",\"units\":1,\"mem\":0,\"dir\":\"/\",\"cmd\":[\"make\"]}"
     ),
-    Ok(Request.Submit(JobSpec("build", 1, 0, false, "/", None, ["make"], [])))
+    Ok(Request.Submit(JobSpec("build", 4, 0, false, "/", None, ["make"], [])))
   )
   assert(
     marshal.decodeRequest(

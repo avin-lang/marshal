@@ -115,7 +115,7 @@ jobs marshal has admitted, while marshal's queue waits for units the bare run is
 exception is a fix to marshal itself: it runs bare, as `caffeinate -dimsu nice <command>`, so a
 broken marshal cannot block its own fix.
 
-**Always give `--label`, `--deadline` and an honest `--units`.**
+**Always give `--label` and `--deadline`; give `--units` to work marshal has not seen.**
 
 ```
 caffeinate -dimsu marshal run --dir . --label "ed: parser tests" --deadline 20m --units 4 -- make test
@@ -124,8 +124,14 @@ caffeinate -dimsu marshal run --dir . --label "ed: parser tests" --deadline 20m 
 - `--label` says whose job it is and what it is; `ls` and `top` show nothing else about who owns it.
 - `--deadline` is a little above the known run time, so a hung run dies instead of holding its units
   for hours. Time spent queued does not count against it.
-- `--units` is the parallelism the job really uses. Asking for more starves everyone else; asking
-  for less oversubscribes the machine.
+- `--units` is the parallelism the job really uses, in steps of 0.25 (`--units 0.5` for a job that
+  mostly waits). Asking for more starves everyone else; asking for less oversubscribes the machine.
+  Once a command has run, marshal knows: it measures the cores every run keeps busy and weighs the
+  next run of the same command by them, so **`--units` may be left out for a command it knows**.
+  `ls` shows learned units with `~` in UNITS and what a job used in USED. Where a given `--units`
+  is far from what recent runs used (2 units or more apart, and twice or half), `run` and `submit`
+  say so on stderr — `marshal: declared 4 units; recent runs used about 1.2` — and that is the
+  value to give, or to leave out.
 
 **Let memory be learned, and give `--mem` to heavy work marshal has not seen.** Memory is learned
 per command (`sysl test compiler`, `zsh gate.zsh`), not per kind, so a run of a command it knows
@@ -285,7 +291,7 @@ Options of `submit` and `run`:
 | Option | Meaning |
 | --- | --- |
 | `--kind <k>` | What the job is, for learning its deadline. Default: `test` when a word of the command is `test`, otherwise `build`. |
-| `--units <n>` | Its weight. Default: 4 for a `test`, 1 for anything else. |
+| `--units <n>` | Its weight, a number above 0 in steps of 0.25 (`0.5`, `1.25`, `4`); anything else is refused. Default: the cores recent runs of the same command used, rounded up to a quarter (`~` in UNITS; see "The daemon"), and 4 for a `test`, 1 for anything else until the command has been measured. A given value far from what recent runs used gets a one-line hint on stderr. |
 | `--mem <size>` | Memory it needs: `29G`, `512M` (powers of 1024). Default: the learned peak of the same command in its directory, or anywhere while it has not run in that directory (see Budget); 0 until the command has run once. `--mem 0` reserves nothing and learns nothing. |
 | `--external` | Its work runs outside its own processes: `docker run`, a VM, or a command run as another account through `sudo` (see Work outside the job's processes). It needs `--mem`, and is refused without it; it reserves exactly that and holds it whatever its process tree measures; its measured peak is never learned from, so its kind's later jobs are not taught a near-zero peak. `ls` and `top` show its RESV with `@` before it (`@29G`), `status --json` gives `"external": true`, and `rerun` keeps it. A command whose first word (or the first after `sudo`) is `docker` with `run`, `compose`, `build` or `buildx`, or `docker-compose`, submitted without it gets a warning on stderr and is submitted all the same. |
 | `--landing` | The landing lane: starts before every development job, outside the unit budget, at normal priority, once its memory fits beside what runs; until then nothing else starts, so the running jobs drain for it. One landing job runs at a time. One whose memory alone exceeds the budget starts when nothing else runs. |
@@ -467,6 +473,30 @@ ends: nothing polls.
   whichever is more, so a job that reserved nothing but holds 27G keeps a 30G one out of a 56G
   budget. A job submitted with `--external` holds exactly its `--mem`, and its peak is never
   learned. What has been learned is kept in `memory.json` in marshal's home (below).
+- **Units learned from processor use.** Units come in quarters (`0.25`, `1.5`, `4`): the budget's
+  12 units are 48 quarters, and the scheduler adds whole quarters, so fractional jobs fill the
+  budget exactly. Each second, with the memory, the daemon lists the processor time of every
+  process in a running job's process groups (one `ps` for all jobs). Over an interval the cores a
+  job keeps busy are the processor time its processes used divided by the time that passed (a
+  process seen before counts what it used since; a new one all it has used). The job's level is
+  the last two intervals together, so one busy second between quiet ones counts at half, and its
+  peak is the most that level has been. A job's `finished` (or other ending) event records the
+  peak as `peak_cores` and the processor time counted as `cpu_ms`; a job that ended within its
+  first second was never measured and records neither. A process that ends between two samples
+  takes the time it used since the last one with it, so work made of many processes shorter than a
+  second is measured low. A job that gives no `--units` weighs what the runs of the same command
+  teach, learned as memory is (the command's signature, its directory first): the most of the
+  last 5 measured peaks, rounded up to a quarter, at least 0.25 and at most the budget; a command
+  never measured weighs its kind's default (4 for a `test`, 1 for anything else). `--units` wins
+  whenever it is given, and a job type's `units` counts as given. An exclusive job still weighs the
+  whole budget, and a quick job its own units outside it. When a run teaches a new value, the
+  queued and waiting jobs that gave no units weigh again at once; a running job keeps what it
+  started with. A restart weighs them again from what the new program reads, and a running job
+  it takes over keeps its measured peak and is measured on from a fresh baseline. An external
+  job's cores are never learned. `ls` shows a job's units in UNITS (`~` before learned ones) and in
+  USED the cores a running job keeps busy or an ended job's peak (`-` where nothing was measured);
+  `status --json` gives `units` as a number (`1.25`), `units_learned`, and `cores`, `peak_cores`
+  and `cpu_ms` once measured; `top`'s UNITS shows the same units with `~`.
 - **Work outside the job's processes.** Marshal measures a job's own process tree, so work that a
   job hands to something else is invisible to it: `docker run` leaves only the docker client in the
   tree while the container uses the VM's CPU and memory. Such a job is submitted with
@@ -527,16 +557,19 @@ ends: nothing polls.
   exits 2. `$MARSHAL_RESTART_PROGRAM`, in the daemon's environment, names another program.
   `restart` prints the version before and after; `version` prints this marshal's and the
   daemon's, and neither starts a daemon.
-- **Learned memory is kept in `memory.json`.** After every job that ends, the daemon writes the
-  peaks it has learned to `memory.json` in marshal's home: `{"version": 1, "peaks": {...}}`, each
-  key a kind (`+landing` for the landing lane), a line feed and a command's signature, with a line
-  feed and a directory after it for runs in that directory, holding that key's last 20 peaks in
-  bytes, oldest first. It is written to a temporary file and renamed into place, so a reader sees
+- **Learned memory and cores are kept in `memory.json`.** After every job that ends, the daemon
+  writes what it has learned to `memory.json` in marshal's home:
+  `{"version": 2, "peaks": {...}, "cores": {...}}`, each key a kind (`+landing` for the landing
+  lane), a line feed and a command's signature, with a line feed and a directory after it for runs
+  in that directory, holding that key's last 20 memory peaks in bytes (`peaks`) and peak cores as
+  numbers (`cores`, such as `1.25`), oldest first. A version 1 file, which has only `peaks`, is read
+  without loss: its peaks are kept, the cores are learned from the event log's `peak_cores`, and
+  the file is written again as version 2. It is written to a temporary file and renamed into place, so a reader sees
   the whole of one write, never part. A starting daemon reads it, so what was learned survives
   `stop`, `restart`, an upgrade, a reboot and `marshal clean` trimming the event log. When the file
   is missing, does not read, or is of another version, the daemon says so on stderr (a missing one
-  silently), learns again from the event log's ending events (the `cmd`, `dir` and `peak_rss` each
-  records) and writes the file at once. Removing it is safe.
+  silently), learns again from the event log's ending events (the `cmd`, `dir`, `peak_rss` and
+  `peak_cores` each records) and writes the file at once. Removing it is safe.
 
 `config.json` in marshal's home changes the defaults: `units`, `memory` (`"56G"` or bytes),
 `reserve`, `deadline_floor` (`"5m"`), `learn_window`, `learn_min_runs`, `drain_after` (`"10m"`, or
@@ -565,7 +598,7 @@ nothing. A removed job leaves `ls`; `wait` and `rerun` still answer for it from 
 every use moves forward. It ends by saying how much it freed (`marshal: freed 1.5M`; with `--dry-run`,
 `marshal: would free 1.5M`).
 
-`marshal status --json` prints `units`, `unit_budget`, `mem` (what the running jobs reserve,
+`marshal status --json` prints `units`, `unit_budget` (numbers of units, `1.25` among them), `mem` (what the running jobs reserve,
 declared or learned), `mem_budget`, `rss` (what the running jobs hold in RAM, in bytes), `mem_held`
 (what admission counts them holding: each job's reservation or its `rss`, whichever is more),
 `machine_mem` (the machine's memory, 0 if unknown), `landing` (the landing

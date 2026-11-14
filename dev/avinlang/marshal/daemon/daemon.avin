@@ -13,7 +13,8 @@ module dev.avinlang.marshal.daemon
 // start changes with time alone (a job waits past the bound, a running job passes its estimate), and
 // take-slot's runs come and go without telling marshal, so while jobs wait a ticker decides again
 // every few seconds, reading take-slot's files where a directory is shared (`Tick`). And what the running jobs hold in RAM is
-// measured every second (`Sample`), on a thread of its own, which reports back (`Measured`).
+// measured every second (`Sample`), on a thread of its own, which reports back (`Measured`), and
+// with it the processor time their processes have used, which tells the cores they keep busy.
 //
 // A restart replaces the daemon's program in place (`process.exec`), keeping its process and so its
 // jobs, which stay its children: the old image writes its state to `<home>/state.json`, and the new
@@ -66,8 +67,9 @@ data Message
   // time for the automatic retention sweep
   Sweep
   Sample
-  // The resident bytes of each job's process tree, by job id.
-  Measured(sizes: Vector[(long, long)])
+  // The resident bytes of each job's process tree, by job id, and the processor time each of its
+  // processes had used at `atMs` (the daemon's clock).
+  Measured(sizes: Vector[(long, long)], cpu: Vector[(long, Vector[marshal.CpuSample])], atMs: long)
   // The client of a watch has gone: the stream it was read from.
   Unwatch(out: Channel[Reply])
 
@@ -106,7 +108,7 @@ watchedOwner() -> Option[long] = process.env(
   "MARSHAL_TEST_WATCH_PID"
 ).flatMap(t -> t.toLongOption()).filter(n -> n >= 1)
 
-// How often the running jobs' memory is measured, in milliseconds.
+// How often the running jobs' memory and processor use are measured, in milliseconds.
 val SampleMs: long = 1000
 
 // The pauses, one after another, before a paused job's groups are stopped again (see `restopSoon`).
@@ -114,12 +116,14 @@ val RestopMs: Vector[long] = [10, 40, 150]
 
 // `arrived` is when it joined the queue on the wall clock, in microseconds: when it was submitted,
 // ready after the jobs it waited for, or queued again to retry. `pid` is its main process;
-// `startedAt` when it started on the wall clock, in milliseconds; `resident` its memory as measured.
+// `startedAt` when it started on the wall clock, in milliseconds; `resident` its memory as measured,
+// and `meter` its processor use. `spec` holds the units it weighs, which a job that gave none takes
+// from what is learned (`size`), with `unitsLearned` saying so.
 // `after` the jobs a waiting job still waits for; `attempt` counts its runs from 1, and `retryAt` is
 // when a job waiting to retry queues again.
 class Job(
     val id: long,
-    val spec: JobSpec,
+    var spec: JobSpec,
     val submittedMs: long,
     var arrived: long,
     val deadlineMs: long,
@@ -131,6 +135,8 @@ class Job(
   var startedMs: long = 0
   var startedAt: long = 0
   var resident = Resident(0, 0)
+  var meter = marshal.startMeter(0)
+  var unitsLearned = false
   var endedMs: long = 0
   var pgid: long = 0
   var outcome: Option[Outcome] = None
@@ -227,7 +233,11 @@ class Job(
       durationLearned,
       expectedStart,
       spec.exclusive,
-      spec.quietLoad
+      spec.quietLoad,
+      unitsLearned,
+      if state == "running" then meter.now else -1,
+      meter.peak,
+      meter.cpuMs
     )
 
 // The daemon's state, owned by its own thread.
@@ -258,6 +268,8 @@ class Daemon(
   var measuring = false
   // The peak memory of each job that ran and was measured, by history key, oldest first.
   val peaks = MutableMap[string, Buffer[long]]()
+  // The peak cores of each job that ran and was measured, in hundredths, by the same keys.
+  val cores = MutableMap[string, Buffer[long]]()
   var began: long = time.monotonic().toMillis
   // Replies given and not yet written by their connections.
   var unwritten = 0
@@ -306,38 +318,83 @@ class Daemon(
     job.learnedMem = r.learned
     job.reservedFrom = marshal.reservationSource(s.memory, s.memoryGiven, r, h.from)
 
-  // Remembers the peak a job of `key` reached, for the reservations of the jobs after it. Only the
-  // last `MemoryKept` are kept: the estimate reads fewer.
-  rememberPeak(key: string, peak: long)
-    if peak <= 0 then return
-    peaks.get(key) match
+  // The peak cores of the jobs of `key`, oldest first.
+  coresOf(key: string) -> Vector[long] = cores.get(key).map(b -> b.toVector).getOrElse([])
+
+  // The peak cores the job of `spec` learns its units from: its command's in its directory, or
+  // anywhere while its directory has none.
+  coresFor(s: JobSpec) -> Vector[long]
+    val sig = marshal.commandSignature(s.cmd)
+    if sig.isEmpty then return []
+    marshal.coresHistory(
+      coresOf(marshal.memoryDirKey(s.kind, s.landing, sig, s.dir)),
+      coresOf(marshal.memoryKey(s.kind, s.landing, sig))
+    )
+
+  // Gives `job` its units: those it gave, or what its command's runs teach, or its kind's default
+  // before they teach anything. An exclusive or quick job keeps what it has.
+  size(job: Job)
+    val sizing = sizing(job.spec)
+    if sizing.quarters != job.spec.units then job.spec = marshal.withUnits(job.spec, sizing.quarters)
+    job.unitsLearned = sizing.learned
+
+  sizing(s: JobSpec) -> marshal.Sizing
+    val learned = marshal.learnedUnits(coresFor(s), config.budget.units)
+    marshal.sizeFor(s.unitsGiven, s.units, s.exclusive || s.quick, learned, marshal.defaultUnits(s.kind))
+
+  // Advice for the submitter of `spec` when the units it gave are far from what its command's runs
+  // used: "" otherwise, and for a job whose units are not weighed as others are.
+  unitsHint(s: JobSpec) -> string
+    if !s.unitsGiven || s.exclusive || s.quick || s.landing then return ""
+    val history = coresFor(s)
+    (marshal.learnedUnits(history, config.budget.units), marshal.recentCores(history)) match
+      (Some(q), Some(c)) -> marshal.unitsHint(s.units, q, c)
+      _ -> ""
+
+  // Remembers the value a job of `key` reached in `table`, for the jobs after it. Only the last
+  // `MemoryKept` are kept: the estimates read fewer.
+  remember(table: MutableMap[string, Buffer[long]], key: string, value: long)
+    table.get(key) match
       Some(b) ->
-        b += peak
+        b += value
         if b.length > marshal.MemoryKept then b.remove(0)
       None ->
         val b = Buffer[long]()
-        b += peak
-        peaks(key) = b
+        b += value
+        table(key) = b
 
-  // Learns the peak of a job that has ended: under what it ran, and in its directory; then the jobs
-  // still waiting to start reserve again, so a peak above what they reserved raises theirs at once,
-  // and the learned peaks are written to `memory.json`.
-  learnPeak(spec: JobSpec, peak: long)
-    if peak <= 0 then return
-    for key in marshal.memoryKeys(spec.kind, spec.landing, spec.cmd, spec.dir) do rememberPeak(key, peak)
+  // Remembers the peak memory a job of `key` reached, for the reservations of the jobs after it.
+  rememberPeak(key: string, peak: long) = if peak > 0 then remember(peaks, key, peak)
+
+  // Remembers the peak cores a job of `key` was measured using, for the units of the jobs after it.
+  rememberCores(key: string, centi: long) = if centi >= 0 then remember(cores, key, centi)
+
+  // Learns the peaks of a job that has ended, its memory and its cores: under what it ran, and in
+  // its directory; then the jobs still waiting to start reserve and weigh again, so a peak above
+  // what they reserved raises theirs at once, and what is learned is written to `memory.json`.
+  learnRun(spec: JobSpec, peak: long, centi: long)
+    if peak <= 0 && centi < 0 then return
+    for key in marshal.memoryKeys(spec.kind, spec.landing, spec.cmd, spec.dir)
+      rememberPeak(key, peak)
+      rememberCores(key, centi)
     reserveAgain()
     saveMemory()
 
-  // Every job that has not started and gave no memory reserves again from what is learned now; a
-  // running job keeps its reservation (admission counts what it measures beyond), and a given
-  // memory stays given.
+  // Every job that has not started and gave no memory reserves again from what is learned now, and
+  // every one that gave no units weighs again; a running job keeps its reservation (admission
+  // counts what it measures beyond) and its units, and what was given stays given.
   reserveAgain()
-    for j in queue ++ waitingJobs do if !j.spec.memoryGiven && j.spec.memory == 0 then reserve(j)
+    for j in queue ++ waitingJobs
+      if !j.spec.memoryGiven && j.spec.memory == 0 then reserve(j)
+      if !j.spec.unitsGiven then size(j)
 
-  // Writes the learned peaks to `<home>/memory.json`; a file that cannot be written is said, and the
+  // Writes what is learned to `<home>/memory.json`; a file that cannot be written is said, and the
   // peaks stay learned in the daemon and in the event log.
   saveMemory()
-    val all = peaks.keys.map(k -> (k, peaks(k).toVector)).toMap
+    val all = marshal.Learned(
+      peaks.keys.map(k -> (k, peaks(k).toVector)).toMap,
+      cores.keys.map(k -> (k, cores(k).toVector)).toMap
+    )
     marshal.saveMemory(home + "/memory.json", all) match
       Ok(_) -> ()
       Err(e) -> eprintln(s"marshal: cannot write $home/memory.json: ${e.message}")
@@ -424,7 +481,7 @@ class Daemon(
           quietCheck()
           exclusiveCheck()
           measure()
-        Measured(sizes) -> measured(sizes)
+        Measured(sizes, cpu, at) -> measured(sizes, cpu, at)
         Unwatch(out) -> unwatch(out)
         Terminate ->
           eprintln("marshal: TERM received: stopping, killing what runs")
@@ -467,8 +524,13 @@ class Daemon(
   submit(given: JobSpec, extra: Vector[(string, Json)] = []) -> Reply
     if stopping || draining then return Failed("the daemon is stopping and takes no new jobs")
     for why in marshal.exclusiveRefusal(given) do return Failed(why)
-    // an exclusive job is the only one running, so it weighs the whole budget
-    val spec = if given.exclusive then marshal.exclusiveSpec(given, config.budget.units) else given
+    // an exclusive job is the only one running, so it weighs the whole budget; one that gave no
+    // units weighs what its command's runs teach
+    val sized = sizing(given)
+    val spec = if given.exclusive then marshal.exclusiveSpec(given, config.budget.units) else marshal.withUnits(
+      given,
+      sized.quarters
+    )
     // a landing job, and an exclusive one, of any memory can start: when nothing else runs
     marshal.neverFits(config.budget, spec.units, spec.memory, spec.landing || spec.exclusive) match
       Some(why) -> return Failed(why)
@@ -497,6 +559,7 @@ class Daemon(
     nextId += 1
     val job = Job(id, spec, now(), time.now().epochMicros, deadline, expected, s"$home/jobs/$id.log")
     job.durationLearned = marshal.durationLearned(config.learning, past)
+    job.unitsLearned = sized.learned && !spec.exclusive
     reserve(job)
     // its quiet load's clock starts with the load as it is now
     if spec.quietLoad > 0.0 then settleSeen(job, marshal.loadAverages().headOption, now())
@@ -511,7 +574,8 @@ class Daemon(
       record("submitted", job, [("spec", marshal.encodeSpec(spec))] ++ extra)
       reconsider(job)
     schedule()
-    Submitted(id, job.log, marshal.quickHint(config.learning, spec, past))
+    val hints = [marshal.quickHint(config.learning, spec, past), unitsHint(spec)].filter(h -> h.nonEmpty)
+    Submitted(id, job.log, hints.mkString("\n"))
 
   // `rerun`: job `id`, ended, submitted again with the same command, directory, environment, kind,
   // resources, deadline, quiet timeout, urgency, retries and label, but waiting for nothing.
@@ -546,7 +610,8 @@ class Daemon(
         spec.external,
         spec.quick,
         spec.exclusive,
-        spec.quietLoad
+        spec.quietLoad,
+        spec.unitsGiven
       ),
       [("rerun_of", Json.num(id))]
     )
@@ -929,6 +994,8 @@ class Daemon(
     job.state = "running"
     job.startedMs = now()
     job.startedAt = time.now().epochMillis
+    // each attempt's processor use is its own
+    job.meter = marshal.startMeter(job.startedMs)
     job.quiet = marshal.quietStart(marshal.fileBytes(job.log), job.startedMs)
     running += job
     command.start() match
@@ -1091,8 +1158,8 @@ class Daemon(
   // A running job leaves the machine: the running jobs and take-slot's files.
   offMachine(job: Job)
     running.remove(running.indexOf(job))
-    // an external job's tree is not where its work ran, so its peak teaches nothing
-    if !job.spec.external then learnPeak(job.spec, job.resident.peak)
+    // an external job's tree is not where its work ran, so its peaks teach nothing
+    if !job.spec.external then learnRun(job.spec, job.resident.peak, job.meter.peak)
     val pid = job.pid
     if pid > 0 then slots.foreach(ts -> if job.spec.landing then ts.releaseLanding(pid) else ts.unregister(pid))
 
@@ -1103,13 +1170,19 @@ class Daemon(
     val groups = running.map(j -> (j.id, j.pgid)).toVector
     val events = self.events
     val home = self.home
-    spawn(() -> events.send(Measured(groups.map(g -> (g.0, marshal.jobResident(home, g.0, g.1))))))
+    spawn(() ->
+      val sizes = groups.map(g -> (g.0, marshal.jobResident(home, g.0, g.1)))
+      val times = marshal.processTimes()
+      val at = time.monotonic().toMillis
+      events.send(Measured(sizes, groups.map(g -> (g.0, marshal.jobCpu(home, g.0, g.1, times))), at)))
 
   // What a measurement found, for the jobs still running.
-  measured(sizes: Vector[(long, long)])
+  measured(sizes: Vector[(long, long)], cpu: Vector[(long, Vector[marshal.CpuSample])], at: long)
     measuring = false
     for (id, bytes) in sizes
       jobs.get(id).foreach(job -> if job.state == "running" then job.resident = job.resident.measured(bytes))
+    for (id, table) in cpu
+      jobs.get(id).foreach(job -> if job.state == "running" then job.meter = job.meter.sampled(table, at))
 
   // A client asks to follow events. Everything is decided here, on the daemon's thread, which is
   // also the only one that appends to the log: what the log already holds is read and the watcher
@@ -1505,7 +1578,7 @@ class Daemon(
       Some(Tick) -> ()
       Some(Sweep) -> ()
       Some(Sample) -> ()
-      Some(Measured(sizes)) -> measured(sizes)
+      Some(Measured(sizes, cpu, at)) -> measured(sizes, cpu, at)
       Some(Unwatch(out)) -> unwatch(out)
       None -> ()
 
@@ -1544,7 +1617,11 @@ class Daemon(
       j.learnedMem,
       j.quietStopped,
       j.reservedFrom,
-      j.durationLearned
+      j.durationLearned,
+      j.unitsLearned,
+      j.meter.now,
+      j.meter.peak,
+      j.meter.cpuMs
     )
     SavedState(
       reportedVersion(),
@@ -1577,6 +1654,9 @@ class Daemon(
       job.startedMs = mono(if sj.startedAt == 0 then sj.endedAt else sj.startedAt)
       job.startedAt = sj.startedAt
       job.resident = Resident(sj.rss, sj.peakRss)
+      // what its processes had used before is not known here: the next sample is a baseline
+      job.meter = marshal.resumedMeter(t, sj.cores, sj.peakCores, sj.cpuMs)
+      job.unitsLearned = sj.unitsLearned
       job.endedMs = mono(sj.endedAt)
       job.pid = sj.pid
       job.pgid = sj.pgid
@@ -1870,7 +1950,7 @@ run(home: string, resume: Option[string] = None) -> int
     ())
   val sharing = takeSlot.map(dir -> s", sharing take-slot's $dir").getOrElse("")
   eprintln(
-    s"marshal: daemon ${process.pid()} listening at $home/sock; units ${config.budget.units}, memory ${marshal.formatSize(config.budget.memory)}$sharing, ${orphans.length} jobs lost"
+    s"marshal: daemon ${process.pid()} listening at $home/sock; units ${marshal.formatUnits(config.budget.units)}, memory ${marshal.formatSize(config.budget.memory)}$sharing, ${orphans.length} jobs lost"
   )
   // the jobs earlier daemons ended, the ones just recorded as lost among them; a restarted
   // daemon holds its own recent ones
@@ -1881,16 +1961,20 @@ run(home: string, resume: Option[string] = None) -> int
     ).filter(r -> r.isOk).map(r -> marshal.asLost(r.ok.get))
   ).sortBy(j -> j.id).takeRight(Recent)
   val daemon = Daemon(home, config, events, recovered.nextId, histories, slots, earlier, machine)
-  // the learned peaks are memory.json's; where it is missing, unreadable or of another version,
-  // they are learned again from the event log and written there at once
+  // the learned peaks and cores are memory.json's; where it is missing, unreadable or of another
+  // version, they are learned again from the event log and written there at once. A version 1 file
+  // keeps its peaks, and the cores, which it never had, come from the event log.
   val memoryFile = home + "/memory.json"
   val loaded = marshal.loadMemory(memoryFile)
   loaded.err.foreach(
     why -> if fs.exists(memoryFile) then eprintln(s"marshal: $memoryFile $why; learning again from the event log")
   )
-  for (key, peaks) in loaded.getOrElse(recovered.peaks)
+  val learned = loaded.getOrElse(marshal.Learned(recovered.peaks, recovered.cores))
+  for (key, peaks) in learned.peaks
     for p in peaks do daemon.rememberPeak(key, p)
-  if loaded.isErr then daemon.saveMemory()
+  for (key, cores) in if learned.fromVersion1 then recovered.cores else learned.cores
+    for c in cores do daemon.rememberCores(key, c)
+  if loaded.isErr || learned.fromVersion1 then daemon.saveMemory()
   for s in saved
     daemon.restore(s)
     val upgrade = if s.version == reportedVersion() then s"version ${s.version}" else s"version ${s.version} to ${reportedVersion()}"

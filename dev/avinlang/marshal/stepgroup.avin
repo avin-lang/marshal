@@ -7,6 +7,7 @@ module dev.avinlang.marshal
 // (not a field of the job) so that a daemon that took the job over in a restart finds it as well.
 import avin.fs
 import avin.process
+import avin.process.Command
 
 // Where job `id`'s current step group is recorded.
 stepGroupFile(home: string, id: long) -> string = s"$home/runs/$id/step.pgid"
@@ -33,6 +34,17 @@ groupsOf(home: string, id: long, pgid: long) -> Vector[long]
 // The resident bytes of all of job `id`'s processes: those of its own group and of its step's.
 jobResident(home: string, id: long, pgid: long) -> long =
   groupsOf(home, id, pgid).map(g -> groupResident(g)).sum
+
+// The processor time each of job `id`'s processes has used, from `table` (`processTimes`): those of
+// its own group and of its step's.
+jobCpu(home: string, id: long, pgid: long, table: Vector[GroupedCpu]) -> Vector[CpuSample]
+  val groups = groupsOf(home, id, pgid)
+  table.filter(g -> groups.contains(g.pgid)).map(g -> g.sample)
+
+// The processor time of every process on the machine, with its group, as one `ps` lists them; none
+// where `ps` cannot be run. One listing serves every running job.
+processTimes() -> Vector[GroupedCpu] =
+  groupedCpuTable(Command("ps", "-A", "-o", "pid=,pgid=,time=").output().getOrElse(""))
 
 // Signals every group of job `id`; the errors of a group nobody is in are not an error.
 signalGroups(home: string, id: long, pgid: long, sig: int)

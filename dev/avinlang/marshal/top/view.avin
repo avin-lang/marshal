@@ -196,7 +196,7 @@ cells(l: Line, since: long, zone: time.Zone, today: string, width: int) -> Vecto
     Span(j.id.toString()),
     styled(stateOf(l)),
     Span(marshal.fittedKind(j, KindWidth)),
-    Span(j.units.toString()),
+    Span(marshal.unitsText(j)),
     Span(marshal.reservedText(j)),
     Span(measuredText(if j.state == "running" then j.rss else 0)),
     Span(measuredText(j.peakRss)),
@@ -724,10 +724,13 @@ drawHeader(g: Grid, o: Overview, since: long, f: Filter) -> int
   val outside = u.takeSlot.map(t -> t.units).getOrElse(0)
   g.text(0, 1, "units ")
   unitBar(g, 6, 1, barWidth, u.units, outside, u.unitBudget)
+  val budget = marshal.formatUnits(u.unitBudget)
   val share = u.takeSlot match
-    Some(t) -> s" + take-slot $outside / ${u.unitBudget}" + (if t.waiting > 0 then s", ${t.waiting} waiting" else "")
-    None -> s" / ${u.unitBudget}"
-  val after = g.text(6 + barWidth + 3, 1, s"${u.units}$share")
+    Some(t) -> s" + take-slot ${marshal.formatUnits(outside)} / $budget" + (
+      if t.waiting > 0 then s", ${t.waiting} waiting" else ""
+    )
+    None -> s" / $budget"
+  val after = g.text(6 + barWidth + 3, 1, s"${marshal.formatUnits(u.units)}$share")
   landingUnits(g, after, 1, o)
   g.text(0, 2, "mem   ")
   val bounded = u.memoryBudget != long.MaxValue && u.memoryBudget > 0
@@ -749,7 +752,7 @@ memoryText(u: Usage) -> string =
 landingUnits(g: Grid, x: int, y: int, o: Overview)
   for id in o.usage.landing
     for j in o.running.find(j -> j.id == id)
-      val text = s"landing ${j.units}"
+      val text = s"landing ${marshal.formatUnits(j.units)}"
       if x + 3 + textWidth(text) <= g.width then g.text(x + 3, y, text, Style.fg(Cyan))
 
 // The quick lane in the header, `   quick: 1/2`, while a quick job runs; nothing otherwise.
@@ -762,7 +765,7 @@ laneText(o: Overview) -> (string, Style)
   o.usage.landing match
     Some(id) ->
       val units = o.running.find(j -> j.id == id).map(
-        j -> if j.units == 1 then " (1 unit)" else s" (${j.units} units)"
+        j -> if j.units == marshal.wholeUnits(1) then " (1 unit)" else s" (${marshal.formatUnits(j.units)} units)"
       ).getOrElse("")
       (s"job $id$units", Style.fg(Cyan).with(Bold))
     None ->
@@ -770,8 +773,8 @@ laneText(o: Overview) -> (string, Style)
       else ("free", Style.fg(BrightBlack))
 
 // The unit budget as a bar `width` cells wide between brackets: marshal's development units in
-// green, take-slot's after them in magenta, the rest dotted. Each boundary is at the nearest cell, a
-// half rounding up. A budget of 0 counts as 1.
+// green, take-slot's after them in magenta, the rest dotted, all in quarters. Each boundary is at the
+// nearest cell, a half rounding up. A budget of 0 counts as 1.
 unitBar(g: Grid, x: int, y: int, width: int, ours: int, outside: int, budget: int)
   g.gauge(
     x,

@@ -347,7 +347,7 @@ labelOptions()
 @test("ls always has a LABEL column before COMMAND, empty for a job without a label")
 labelListing()
   val none = marshal.listing([labelled(1, ""), labelled(2, "")]).lines.toVector
-  assertEq(none(0), "ID  STATE    KIND   UNITS  RESV  STARTED  ELAPSED  LABEL  COMMAND")
+  assertEq(none(0), "ID  STATE    KIND   UNITS  USED  RESV  STARTED  ELAPSED  LABEL  COMMAND")
   assertEq(none(1).indexOf("sleep 30"), none(0).indexOf("COMMAND"))
   val rows = marshal.listing([labelled(1, "train 209"), labelled(2, ""), labelled(30, "a longer label")]).lines.toVector
   assert(rows(0).contains("ELAPSED  LABEL"), rows(0))

@@ -55,6 +55,10 @@ module dev.avinlang.marshal
 //   not there. Landing jobs are not held back by a waiting
 //   exclusive job: one queued, ahead of it or behind, starts first, so a benchmark never delays a
 //   release train; only a running exclusive job holds the landing lane.
+//
+// The scheduler counts units in quarters (cores.avin) everywhere: a budget's, a job's, take-slot's.
+// So a budget of 12 units is 48, and jobs of 0.25 and 1.5 units weigh 1 and 6: whole numbers, which
+// add up exactly.
 
 data Budget(units: int, memory: long)
 
@@ -507,14 +511,17 @@ private freeAt(budget: Budget, used: int, memory: long, ends: Buffer[(long, int,
 // Why a job can never start under `budget`, or None when it can. A landing job of any size can: one
 // whose memory exceeds the budget starts when nothing else runs.
 neverFits(budget: Budget, units: int, memory: long, landing: bool) -> Option[string]
-  if units < 1 then return Some(s"a job weighs at least 1 unit, not $units")
+  if units < 1 then return Some(s"a job weighs at least 0.25 units, not ${formatUnits(units)}")
   if memory < 0 then return Some("a job's memory is not negative")
   if landing then return None
-  if units > budget.units then return Some(s"the job needs $units units and the budget is ${budget.units}")
+  if units > budget.units then return Some(
+    s"the job needs ${formatUnits(units)} units and the budget is ${formatUnits(budget.units)}"
+  )
   if memory > budget.memory then return Some(
     s"the job needs ${formatSize(memory)} of memory and the budget is ${formatSize(budget.memory)}"
   )
   None
 
-// The units a job of `kind` weighs when it does not say: a test 4, anything else 1.
-defaultUnits(kind: string) -> int = if kind == "test" then 4 else 1
+// The units a job of `kind` weighs, in quarters, when it does not say and nothing is learned of its
+// command: a test 4, anything else 1.
+defaultUnits(kind: string) -> int = wholeUnits(if kind == "test" then 4 else 1)

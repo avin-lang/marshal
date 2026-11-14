@@ -1,0 +1,225 @@
+module dev.avinlang.marshal
+
+// Units, and the processor use they stand for.
+//
+// A unit is about one core's worth of the machine. Jobs weigh units in quarter steps (`0.25`, `1.5`,
+// `4`), and everything that adds them up counts whole quarters, so a budget of 12 units is 48
+// quarters and fractional jobs fill it exactly, with no rounding drift. The command line, the
+// protocol, the event log and every listing write units as units (`1.25`); only the arithmetic
+// inside counts quarters.
+//
+// What a job really uses is measured while it runs: the processor time of every process in its
+// process groups, sampled as its memory is (`CpuMeter`), gives the cores it kept busy. A job that
+// says no units weighs what earlier runs of the same command were measured using (`learnedUnits`).
+import dev.avinlang.json.Json
+
+// How many quarters make a unit.
+val QuartersPerUnit: int = 4
+
+// `n` whole units, in quarters.
+wholeUnits(n: int) -> int = n * QuartersPerUnit
+
+// Quarters as units are written: no trailing zeros, `0.25`, `1.5`, `4`.
+formatUnits(quarters: int) -> string
+  val sign = if quarters < 0 then "-" else ""
+  val q = if quarters < 0 then -quarters else quarters
+  val whole = (q / QuartersPerUnit).toString()
+  val part = q % QuartersPerUnit match
+    1 -> ".25"
+    2 -> ".5"
+    3 -> ".75"
+    _ -> ""
+  sign + whole + part
+
+// Units as they are written (`2`, `0.5`, `1.25`, `.75`), in quarters; None for anything that is not
+// a whole number of quarters 0 or more: a sign, a step finer than a quarter (`0.3`), other text.
+parseUnits(text: string) -> Option[int]
+  val t = text.trim
+  val dot = t.indexOf(".")
+  val (whole, frac) = if dot >= 0 then (t.take(dot), t.drop(dot + 1)) else (t, "")
+  if whole.isEmpty && frac.isEmpty then return None
+  if !whole.chars.forall(c -> '0' <= c <= '9') || !frac.chars.forall(c -> '0' <= c <= '9') then return None
+  if dot >= 0 && frac.isEmpty then return None
+  if whole.charCount > 7 then return None
+  val n = if whole.isEmpty then 0 else whole.toInt()
+  var digits = frac
+  while digits.endsWith("0") do digits = digits.dropRight(1)
+  val part = digits match
+    "" -> 0
+    "25" -> 1
+    "5" -> 2
+    "75" -> 3
+    _ -> return None
+  Some(n * QuartersPerUnit + part)
+
+// What `--units` gives: a positive number of quarters, or why the text is not one.
+unitsOption(text: string) -> Result[int, string] = parseUnits(text) match
+  Some(q) if q > 0 -> Ok(q)
+  _ -> Err(s"`--units $text`: units are a number above 0 in steps of 0.25, such as 1, 0.5 or 2.25")
+
+// Quarters as the protocol writes units: a whole number where they are whole units, otherwise the
+// fraction (`1.25`).
+unitsJson(quarters: int) -> Json =
+  if quarters % QuartersPerUnit == 0 then Json.num(quarters / QuartersPerUnit) else Json.num(
+    real(quarters) / real(QuartersPerUnit)
+  )
+
+// Units the protocol wrote, in quarters: None for a value that is not a number, or not a whole
+// number of quarters.
+quartersOf(v: Json) -> Option[int]
+  v.asLong match
+    Some(n) -> return if -100000000 <= n <= 100000000 then Some(int(n) * QuartersPerUnit) else None
+    None -> ()
+  val x = v.asReal?
+  if !(-100000000.0 <= x <= 100000000.0) then return None
+  val q = x * real(QuartersPerUnit)
+  val n = long(q)
+  if real(n) == q then Some(int(n)) else None
+
+// Quarters as whole units, rounding up: what take-slot's files hold, which count whole units.
+ceilUnits(quarters: int) -> int = if quarters <= 0 then 0 else (quarters + QuartersPerUnit - 1) / QuartersPerUnit
+
+// Cores are counted in hundredths (`centicores`): 150 is one and a half cores kept busy.
+val Centi: long = 100
+
+// Hundredths of a core as a listing writes them, to one decimal: `1.2`, `0`, `11.5`; `-` for none
+// (a value below 0, which is what a job never measured has).
+formatCores(centi: long) -> string
+  if centi < 0 then return "-"
+  val tenths = (centi + 5) / 10
+  if tenths % 10 == 0 then (tenths / 10).toString() else s"${tenths / 10}.${tenths % 10}"
+
+// Hundredths of a core as the protocol and memory.json write them: a number of cores.
+coresJson(centi: long) -> Json = if centi % Centi == 0 then Json.num(centi / Centi) else Json.num(
+  real(centi) / real(Centi)
+)
+
+// Cores the protocol wrote, in hundredths, the nearest; None for a value that is not a number of
+// cores 0 or more.
+centiOf(v: Json) -> Option[long]
+  val x = v.asReal?
+  if !(0.0 <= x <= 1000000.0) then return None
+  Some(long(x * real(Centi) + 0.5))
+
+// The processor time a process has used: its pid and hundredths of a second.
+data CpuSample(pid: long, cpu: long)
+
+// A process's processor time with its process group, as `ps -A -o pid=,pgid=,time=` lists it.
+data GroupedCpu(pgid: long, sample: CpuSample)
+
+// The `pid pgid time` lines of `ps -A -o pid=,pgid=,time=`; a line that does not read is left out.
+groupedCpuTable(text: string) -> Vector[GroupedCpu]
+  val out = Buffer[GroupedCpu]()
+  for line in text.lines
+    val words = line.trim.split(" ").filter(w -> w.nonEmpty).toVector
+    if words.length < 3 then continue
+    (words(0).toLongOption(), words(1).toLongOption(), parseCpuTime(words(2))) match
+      (Some(pid), Some(pgid), Some(cpu)) -> out += GroupedCpu(pgid, CpuSample(pid, cpu))
+      _ -> ()
+  out.toVector
+
+// The processor time, in hundredths of a second, that the processes `now` used since `before` was
+// taken. A process seen before counts what it has used since; one not seen before counts all it has
+// used, since it started (or joined the job's groups) since. A process that has ended is not in `now`,
+// and what it used after it was last seen is not counted. A process whose time went down is a new
+// process with an old one's pid, and counts all it has used.
+cpuUsedSince(before: Map[long, long], now: Vector[CpuSample]) -> long
+  var used: long = 0
+  for s in now
+    val was = before.get(s.pid).getOrElse(0)
+    used += if s.cpu >= was then s.cpu - was else s.cpu
+  used
+
+// The processor use of a running job as measured. Each sample lists the processes of its groups and
+// what each has used (`seen`) at `atMs` on the daemon's clock. Over one interval, cores are the
+// processor time used divided by the time that passed; `now` is that over the last two intervals
+// together, and `peak` the most `now` has been. Two intervals, so that one busy second between quiet
+// ones counts at half: a peak is a level the job held, not a spike. A job that ended within its first
+// interval was never measured, and both stay -1. `cpuMs` is all the processor time counted, in
+// milliseconds. `primed` false makes the next sample only a baseline, counting nothing: a daemon
+// that took the job over in a restart does not know what its processes had used before.
+data CpuMeter(
+    seen: Map[long, long],
+    atMs: long,
+    lastCpu: long,
+    lastMs: long,
+    now: long,
+    peak: long,
+    cpuMs: long,
+    primed: bool
+)
+
+impl CpuMeter
+  // The meter after a sample `table` taken at `t`. A sample no later than the last counts nothing,
+  // and so does an empty one: a job with no process left, or a listing that could not be made, has
+  // nothing to count, and what was seen stays the baseline for the next.
+  sampled(table: Vector[CpuSample], t: long) -> CpuMeter
+    if table.isEmpty then return self
+    val seenNow = table.map(s -> (s.pid, s.cpu)).toMap
+    if !primed then return CpuMeter(seenNow, t, 0, 0, now, peak, cpuMs, true)
+    val wall = t - atMs
+    if wall <= 0 then return self
+    // hundredths of a second, as milliseconds
+    val used = cpuUsedSince(seen, table) * 10
+    val window = coresOver(used + lastCpu, wall + lastMs)
+    CpuMeter(seenNow, t, used, wall, window, if window > peak then window else peak, cpuMs + used, true)
+
+// A meter for a job started at `t`: nothing seen yet, so every process it starts counts.
+startMeter(t: long) -> CpuMeter = CpuMeter(Map(), t, 0, 0, -1, -1, 0, true)
+
+// A meter taken over from an earlier daemon with what it had measured: its next sample is a baseline.
+resumedMeter(
+    t: long,
+    now: long,
+    peak: long,
+    cpuMs: long
+) -> CpuMeter = CpuMeter(Map(), t, 0, 0, now, peak, cpuMs, false)
+
+// The cores `cpuMs` of processor time over `wallMs` kept busy, in hundredths, the nearest; 0 over no
+// time.
+coresOver(cpuMs: long, wallMs: long) -> long = if wallMs <= 0 then 0 else (cpuMs * Centi + wallMs / 2) / wallMs
+
+// How units are learned from the cores earlier runs used: the most of the last `window` measured
+// peaks, rounded up to a quarter, at least a quarter, and no more than the budget.
+val CoresWindow: int = 5
+
+// The units, in quarters, that the measured peaks `peaks` (hundredths of a core, oldest first)
+// teach, held to `budget` quarters; None while there are none.
+learnedUnits(peaks: Vector[long], budget: int) -> Option[int]
+  val runs = peaks.filter(p -> p >= 0).takeRight(CoresWindow)
+  if runs.isEmpty then return None
+  val most = runs.max
+  val q = (most * long(QuartersPerUnit) + Centi - 1) / Centi
+  val atLeast = if q < 1 then long(1) else q
+  Some(if atLeast > long(budget) then budget else int(atLeast))
+
+// The most of the last `CoresWindow` measured peaks, in hundredths: what a hint says recent runs used.
+recentCores(peaks: Vector[long]) -> Option[long]
+  val runs = peaks.filter(p -> p >= 0).takeRight(CoresWindow)
+  if runs.isEmpty then None else Some(runs.max)
+
+// The peaks a job learns its units from: those of its command in its directory once there are any,
+// and of its command anywhere until then.
+coresHistory(dirPeaks: Vector[long], cmdPeaks: Vector[long]) -> Vector[long] =
+  if dirPeaks.exists(p -> p >= 0) then dirPeaks else cmdPeaks
+
+// The units a job weighs, in quarters, and whether they were learned. Units it gave (`given`) are
+// its; an exclusive or quick job keeps what it has, since neither weighs units the way others do; any
+// other job weighs what its command's runs teach (`learned`), and `default` before there are any.
+data Sizing(quarters: int, learned: bool)
+
+sizeFor(given: bool, declared: int, exclusiveOrQuick: bool, learned: Option[int], default: int) -> Sizing
+  if given || exclusiveOrQuick then return Sizing(declared, false)
+  learned match
+    Some(q) -> Sizing(q, true)
+    None -> Sizing(default, false)
+
+// Advice for a job that gave `declared` quarters where its command's recent runs used `recent`
+// hundredths of a core and so teach `learned` quarters: said only when the two are at least 2 units
+// apart and one is at least twice the other. "" otherwise.
+unitsHint(declared: int, learned: int, recent: long) -> string
+  val apart = if declared > learned then declared - learned else learned - declared
+  val twice = declared >= 2 * learned || learned >= 2 * declared
+  if apart >= wholeUnits(
+    2
+  ) && twice then s"marshal: declared ${formatUnits(declared)} units; recent runs used about ${formatCores(recent)}" else ""

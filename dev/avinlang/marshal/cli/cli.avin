@@ -87,7 +87,9 @@ val Commands: Vector[(string, string)] = [
 val Options: string = """
 Options of submit and run:
   --kind <k>        what the job is, for learning its deadline (default: test when a word of the command is `test`, else build)
-  --units <n>       its weight in units (default: 4 for a test, 1 otherwise)
+  --units <n>       its weight in units, in steps of 0.25 such as 0.5 or 2 (default: the
+                    cores recent runs of what it runs used, rounded up to a quarter, ~ in UNITS;
+                    4 for a test and 1 otherwise until it has run once)
   --mem <size>      the memory it needs, such as 29G or 512M (default: the learned peak of
                     what it runs, such as `sysl test compiler` or `zsh gate.zsh`, in its --dir
                     or anywhere, ~ in RESV; 0 until it has run once; --mem 0 reserves none)
@@ -359,9 +361,7 @@ parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]
       "--kind" ->
         if value.isEmpty then return Err("a kind is a word, not empty")
         kind = Some(value)
-      "--units" -> value.toIntOption() match
-        Some(n) -> units = Some(n)
-        None -> return Err(s"`--units $value`: units are a whole number")
+      "--units" -> units = Some(marshal.unitsOption(value)?)
       "--mem" -> marshal.parseSize(value) match
         Some(n) ->
           memory = n
@@ -416,7 +416,8 @@ parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]
     external,
     quick,
     exclusive,
-    quietLoad
+    quietLoad,
+    units.isDefined
   )
   for why in marshal.exclusiveRefusal(spec) do return Err(why)
   Ok(spec)

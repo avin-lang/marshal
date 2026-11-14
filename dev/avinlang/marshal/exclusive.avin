@@ -51,29 +51,7 @@ exclusiveRefusal(spec: JobSpec) -> Option[string]
 
 // The spec of an exclusive job as the daemon keeps it: it weighs the whole unit budget, `units`,
 // whatever it said, since it is the only job running.
-exclusiveSpec(s: JobSpec, units: int) -> JobSpec =
-  JobSpec(
-    s.kind,
-    units,
-    s.memory,
-    s.landing,
-    s.dir,
-    s.deadlineMs,
-    s.cmd,
-    s.env,
-    s.urgent,
-    s.after,
-    s.afterAny,
-    s.retries,
-    s.retryDelayMs,
-    s.memoryGiven,
-    s.label,
-    s.quietMs,
-    s.external,
-    s.quick,
-    s.exclusive,
-    s.quietLoad
-  )
+exclusiveSpec(s: JobSpec, units: int) -> JobSpec = withUnits(s, units)
 
 // The load averages `text` holds, as `sysctl -n vm.loadavg` prints them (`{ 1.52 1.40 1.31 }`) or as
 // bare numbers; empty when it holds none.

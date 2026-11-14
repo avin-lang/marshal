@@ -24,7 +24,7 @@ endedRange(from: long, to: long) -> Vector[JobInfo]
 
 // A daemon running job 2000 whose snapshot carries the ten that ended last, 1010 to 1001.
 liveTen() -> Overview = Overview(
-  Usage(1, 12, 0, 16 * G, 1, 0, None, None),
+  Usage(4, 48, 0, 16 * G, 1, 0, None, None),
   5000,
   [snapJob(2000)],
   [],

@@ -115,7 +115,15 @@ badRequests()
     ("{\"op\": \"submit\", \"kind\": \"x\", \"units\": 1, \"mem\": 0, \"cmd\": [\"a\"]}", "`dir` is missing"),
     (
       "{\"op\": \"submit\", \"kind\": \"x\", \"units\": 3000000000, \"mem\": 0, \"dir\": \"/\", \"cmd\": [\"a\"]}",
-      "`units` is not an int"
+      "`units` is not a number of units in steps of 0.25"
+    ),
+    (
+      "{\"op\": \"submit\", \"kind\": \"x\", \"units\": 0.3, \"mem\": 0, \"dir\": \"/\", \"cmd\": [\"a\"]}",
+      "`units` is not a number of units in steps of 0.25"
+    ),
+    (
+      "{\"op\": \"submit\", \"kind\": \"x\", \"units\": \"1\", \"mem\": 0, \"dir\": \"/\", \"cmd\": [\"a\"]}",
+      "`units` is not a number of units in steps of 0.25"
     ),
     (
       "{\"op\": \"submit\", \"kind\": \"x\", \"units\": 1, \"mem\": 0, \"dir\": \"/\", \"cmd\": [\"a\"], \"env\": {\"A\": 1}}",
@@ -134,14 +142,25 @@ requestDefaults()
     marshal.decodeRequest(
       "{\"op\": \"submit\", \"kind\": \"x\", \"units\": 1, \"mem\": 0, \"dir\": \"/\", \"cmd\": [\"a\"]}"
     ),
-    Ok(Request.Submit(JobSpec("x", 1, 0, false, "/", None, ["a"], [])))
+    Ok(Request.Submit(JobSpec("x", 4, 0, false, "/", None, ["a"], [])))
   )
   assertEq(
     marshal.decodeRequest(
       "{\"op\": \"submit\", \"kind\": \"x\", \"units\": 1, \"mem\": 0, \"dir\": \"/\", \"cmd\": [\"a\"], \"landing\": null, \"deadline_ms\": null}"
     ),
-    Ok(Request.Submit(JobSpec("x", 1, 0, false, "/", None, ["a"], [])))
+    Ok(Request.Submit(JobSpec("x", 4, 0, false, "/", None, ["a"], [])))
   )
+  // fractional units, and units that are not given
+  assertEq(
+    marshal.decodeRequest(
+      "{\"op\": \"submit\", \"kind\": \"x\", \"units\": 1.25, \"units_given\": false, \"mem\": 0, \"dir\": \"/\", \"cmd\": [\"a\"]}"
+    ),
+    Ok(Request.Submit(JobSpec("x", 5, 0, false, "/", None, ["a"], [], unitsGiven = false)))
+  )
+  val fractional = JobSpec("x", 3, 0, false, "/", None, ["a"], [], unitsGiven = false)
+  val text = marshal.encodeRequest(Request.Submit(fractional)).render
+  assert(text.contains("\"units\":0.75") && text.contains("\"units_given\":false"), text)
+  assertEq(marshal.decodeRequest(text), Ok(Request.Submit(fractional)))
   assertEq(marshal.decodeRequest("{\"op\": \"stop\"}"), Ok(Request.Stop(false, false)))
   assertEq(marshal.decodeRequest(" {\"op\": \"ls\", \"extra\": true} "), Ok(Request.List))
 
@@ -176,7 +195,13 @@ overview(
     landing: Option[long] = None,
     takeSlot: Option[marshal.TakeSlotUse] = None
 ) -> Overview =
-  Overview(Usage(5, 12, 1024, 4096, running.length, queued.length, landing, takeSlot), 3723000, running, queued, recent)
+  Overview(
+    Usage(20, 48, 1024, 4096, running.length, queued.length, landing, takeSlot),
+    3723000,
+    running,
+    queued,
+    recent
+  )
 
 val everyWhy: Vector[Why] = [
   Why.NoUnits,
@@ -314,8 +339,13 @@ measuredUsage()
     marshal.decodeReply(
       "{\"ok\":true,\"units\":0,\"unit_budget\":12,\"mem\":0,\"mem_budget\":0,\"running\":0,\"queued\":0,\"landing\":null,\"take_slot\":null}"
     ),
-    Ok(Reply.Using(Usage(0, 12, 0, 0, 0, 0, None, None)))
+    Ok(Reply.Using(Usage(0, 48, 0, 0, 0, 0, None, None)))
   )
+  // units go out as units, fractions among them, and come back in quarters
+  val busy = Usage(7, 48, 0, 0, 2, 0, None, Some(marshal.TakeSlotUse("/d", 8, 0, false)))
+  val js = marshal.statusJson(busy, [])
+  assertEq((js("units").asReal, js("unit_budget").asLong), (Some(1.75), Some(long(12))))
+  assertEq(js("take_slot")("units").asLong, Some(long(2)))
 
 @test("the snapshot request reads back as itself and is written as op snapshot")
 snapshotRequest()

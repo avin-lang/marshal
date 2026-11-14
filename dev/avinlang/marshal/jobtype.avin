@@ -51,7 +51,7 @@ data Step(
 // A type as its file gives it. `steps` are the gate; `land` the steps a gate that says `land` goes
 // on to; `failMap` a step run after a red gate that names the branch behind each failure;
 // `cleanup` the steps that end every pass, whatever came of it; `bisect` the repeatable parameter
-// whose values a red gate is bisected over.
+// whose values a red gate is bisected over. `units` is in quarters (cores.avin).
 data JobType(
     name: string,
     file: string,
@@ -120,10 +120,10 @@ parseJobType(name: string, file: string, text: string) -> Result[JobType, string
     "landing" -> true
     other -> return Err(s"`lane` is \"dev\" or \"landing\", not \"$other\"")
   val units = j.get("units") match
-    None -> 1
-    Some(v) -> v.asInt.filter(n -> n >= 0) match
+    None -> wholeUnits(1)
+    Some(v) -> quartersOf(v).filter(n -> n >= 0) match
       Some(n) -> n
-      None -> return Err("`units` is a whole number, 0 or more")
+      None -> return Err("`units` is a number 0 or more in steps of 0.25, such as 1 or 0.5")
   val memory = j.get("mem") match
     None -> long(0)
     Some(v) -> v.asString.flatMap(parseSize).orElse(v.asLong.filter(n -> n >= 0)) match
@@ -494,7 +494,7 @@ typeHelp(t: JobType) -> string
   val positional = t.params.find(p -> p.positional).map(p -> s" [<${p.name}>...]").getOrElse("")
   lines += s"usage: marshal run-type ${t.name} [options]$positional"
   if t.about.nonEmpty then lines += "\n" + t.about
-  lines += s"\nFrom ${t.file}. Runs as a job of kind `${t.kind}` in the ${if t.landing then "landing lane" else s"development lane, ${t.units} units"}."
+  lines += s"\nFrom ${t.file}. Runs as a job of kind `${t.kind}` in the ${if t.landing then "landing lane" else s"development lane, ${formatUnits(t.units)} units"}."
   if t.params.nonEmpty then lines += "\nParameters:"
   for p in t.params
     val value = if p.kind == "bool" then "" else s" <${p.kind}>"

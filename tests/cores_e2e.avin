@@ -1,0 +1,186 @@
+module tests
+
+// End to end, units learned from the cores a command's runs used: a busy command's run is measured
+// and its next run weighs that; an idle one learns a quarter, so several run in a budget of one;
+// `--units` wins and is told when it is far off; a never-seen command keeps its kind's default;
+// queued jobs weigh again when a run teaches more, and when a restart learns from a new memory.json;
+// a missing, corrupt or version 1 memory.json learns the cores again from the event log. The
+// helpers are e2e.avin's, together_e2e.avin's and reserve_e2e.avin's.
+import avin.fs
+import avin.threads
+import avin.time
+import avin.time.millis
+import dev.avinlang.json
+import dev.avinlang.json.Json
+import dev.avinlang.marshal
+
+// `sh work.sh SECONDS CORES` keeps CORES cores busy for SECONDS (none: it sleeps). Its arguments
+// are not part of its signature, so every run of it is the same command to learn from.
+private val WorkScript: string = """
+n=$2
+if [ "$n" = 0 ]; then exec sleep "$1"; fi
+i=0
+while [ $i -lt $n ]; do
+  perl -e 'my $t = time + '"$1"'; 1 while time < $t' &
+  i=$((i + 1))
+done
+wait
+"""
+
+// The options and command that run work.sh in `home` for `seconds` on `cores` cores.
+private work(home: string, kind: string, seconds: string, cores: string) -> Vector[string]
+  fs.writeText(home + "/work.sh", WorkScript).ok.get
+  ["--kind", kind, "--dir", home, "--", "sh", "work.sh", seconds, cores]
+
+// The job's units as `status --json` gives them, in units, and whether they were learned.
+private unitsOf(home: string, id: long) -> (Option[real], Option[bool])
+  val j = statusJob(home, id)
+  (j("units").asReal, Some(j.get("units_learned").flatMap(v -> v.asBool).getOrElse(false)))
+
+// The `finished` event of job `id`.
+private endingOf(home: string, id: long) -> Json =
+  events(home).filter(e -> e("id").asLong == Some(id) && e("event").asString == Some("finished")).last
+
+// The id `submit` printed, its last line.
+private idOf(r: Ran) -> long = r.out.lines.toVector.last.trim.toLong()
+
+// `{"version":2,...}` with the cores of `kind` jobs running `sleep` at `cores`.
+private sleepCores(kind: string, cores: string) -> string =
+  s"{\"version\":2,\"peaks\":{},\"cores\":{\"$kind\\nsleep\":[$cores]}}\n"
+
+@test("a busy run is measured, its next run weighs the cores it used, and ls shows both")
+busyLearned()
+  val home = newHome()
+  // long enough for whole intervals of it: the time a process uses after the last sample before
+  // it ends is not seen
+  val first = submitted(home, work(home, "cpu", "6", "2")*)
+  assertEq(m(home, "wait", first.toString()).code, 0)
+  val end = endingOf(home, first)
+  val peak = end("peak_cores").asReal.get
+  // two cores, give or take what a shared machine takes from them
+  assert(1.4 <= peak <= 2.6, s"$end")
+  assert(end("cpu_ms").asLong.get >= 5000, s"$end")
+  // a finished job's USED is its peak
+  val used = marshal.formatCores(marshal.centiOf(end("peak_cores")).get)
+  assert(lsRow(home, first).contains(s" $used "), lsRow(home, first))
+  val next = submitted(home, work(home, "cpu", "30", "1")*)
+  val (units, learned) = unitsOf(home, next)
+  assertEq(learned, Some(true))
+  assertEq(units, Some(real(marshal.learnedUnits([marshal.centiOf(end("peak_cores")).get], 48).get) / 4.0))
+  assert(lsRow(home, next).contains(" ~"), lsRow(home, next))
+  // while it runs, status --json says how many cores it keeps busy
+  assert(within(10000, () -> statusJob(home, next).has("cores")), s"${statusJob(home, next)}")
+  assertEq(m(home, "stop", "--force").code, 0)
+  cleanUp(home)
+
+@test("idle runs learn a quarter unit, and four of them then run together in a budget of one")
+idleQuarter()
+  val home = newHome("{\"units\": 1}")
+  assertEq(m(home, (["run"] ++ work(home, "nap", "2.5", "0"))*).code, 0)
+  // the shell's start costs a little; a sleep nothing
+  assert(endingOf(home, 1)("peak_cores").asReal.get <= 0.1, s"${endingOf(home, 1)}")
+  val ids = (1 .. 4).map(_ -> submitted(home, work(home, "nap", "3", "0")*)).toVector
+  for id in ids do assertEq(unitsOf(home, id), (Some(0.25), Some(true)))
+  for id in ids do assertEq(m(home, "wait", id.toString()).code, 0)
+  assertEq(mostAtOnce(home, false), 4)
+  cleanUp(home)
+
+@test("--units wins over what is learned, and run and submit say so when it is far off")
+givenWins()
+  val home = newHome()
+  fs.writeText(home + "/memory.json", sleepCores("k", "1.2, 0.4")).ok.get
+  val far = m(home, "submit", "--kind", "k", "--units", "4", "--", "sleep", "30")
+  assertEq(far.code, 0)
+  assert(far.out.contains("marshal: declared 4 units; recent runs used about 1.2"), far.out)
+  assertEq(unitsOf(home, idOf(far)), (Some(4.0), Some(false)))
+  // 2 against the 1.25 learned: under 2 units apart, no hint
+  val near = m(home, "submit", "--kind", "k", "--units", "2", "--", "sleep", "30")
+  assert(!near.out.contains("declared"), near.out)
+  // a fraction is taken as given
+  val small = m(home, "submit", "--kind", "big", "--units", "0.5", "--", "sleep", "30")
+  assertEq(unitsOf(home, idOf(small)), (Some(0.5), Some(false)))
+  stopDaemon(home)
+  // run says it too, before it waits
+  fs.writeText(home + "/memory.json", sleepCores("r", "6")).ok.get
+  val ran = m(home, "run", "--kind", "r", "--units", "1", "--", "sleep", "0.1")
+  assertEq(ran.code, 0)
+  assert(ran.out.contains("marshal: declared 1 units; recent runs used about 6"), ran.out)
+  // a refused --units never reaches the daemon
+  for bad in ["0", "0.3", "-2", "x"]
+    val r = m(home, "submit", "--units", bad, "--", "true")
+    assertEq(r.code, 2)
+    assert(r.out.contains("steps of 0.25"), r.out)
+  cleanUp(home)
+
+@test("a command never seen keeps its kind's default, 4 for a test and 1 for the rest; exclusive weighs the budget")
+neverSeen()
+  val home = newHome()
+  fs.writeText(home + "/memory.json", sleepCores("known", "2")).ok.get
+  assertEq(unitsOf(home, submitted(home, "--kind", "test", "--", "sleep", "30")), (Some(4.0), Some(false)))
+  assertEq(unitsOf(home, submitted(home, "--kind", "other", "--", "sleep", "30")), (Some(1.0), Some(false)))
+  // another command of a known kind is not known
+  assertEq(unitsOf(home, submitted(home, "--kind", "known", "--", "perl", "-e", "sleep 30")), (Some(1.0), Some(false)))
+  assertEq(unitsOf(home, submitted(home, "--kind", "known", "--", "sleep", "30")), (Some(2.0), Some(true)))
+  val ex = submitted(home, "--kind", "known", "--exclusive", "--", "sleep", "30")
+  assertEq(unitsOf(home, ex), (Some(12.0), Some(false)))
+  assertEq(m(home, "stop", "--force").code, 0)
+  cleanUp(home)
+
+@test("a queued job that gave no units weighs again when a run of its command teaches more")
+queuedResized()
+  val home = newHome("{\"units\": 4}")
+  // a blocker fills the budget, so the next waits, at its kind's default: nothing is learned yet
+  val blocker = submitted(home, "--kind", "block", "--units", "4", "--", "sleep", "30")
+  val queued = submitted(home, work(home, "w", "30", "1")*)
+  val given = submitted(home, (["--units", "1"] ++ work(home, "w", "30", "1"))*)
+  assertEq(unitsOf(home, queued), (Some(1.0), Some(false)))
+  // a run of the same command on two cores, quick so it starts at once, teaches about two
+  assertEq(m(home, (["run", "--quick"] ++ work(home, "w", "6", "2"))*).code, 0)
+  val taught = statusJob(home, queued)
+  assertEq(taught.get("units_learned").flatMap(v -> v.asBool), Some(true))
+  assert(taught("units").asReal.get >= 1.5, s"$taught")
+  // units given stay given
+  assertEq(unitsOf(home, given), (Some(1.0), Some(false)))
+  assertEq(statusJob(home, blocker)("state").asString, Some("running"))
+  assertEq(m(home, "stop", "--force").code, 0)
+  cleanUp(home)
+
+@test("a restart weighs the queued jobs again from what it learns, and keeps a running job's cores")
+restartResized()
+  val home = newHome("{\"units\": 4}")
+  fs.writeText(home + "/memory.json", sleepCores("w", "0.5")).ok.get
+  val busy = submitted(home, (["--units", "4"] ++ work(home, "cpu", "30", "1"))*)
+  val queued = submitted(home, "--kind", "w", "--", "sleep", "30")
+  val given = submitted(home, "--kind", "w", "--units", "1", "--", "sleep", "30")
+  assertEq(unitsOf(home, queued), (Some(0.5), Some(true)))
+  assert(within(10000, () -> statusJob(home, busy).has("peak_cores")), s"${statusJob(home, busy)}")
+  // the new image reads a memory.json that has learned more
+  fs.writeText(home + "/memory.json", sleepCores("w", "2.6")).ok.get
+  restarted(home)
+  assertEq(unitsOf(home, queued), (Some(2.75), Some(true)))
+  assertEq(unitsOf(home, given), (Some(1.0), Some(false)))
+  assert(statusJob(home, busy).has("peak_cores"), s"${statusJob(home, busy)}")
+  // the taken-over job goes on being measured from a baseline: its past is no spike
+  assert(within(10000, () -> statusJob(home, busy).has("cores")), s"${statusJob(home, busy)}")
+  threads.sleep(millis(2500))
+  assert(statusJob(home, busy)("peak_cores").asReal.get <= 1.6, s"${statusJob(home, busy)}")
+  assertEq(m(home, "stop", "--force").code, 0)
+  cleanUp(home)
+
+// A `finished` event of job `id`, of `kind`, running `sleep`, measured at `cores`.
+private coresLine(id: long, kind: string, cores: string) -> string =
+  s"{\"ts\":${time.now().epochMillis},\"event\":\"finished\",\"id\":$id,\"kind\":\"$kind\",\"landing\":false,\"cmd\":[\"sleep\",\"1\"],\"exit\":0,\"run_ms\":1000,\"peak_rss\":1048576,\"peak_cores\":$cores}"
+
+@test("a missing, corrupt or version 1 memory.json learns the cores again from the event log, written as version 2")
+coresFallBack()
+  for bad in ["missing", "", "{\"version\":2,\"peaks\":{}", "{\"version\":1,\"peaks\":{\"e\\nsleep\":[1048576]}}"]
+    val home = newHome()
+    val lines = [coresLine(1, "e", "2.3"), coresLine(2, "e", "0.4")]
+    fs.writeText(home + "/events.jsonl", lines.mkString("\n") + "\n").ok.get
+    if bad != "missing" then fs.writeText(home + "/memory.json", bad).ok.get
+    val id = submitted(home, "--kind", "e", "--", "sleep", "30")
+    assert(unitsOf(home, id) == (Some(2.5), Some(true)), s"$bad: ${unitsOf(home, id)}")
+    val text = fs.readText(home + "/memory.json").ok.get
+    assert(text.contains("\"version\":2") && text.contains("[2.3,0.4]"), text)
+    assertEq(m(home, "stop", "--force").code, 0)
+    cleanUp(home)

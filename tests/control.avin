@@ -107,7 +107,8 @@ usageQueueHeld()
     marshal.decodeReply(
       "{\"ok\":true,\"units\":0,\"unit_budget\":12,\"mem\":0,\"mem_budget\":0,\"running\":0,\"queued\":0,\"landing\":null,\"take_slot\":null}"
     ),
-    Ok(Reply.Using(Usage(0, 12, 0, 0, 0, 0, None, None)))
+    // a unit is four quarters
+    Ok(Reply.Using(Usage(0, 48, 0, 0, 0, 0, None, None)))
   )
 
 @test("higher priorities go first, equal ones keep their order, the extremes included")
@@ -155,7 +156,7 @@ urgentOption()
   val env = [("A", "b")]
   assertEq(
     cli.parseSubmission(["--urgent", "--", "make"], "/w", env),
-    Ok(marshal.JobSpec("build", 1, 0, false, "/w", None, ["make"], env, true))
+    Ok(marshal.JobSpec("build", 4, 0, false, "/w", None, ["make"], env, true, unitsGiven = false))
   )
   assertEq(
     cli.parseSubmission(["--landing", "--urgent", "make"], "/w", env).map(s -> (s.landing, s.urgent)),
@@ -175,7 +176,7 @@ urgentOption()
     marshal.decodeRequest(
       "{\"op\": \"submit\", \"kind\": \"x\", \"units\": 1, \"mem\": 0, \"dir\": \"/\", \"cmd\": [\"a\"]}"
     ),
-    Ok(Request.Submit(marshal.JobSpec("x", 1, 0, false, "/", None, ["a"], [], false)))
+    Ok(Request.Submit(marshal.JobSpec("x", 4, 0, false, "/", None, ["a"], [], false)))
   )
   refused(
     "{\"op\": \"submit\", \"kind\": \"x\", \"units\": 1, \"mem\": 0, \"dir\": \"/\", \"cmd\": [\"a\"], \"urgent\": 1}",
@@ -375,7 +376,7 @@ shownHeld()
   assertEq(marshal.stateColumn(infoOf(1)), "queued")
   assert(marshal.listing([infoOf(1, true)]).contains("held"))
   assertEq(
-    marshal.usageLine(Usage(0, 12, 0, long.MaxValue, 0, 2, None, None, queueHeld = true)),
+    marshal.usageLine(Usage(0, 48, 0, long.MaxValue, 0, 2, None, None, queueHeld = true)),
     "units 0/12, memory 0, 0 running, 2 queued, landing lane free; the queue is held: nothing new starts"
   )
   assertEq(top.whyText(Held), "held")

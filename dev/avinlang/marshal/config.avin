@@ -93,7 +93,7 @@ readConfig(text: string, machineMemory: long) -> Result[Config, string]
   val loadWait = waitSetting(j, "load_wait", DefaultLoadWait)?
   Ok(
     Config(
-      Budget(units, memory),
+      Budget(wholeUnits(units), memory),
       Learning(window, minRuns, defaultLearning.factor, floor),
       takeSlot,
       retention,

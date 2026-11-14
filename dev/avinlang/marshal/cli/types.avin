@@ -67,9 +67,7 @@ typeLine(args: Vector[string]) -> Result[TypeLine, string]
         Some(ms) -> deadline = Some(ms)
         None -> return Err(s"`--deadline $value`: a deadline is minutes, or a number with s, m or h, such as 90s")
       "--quiet-timeout" -> quiet = parseQuietTimeout(value)?
-      "--units" -> value.toIntOption() match
-        Some(n) -> units = Some(n)
-        None -> return Err(s"`--units $value`: units are a whole number")
+      "--units" -> units = Some(marshal.unitsOption(value)?)
       "--label" -> label = marshal.checkLabel(value).mapErr(e -> s"`--label`: $e")?
       _ -> marshal.parseSize(value) match
         Some(n) -> memory = Some(n)

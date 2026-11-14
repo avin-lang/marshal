@@ -6,6 +6,7 @@ module tests
 // MARSHAL_GOLDEN_WRITE=1 set, and the new file is read over in review.
 import avin.fs
 import avin.process
+import dev.avinlang.marshal
 import dev.avinlang.marshal.{JobInfo, Outcome, Overview, QueuedJob, TakeSlotUse, Usage, Why}
 import dev.avinlang.marshal.top.App
 import dev.avinlang.marshal.top
@@ -72,7 +73,7 @@ gjob(
   JobInfo(
     id,
     kind,
-    units,
+    marshal.wholeUnits(units),
     memory,
     landing,
     "/w",
@@ -155,7 +156,20 @@ busy() -> Overview
     gjob(15, state = "done", outcome = Some(Outcome.Exited(0)), peak = 700 * 1048576)
   ]
   Overview(
-    Usage(6, 12, 7 * G, 16 * G, 4, 9, Some(21), Some(TakeSlotUse("/s/.git", 3, 2, false)), 6 * G, 64 * G, true, 10 * G),
+    Usage(
+      24,
+      48,
+      7 * G,
+      16 * G,
+      4,
+      9,
+      Some(21),
+      Some(TakeSlotUse("/s/.git", 12, 2, false)),
+      6 * G,
+      64 * G,
+      true,
+      10 * G
+    ),
     90061000,
     running,
     queuedJobs,
@@ -163,7 +177,7 @@ busy() -> Overview
     waits
   )
 
-idleDaemon() -> Overview = Overview(Usage(0, 12, 0, 16 * G, 0, 0, None, None), 5000, [], [], [])
+idleDaemon() -> Overview = Overview(Usage(0, 48, 0, 16 * G, 0, 0, None, None), 5000, [], [], [])
 
 @test("the unit bar puts each boundary at the nearest cell and an exact half rounds up, wherever the half falls")
 unitBarHalves()
@@ -308,7 +322,7 @@ goldenQuickLane()
     ),
     QueuedJob(gjob(44, state = "queued", units = 1), 1, Why.NoUnits)
   ]
-  val o = Overview(Usage(12, 12, 0, 16 * G, 3, 2, None, None, quick = 2), 60000, running, queued, [])
+  val o = Overview(Usage(48, 48, 0, 16 * G, 3, 2, None, None, quick = 2), 60000, running, queued, [])
   golden("quick-lane", drawn(viewing(o), 100, 12))
   // with no quick job running, the header says nothing of the lane
   assert(!drawn(viewing(idleDaemon()), 100, 10).rowText(0).contains("quick"))
@@ -344,7 +358,7 @@ goldenUrgentMarks()
     QueuedJob(gjob(58, state = "queued"), 2, Why.NoUnits)
   ]
   val ended = [gjob(50, kind = "test", state = "done", outcome = Some(Outcome.Exited(0)), urgent = true)]
-  val o = Overview(Usage(8, 12, 0, 16 * G, 5, 3, Some(53), None, quick = 1), 60000, running, queued, ended)
+  val o = Overview(Usage(32, 48, 0, 16 * G, 5, 3, Some(53), None, quick = 1), 60000, running, queued, ended)
   golden("urgent-marks", drawn(viewing(o), 120, 20))
   golden("urgent-marks-80", drawn(viewing(o), 80, 20))
   assert(drawn(viewing(o), 120, 20).rowText(5).contains("test!"))
@@ -358,7 +372,7 @@ goldenExclusiveMarks()
   ]
   val queued = [QueuedJob(gjob(63, kind = "bench", state = "queued", exclusive = true), 1, Why.NoUnits)]
   val ended = [gjob(60, kind = "bench", state = "done", outcome = Some(Outcome.Exited(0)), exclusive = true)]
-  val o = Overview(Usage(8, 12, 0, 16 * G, 5, 3, None, None), 60000, running, queued, ended)
+  val o = Overview(Usage(32, 48, 0, 16 * G, 5, 3, None, None), 60000, running, queued, ended)
   golden("exclusive-marks", drawn(viewing(o), 100, 16))
   assert(drawn(viewing(o), 100, 16).rowText(5).contains("bench#"))
   assert(drawn(viewing(o), 100, 16).rowText(6).contains("bench#!"))
@@ -366,7 +380,7 @@ goldenExclusiveMarks()
 // A daemon running only a landing job of `units`, with take-slot's use if any.
 landingOnly(units: int, takeSlot: Option[TakeSlotUse]) -> Overview =
   Overview(
-    Usage(0, 12, 0, 16 * G, 1, 0, Some(7), takeSlot),
+    Usage(0, 48, 0, 16 * G, 1, 0, Some(7), takeSlot),
     60000,
     [gjob(7, kind = "test", units = units, landing = true)],
     [],
@@ -381,26 +395,26 @@ goldenLandingUnits()
   // `0 / 12   landing 1` ends at column 40 of a 40-cell screen, and is dropped from a 39-cell one
   for w in [100, 40, 39, 24]
     golden(s"landing-units-$w", drawn(viewing(alone), w, 10))
-  val beside = landingOnly(3, Some(TakeSlotUse("/s/.git", 4, 0, false)))
+  val beside = landingOnly(3, Some(TakeSlotUse("/s/.git", 16, 0, false)))
   // `0 + take-slot 4 / 12   landing 3` ends at column 61 of a 61-cell screen
   for w in [120, 61, 60, 40]
     golden(s"landing-units-takeslot-$w", drawn(viewing(beside), w, 10))
   golden(
     "landing-units-takeslot-waiting",
-    drawn(viewing(landingOnly(2, Some(TakeSlotUse("/s/.git", 4, 3, false)))), 100, 10)
+    drawn(viewing(landingOnly(2, Some(TakeSlotUse("/s/.git", 16, 3, false)))), 100, 10)
   )
   // the lane held by take-slot, or by a landing job not among the running ones: nothing is added
   golden(
     "landing-units-lane-takeslot",
     drawn(
-      viewing(Overview(Usage(0, 12, 0, 16 * G, 0, 0, None, Some(TakeSlotUse("/s", 2, 0, true))), 0, [], [], [])),
+      viewing(Overview(Usage(0, 48, 0, 16 * G, 0, 0, None, Some(TakeSlotUse("/s", 8, 0, true))), 0, [], [], [])),
       100,
       10
     )
   )
   golden(
     "landing-units-not-running",
-    drawn(viewing(Overview(Usage(0, 12, 0, 16 * G, 0, 1, Some(9), None), 0, [], [], [])), 100, 10)
+    drawn(viewing(Overview(Usage(0, 48, 0, 16 * G, 0, 1, Some(9), None), 0, [], [], [])), 100, 10)
   )
   val row = drawn(viewing(alone), 100, 10).rowText(1)
   assert(row.contains("] 0 / 12   landing 1"), row)
