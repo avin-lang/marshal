@@ -110,7 +110,7 @@ reapOrphans() -> int
     val owner = (if lines.length > 1 then lines(1).trim.toLongOption() else None).getOrElse(0)
     if lines.nonEmpty && !(owner >= 1 && process.signal(owner, 0).isOk)
       val home = lines(0)
-      for pid in fs.readText(home + "/daemon.pid").ok.flatMap(t -> t.trim.toLongOption())
+      for pid in fs.readText(home + "/daemon.pid").ok.flatMap(t -> t.trim.toLongOption()).toList
         val _ = process.signal(pid, 15)
         val until = time.monotonic() + millis(5000)
         while process.signal(pid, 0).isOk && time.monotonic() < until do threads.sleep(millis(20))
@@ -657,10 +657,10 @@ restartThroughSymlink()
   val home = newHome()
   assertEq(m(home, "status").code, 0)
   val before = daemonPid(home)
-  val real = copyOfBin(home, "cellar-real")
+  val target = copyOfBin(home, "cellar-real")
   fs.createDirAll(home + "/links").ok.get
   val link = home + "/links/marshal"
-  assertEq(Command("ln", "-s", real, link).run().ok, Some(ExitStatus.Exited(0)))
+  assertEq(Command("ln", "-s", target, link).run().ok, Some(ExitStatus.Exited(0)))
   assertEq(mFrom(link, home, [], "restart").code, 0)
   val log = daemonLog(home)
   assert(log.contains("/cellar-real/marshal with"), log)

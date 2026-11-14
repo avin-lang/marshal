@@ -100,8 +100,8 @@ settleWhy(
     waitMs: Option[long],
     now: long
 ) -> Option[Why]
-  for from in waitingSince
-    for bound in waitMs
+  for from in waitingSince.toList
+    for bound in waitMs.toList
       if now - from >= bound then return None
   loadWhy(load, limit, since, windowMs, now)
 

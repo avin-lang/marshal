@@ -35,7 +35,7 @@ diskFreeOf(text: string) -> Option[long]
   for line in text.lines.drop(1)
     val words = line.trim.split(" ").filter(w -> w.nonEmpty).toVector
     if words.length < 4 then continue
-    for kib in words(3).toLongOption()
+    for kib in words(3).toLongOption().toList
       if kib >= 0
         val bytes = kib * 1024
         least = Some(least.map(l -> if l < bytes then l else bytes).getOrElse(bytes))

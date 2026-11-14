@@ -46,7 +46,7 @@ endedJobs(log: string) -> Result[Vector[JobInfo], string]
   loop
     f.readLine() match
       Ok(Some(line)) ->
-        for e in endingOf(line)
+        for e in endingOf(line).toList
           position.get(e.1.id) match
             Some(p) -> ends(p) = e
             None ->

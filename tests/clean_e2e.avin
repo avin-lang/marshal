@@ -89,9 +89,9 @@ cleanDryRun()
   for id in 1 .. 3 do assert(hasLog(home, id))
   assert(fs.isDir(home + "/runs/1"))
   assertEq(fs.readText(home + "/events.jsonl").ok.get, before)
-  val real = m(home, "clean")
+  val done = m(home, "clean")
   assertEq(
-    real.out.replace("would remove", "removed").lines.filter(l -> l.startsWith("removed")),
+    done.out.replace("would remove", "removed").lines.filter(l -> l.startsWith("removed")),
     dry.out.replace("would remove", "removed").lines.filter(l -> l.startsWith("removed"))
   )
   for id in 1 .. 3 do assert(!hasLog(home, id))
@@ -255,9 +255,9 @@ cleanBytesReported()
   val freed = dry.out.lines.filter(l -> l.startsWith("marshal: would free ")).toVector
   assertEq(freed.length, 1)
   assert(fs.isFile(home + "/runs/1/big"))
-  val real = m(home, "clean")
+  val done = m(home, "clean")
   assertEq(
-    real.out.lines.filter(l -> l.startsWith("marshal: freed ")).map(l -> l.drop("marshal: freed ".byteLength)).toVector,
+    done.out.lines.filter(l -> l.startsWith("marshal: freed ")).map(l -> l.drop("marshal: freed ".byteLength)).toVector,
     freed.map(l -> l.drop("marshal: would free ".byteLength))
   )
   assert(!fs.exists(home + "/runs/1/big"))
@@ -309,15 +309,15 @@ automaticAge()
 retentionAcrossRestart()
   val home = newHome()
   quickJobs(home, 3)
-  val long = submitted(home, "--units", "12", "--", "sleep", "30")
+  val running = submitted(home, "--units", "12", "--", "sleep", "30")
   for id in 1 .. 3 do assert(hasLog(home, id))
   fs.writeText(home + "/config.json", "{\"keep_jobs\": 1}").ok.get
   restarted(home)
   assert(!hasLog(home, 1) && !hasLog(home, 2), "old logs remain")
   assert(hasLog(home, 3))
-  assert(hasLog(home, long))
+  assert(hasLog(home, running))
   assert(m(home, "ls").out.contains("running"))
-  assertEq(m(home, "kill", long.toString()).code, 0)
+  assertEq(m(home, "kill", running.toString()).code, 0)
   cleanUp(home)
 
 @test("keep_logs and keep_jobs set to never keep everything, and a bad setting stops the daemon with the reason")

@@ -344,7 +344,7 @@ class App(val sock: string)
   update(o: Overview)
     // once earlier jobs are loaded, the ended jobs the snapshot no longer carries join them, so
     // the list scrolled back through has no hole
-    for before in overview
+    for before in overview.toList
       if olderLeft.isDefined
         val now = (o.recent ++ o.running ++ o.waiting ++ o.queued.map(q -> q.job)).map(j -> j.id).toSet
         older = before.recent.filter(j -> !now.contains(j.id)) ++ older
@@ -372,8 +372,8 @@ class App(val sock: string)
       None -> if followsTop then 0 else -1
     table.select(if at >= 0 then at else table.selected, shown.length)
     remember()
-    for j in logOf
-      for o in overview
+    for j in logOf.toList
+      for o in overview.toList
         val now = lines(o, ShowAll).find(l -> l.job.id == j.id)
         if now.isDefined then logOf = now.map(l -> l.job)
 
@@ -593,7 +593,7 @@ class App(val sock: string)
       table.offset = drawing.offset
       remember()
       position = positionOf(area.h - 1)
-      for j in logOf
+      for j in logOf.toList
         drawLog(g, parts(1), j)
     else
       position = ""
@@ -874,8 +874,8 @@ memoryText(u: Usage) -> string =
 // the units line from column `x` of row `y`: `   landing 1`, in the landing job's colour. Nothing while
 // no landing job runs, and nothing where the whole of it does not fit on the screen.
 landingUnits(g: Grid, x: int, y: int, o: Overview)
-  for id in o.usage.landing
-    for j in o.running.find(j -> j.id == id)
+  for id in o.usage.landing.toList
+    for j in o.running.find(j -> j.id == id).toList
       val text = s"landing ${marshal.formatUnits(j.units)}"
       if x + 3 + textWidth(text) <= g.width then g.text(x + 3, y, text, Style.fg(Cyan))
 

@@ -114,7 +114,7 @@ runType(args: Vector[string], typeName: Option[string]) -> int
     Ok(snap) ->
       typeFile = snap.typeFile
       program = snap.executable.getOrElse(program)
-      for stock in snap.stock do env = env.filter(e -> e.0 != "MARSHAL_STOCK") ++ [("MARSHAL_STOCK", stock)]
+      for stock in snap.stock.toList do env = env.filter(e -> e.0 != "MARSHAL_STOCK") ++ [("MARSHAL_STOCK", stock)]
     Err(e) -> eprintln(s"marshal: note: not copying the type for the job: $e; it runs from the installed files")
   // a quick run keeps the type's own deadline only where the quick lane allows it
   val typeDeadline = if line.quick then t.deadlineMs.filter(d -> d <= marshal.QuickCapMs) else t.deadlineMs
@@ -151,7 +151,7 @@ runType(args: Vector[string], typeName: Option[string]) -> int
   askDaemon(Request.Wait(id)) match
     Ok(Ended(job)) ->
       println(marshal.resultLine(job))
-      for text in fs.readText(s"${home()}/runs/$id/report.txt").ok do print(text)
+      for text in fs.readText(s"${home()}/runs/$id/report.txt").ok.toList do print(text)
       job.outcome.map(marshal.exitCode).getOrElse(Trouble)
     Ok(Failed(e)) -> complain(s"marshal: $e")
     Ok(other) -> complain(s"marshal: unexpected reply $other")

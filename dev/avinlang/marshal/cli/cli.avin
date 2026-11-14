@@ -425,7 +425,7 @@ parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]
     units.isDefined,
     owner
   )
-  for why in marshal.exclusiveRefusal(spec) do return Err(why)
+  for why in marshal.exclusiveRefusal(spec).toList do return Err(why)
   Ok(spec)
 
 // The value of `--quiet-timeout`, written as `--deadline` writes a deadline, in milliseconds.

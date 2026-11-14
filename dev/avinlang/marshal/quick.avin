@@ -17,7 +17,7 @@ val QuickCapMs: long = 2 * 60000
 quickRefusal(spec: JobSpec) -> Option[string]
   if !spec.quick then return None
   if spec.landing then return Some("a job is quick or landing, not both")
-  for d in spec.deadlineMs
+  for d in spec.deadlineMs.toList
     if d > QuickCapMs then return Some(
       s"a quick job's deadline is at most ${formatMillis(QuickCapMs)}, not ${formatMillis(d)}: drop --quick to give it longer"
     )

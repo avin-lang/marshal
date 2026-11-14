@@ -368,11 +368,11 @@ sweepBytes()
   val dry = marshal.sweepRule(home, {long(5)}, 1000, r, CleanRule(None, Some(1), true))
   // jobs 1 to 3: logs of 5 bytes each, job 2's sample 1 byte, each run directory's file 1 byte
   val before = fs.readText(home + "/events.jsonl").ok.get.byteLength
-  val real = marshal.sweepRule(home, {long(5)}, 1000, r, CleanRule(None, Some(1), false))
+  val done = marshal.sweepRule(home, {long(5)}, 1000, r, CleanRule(None, Some(1), false))
   val shrunk = before - fs.readText(home + "/events.jsonl").ok.get.byteLength
   assert(shrunk > 0)
   assertEq(dry.bytes, long(15 + 1 + 3 + shrunk))
-  assertEq(real.bytes, dry.bytes)
+  assertEq(done.bytes, dry.bytes)
   assert(
     marshal.sweepRule(home, {}, 1000, Retention(None, None, None, None), CleanRule(None, Some(0), false)).bytes > 0
   )
@@ -455,8 +455,8 @@ sweepDryRun()
   assertEq(dry.jobs, [long(1), 2, 3])
   for id in 1 .. 5 do assert(fs.isFile(s"$home/jobs/$id.log") && fs.isDir(s"$home/runs/$id"), s"$id")
   assertEq(fs.readText(home + "/events.jsonl").ok.get, before)
-  val real = marshal.sweepRule(home, {long(5)}, 1000, r, CleanRule(None, Some(1), false))
-  assertEq(real, CleanReport(false, dry.jobs, dry.runs, dry.steps, dry.events, dry.eventJobs, dry.bytes))
+  val done = marshal.sweepRule(home, {long(5)}, 1000, r, CleanRule(None, Some(1), false))
+  assertEq(done, CleanReport(false, dry.jobs, dry.runs, dry.steps, dry.events, dry.eventJobs, dry.bytes))
   assert(dry.events > 0)
   val _ = fs.removeDirAll(home)
 

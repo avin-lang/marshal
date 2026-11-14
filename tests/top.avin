@@ -845,13 +845,13 @@ logHeader()
 
 @test("a long command wraps inside the pane, whole, and the log keeps at least a row")
 logHeaderWraps()
-  val long = ["sh", "-c", (0 ..< 12).map(i -> "abcdefghij").mkString("")]
-  val o = Overview(full().usage, 0, [snapJob(1, cmd = long)], [], [])
+  val lengthy = ["sh", "-c", (0 ..< 12).map(i -> "abcdefghij").mkString("")]
+  val o = Overview(full().usage, 0, [snapJob(1, cmd = lengthy)], [], [])
   val app = viewing(o)
   app.handle(press(Enter))
   app.logLines = ["first", "last"]
   val g = drawn(app, 60, 30)
-  val whole = long.mkString(" ")
+  val whole = lengthy.mkString(" ")
   val title = rowOf(g, "job 1 log")
   // the wrapped lines under `command` have no label and carry the rest of the text
   var joined = ""

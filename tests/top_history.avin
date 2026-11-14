@@ -39,7 +39,7 @@ class FakeHistory(val all: Vector[JobInfo])
   source() -> HistorySource = (before, limit) -> page(before, limit)
   page(before: Option[long], limit: int) -> Result[Page, string]
     asked += 1
-    for why in failing
+    for why in failing.toList
       return Err(why)
     Ok(top.pageOf(all, before, limit))
 

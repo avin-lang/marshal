@@ -586,7 +586,7 @@ class Daemon(
   // its `submitted` event.
   submit(given: JobSpec, extra: Vector[(string, Json)] = []) -> Reply
     if stopping || draining then return Failed("the daemon is stopping and takes no new jobs")
-    for why in marshal.exclusiveRefusal(given) do return Failed(why)
+    for why in marshal.exclusiveRefusal(given).toList do return Failed(why)
     // an exclusive job is the only one running, so it weighs the whole budget; one that gave no
     // units weighs what its command's runs teach
     val sized = sizing(given)
@@ -601,7 +601,7 @@ class Daemon(
     marshal.externalRefusal(spec.external, spec.memoryGiven || spec.memory > 0) match
       Some(why) -> return Failed(why)
       None -> ()
-    for why in marshal.quickRefusal(spec) do return Failed(why)
+    for why in marshal.quickRefusal(spec).toList do return Failed(why)
     if !fs.isDir(spec.dir) then return Failed(s"no directory ${spec.dir}")
     if spec.retries < 0 then return Failed(s"retries are 0 or more, not ${spec.retries}")
     if spec.retryDelayMs < 0 then return Failed("a retry delay is not negative")
@@ -1031,7 +1031,7 @@ class Daemon(
     // (a note a log cannot take is lost; the job itself is not affected)
     if job.attempt > 1 then val _ = fs.appendText(job.log, s"marshal: attempt ${job.attempt} of ${spec.retries + 1}\n")
     val first = job.attempt == 1
-    for id in ahead
+    for id in ahead.toList
       val line = s"marshal: backfilled ahead of $id\n"
       val _ = if first then fs.writeText(job.log, line) else fs.appendText(job.log, line)
     // An exclusive job's log begins with what else the machine is doing as it starts; the job's
@@ -1600,7 +1600,7 @@ class Daemon(
       return
     // so would a paused one
     if drain && !force
-      for job in running.find(j -> j.paused)
+      for job in running.find(j -> j.paused).toList
         reply.foreach(
           r -> give(
             r,
@@ -1632,7 +1632,7 @@ class Daemon(
   finish()
     val _ = fs.remove(home + "/sock") // the daemon is ending; a file left is found stale by the next one
     val _ = fs.remove(home + "/daemon.pid")
-    for ts in slots
+    for ts in slots.toList
       ticket.foreach(name -> ts.removeTicket(name))
     for r in stopReplies do give(r, Done)
     if watchers.nonEmpty
@@ -2030,7 +2030,7 @@ run(home: string, resume: Option[string] = None) -> int
       val _ = fs.remove(home + "/sock")
       return 1
   val takeSlot = marshal.takeSlotDir(process.env("MARSHAL_TAKE_SLOT_DIR"), config.takeSlot)
-  for dir in takeSlot
+  for dir in takeSlot.toList
     if !fs.isDir(dir)
       eprintln(s"marshal: the take-slot directory $dir is not a directory")
       val _ = listener.close()
@@ -2059,7 +2059,7 @@ run(home: string, resume: Option[string] = None) -> int
           )
         )
       None -> eprintln(s"marshal: an open job's event is unreadable: $ev")
-  for ts in slots
+  for ts in slots.toList
     ts.lock()
     // a restarted daemon's own files are its jobs' and its ticket
     ts.forget(
@@ -2097,7 +2097,7 @@ run(home: string, resume: Option[string] = None) -> int
       threads.sleep(millis(sweepInterval()))
       events.send(Sweep)
     ())
-  for owner in watchedOwner()
+  for owner in watchedOwner().toList
     spawn(() ->
       loop
         threads.sleep(millis(200))
@@ -2142,7 +2142,7 @@ run(home: string, resume: Option[string] = None) -> int
   if loaded.isErr || learned.fromVersion1 || learned.withoutDurations then daemon.saveMemory()
   // the free disk is known before the first job can start
   daemon.diskFree = marshal.diskFree(daemon.diskDirs()).getOrElse(-1)
-  for s in saved
+  for s in saved.toList
     daemon.restore(s)
     val upgrade = if s.version == reportedVersion() then s"version ${s.version}" else s"version ${s.version} to ${reportedVersion()}"
     val waits = if s.waiting.isEmpty then "" else s" and ${s.waiting.length} waiting"

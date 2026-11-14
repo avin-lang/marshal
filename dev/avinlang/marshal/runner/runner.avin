@@ -207,7 +207,7 @@ execStep(
   if home.nonEmpty then marshal.recordStepGroup(home, job, pgid)
   val events = Channel[StepEvent](4)
   spawn(() -> events.send(StepExited(process.waitPid(pid))))
-  for ms in deadlineMs
+  for ms in deadlineMs.toList
     spawn(() ->
       threads.sleep(millis(ms))
       events.send(StepDue))
@@ -260,7 +260,7 @@ class Run(
   // The values every reference of a step expands with now.
   vars() -> Map[string, Vector[string]]
     var v = params
-    for b in t.bisect do v = v.updated(b, values)
+    for b in t.bisect.toList do v = v.updated(b, values)
     v.updated("dir", [jobDir]).updated("work", [work]).updated("run_dir", [runDir]).updated("head", [head]).updated(
       "pass",
       [passes.toString()]

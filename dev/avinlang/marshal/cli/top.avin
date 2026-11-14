@@ -36,7 +36,7 @@ watch(term: Terminal) -> Result[unit, IoError]
   val sock = home() + "/sock"
   val app = App(sock)
   app.history = Some(logHistory(home() + "/events.jsonl"))
-  for n in process.env("MARSHAL_TEST_TOP_IDLE_MS").flatMap(t -> t.toLongOption()).filter(n -> n >= 1)
+  for n in process.env("MARSHAL_TEST_TOP_IDLE_MS").flatMap(t -> t.toLongOption()).filter(n -> n >= 1).toList
     app.hideAfter = n
   var conn: Option[UnixStream] = None
   val epoch = time.monotonic()
@@ -99,5 +99,5 @@ look(app: App, conn: Option[UnixStream], sock: string) -> Option[UnixStream]
 
 // The lines of the log the pane shows, read again.
 readLog(app: App)
-  for (log, count) in app.logWanted()
+  for (log, count) in app.logWanted().toList
     app.logLines = fs.readTailLines(log, count).getOrElse([]).toVector

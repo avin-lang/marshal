@@ -127,7 +127,7 @@ parseCondition(text: string) -> Result[Condition, string]
     Some(c) -> if c == 0 then "" else body.slice(0, c - 1)
     None -> body
   val parts: Vector[string] = if rest.isEmpty || cut == Some(0) then [] else head.split(",").toVector
-  for text in labelText
+  for text in labelText.toList
     if text.isEmpty then return Err("`label` needs some text: label=<text>")
     filter = Filter(filter.names, filter.kind, filter.outcome, filter.landing, filter.notOk, Some(text))
   for part in parts

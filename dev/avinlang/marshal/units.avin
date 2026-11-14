@@ -8,46 +8,46 @@ private val Kibi: long = 1024
 // when bare. `29G` is 29 × 1024³ bytes. Anything else, a sign or a fraction among it, is None.
 parseSize(text: string) -> Option[long]
   if text.isEmpty then return None
-  val unit: long = text.last match
+  val multiplier: long = text.last match
     'K' | 'k' -> Kibi
     'M' | 'm' -> Kibi * Kibi
     'G' | 'g' -> Kibi * Kibi * Kibi
     'T' | 't' -> Kibi * Kibi * Kibi * Kibi
     _ -> 1
-  val digits = if unit == 1 then text else text.dropRight(1)
+  val digits = if multiplier == 1 then text else text.dropRight(1)
   if digits.isEmpty || !digits.chars.forall(c -> '0' <= c <= '9') then return None
   digits.toLongOption() match
-    Some(n) if n <= long.MaxValue / unit -> Some(n * unit)
+    Some(n) if n <= long.MaxValue / multiplier -> Some(n * multiplier)
     _ -> None
 
 // A size in the largest unit that divides it exactly: `29G`, `1536M`, `100`, `0`.
 formatSize(bytes: long) -> string
   if bytes == 0 then return "0"
   var n = bytes
-  var unit = 0
-  while unit < 4 && n % Kibi == 0
+  var power = 0
+  while power < 4 && n % Kibi == 0
     n /= Kibi
-    unit += 1
-  n.toString() + sizeUnit(unit)
+    power += 1
+  n.toString() + sizeUnit(power)
 
 // A measured size, rounded to the nearest for a narrow column: one decimal under ten of its unit and
 // whole numbers from there, in the largest unit it reaches: `512`, `1.5K`, `812M`, `9.4G`, `12G`.
 // What rounds up to 1024 of a unit is `1.0` of the next; at most five characters below 10000T.
 roundSize(bytes: long) -> string
   if bytes <= 0 then return "0"
-  var unit = 0
+  var power = 0
   var div: long = 1
-  while unit < 4 && bytes / div >= Kibi
+  while power < 4 && bytes / div >= Kibi
     div *= Kibi
-    unit += 1
-  if unit == 0 then return bytes.toString()
+    power += 1
+  if power == 0 then return bytes.toString()
   val whole = bytes / div
   val rem = bytes % div
   val tenths = whole * 10 + (rem * 10 + div / 2) / div
-  if tenths < 100 then return s"${tenths / 10}.${tenths % 10}" + sizeUnit(unit)
+  if tenths < 100 then return s"${tenths / 10}.${tenths % 10}" + sizeUnit(power)
   val rounded = whole + (if rem >= div - rem then 1 else 0)
-  if rounded >= Kibi && unit < 4 then return "1.0" + sizeUnit(unit + 1)
-  rounded.toString() + sizeUnit(unit)
+  if rounded >= Kibi && power < 4 then return "1.0" + sizeUnit(power + 1)
+  rounded.toString() + sizeUnit(power)
 
 private sizeUnit(i: int) -> string = ["", "K", "M", "G", "T"](i)
 

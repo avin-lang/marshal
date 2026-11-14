@@ -414,10 +414,10 @@ labelTopTable()
   assert(wide.rowText(head + 2).trim.endsWith("sleep 30"), wide.rowText(head + 2))
   assertEq(wide.rowText(head + 2).indexOf("sleep 30"), wide.rowText(head + 1).indexOf("sleep 30"))
   // a long label is cut with an ellipsis, and COMMAND keeps its place
-  val long = (0 ..< 60).map(i -> "L").mkString("")
-  val cut = drawn(viewing(overviewOf([labelled(1, long)])), 140, 20)
+  val lengthy = (0 ..< 60).map(i -> "L").mkString("")
+  val cut = drawn(viewing(overviewOf([labelled(1, lengthy)])), 140, 20)
   assert(cut.rowText(head + 1).contains("…"), cut.rowText(head + 1))
-  assert(!cut.rowText(head + 1).contains(long), cut.rowText(head + 1))
+  assert(!cut.rowText(head + 1).contains(lengthy), cut.rowText(head + 1))
   assert(cut.rowText(head + 1).trim.endsWith("sleep 30"), cut.rowText(head + 1))
   // a narrow screen leaves the column out
   val narrow = drawn(viewing(overviewOf([labelled(1, "train 209")])), 100, 20)
@@ -460,8 +460,8 @@ labelTopLogHeader()
   assert(p.rowText(pt + 2).contains("command"), p.rowText(pt + 2))
   assert(p.rowText(pt + 3).contains("──────"), p.rowText(pt + 3))
   // a label too long for the rest of the kind line wraps under where it began, every character kept
-  val long = (0 ..< 120).map(i -> if i % 10 == 9 then "z" else "a").mkString("")
-  val wrapped = viewing(overviewOf([labelled(3, long)]))
+  val lengthy = (0 ..< 120).map(i -> if i % 10 == 9 then "z" else "a").mkString("")
+  val wrapped = viewing(overviewOf([labelled(3, lengthy)]))
   wrapped.handle(press(Enter))
   wrapped.logLines = ["a line"]
   val w = drawn(wrapped, 60, 30)
@@ -471,7 +471,7 @@ labelTopLogHeader()
   for k in 1 ..< 5
     seen = seen + w.rowText(wt + k).slice(start, w.rowText(wt + k).byteLength).replace("│", "").trim
   assert(!seen.contains("…"), seen)
-  assertEq(seen, long)
+  assertEq(seen, lengthy)
   assert(w.rowText(wt + 1).contains("kind") && w.rowText(wt + 1).contains("build   label  "), w.rowText(wt + 1))
   assert(!w.rowText(wt + 2).contains("label") && !w.rowText(wt + 2).contains("kind"), w.rowText(wt + 2))
   assert(w.rowText(wt + 5).contains("command"), w.rowText(wt + 5))

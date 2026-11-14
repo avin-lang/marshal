@@ -280,9 +280,9 @@ goldenLog()
   app.handle(press(Down))
   app.logLines = []
   golden("log-empty", drawn(app, 100, 30))
-  val long = ["sh", "-c", (0 ..< 14).map(i -> "abcdefghij").mkString("")]
+  val lengthy = ["sh", "-c", (0 ..< 14).map(i -> "abcdefghij").mkString("")]
   val wrapping = viewing(
-    Overview(full().usage, 0, [gjob(1, cmd = long, label = "a label long enough to wrap in a narrow pane")], [], [])
+    Overview(full().usage, 0, [gjob(1, cmd = lengthy, label = "a label long enough to wrap in a narrow pane")], [], [])
   )
   wrapping.handle(press(Enter))
   wrapping.logLines = ["first", "last"]

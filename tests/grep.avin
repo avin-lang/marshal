@@ -274,11 +274,11 @@ grepBudget()
 
 @test("the matcher answers Err for an over-budget line and Ok otherwise, with -F never over budget")
 grepBudgetMatcher()
-  val long = "a".repeat(60) + "b"
-  assert(marshal.grepMatcher("(a+)+?$", false, false).ok.get(long).isErr)
+  val lengthy = "a".repeat(60) + "b"
+  assert(marshal.grepMatcher("(a+)+?$", false, false).ok.get(lengthy).isErr)
   assertEq(marshal.grepMatcher("(a+)+?$", false, false).ok.get("aaa"), Ok(true))
-  assertEq(marshal.grepMatcher("(a+)+?$", true, false).ok.get(long), Ok(false))
-  assertEq(marshal.grepMatcher("a+b$", false, false).ok.get(long), Ok(true))
+  assertEq(marshal.grepMatcher("(a+)+?$", true, false).ok.get(lengthy), Ok(false))
+  assertEq(marshal.grepMatcher("a+b$", false, false).ok.get(lengthy), Ok(true))
 
 @test("grep is a command: its usage names every option and the exit codes, and the README has its line")
 grepHelp()

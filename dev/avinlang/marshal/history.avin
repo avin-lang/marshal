@@ -214,18 +214,18 @@ private parseOffset(text: string) -> Option[long]
 // anything else.
 parseEndedSince(text: string, nowMs: long, zone: time.Zone) -> Option[long]
   if text.isEmpty then return None
-  val unit: long = text.last match
+  val scale: long = text.last match
     's' -> 1000
     'm' -> 60000
     'h' -> 3600000
     'd' -> 86400000
     'w' -> 604800000
     _ -> 0
-  if unit > 0
+  if scale > 0
     val digits = text.dropRight(1)
     if !isDigits(digits) then return None
     return digits.toLongOption() match
-      Some(n) if 0 < n <= nowMs / unit -> Some(nowMs - n * unit)
+      Some(n) if 0 < n <= nowMs / scale -> Some(nowMs - n * scale)
       _ -> None
   val parts = text.split("T")
   if parts.length > 2 then return None

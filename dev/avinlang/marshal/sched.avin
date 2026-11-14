@@ -246,7 +246,7 @@ private decide(
 ) -> Vector[Decision]
   val out = Buffer[Decision]()
   // An exclusive job running holds every lane: whatever waits, waits for it.
-  for x in running.find(r -> r.exclusive)
+  for x in running.find(r -> r.exclusive).toList
     for w in queue do out += Decision(w.id, Some(ForExclusive(x.id)))
     return out.toVector
   // The first exclusive job in queue order, if one waits; the jobs decided as usual (`weighed`) are
@@ -300,7 +300,7 @@ private decide(
       draining = Some(w.id)
   // While a landing job drains the machine, every development job waits behind it and no take-slot
   // waiter is counted as admitted.
-  for id in draining
+  for id in draining.toList
     for w in queue.filter(w -> !w.landing)
       out += Decision(w.id, Some(Behind(id)))
     return out.toVector
@@ -322,7 +322,7 @@ private decide(
   var spareMemory: long = 0
   for e in arrivalOrder(order, tickets)
     if hold.isDefined
-      for w in e.job
+      for w in e.job.toList
         val fits = units + w.units <= budget.units && memory + w.memory <= budget.memory
         val estimate = drainEstimate(w.expectedMs, w.drainMs)
         val endsFirst = drainAt > now && estimate <= drainAt - now
@@ -351,7 +351,7 @@ private decide(
       memory += e.memory
       ends += (now + e.expectedMs, e.units, e.memory)
       if e.job.isEmpty then theirs += e.units
-    for w in e.job
+    for w in e.job.toList
       if go
         out += Decision(w.id, None)
       elif starved.exists(s -> s.id == w.id)
@@ -368,7 +368,7 @@ private decide(
         out += Decision(w.id, Some(why), None, if backfills then Some(drainAt) else None)
       else
         out += Decision(w.id, Some(waitsFor(budget, units, memory, theirs, e, fits, head)))
-  for x in exclusive
+  for x in exclusive.toList
     // it waits for the load without reserving anything; once that has settled, it waits behind a job
     // ahead of it that waits, then for the machine to empty
     val ahead = out.find(d -> d.why.isDefined && weighed.exists(w -> w.id == d.id && !w.landing))
