@@ -43,7 +43,8 @@
 2 7..14 Basic(6)/Default/0
 2 14..17 Basic(4)/Default/0
 2 17..23 Basic(8)/Default/0
-3 7..14 Basic(2)/Default/0
+3 7..13 Basic(2)/Default/0
+3 13..14 Basic(2)/Basic(3)/0
 3 14..19 Basic(3)/Default/0
 3 19..23 Basic(8)/Default/0
 5 0..50 Default/Default/17

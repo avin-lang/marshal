@@ -12,7 +12,7 @@ import dev.avinlang.marshal.{Exited, Signalled, TimedOut, Cancelled, Lost, Depen
 import dev.avinlang.tui.{
   Black, Blue, Bold, BrightBlack, Char, Column, Ctrl, Cyan, Dim, Down, End, Enter, Escape, Event, Fill, Fixed, Green,
   Grid, Home, Key, KeyPress, Magenta, Modal, ModalStack, PageDown, PageUp, Rect, Red, Reverse, Rounded, Scrollbar,
-  ScrollView, Segment, Span, Stop, Style, Table, Up, Yellow, textWidth, wrapChars
+  ScrollView, Segment, Span, Stop, Style, Table, Up, Yellow, gaugeEighths, textWidth, wrapChars
 }
 
 // Which jobs the table lists.
@@ -853,15 +853,52 @@ diskText(g: Grid, x: int, y: int, u: Usage)
 cpuBar(g: Grid, x: int, y: int, width: int, jobs: long, all: long, budget: int)
   val ours = if jobs < 0 then long(0) else jobs
   val others = if all > ours then all - ours else long(0)
-  g.gauge(
+  eighthGauge(
+    g,
     x,
     y,
     width + 2,
     [Segment(real(ours), Style.fg(Green)), Segment(real(others), Style.fg(Yellow))],
-    real(if budget > 0 then budget else 1),
-    rest = ' ',
-    eighths = true
+    real(if budget > 0 then budget else 1)
   )
+
+// A meter `width` columns wide between brackets from column `x` of row `y`, the segments laid end to
+// end in eighths of a cell against `budget`, the cells after them blank. A cell is drawn by the
+// segment its left edge falls in: whole where that segment covers all of it, otherwise as a left block
+// of the eighths it covers over the colour of whatever follows that segment (the background of an empty
+// cell where nothing does), so a cell shared by two segments shows both and never a black remainder.
+// A segment with no eighths draws no cell.
+eighthGauge(g: Grid, x: int, y: int, width: int, segments: Vector[Segment], budget: real)
+  if width < 3 then return
+  val inner = width - 2
+  val empty = Style.fg(BrightBlack)
+  g.putChar(x, y, '[', Style.plain())
+  g.putChar(x + width - 1, y, ']', Style.plain())
+  val ends = Vector.newBuilder[int]()
+  var sum = 0
+  for n in gaugeEighths(inner, segments, budget)
+    sum += n
+    ends.addOne(sum)
+  val bounds = ends.result()
+  val blocks = " ▏▎▍▌▋▊▉█"
+  var j = 0
+  for i in 0 ..< inner
+    val start = i * 8
+    while j < bounds.length && bounds(j) <= start
+      j += 1
+    if j == bounds.length
+      g.putChar(x + 1 + i, y, ' ', empty)
+    else
+      val s = segments(j)
+      val covered = bounds(j) - start
+      if covered >= 8
+        g.putChar(x + 1 + i, y, '█', s.style)
+      else
+        var k = j + 1
+        while k < bounds.length && bounds(k) <= bounds(j)
+          k += 1
+        val behind = if k < bounds.length then segments(k).style.fg else empty.bg
+        g.putChar(x + 1 + i, y, blocks.chars(covered), Style(s.style.fg, behind, s.style.attrs))
 
 // What the header says after the memory the running jobs reserve: what they hold, as last measured,
 // and the memory the machine has, where it is known.
@@ -913,14 +950,13 @@ unitBar(g: Grid, x: int, y: int, width: int, ours: int, outside: int, budget: in
 // measured memory where it is more than its reservation) in blue, as shares of `budget`; empty for
 // a budget of 0 (none set).
 memBar(g: Grid, x: int, y: int, width: int, reserved: long, held: long, budget: long)
-  g.gauge(
+  eighthGauge(
+    g,
     x,
     y,
     width + 2,
     [Segment(real(reserved), Style.fg(Cyan)), Segment(real(held - reserved), Style.fg(Blue))],
-    real(budget),
-    rest = ' ',
-    eighths = true
+    real(budget)
   )
 
 private minInt(a: int, b: int) -> int = if a < b then a else b
