@@ -237,6 +237,19 @@ goldenMain()
   for (w, h) in [(140, 24), (120, 22), (100, 20), (90, 20), (89, 20), (80, 18), (60, 16), (40, 12), (24, 8)]
     golden(s"full-$w", drawn(viewing(full()), w, h))
 
+@test("golden: the header meters scale to the terminal's width, half of it at most 120 cells")
+goldenMeters()
+  for (w, h) in [(80, 12), (160, 12), (250, 12)]
+    golden(s"meters-$w", drawn(viewing(full()), w, h))
+  assertEq(top.meterWidth(24), 10)
+  assertEq(top.meterWidth(60), 23)
+  assertEq(top.meterWidth(90), 38)
+  assertEq(top.meterWidth(250), 118)
+  assertEq(top.meterWidth(400), 120)
+  for w in [24, 60, 80, 90, 140, 250, 400]
+    assert(top.meterWidth(w) <= 120, s"$w")
+    assert(top.meterWidth(w) >= (if w / 3 < 10 then 10 elif w / 3 > 40 then 40 else w / 3), s"$w")
+
 @test("golden: a busy daemon, with landing, take-slot, a paused job, the queue held and every state")
 goldenBusy()
   for (w, h) in [(160, 30), (120, 30), (100, 28), (89, 28), (70, 24), (40, 14)]

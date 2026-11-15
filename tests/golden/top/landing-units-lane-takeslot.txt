@@ -1,7 +1,7 @@
 |marshal  up 0:00   0 running  0 queued   landing: take-slot                              filter: all|
-|units[||||||                     0+2/12] take-slot                                                  |
-|mem  [                            0/16G] rss 0                                                      |
-|cpu  [                             -/12]                                                            |
+|units[|||||||                              0+2/12] take-slot                                        |
+|mem  [                                      0/16G] rss 0                                            |
+|cpu  [                                       -/12]                                                  |
 |                                                                                                    |
 |   ID STATE          KIND     UNITS   RESV   RSS STARTED  ELAPSED     ETA DEADLINE COMMAND          |
 |                                                                                                    |
@@ -14,10 +14,10 @@
 0 30..38 Basic(3)/Default/0
 0 50..59 Basic(5)/Default/1
 0 89..100 Basic(8)/Default/0
-1 6..12 Basic(5)/Default/0
-1 12..39 Basic(8)/Default/0
-2 6..39 Basic(8)/Default/0
-3 6..39 Basic(8)/Default/0
+1 6..13 Basic(5)/Default/0
+1 13..49 Basic(8)/Default/0
+2 6..49 Basic(8)/Default/0
+3 6..49 Basic(8)/Default/0
 5 0..100 Default/Default/17
 9 0..1 Default/Default/1
 9 1..6 Basic(0)/Basic(6)/0

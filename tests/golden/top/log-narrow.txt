@@ -1,7 +1,7 @@
 |marshal  up 25:01:01   4 running  9 quefilter: all|
-|units[||||||||||6+3/12] take-slot, 2 waiting      |
-|mem  [||||||||||7G/16G] rss 6.0G   machine 64G    |
-|cpu  [||||||4.9+3.5/12] disk 31G free             |
+|units[||||||||||||6+3/12] take-slot, 2 waiting    |
+|mem  [||||||||||| 7G/16G] rss 6.0G   machine 64G  |
+|cpu  [||||||||4.9+3.5/12] disk 31G free           |
 |                                                  |
 |   ID STATE          KIND     UNITS   RESV   RSS S|
 |   21 landing        test*        2     4G  3.0G █|
@@ -37,16 +37,16 @@
 0 23..32 Basic(2)/Default/0
 0 34..39 Basic(3)/Default/0
 0 39..50 Basic(8)/Default/0
-1 6..14 Basic(2)/Default/0
-1 14..18 Basic(5)/Default/0
-1 18..22 Basic(8)/Default/0
-2 6..13 Basic(6)/Default/0
-2 13..16 Basic(4)/Default/0
-2 16..22 Basic(8)/Default/0
-3 6..12 Basic(2)/Default/0
-3 12..17 Basic(3)/Default/0
-3 17..22 Basic(8)/Default/0
-3 24..37 Basic(3)/Default/0
+1 6..15 Basic(2)/Default/0
+1 15..20 Basic(5)/Default/0
+1 20..24 Basic(8)/Default/0
+2 6..14 Basic(6)/Default/0
+2 14..17 Basic(4)/Default/0
+2 17..24 Basic(8)/Default/0
+3 6..13 Basic(2)/Default/0
+3 13..19 Basic(3)/Default/0
+3 19..24 Basic(8)/Default/0
+3 26..39 Basic(3)/Default/0
 5 0..50 Default/Default/17
 6 0..6 Default/Default/16
 6 6..20 Basic(2)/Default/17

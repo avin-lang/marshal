@@ -1,7 +1,7 @@
 |marshal  up 1:00   2 running  2 queued   landing: free                                                       filter: all|
-|units[|||||||                             2/12]                                                                         |
-|mem  [                                   0/16G] rss 0                                                                   |
-|cpu  [||||||||||                    1.2+1.8/12] disk 14G free < 20G: nothing starts                                     |
+|units[|||||||||                                        2/12]                                                            |
+|mem  [                                                0/16G] rss 0                                                      |
+|cpu  [|||||||||||||                              1.2+1.8/12] disk 14G free < 20G: nothing starts                        |
 |                                                                                                                        |
 |hHelp EnterLog kKill fFilter oOwner qQuit                                                                  jobs 1–1 of 2|
 --
@@ -10,13 +10,13 @@
 0 30..38 Basic(3)/Default/0
 0 50..54 Basic(8)/Default/0
 0 109..120 Basic(8)/Default/0
-1 6..13 Basic(2)/Default/0
-1 13..46 Basic(8)/Default/0
-2 6..46 Basic(8)/Default/0
-3 6..10 Basic(2)/Default/0
-3 10..16 Basic(3)/Default/0
-3 16..46 Basic(8)/Default/0
-3 48..83 Basic(1)/Default/1
+1 6..15 Basic(2)/Default/0
+1 15..59 Basic(8)/Default/0
+2 6..59 Basic(8)/Default/0
+3 6..11 Basic(2)/Default/0
+3 11..19 Basic(3)/Default/0
+3 19..59 Basic(8)/Default/0
+3 61..96 Basic(1)/Default/1
 5 0..1 Default/Default/1
 5 1..6 Basic(0)/Basic(6)/0
 5 6..11 Default/Default/1
