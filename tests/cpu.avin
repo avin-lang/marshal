@@ -1,0 +1,188 @@
+module tests
+
+// The processor time the kernel counts (cpu.avin): the machine's tick counters and the cores they
+// say were busy, read against processes burning a known number of cores; and a process's own and
+// reaped time from proc_pid_rusage, against `ps`.
+import avin.process.{Child, Command}
+import avin.threads
+import avin.time
+import avin.time.millis
+import dev.avinlang.marshal
+import dev.avinlang.marshal.CpuTicks
+
+@test("tick counters read as unsigned 32-bit counts, and a counter that wrapped counts past the wrap")
+ticksUnsigned()
+  assertEq(marshal.unsignedTicks(0), long(0))
+  assertEq(marshal.unsignedTicks(int.MaxValue), long(2147483647))
+  assertEq(marshal.unsignedTicks(-1), long(4294967295))
+  assertEq(marshal.unsignedTicks(int.MinValue), long(2147483648))
+  assertEq(marshal.tickDelta(100, 250), long(150))
+  assertEq(marshal.tickDelta(5, 5), long(0))
+  assertEq(marshal.tickDelta(4294967290, 10), long(16))
+  assertEq(marshal.tickDelta(0, 4294967295), long(4294967295))
+
+@test("busy cores are the running ticks over all the ticks, times the processors, to the nearest hundredth")
+busyCoresArithmetic()
+  val a = CpuTicks(1000, 500, 10000, 0)
+  // 18 processors for a second at 100 ticks each: 1800 ticks, 900 of them running
+  assertEq(marshal.busyCores(a, CpuTicks(1600, 800, 10900, 0), 18), long(900))
+  // every one busy, nice ticks among them
+  assertEq(marshal.busyCores(a, CpuTicks(2000, 1000, 10000, 300), 18), long(1800))
+  // every one idle
+  assertEq(marshal.busyCores(a, CpuTicks(1000, 500, 11800, 0), 18), long(0))
+  // to the nearest hundredth: a third and two thirds of one processor
+  assertEq(marshal.busyCores(a, CpuTicks(1001, 500, 10002, 0), 1), long(33))
+  assertEq(marshal.busyCores(a, CpuTicks(1002, 500, 10001, 0), 1), long(67))
+  // no tick counted, or no processors: nothing can be said
+  assertEq(marshal.busyCores(a, a, 18), long(-1))
+  assertEq(marshal.busyCores(a, CpuTicks(1600, 800, 10900, 0), 0), long(-1))
+  // the user counter wrapped between the two readings: 196 running ticks of 392
+  val w = CpuTicks(4294967200, 0, 0, 0)
+  assertEq(marshal.busyCores(w, CpuTicks(100, 0, 196, 0), 2), long(100))
+  // every counter wrapped
+  val all = CpuTicks(4294967295, 4294967295, 4294967295, 4294967295)
+  assertEq(marshal.busyCores(all, CpuTicks(0, 0, 2, 0), 2), long(100))
+
+@test("the machine's meter needs two readings, then covers the last two intervals, and keeps its level without one")
+machineMeter()
+  val m0 = marshal.startMachineMeter(4)
+  assertEq(m0.now, long(-1))
+  val m1 = m0.sampled(Some(CpuTicks(0, 0, 0, 0)))
+  assertEq(m1.now, long(-1))
+  // the first interval: 400 ticks, all running, on 4 processors
+  val m2 = m1.sampled(Some(CpuTicks(400, 0, 0, 0)))
+  assertEq(m2.now, long(400))
+  // an idle interval after it: the two together are 2 cores
+  val m3 = m2.sampled(Some(CpuTicks(400, 0, 400, 0)))
+  assertEq(m3.now, long(200))
+  // a second idle one: the last two are both idle
+  val m4 = m3.sampled(Some(CpuTicks(400, 0, 800, 0)))
+  assertEq(m4.now, long(0))
+  // the kernel would not say: nothing changes
+  assertEq(m4.sampled(None), m4)
+  // a reading with no tick counted since either of the last two keeps the level
+  val still = marshal.startMachineMeter(4).sampled(Some(CpuTicks(400, 0, 0, 0))).sampled(
+    Some(CpuTicks(800, 0, 0, 0))
+  )
+  assertEq(still.now, long(400))
+  val same = still.sampled(Some(CpuTicks(800, 0, 0, 0))).sampled(Some(CpuTicks(800, 0, 0, 0)))
+  assertEq(same.now, long(400))
+
+@test("Mach absolute time converts to hundredths of a second at the timebase, rounding down, without overflow")
+machTime()
+  // Apple silicon's timebase, 125/3 of a nanosecond: 24 million units are a second
+  assertEq(marshal.machToCenti(24000000, 125, 3), long(100))
+  assertEq(marshal.machToCenti(23999999, 125, 3), long(99))
+  // a nanosecond a unit
+  assertEq(marshal.machToCenti(1000000000, 1, 1), long(100))
+  assertEq(marshal.machToCenti(9999999, 1, 1), long(0))
+  assertEq(marshal.machToCenti(0, 125, 3), long(0))
+  assertEq(marshal.machToCenti(-5, 125, 3), long(0))
+  // a century of processor time
+  val century: long = long(100) * 365 * 24 * 3600
+  assertEq(marshal.machToCenti(century * 24000000, 125, 3), century * 100)
+  // a timebase that is not one converts nothing
+  assertEq(marshal.machToCenti(1000, 0, 3), long(0))
+  assertEq(marshal.machToCenti(1000, 3, 0), long(0))
+
+@test("the kernel answers the machine's ticks, which only grow, and its processors")
+ticksRead()
+  val ncpu = marshal.logicalCpus()
+  assert(ncpu.exists(n -> n >= 1), s"$ncpu")
+  val a = marshal.machineTicks().get
+  threads.sleep(millis(200))
+  val b = marshal.machineTicks().get
+  val busy = marshal.busyCores(a, b, ncpu.get)
+  assert(0 <= busy <= long(ncpu.get) * 100, s"$a $b $busy")
+
+// A process burning one core for `seconds` of wall time.
+private burner(seconds: int) -> Child =
+  Command("perl", "-e", "my $t = time + " + seconds.toString() + "; 1 while time < $t").start().ok.get
+
+// The cores the machine kept busy over `ms` milliseconds by its ticks, and those `pids` used over the
+// same time by their own processor time, both in hundredths.
+private window(pids: Vector[long], ms: long) -> (long, long)
+  val ncpu = marshal.logicalCpus().get
+  val own = () -> pids.map(p -> marshal.processCpu(p).map(c -> c.0).getOrElse(0)).sum
+  val t0 = marshal.machineTicks().get
+  val c0 = own()
+  val w0 = time.monotonic()
+  threads.sleep(millis(ms))
+  val t1 = marshal.machineTicks().get
+  val c1 = own()
+  val wall = (time.monotonic() - w0).toMillis
+  (marshal.busyCores(t0, t1, ncpu), marshal.coresOver((c1 - c0) * 10, wall))
+
+// One try at the burn test with `n` burners: the machine's busy cores without them and with them,
+// and the cores they used, in hundredths.
+private burnTry(n: int) -> (long, long, long)
+  val (baseline, _) = window([], 1000)
+  val burners = (1 .. n).map(_ -> burner(4)).toVector
+  threads.sleep(millis(300))
+  val (busy, used) = window(burners.map(b -> b.pid()), 1000)
+  for b in burners
+    b.kill()
+    val _ = b.waitFor()
+  (baseline, busy, used)
+
+@test(
+  "burning 2 and then 4 cores, the ticks read the machine that much busier than before, and no less than the burners used"
+)
+ticksMeasureBurn()
+  val ncpu = long(marshal.logicalCpus().get)
+  for n in [2, 4]
+    if long(n + 2) > ncpu then continue
+    // other work on the machine comes and goes: a try whose change is within half a core passes,
+    // and three tries are given
+    val seen = Buffer[(long, long, long)]()
+    var passed = false
+    for _ in 1 .. 3
+      val (baseline, busy, used) = burnTry(n)
+      seen += (baseline, busy, used)
+      // whatever else runs: the machine is never read below what the burners alone used, or above
+      // all of its processors
+      assert(busy + 50 >= used, s"$n burners: machine $busy below the burners' $used")
+      assert(busy <= ncpu * 100 + 5, s"$n burners: machine $busy above $ncpu cores")
+      // with room for them, the burners got their cores, and the machine reads that much busier
+      if baseline + long(n) * 100 + 100 > ncpu * 100 then continue
+      if used >= long(n) * 100 - 50 && (busy - baseline - long(n) * 100).abs <= 50
+        passed = true
+        break
+    // a machine with no room for the burners in any try says nothing of them
+    val roomy = seen.exists(s -> s.0 + long(n) * 100 + 100 <= ncpu * 100)
+    assert(passed || !roomy, s"$n burners: (baseline, busy, used) $seen")
+
+@test("a process's own time by rusage is ps's time= to within 5%, and its reaped children's count apart")
+rusageMatchesPs()
+  // perl's `time` is in whole seconds, so a burner of N seconds may end after N - 1: it must still
+  // run when it is read, since `ps` reads an ended one as 0
+  val b = burner(5)
+  threads.sleep(millis(1500))
+  val (own, reaped) = marshal.processCpu(b.pid()).get
+  val ps = marshal.parseCpuTime(Command("ps", "-o", "time=", "-p", b.pid().toString()).output().ok.get.trim).get
+  b.kill()
+  val _ = b.waitFor()
+  // the burner had used most of a second and a half, which nothing else counted
+  assert(own >= 50, s"own $own")
+  // ps and rusage read a moment apart: 5% and two hundredths
+  assert((own - ps).abs <= ps / 20 + 2, s"rusage $own, ps $ps")
+  assertEq(reaped, long(0))
+  // a shell that ran two short burners and reaped them counts them as reaped, not as its own
+  val shell = Command(
+    "sh",
+    "-c",
+    "perl -e '1 while (times)[0] < 0.3'; perl -e '1 while (times)[0] < 0.3'; sleep 2"
+  ).start().ok.get
+  assert(within(5000, () -> marshal.processCpu(shell.pid()).exists(c -> c.1 >= 55)), "the shell's reaped time")
+  val (sOwn, sReaped) = marshal.processCpu(shell.pid()).get
+  assert(sOwn < 20, s"the shell's own $sOwn")
+  assert(55 <= sReaped <= 80, s"the shell's reaped $sReaped")
+  shell.kill()
+  val _ = shell.waitFor()
+
+@test("a process that does not exist, or a pid no process has, has no processor time to say")
+rusageAbsent()
+  assertEq(marshal.processCpu(0), None)
+  assertEq(marshal.processCpu(-1), None)
+  assertEq(marshal.processCpu(NoProcess), None)
+  assertEq(marshal.processCpu(long(int.MaxValue) + 1), None)

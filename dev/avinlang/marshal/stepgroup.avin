@@ -106,14 +106,28 @@ jobResident(tree: JobTree) -> long
   val pids = if tree.pids.isEmpty then tree.groups.flatMap(g -> groupMembers(g)) else tree.pids.toVector
   residentOf(pids, pid -> process.residentBytes(pid))
 
-// The processor time each of a job's processes (`tree`) has used, from `table` (`processTimes`).
-jobCpu(tree: JobTree, table: Vector[GroupedCpu]) -> Vector[CpuSample] =
-  table.filter(g -> tree.pids.contains(g.sample.pid)).map(g -> g.sample)
+// The processor time each of a job's processes (`tree`) has used, with its parent, from `table`
+// (`processTimes`). Where `asked` (`measuredByRusage`), each process's own time and its reaped
+// children's are asked of the kernel (`processCpu`), so what short programs used counts through the
+// process that reaped them; a process that cannot be asked keeps the listing's time. Otherwise the
+// listing's time is all there is, as a test's stand-in for `ps` gives it.
+jobCpu(tree: JobTree, table: Vector[GroupedCpu], asked: bool = true) -> Vector[CpuSample] =
+  table.filter(g -> tree.pids.contains(g.sample.pid)).map(
+    g ->
+      val s = g.sample
+      val listed: (long, long) = (s.cpu, 0)
+      val (own, reaped) = if asked then processCpu(s.pid).getOrElse(listed) else listed
+      CpuSample(s.pid, own, reaped, g.ppid)
+  )
 
-// The processor time of every process on the machine, with its group and its parent, as one `ps`
-// lists them; none where `ps` cannot be run. One listing serves every running job. A test names a
-// program that prints the same lines instead (`$MARSHAL_TEST_PS`), so what it measures does not
-// hang on how much of the machine the test's jobs are given.
+// Whether a job's processor time is asked of the kernel: always, but where a test's stand-in for
+// `ps` says what each process used.
+measuredByRusage() -> bool = process.env("MARSHAL_TEST_PS").forall(p -> p.isEmpty)
+
+// Every process on the machine, with its group, its parent and the processor time `ps` says it has
+// used, as one `ps` lists them; none where `ps` cannot be run. One listing serves every running job.
+// A test names a program that prints the same lines instead (`$MARSHAL_TEST_PS`), so what it
+// measures does not hang on how much of the machine the test's jobs are given.
 processTimes() -> Vector[GroupedCpu]
   val listing = process.env("MARSHAL_TEST_PS") match
     Some(program) if program.nonEmpty -> Command(program)

@@ -1,4 +1,4 @@
-package { name = "marshal", version = "0.3.17", description = "A job manager for building, testing and releasing: a unit and memory budget, a landing lane, learned deadlines" }
+package { name = "marshal", version = "0.3.18", description = "A job manager for building, testing and releasing: a unit and memory budget, a landing lane, learned deadlines" }
 
 dependencies {
   tui { git = "github.com/avin-lang/tui", version = "0.2.8" }
@@ -6,5 +6,5 @@ dependencies {
 }
 
 c-libraries {
-  libc { headers = ["<sys/resource.h>", "<limits.h>", "<sys/sysctl.h>", "<libproc.h>"] }
+  libc { headers = ["<sys/resource.h>", "<limits.h>", "<sys/sysctl.h>", "<libproc.h>", "<mach/mach.h>", "<mach/mach_time.h>"] }
 }

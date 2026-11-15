@@ -12,6 +12,7 @@ module dev.avinlang.marshal
 // tree (stepgroup.avin's `jobTree`), sampled as its memory is (`CpuMeter`), gives the cores it kept
 // busy. A job that says no units weighs what earlier runs of the same command were measured holding
 // (`learnedUnits`).
+import avin.collections.mutable.Map as MutableMap
 import dev.avinlang.json.Json
 
 // How many quarters make a unit.
@@ -102,8 +103,10 @@ centiOf(v: Json) -> Option[long]
   if !(0.0 <= x <= 1000000.0) then return None
   Some(long(x * real(Centi) + 0.5))
 
-// The processor time a process has used: its pid and hundredths of a second.
-data CpuSample(pid: long, cpu: long)
+// The processor time a process has used, in hundredths of a second: its pid, its own time (`cpu`),
+// the time of the children it has reaped (`reaped`; processCpu, cpu.avin), and its parent (`ppid`,
+// 0 where not known), which a process that ends is reaped by.
+data CpuSample(pid: long, cpu: long, reaped: long = 0, ppid: long = 0)
 
 // A process's processor time with its process group and its parent, as
 // `ps -A -o pid=,ppid=,pgid=,time=` lists it; `ppid` is 0 where the listing does not say.
@@ -127,15 +130,38 @@ groupedCpuTable(text: string) -> Vector[GroupedCpu]
   out.toVector
 
 // The processor time, in hundredths of a second, that the processes `now` used since `before` was
-// taken. A process seen before counts what it has used since; one not seen before counts all it has
-// used, since it started (or joined the job's groups) since. A process that has ended is not in `now`,
-// and what it used after it was last seen is not counted. A process whose time went down is a new
-// process with an old one's pid, and counts all it has used.
-cpuUsedSince(before: Map[long, long], now: Vector[CpuSample]) -> long
+// taken (by pid). A process seen before counts what it has used since, its own and its reaped
+// children's; one not seen before counts all it has used, since it started (or joined the job's
+// groups) since. A process whose time went down is a new process with an old one's pid, and counts
+// all it has used.
+//
+// A process that ends is reaped by its parent, whose reaped time then grows by all the ended one
+// used, the part already counted while it lived included. So each process of `before` that is not
+// in `now` has what it was last seen using taken off the growth of its nearest ancestor still in
+// `now` (by the parents `before` records), no more than that growth: a short program that lived and
+// ended between two samples counts in full through its parent, and one seen while it ran is not
+// counted twice. What a process used after it was last seen counts where its ancestor reaps it; one
+// whose parent ended first is reaped by process 1, and that tail is not counted.
+cpuUsedSince(before: Map[long, CpuSample], now: Vector[CpuSample]) -> long
+  val live = now.map(s -> s.pid).toSet
+  // what the ended processes were last seen using, by the live ancestor that reaps it
+  val credit = MutableMap[long, long]()
+  for pid in before.keys
+    if live.contains(pid) then continue
+    val was = before(pid)
+    var at = was.ppid
+    var steps = 0
+    while at > 1 && !live.contains(at) && steps <= before.size
+      at = before.get(at).map(p -> p.ppid).getOrElse(0)
+      steps += 1
+    if at > 1 && live.contains(at) then credit(at) = credit.get(at).getOrElse(0) + was.cpu + was.reaped
   var used: long = 0
   for s in now
-    val was = before.get(s.pid).getOrElse(0)
-    used += if s.cpu >= was then s.cpu - was else s.cpu
+    val (own, reaped) = before.get(s.pid) match
+      Some(w) if s.cpu >= w.cpu && s.reaped >= w.reaped -> (s.cpu - w.cpu, s.reaped - w.reaped)
+      _ -> (s.cpu, s.reaped)
+    val gained = reaped - credit.get(s.pid).getOrElse(0)
+    used += own + (if gained > 0 then gained else 0)
   used
 
 // The processor use of a running job as measured. Each sample lists the processes of its groups and
@@ -154,7 +180,7 @@ cpuUsedSince(before: Map[long, long], now: Vector[CpuSample]) -> long
 // its burst, is what its units are learned from. The levels are whole hundredths no higher than
 // the machine's cores, so the counts stay a few thousand entries at most however long a run is.
 data CpuMeter(
-    seen: Map[long, long],
+    seen: Map[long, CpuSample],
     atMs: long,
     lastCpu: long,
     lastMs: long,
@@ -171,7 +197,7 @@ impl CpuMeter
   // nothing to count, and what was seen stays the baseline for the next.
   sampled(table: Vector[CpuSample], t: long) -> CpuMeter
     if table.isEmpty then return self
-    val seenNow = table.map(s -> (s.pid, s.cpu)).toMap
+    val seenNow = table.map(s -> (s.pid, s)).toMap
     if !primed then return CpuMeter(seenNow, t, 0, 0, now, peak, cpuMs, true, windows)
     val wall = t - atMs
     if wall <= 0 then return self
@@ -193,6 +219,13 @@ impl CpuMeter
   // The level the run held: what three quarters of its measured levels were at or below, in
   // hundredths of a core; -1 while none has been measured.
   held() -> long = heldOf(windows)
+
+  // The meter once the job's own process has ended and been reaped having used `totalMs` in all,
+  // its own and every descendant's it reaped in turn: the processor time counted is the more of
+  // that and what the samples counted, which also took in what was used before the last sample
+  // under a process that left the job's own process's line of descent. It never goes down.
+  ended(totalMs: long) -> CpuMeter =
+    if totalMs <= cpuMs then self else CpuMeter(seen, atMs, lastCpu, lastMs, now, peak, totalMs, primed, windows)
 
 // The level three quarters of the counted levels `windows` (level to count) are at or below; -1
 // where there are none.
