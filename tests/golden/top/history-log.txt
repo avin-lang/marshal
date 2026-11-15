@@ -16,7 +16,7 @@
 | 1001 exit 0         build        1      -     - -           1:00       -        - -           sleep 30                │|
 | 1000 exit 0         build        1      -     - -           1:00       -        - -           sleep 30                │|
 |╭─job 1000 log, following; PgUp PgDn Home End scroll, Esc closes───────────────────────────────────────────────────────╮|
-|│kind    build                                                                                                         │|
+|│kind    build   owner  -                                                                                              │|
 |│command sleep 30                                                                                                      │|
 |│──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────│|
 |│(nothing in the log yet)                                                                                              │|
@@ -85,6 +85,8 @@
 18 0..1 Basic(6)/Default/0
 18 1..5 Default/Default/1
 18 9..14 Basic(8)/Default/0
+18 17..22 Default/Default/1
+18 24..25 Basic(8)/Default/0
 18 119..120 Basic(6)/Default/0
 19 0..1 Basic(6)/Default/0
 19 1..8 Default/Default/1

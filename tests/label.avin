@@ -30,7 +30,7 @@ val labelSpec: JobSpec = JobSpec(
 )
 
 // A job as a listing or the log gives it, with `label`.
-labelled(id: long, label: string, state: string = "running", outcome: Option[Outcome] = None) -> JobInfo =
+labelled(id: long, label: string, state: string = "running", outcome: Option[Outcome] = None, owner: string = "") -> JobInfo =
   JobInfo(
     id,
     "build",
@@ -58,7 +58,8 @@ labelled(id: long, label: string, state: string = "running", outcome: Option[Out
     1,
     0,
     false,
-    label
+    label,
+    owner = owner
   )
 
 refusedLabel(text: string, why: string) = marshal.checkLabel(text) match
@@ -435,6 +436,26 @@ labelTopTable()
     plainNarrow.rowText(rowOf(plainNarrow, "ID STATE"))
   )
 
+@test("top's log pane header shows the whole owner after the kind, though the job list's OWNER column cuts it")
+labelTopLogOwner()
+  val owner = "fix-bufkeeps-long-owner"
+  val app = viewing(overviewOf([labelled(1, "train 209", owner = owner)]))
+  val list = drawn(app, 140, 20)
+  assert(!list.rowText(rowOf(list, "ID STATE") + 1).contains(owner), list.rowText(rowOf(list, "ID STATE") + 1))
+  app.handle(press(Enter))
+  app.logLines = ["a line"]
+  val g = drawn(app, 100, 30)
+  val title = rowOf(g, "job 1 log, following")
+  assert(g.rowText(title + 1).contains(s"build   owner  $owner   label  train 209"), g.rowText(title + 1))
+  // an owner in wide characters is shown whole, and the label stands after its full width
+  val wide = viewing(overviewOf([labelled(2, "x", owner = "日本語の持ち主")]))
+  wide.handle(press(Enter))
+  wide.logLines = ["a line"]
+  val w = drawn(wide, 100, 30)
+  val kindRow = w.rowText(rowOf(w, "job 2 log, following") + 1)
+  assert(kindRow.contains("owner  日本語の持ち主") && kindRow.contains("label  x"), kindRow)
+  assert(kindRow.indexOf("label") > kindRow.indexOf("主"), kindRow)
+
 @test(
   "top's log pane header shows the whole label after the kind, wrapped under where it began, and is as it was for a job without one"
 )
@@ -445,7 +466,7 @@ labelTopLogHeader()
   val g = drawn(app, 100, 30)
   val title = rowOf(g, "job 1 log, following")
   assert(g.rowText(title + 1).contains("kind"), g.rowText(title + 1))
-  assert(g.rowText(title + 1).contains("build   label  train 209"), g.rowText(title + 1))
+  assert(g.rowText(title + 1).contains("build   owner  -   label  train 209"), g.rowText(title + 1))
   assert(g.rowText(title + 2).contains("command") && g.rowText(title + 2).contains("sleep 30"), g.rowText(title + 2))
   assert(g.rowText(title + 3).contains("──────"), g.rowText(title + 3))
   assert(!g.rowText(title + 2).contains("label"), g.rowText(title + 2))
@@ -456,7 +477,7 @@ labelTopLogHeader()
   val p = drawn(plain, 100, 30)
   val pt = rowOf(p, "job 2 log, following")
   assert(p.rowText(pt + 1).contains("kind") && p.rowText(pt + 1).contains("build"), p.rowText(pt + 1))
-  assertEq(p.rowText(pt + 1).replace("│", "").trim, "kind    build")
+  assertEq(p.rowText(pt + 1).replace("│", "").trim, "kind    build   owner  -")
   assert(p.rowText(pt + 2).contains("command"), p.rowText(pt + 2))
   assert(p.rowText(pt + 3).contains("──────"), p.rowText(pt + 3))
   // a label too long for the rest of the kind line wraps under where it began, every character kept
@@ -468,11 +489,13 @@ labelTopLogHeader()
   val wt = rowOf(w, "job 3 log, following")
   val start = w.rowText(wt + 1).indexOf("label") + 7
   var seen = ""
-  for k in 1 ..< 5
+  var k = 1
+  while !w.rowText(wt + k).contains("command") && k < 20
     seen = seen + w.rowText(wt + k).slice(start, w.rowText(wt + k).byteLength).replace("│", "").trim
+    k += 1
   assert(!seen.contains("…"), seen)
   assertEq(seen, lengthy)
-  assert(w.rowText(wt + 1).contains("kind") && w.rowText(wt + 1).contains("build   label  "), w.rowText(wt + 1))
+  assert(w.rowText(wt + 1).contains("kind") && w.rowText(wt + 1).contains("build   owner  -   label  "), w.rowText(wt + 1))
   assert(!w.rowText(wt + 2).contains("label") && !w.rowText(wt + 2).contains("kind"), w.rowText(wt + 2))
-  assert(w.rowText(wt + 5).contains("command"), w.rowText(wt + 5))
-  assertEq(rowOf(w, "command"), wt + 5)
+  assert(k > 2 && w.rowText(wt + k).contains("command"), w.rowText(wt + k))
+  assertEq(rowOf(w, "command"), wt + k)

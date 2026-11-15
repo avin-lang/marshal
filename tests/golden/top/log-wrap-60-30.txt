@@ -16,8 +16,8 @@
 |                                                            |
 |                                                            |
 |╭─job 1 log, following; PgUp PgDn Home End scroll, Esc cl…─╮|
-|│kind    build   label  a label long enough to wrap in a na│|
-|│                       rrow pane                          │|
+|│kind    build   owner  -   label  a label long enough to w│|
+|│                                  rap in a narrow pane    │|
 |│command sh -c abcdefghijabcdefghijabcdefghijabcdefghijabcd│|
 |│        efghijabcdefghijabcdefghijabcdefghijabcdefghijabcd│|
 |│        efghijabcdefghijabcdefghijabcdefghijabcdefghij    │|
@@ -48,10 +48,12 @@
 18 1..5 Default/Default/1
 18 9..14 Basic(8)/Default/0
 18 17..22 Default/Default/1
-18 24..59 Basic(8)/Default/0
+18 24..25 Basic(8)/Default/0
+18 28..33 Default/Default/1
+18 35..59 Basic(8)/Default/0
 18 59..60 Basic(6)/Default/0
 19 0..1 Basic(6)/Default/0
-19 24..33 Basic(8)/Default/0
+19 35..55 Basic(8)/Default/0
 19 59..60 Basic(6)/Default/0
 20 0..1 Basic(6)/Default/0
 20 1..8 Default/Default/1

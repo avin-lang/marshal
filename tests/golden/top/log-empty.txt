@@ -16,7 +16,7 @@
 |   35 #6 behind 30   build        1      -     - -              -       -    30:00 make -j4        │|
 |   36 #7 starting    build        1      -     - -              -       -    30:00 make -j4        │|
 |╭─job 22 log, following; PgUp PgDn Home End scroll, Esc closes─────────────────────────────────────╮|
-|│kind    build                                                                                     │|
+|│kind    build   owner  nex                                                                        │|
 |│command cargo build --release                                                                     │|
 |│──────────────────────────────────────────────────────────────────────────────────────────────────│|
 |│(nothing in the log yet)                                                                          │|
@@ -90,6 +90,8 @@
 18 0..1 Basic(6)/Default/0
 18 1..5 Default/Default/1
 18 9..14 Basic(8)/Default/0
+18 17..22 Default/Default/1
+18 24..27 Basic(8)/Default/0
 18 99..100 Basic(6)/Default/0
 19 0..1 Basic(6)/Default/0
 19 1..8 Default/Default/1
