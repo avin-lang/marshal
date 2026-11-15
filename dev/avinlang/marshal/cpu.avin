@@ -1,0 +1,132 @@
+module dev.avinlang.marshal
+
+// The processor time the kernel counts, read directly rather than through `ps`. `ps %cpu` is a
+// decayed average over about a minute, which lags a burst and barely sees a process that lives under
+// a second (each compiler a build starts), and `ps time=` is the time of the processes still alive,
+// which loses every process that started and ended between two listings. So:
+//
+// - the machine's use is read from the kernel's processor tick counters (`host_statistics`'s
+//   `HOST_CPU_LOAD_INFO`, the user, system, idle and nice ticks of every processor together, which
+//   htop and Activity Monitor read): the cores kept busy over an interval are the busy ticks over all
+//   the ticks counted in it, times the processor count;
+// - a process's use is its own processor time and that of the children it has reaped
+//   (`proc_pid_rusage`), so a shell's loop of short programs counts in full while the shell lives.
+
+@c(const: "HOST_CPU_LOAD_INFO")
+private val hostCpuLoadInfo: int
+
+// The tick counters `HOST_CPU_LOAD_INFO` answers: user, system, idle and nice, in that order.
+@c(const: "CPU_STATE_MAX")
+private val cpuStates: int
+
+@c("mach_port_t mach_host_self(void)")
+private machHostSelf() -> long
+
+@c(
+  "kern_return_t host_statistics(host_t host_priv, host_flavor_t flavor, integer_t *host_info_out, length(host_info_out) inout mach_msg_type_number_t *host_info_outCnt)"
+)
+private hostStatistics(host: long, flavor: int, info: Array[int]) -> (int, int)
+
+// The host port, asked for once: each call of `mach_host_self` takes another reference to it.
+private val hostPort: long = machHostSelf()
+
+// The kernel's counters wrap at 2^32: each is a 32-bit unsigned count.
+val TickWrap: long = 4294967296
+
+// The processor ticks of the whole machine as the kernel has counted them since it started, each
+// counter in [0, TickWrap): the ticks every processor spent running user code, the kernel's, idle,
+// and user code at a lowered priority.
+data CpuTicks(user: long, system: long, idle: long, nice: long)
+
+// A counter read through a C `int`, as the unsigned count it is.
+unsignedTicks(n: int) -> long = if n < 0 then long(n) + TickWrap else long(n)
+
+// The ticks counted from `before` to `after` of one counter: a counter that wrapped in between
+// counts past the wrap. An interval longer than a whole wrap (weeks, for the idle ticks of a big
+// machine) is not told apart from a shorter one.
+tickDelta(before: long, after: long) -> long = if after >= before then after - before else after + TickWrap - before
+
+// The cores kept busy between the readings `before` and `after` on a machine of `ncpu` processors,
+// in hundredths, the nearest: the ticks spent running (user, system and nice) over all the ticks
+// counted, times the processors. -1 where no tick was counted, so nothing can be said.
+busyCores(before: CpuTicks, after: CpuTicks, ncpu: int) -> long
+  val busy = tickDelta(before.user, after.user) + tickDelta(before.system, after.system) + tickDelta(
+    before.nice,
+    after.nice
+  )
+  val all = busy + tickDelta(before.idle, after.idle)
+  if all <= 0 || ncpu <= 0 then return -1
+  (busy * long(ncpu) * Centi + all / 2) / all
+
+// The machine's processor ticks now; None where the kernel will not say.
+machineTicks() -> Option[CpuTicks]
+  val info = Array.fill(cpuStates, 0)
+  hostStatistics(hostPort, hostCpuLoadInfo, info) match
+    (0, n) if n >= 4 -> Some(
+      CpuTicks(unsignedTicks(info(0)), unsignedTicks(info(1)), unsignedTicks(info(2)), unsignedTicks(info(3)))
+    )
+    _ -> None
+
+// The machine's logical processors, `hw.ncpu`; None where it cannot be read.
+logicalCpus() -> Option[int] = sysctlInt("hw.ncpu").filter(n -> n >= 1)
+
+// The processor use of the whole machine as measured: the last two readings of its ticks, newest
+// first, and the cores kept busy over the two intervals they end (`now`, in hundredths, -1 until two
+// readings have been taken). Two intervals, as a job's meter takes, so that the machine's figure
+// and its jobs' cover the same time.
+data MachineMeter(last: Option[CpuTicks], older: Option[CpuTicks], ncpu: int, now: long)
+
+impl MachineMeter
+  // The meter after a reading `ticks`; None (the kernel would not say) counts nothing.
+  sampled(ticks: Option[CpuTicks]) -> MachineMeter = ticks match
+    None -> self
+    Some(t) ->
+      val from = older.orElse(last)
+      val busy = from.map(f -> busyCores(f, t, ncpu)).getOrElse(-1)
+      MachineMeter(Some(t), last, ncpu, if busy >= 0 then busy else now)
+
+// A meter for a machine of `ncpu` processors with nothing read yet.
+startMachineMeter(ncpu: int) -> MachineMeter = MachineMeter(None, None, ncpu, -1)
+
+@c(struct: "struct mach_timebase_info")
+private data Timebase(numer: long, denom: long)
+
+@c("kern_return_t mach_timebase_info(out struct mach_timebase_info *info)")
+private timebaseRaw() -> Result[Timebase, int]
+
+// The units of `proc_pid_rusage`'s times, as nanoseconds `numer / denom` each: Mach absolute time,
+// which is a nanosecond on an Intel processor and 125/3 of one on Apple silicon.
+private val timebase: (long, long) = timebaseRaw() match
+  Ok(t) if t.numer > 0 && t.denom > 0 -> (t.numer, t.denom)
+  _ -> (1, 1)
+
+// The `long`s of `struct rusage_info_v2` (after `ri_uuid`'s 16 bytes, two of them) that hold the
+// process's own user and system time, and the user and system time of the children it has reaped.
+private val userTimeAt = 2
+private val systemTimeAt = 3
+private val childUserTimeAt = 12
+private val childSystemTimeAt = 13
+
+// Mach absolute time `t` at the timebase `numer / denom`, in hundredths of a second, rounded down;
+// the product is taken in two parts so that it does not overflow for any time a process can use.
+machToCenti(t: long, numer: long, denom: long) -> long
+  if t <= 0 || numer <= 0 || denom <= 0 then return 0
+  val ns = (t / denom) * numer + (t % denom) * numer / denom
+  ns / 10000000
+
+// The processor time process `pid` has used, in hundredths of a second: its own (user and system)
+// and that of the children it has reaped, each of them with what it reaped in turn. None where it
+// cannot be asked: a process that has ended, or one of another user's.
+processCpu(pid: long) -> Option[(long, long)]
+  if pid <= 0 || pid > long(int.MaxValue) then return None
+  rusage(int(pid), rusageInfoV2) match
+    Ok(info) ->
+      val (numer, denom) = timebase
+      val own = machToCenti(info(userTimeAt), numer, denom) + machToCenti(info(systemTimeAt), numer, denom)
+      val reaped = machToCenti(info(childUserTimeAt), numer, denom) + machToCenti(
+        info(childSystemTimeAt),
+        numer,
+        denom
+      )
+      Some((own, reaped))
+    Err(_) -> None

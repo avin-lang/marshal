@@ -1,0 +1,109 @@
+module tests
+
+// End to end, the processor time the daemon measures with the real `ps` and the kernel's counters:
+// a job of short programs, none of which a listing finds alive, counts what they used; and `status`
+// reads the machine as busy as its tick counters say while a job burns cores. The helpers are
+// e2e.avin's.
+import avin.fs
+import avin.process.{Command, ExitStatus}
+import avin.threads
+import avin.time
+import avin.time.millis
+import dev.avinlang.json
+import dev.avinlang.json.Json
+import dev.avinlang.marshal
+
+// Twenty programs one after another, each doing a fixed amount of work (about a fifth of a second
+// of processor time on a performance core; a loaded machine makes it take longer, not more work)
+// and ending.
+private val ShortScript: string = """
+i=0
+while [ $i -lt 20 ]; do
+  perl -e 'my $i = 0; $i++ while $i < 20000000'
+  i=$((i + 1))
+done
+"""
+
+// `sh burn.sh N SECONDS` keeps N cores busy for SECONDS.
+private val BurnScript: string = """
+i=0
+while [ $i -lt $1 ]; do
+  perl -e 'my $t = time + '"$2"'; 1 while time < $t' &
+  i=$((i + 1))
+done
+wait
+"""
+
+// The `finished` event of job `id`.
+private finishedOf(home: string, id: long) -> Json =
+  events(home).filter(e -> e("id").asLong == Some(id) && e("event").asString == Some("finished")).last
+
+@test("a job of twenty short programs run one after another is measured using all their processor time")
+shortChildrenCounted()
+  val home = newHome()
+  fs.writeText(home + "/short.sh", ShortScript).ok.get
+  // the truth: the same script run here, its time as its reaping tells
+  val here = Command("sh", "short.sh").inDir(home).start().ok.get
+  assertEq(here.waitFor().ok, Some(ExitStatus.Exited(0)))
+  val truth = here.cpuTime().total.toMillis
+  assert(truth >= 2000, s"the script used only ${truth}ms")
+  val id = submitted(home, "--dir", home, "--", "sh", "short.sh")
+  assertEq(m(home, "wait", id.toString()).code, 0)
+  val end = finishedOf(home, id)
+  // summing only the processes a listing found alive read next to none of it; the same work takes
+  // more processor time on an efficiency core than on a performance one, and the two runs may be
+  // given either, so the bound is a factor of two
+  val ms = end("cpu_ms").asLong.get
+  assert(truth / 2 <= ms <= truth * 2, s"truth ${truth}ms: $end")
+  cleanUp(home)
+
+@test("the processor time a job is measured using never goes down, and its whole tree ending keeps it")
+cpuNeverDown()
+  val home = newHome()
+  // a shell whose subtree (a burner and its own child) ends while the shell sleeps on
+  fs.writeText(
+    home + "/tree.sh",
+    "sh -c \"perl -e '1 while (times)[0] < 0.6' & perl -e '1 while (times)[0] < 0.6'; wait\"\nsleep 3\n"
+  ).ok.get
+  val id = submitted(home, "--dir", home, "--", "sh", "tree.sh")
+  var last: long = 0
+  var seen = 0
+  val until = time.monotonic() + millis(15000)
+  while time.monotonic() < until
+    val status = json.parse(m(home, "status", "--json").out).ok.get
+    val job = status("running").asVector.get.find(j -> j("id").asLong == Some(id))
+    if job.isEmpty then break
+    val ms = job.get.get("cpu_ms").flatMap(v -> v.asLong).getOrElse(0)
+    assert(ms >= last, s"went from $last to $ms")
+    last = ms
+    seen += 1
+    threads.sleep(millis(300))
+  assert(seen > 0, "the job was never seen running")
+  assertEq(m(home, "wait", id.toString()).code, 0)
+  val total = finishedOf(home, id)("cpu_ms").asLong.get
+  assert(total >= last, s"ended at $total after $last")
+  assert(total >= 1000, s"$total")
+  cleanUp(home)
+
+@test("while a job burns cores, status reads the machine as busy as its tick counters say")
+statusCpuMatchesTicks()
+  val ncpu = long(marshal.logicalCpus().get)
+  if ncpu < 6 then return
+  val home = newHome()
+  fs.writeText(home + "/burn.sh", BurnScript).ok.get
+  val id = submitted(home, "--dir", home, "--", "sh", "burn.sh", "4", "8")
+  assert(within(5000, () -> started(home, id)))
+  // two whole sample intervals into the burn
+  threads.sleep(millis(3000))
+  // the truth over the two seconds the daemon's figure covers, read around the status
+  val t0 = marshal.machineTicks().get
+  threads.sleep(millis(2000))
+  val status = json.parse(m(home, "status", "--json").out).ok.get
+  val t1 = marshal.machineTicks().get
+  val truth = marshal.busyCores(t0, t1, int(ncpu))
+  val cpu = status.get("cpu").flatMap(marshal.centiOf).getOrElse(-1)
+  assert(cpu >= 0, s"$status")
+  assert((cpu - truth).abs <= 150, s"status cpu $cpu, ticks $truth")
+  // the job's own four cores are among them
+  assert(cpu >= 350 || truth < 350, s"status cpu $cpu with 4 cores burning")
+  cleanUp(home)

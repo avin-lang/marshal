@@ -496,15 +496,17 @@ ends: nothing polls.
   learned. What has been learned is kept in `memory.json` in marshal's home (below).
 - **Units learned from processor use.** Units come in quarters (`0.25`, `1.5`, `4`): the budget's
   12 units are 48 quarters, and the scheduler adds whole quarters, so fractional jobs fill the
-  budget exactly. Each second, with the memory, the daemon lists the processor time of every
-  process in a running job's tree (one `ps` for all jobs): the processes of its own process groups,
+  budget exactly. Each second, with the memory, the daemon lists the machine's processes (one `ps`
+  for all jobs) and asks the kernel (`proc_pid_rusage`) the processor time of every process in a
+  running job's tree, its own and that of the children it has reaped: the processes of its own process groups,
   every descendant of them by parent pid, and the groups those descendants lead, so a program that
   starts its children in process groups of their own (a test runner that ends a test's whole
   group when it overruns) is measured with them. A group the tree was found in stays the job's
   while anyone is in it, so a process whose parent has ended (a child of process 1 by then) is
   still the job's. Over an interval the cores a
   job keeps busy are the processor time its processes used divided by the time that passed (a
-  process seen before counts what it used since; a new one all it has used). The job's level is
+  process seen before counts what it used since, its reaped children's included; a new one all it
+  has used; a process seen and then reaped is not counted again in its parent's). The job's level is
   the last two intervals together, so one busy second between quiet ones counts at half, and its
   peak is the most that level has been. What it **held** is the level three quarters of its
   samples were at or below (the 75th percentile of its levels), so a gate that bursts to 8 cores
@@ -512,8 +514,11 @@ ends: nothing polls.
   `finished` (or other ending) event records the peak as `peak_cores`, what it held as
   `held_cores` and the processor time counted as `cpu_ms`; a job that ended within its first
   second was never measured and records none of them. A process that ends between two samples
-  takes the time it used since the last one with it, so work made of many processes shorter than a
-  second is measured low. A job that gives no `--units` weighs what the runs of the same command
+  counts through the process that reaps it, so a shell's or a build's many programs shorter than a
+  second are measured in full while what reaps them lives; when the job's own process ends, the
+  time its reaping reports (its own and every descendant's it reaped) is counted where it is more
+  than the samples found. What is not counted is the time, after the last sample, of a process
+  whose parent ended before it (process 1 reaps it). A job that gives no `--units` weighs what the runs of the same command
   teach, learned as memory is (the command's signature, its directory first): the most of what
   the last 5 measured runs held, rounded up to a quarter, at least 0.25 and at most the budget (a
   run recorded before `held_cores` was teaches its peak); a command never measured weighs its
@@ -578,9 +583,11 @@ ends: nothing polls.
   `ulimit -n` is that limit. `nofile` in `config.json` asks for another, held to the hard limit. The
   daemon's start line names it (`open files 245760`), `status` ends with `open files 245760` and
   `status --json` has `nofile`.
-- **The machine's processors.** The `ps` listing the jobs are measured from each second lists every
-  process, so the daemon measures the whole machine's processor use from it the same way, and the
-  running jobs' share of it. `status` says `cpu 8.4 (jobs 4.9)`, `status --json` has `cpu` and
+- **The machine's processors.** With each measurement the daemon reads the kernel's processor tick
+  counters (the user, system, idle and nice ticks of every processor, which htop and Activity
+  Monitor read), so the cores the whole machine kept busy over the last two seconds are its running
+  ticks over all its ticks times its processors: every process counts, however short-lived. Beside
+  it is the running jobs' share. `status` says `cpu 8.4 (jobs 4.9)`, `status --json` has `cpu` and
   `job_cpu` in cores, and `top` draws them against the unit budget (a unit is about a core).
 - **Work outside the job's processes.** Marshal measures a job's own process tree, so work that a
   job hands to something else is invisible to it: `docker run` leaves only the docker client in the

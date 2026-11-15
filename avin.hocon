@@ -6,5 +6,5 @@ dependencies {
 }
 
 c-libraries {
-  libc { headers = ["<sys/resource.h>", "<limits.h>", "<sys/sysctl.h>", "<libproc.h>"] }
+  libc { headers = ["<sys/resource.h>", "<limits.h>", "<sys/sysctl.h>", "<libproc.h>", "<mach/mach.h>", "<mach/mach_time.h>"] }
 }

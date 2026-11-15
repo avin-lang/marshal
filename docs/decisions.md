@@ -2078,3 +2078,25 @@ none.
   on the user's choice 2026-11-15: footprint, not RSS (RSS counted shared and droppable pages and
   missed compressed ones: 24.8G vs 21.5G on a sysl test job); peaks recorded as RSS age out of the
   three-run window.
+
+## Processor use from the kernel's counters (branch `cpu-accuracy`)
+
+- **The machine's processor use is read from the kernel's tick counters, and a job's from
+  `proc_pid_rusage` with its reaped children's time.** The machine: `host_statistics`'s
+  `HOST_CPU_LOAD_INFO` (user, system, idle and nice ticks of all processors together, 32-bit
+  counters that wrap) read with each measurement; the busy cores over the last two intervals are
+  Δ(user + system + nice) / Δ(all) × `hw.ncpu`, the window a job's level covers, so `cpu` and
+  `jobs` describe the same seconds. A job: each process in its tree (still found by one `ps`
+  listing) counts its own user + system time and its reaped children's; a process seen and then
+  reaped has what it was last seen using taken off its nearest live ancestor's reaped growth, so it
+  is not counted twice; and when the job's own process is reaped (`waitPidCpu`), its whole time is
+  the job's total where that is more than the samples counted. Times are Mach absolute time,
+  converted with `mach_timebase_info`. `ps %cpu` stays only for naming the busiest processes outside
+  marshal in an exclusive job's log, and a test's stand-in for `ps` still sets what jobs used. Settled
+  on the user's choice 2026-11-15: CPU from tick counters and rusage including reaped children (ps
+  %cpu lagged and missed short processes: marshal read 11 cores while all 18 were busy).
+  Alternatives: `host_processor_info` per processor (the same total, with an out array the kernel
+  allocates and `vm_deallocate` frees, for nothing the total does not say); a kqueue
+  `NOTE_EXIT` on every process to catch its final time (bindings for little the reaped times miss).
+  What is still not counted: a process whose parent ended first is reaped by process 1, and what it
+  used after the last sample is lost.

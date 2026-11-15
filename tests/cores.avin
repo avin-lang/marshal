@@ -92,7 +92,7 @@ private samples(pairs: Vector[(long, long)]) -> Vector[CpuSample] = pairs.map(p 
 
 @test("processor time used since the last sample: seen processes their growth, new ones all of theirs")
 cpuUsed()
-  val before: Map[long, long] = [(long(1), long(100)), (long(2), long(50))].toMap
+  val before = seenOf(samples([(1, 100), (2, 50)]))
   // nothing used
   assertEq(marshal.cpuUsedSince(before, samples([(1, 100), (2, 50)])), long(0))
   // growth of the seen, all of a new one
@@ -107,9 +107,75 @@ cpuUsed()
   val many = (1 .. 200).map(i -> CpuSample(long(i), long(i))).toVector
   assertEq(marshal.cpuUsedSince(Map(), many), long(20100))
   assertEq(
-    marshal.cpuUsedSince(many.map(s -> (s.pid, s.cpu)).toMap, many.map(s -> CpuSample(s.pid, s.cpu + 1))),
+    marshal.cpuUsedSince(seenOf(many), many.map(s -> CpuSample(s.pid, s.cpu + 1))),
     long(200)
   )
+
+// A sample's processes by pid, as a meter keeps what it saw.
+private seenOf(table: Vector[CpuSample]) -> Map[long, CpuSample] = table.map(s -> (s.pid, s)).toMap
+
+@test("a short program that lived and ended between two samples counts through its parent's reaped time")
+cpuReapedUnseen()
+  // a shell (pid 10) using little itself, which runs twenty programs of 20 hundredths each
+  val before = seenOf([CpuSample(10, 5, 0, 1)])
+  assertEq(marshal.cpuUsedSince(before, [CpuSample(10, 6, 400, 1)]), long(401))
+  // what the live ones use counts besides
+  assertEq(marshal.cpuUsedSince(before, [CpuSample(10, 6, 400, 1), CpuSample(11, 30, 0, 10)]), long(431))
+
+@test("a program seen while it ran and then reaped is not counted twice")
+cpuReapedSeen()
+  // the shell 10 and its child 11, which had used 30 when last seen
+  val before = seenOf([CpuSample(10, 5, 0, 1), CpuSample(11, 30, 0, 10)])
+  // 11 ended having used 50 in all, and 10 reaped it: 20 more, and 1 of the shell's own
+  assertEq(marshal.cpuUsedSince(before, [CpuSample(10, 6, 50, 1)]), long(21))
+  // a grandchild seen, ended with its parent: both credited to the live ancestor that reaped them
+  val deep = seenOf([CpuSample(10, 0, 0, 1), CpuSample(11, 10, 0, 10), CpuSample(12, 40, 0, 11)])
+  assertEq(marshal.cpuUsedSince(deep, [CpuSample(10, 0, 70, 1)]), long(20))
+  // a child the parent has not yet reaped (a zombie leaves the listing only once reaped): no credit
+  // is more than the parent's growth, so nothing goes negative
+  assertEq(marshal.cpuUsedSince(before, [CpuSample(10, 5, 0, 1)]), long(0))
+  // a reaped child whose growth and its seen time are equal counts nothing more
+  assertEq(marshal.cpuUsedSince(before, [CpuSample(10, 5, 30, 1)]), long(0))
+  // a process whose parent is not in the sample (it ended too, and process 1 reaps the orphan)
+  // credits nobody
+  val orphan = seenOf([CpuSample(10, 5, 0, 1), CpuSample(20, 30, 0, 99)])
+  assertEq(marshal.cpuUsedSince(orphan, [CpuSample(10, 7, 0, 1)]), long(2))
+  // a loop of parents in what was seen ends the walk
+  val cycle = seenOf([CpuSample(10, 0, 0, 1), CpuSample(30, 5, 0, 31), CpuSample(31, 5, 0, 30)])
+  assertEq(marshal.cpuUsedSince(cycle, [CpuSample(10, 1, 0, 1)]), long(1))
+  // a reaped time that went down is a new process with an old pid: all of it counts
+  assertEq(marshal.cpuUsedSince(seenOf([CpuSample(10, 5, 100, 1)]), [CpuSample(10, 5, 40, 1)]), long(45))
+
+@test("a job of twenty short sequential programs is counted in full by reaped time, and never goes down")
+meterCountsReaped()
+  // one sample a second; a shell runs a 20-hundredth program every 0.25 s, each ending before the
+  // next sample: the listing never finds one alive
+  var meter = marshal.startMeter(0)
+  var reaped: long = 0
+  var lastMs: long = 0
+  for second in 1 .. 5
+    reaped += 80
+    meter = meter.sampled([CpuSample(10, 0, reaped, 1)], long(second) * 1000)
+    assert(meter.cpuMs >= lastMs, s"$meter")
+    lastMs = meter.cpuMs
+  assertEq(meter.cpuMs, long(4000))
+  assertEq(meter.now, long(80))
+  // the whole tree ended: an empty sample keeps what was counted
+  assertEq(meter.sampled([], 6000).cpuMs, long(4000))
+  // live-only summing, which saw only the shell, would have counted nothing
+  var live = marshal.startMeter(0)
+  for second in 1 .. 5 do live = live.sampled([CpuSample(10, 0)], long(second) * 1000)
+  assertEq(live.cpuMs, long(0))
+
+@test("a job's own process reaped with more time than the samples counted raises the count, never lowers it")
+meterEnded()
+  val m = marshal.startMeter(0).sampled([CpuSample(10, 100)], 1000)
+  assertEq(m.cpuMs, long(1000))
+  assertEq(m.ended(2500).cpuMs, long(2500))
+  // the level and peak stay what the samples measured
+  assertEq((m.ended(2500).now, m.ended(2500).peak), (m.now, m.peak))
+  assertEq(m.ended(400), m)
+  assertEq(m.ended(-1), m)
 
 @test("cores over an interval: processor time over wall time, to the nearest hundredth, 0 over no time")
 coresOver()
@@ -568,6 +634,13 @@ heldSaved()
   val read = marshal.decodeSavedJob(json.parse(old).ok.get).ok.get
   assertEq((read.heldWindows, read.groups), (Map[long, long](), Vector[long]()))
   // what is not a level and a count, or a group, is refused
-  for bad in ["\"cpu_levels\":5", "\"cpu_levels\":[[1]]", "\"cpu_levels\":[[1,0]]", "\"cpu_levels\":[[-1,2]]", "\"groups\":[\"a\"]", "\"groups\":{}"]
+  for bad in [
+    "\"cpu_levels\":5",
+    "\"cpu_levels\":[[1]]",
+    "\"cpu_levels\":[[1,0]]",
+    "\"cpu_levels\":[[-1,2]]",
+    "\"groups\":[\"a\"]",
+    "\"groups\":{}"
+  ]
     val broken = old.dropRight(1) + "," + bad + "}"
     assert(marshal.decodeSavedJob(json.parse(broken).ok.get).isErr, broken)

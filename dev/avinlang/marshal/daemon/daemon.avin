@@ -54,7 +54,9 @@ import dev.avinlang.marshal.{
 // `Retry` name the attempt they were set for, so a timer left from an earlier attempt does nothing.
 data Message
   FromClient(request: Request, reply: Channel[Reply])
-  Exit(id: long, status: Result[ExitStatus, IoError])
+  // `cpuMs` is the processor time the job's process used in all, its own and that of every
+  // descendant it reaped, from its reaping; -1 where it was not told.
+  Exit(id: long, status: Result[ExitStatus, IoError], cpuMs: long)
   // job `id`'s deadline, from the sleeper `gen` armed
   Due(id: long, gen: int)
   // job `id`'s retry delay, set for its attempt `attempt`
@@ -69,12 +71,12 @@ data Message
   Sample
   // The resident bytes of each job's process tree, by job id, the processor time each of its
   // processes had used at `atMs` (the daemon's clock), and the process groups its tree was found in.
-  // `machine` is the processor time of every process on the machine at `atMs`.
+  // `machine` is the machine's processor ticks at `atMs`, None where the kernel would not say.
   Measured(
       sizes: Vector[(long, long)],
       cpu: Vector[(long, Vector[marshal.CpuSample])],
       atMs: long,
-      machine: Vector[marshal.CpuSample],
+      machine: Option[marshal.CpuTicks],
       groups: Vector[(long, Vector[long])]
   )
   // The least free space of the volumes the daemon watches, -1 where it could not be measured.
@@ -304,8 +306,8 @@ class Daemon(
   // The longest a job ran before its deadline stopped it, by the same keys, since a job of the key
   // last exited 0: its command takes at least that long.
   val overruns = MutableMap[string, long]()
-  // The processor use of every process on the machine, measured with the jobs'.
-  var machineMeter = marshal.CpuMeter(Map(), 0, 0, 0, -1, -1, 0, false)
+  // The processor use of the whole machine, from its tick counters, measured with the jobs'.
+  var machineMeter = marshal.startMachineMeter(marshal.logicalCpus().getOrElse(1))
   // The least free space of the volumes of the home and the jobs' directories, -1 until measured,
   // and whether a measurement of it is under way.
   var diskFree: long = -1
@@ -584,7 +586,7 @@ class Daemon(
         None -> break
       message match
         FromClient(request, reply) -> answer(request, reply)
-        Exit(id, status) -> exited(id, status)
+        Exit(id, status, cpuMs) -> exited(id, status, cpuMs)
         Due(id, gen) -> due(id, gen)
         Retry(id, attempt) -> retryDue(id, attempt)
         Restop(id, gen) -> restop(id, gen)
@@ -1171,7 +1173,10 @@ class Daemon(
     val events = self.events
     val id = job.id
     val pid = job.pid
-    spawn(() -> events.send(Exit(id, process.waitPid(pid))))
+    spawn(() ->
+      process.waitPidCpu(pid) match
+        Ok((status, cpu)) -> events.send(Exit(id, Ok(status), cpu.total.toMillis))
+        Err(e) -> events.send(Exit(id, Err(e), -1)))
     armDeadline(job)
 
   // A thread that sleeps until what is left of the job's deadline, its run time without its
@@ -1187,9 +1192,11 @@ class Daemon(
       if left > 0 then threads.sleep(millis(left))
       events.send(Due(id, gen)))
 
-  exited(id: long, status: Result[ExitStatus, IoError])
+  exited(id: long, status: Result[ExitStatus, IoError], cpuMs: long)
     val job = jobs(id)
     if job.state != "running" then return
+    // what the job's process reaped before it ended counts, though no sample saw it
+    job.meter = job.meter.ended(cpuMs)
     // Whatever the job left running in its group goes with it, and a paused group is continued
     // so the TERM reaches it.
     marshal.signalGroups(home, id, job.pgid, job.groups, signal.Terminate)
@@ -1324,8 +1331,8 @@ class Daemon(
     val pid = job.pid
     if pid > 0 then slots.foreach(ts -> if job.spec.landing then ts.releaseLanding(pid) else ts.unregister(pid))
 
-  // Measures the running jobs' process trees, and the processor use of the whole machine from the
-  // same listing, on a thread of its own, one measurement at a time.
+  // Measures the running jobs' process trees, and the processor use of the whole machine from its
+  // tick counters, on a thread of its own, one measurement at a time.
   measure()
     if measuring then return
     measuring = true
@@ -1334,14 +1341,16 @@ class Daemon(
     val home = self.home
     spawn(() ->
       val times = marshal.processTimes()
+      val ticks = marshal.machineTicks()
       val at = time.monotonic().toMillis
+      val asked = marshal.measuredByRusage()
       val trees = jobsNow.map(j -> (j.0, marshal.treeOf(home, j.0, j.1, times, j.2)))
       events.send(
         Measured(
           trees.map(t -> (t.0, marshal.jobResident(t.1))),
-          trees.map(t -> (t.0, marshal.jobCpu(t.1, times))),
+          trees.map(t -> (t.0, marshal.jobCpu(t.1, times, asked))),
           at,
-          times.map(g -> g.sample),
+          ticks,
           trees.map(t -> (t.0, t.1.groups))
         )
       ))
@@ -1351,7 +1360,7 @@ class Daemon(
       sizes: Vector[(long, long)],
       cpu: Vector[(long, Vector[marshal.CpuSample])],
       at: long,
-      machine: Vector[marshal.CpuSample],
+      machine: Option[marshal.CpuTicks],
       groups: Vector[(long, Vector[long])]
   )
     measuring = false
@@ -1361,7 +1370,7 @@ class Daemon(
       jobs.get(id).foreach(job -> if job.state == "running" then job.meter = job.meter.sampled(table, at))
     for (id, found) in groups
       jobs.get(id).foreach(job -> if job.state == "running" then job.groups = found)
-    machineMeter = machineMeter.sampled(machine, at)
+    machineMeter = machineMeter.sampled(machine)
 
   // The directories whose volumes the disk guard watches: marshal's home and those of the jobs that
   // run or wait.
@@ -1821,10 +1830,10 @@ class Daemon(
   settle(held: Buffer[(Request, Channel[Reply])]) -> bool
     var any = false
     for job in running.toVector
-      process.tryWaitPid(job.pid) match
+      process.tryWaitPidCpu(job.pid) match
         Ok(None) -> ()
-        Ok(Some(status)) ->
-          exited(job.id, Ok(status))
+        Ok(Some((status, cpu))) ->
+          exited(job.id, Ok(status), cpu.total.toMillis)
           any = true
         Err(_) ->
           while job.state == "running" do during(held)
@@ -1835,7 +1844,7 @@ class Daemon(
   during(held: Buffer[(Request, Channel[Reply])])
     events.receive() match
       Some(FromClient(r, c)) -> held += (r, c)
-      Some(Exit(id, status)) -> exited(id, status)
+      Some(Exit(id, status, cpuMs)) -> exited(id, status, cpuMs)
       Some(Due(id, gen)) -> due(id, gen)
       Some(Retry(id, attempt)) -> retryDue(id, attempt)
       Some(Restop(id, gen)) -> restop(id, gen)
