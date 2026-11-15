@@ -78,7 +78,7 @@ homed(command: Command, home: string) -> Command =
   command.withEnv("MARSHAL_HOME", home).withEnv("MARSHAL_TAKE_SLOT_DIR", slots(home)).withEnv(
     "MARSHAL_TEST_WATCH_PID",
     process.pid().toString()
-  ).withEnv("MARSHAL_TEST_DF", home + "/df.sh")
+  ).withEnv("MARSHAL_TEST_DF", home + "/df.sh").withEnv("MARSHAL_TEST_NCPU", "12")
 
 // Where the homes of a test run are recorded, next to the executable under test, so that a
 // teardown, or the script that ran the tests, can find the daemons a dead test left.

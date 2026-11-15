@@ -2,7 +2,8 @@ module dev.avinlang.marshal
 
 // The daemon's settings, from `config.json` in marshal's home directory. Every key is optional:
 //
-//   units           the development unit budget (12)
+//   units           the development unit budget (the machine's logical processor count, 12 where that
+//                   cannot be read)
 //   memory          the memory budget, a size such as "56G" or a number of bytes; by default the
 //                   machine's memory less `reserve`
 //   reserve         what the default memory budget leaves the rest of the machine ("8G")
@@ -68,8 +69,16 @@ fairness(config: Config, wallNow: long) -> Fairness = config.drainAfterMs match
 private val DefaultReserve: long = 8 * 1024 * 1024 * 1024
 
 // The settings in `text` (empty text is every default), for a machine with `machineMemory` bytes
-// (0 where it is not known: the memory budget is then unlimited unless the file gives one).
-readConfig(text: string, machineMemory: long) -> Result[Config, string]
+// (0 where it is not known: the memory budget is then unlimited unless the file gives one), and
+// whose processor count is unknown: the unit budget is then `FallbackUnits` unless the file gives one.
+readConfig(text: string, machineMemory: long) -> Result[Config, string] = readConfigOn(text, machineMemory, None)
+
+// The unit budget when the machine's processor count cannot be read.
+val FallbackUnits: int = 12
+
+// The settings in `text`, for a machine with `machineMemory` bytes and `processors` logical
+// processors (None where not known). The unit budget is one unit per processor unless `units` says.
+readConfigOn(text: string, machineMemory: long, processors: Option[int]) -> Result[Config, string]
   val j = if text.trim.isEmpty then Json.obj() else json.parse(text) match
     Ok(v) -> v
     Err(e) -> return Err(s"config.json is not JSON: $e")
@@ -81,7 +90,7 @@ readConfig(text: string, machineMemory: long) -> Result[Config, string]
       "polite_schedule"
     ].contains(key)
       return Err(s"config.json: no setting `$key`")
-  val units = whole(j, "units", 12)?
+  val units = whole(j, "units", processors.filter(n -> n >= 1).getOrElse(FallbackUnits))?
   if units < 1 then return Err("config.json: `units` is at least 1")
   val reserve = size(j, "reserve", DefaultReserve)?
   val fallback = if machineMemory <= 0 then long.MaxValue elif machineMemory > reserve then machineMemory - reserve else machineMemory

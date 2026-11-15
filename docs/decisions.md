@@ -2191,3 +2191,19 @@ choices the design left open (settled on the user's delegation 2026-11-15).
   lasts, then the setting applies again. **Review with the user:** whether a fraction set outside the
   windows (say on a Saturday) should still be in force on Monday evening after the window, as it is
   now, or end with the next window.
+
+## The unit budget is the machine's core count (branch `units-cores`)
+
+**Settled on the user's decision 2026-11-15:** *"since marshal is a single workstation job scheduler,
+it could choose the maximum number of units to be the number of cores of the machine it's running
+on"*.
+
+- **The default budget is `hw.ncpu`, the logical processor count**, read by the daemon when it
+  starts (18 on the development machine). A unit has meant a core since 0.3.11, so one unit per
+  logical core is the whole machine. Before, the default was a hard-coded 12.
+- **config.json's `units` still overrides it**, and a count that cannot be read falls back to 12.
+- **Everything else follows the budget, not the number.** `--units` is held to the budget, an
+  exclusive job weighs all of it, polite mode takes a fraction of it (¾ of 18 is 13.5 units), and
+  `status` and `top` draw it. `$MARSHAL_TEST_NCPU` names the count for a test (the e2e helpers set 12).
+- **The budget is read once, at daemon start**: a change needs `marshal restart`, as `units` in
+  config.json always did.
