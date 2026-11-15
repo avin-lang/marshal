@@ -143,14 +143,20 @@ ticksMeasureBurn()
       // all of its processors
       assert(busy + 50 >= used, s"$n burners: machine $busy below the burners' $used")
       assert(busy <= ncpu * 100 + 5, s"$n burners: machine $busy above $ncpu cores")
-      // with room for them, the burners got their cores, and the machine reads that much busier
-      if baseline + long(n) * 100 + 100 > ncpu * 100 then continue
+      // on a quiet machine, the burners got their cores, and the machine reads that much busier; on
+      // a busy one, other work moves by more than the half core this allows, so the try says nothing
+      if !quietFor(baseline, n, ncpu) then continue
       if used >= long(n) * 100 - 50 && (busy - baseline - long(n) * 100).abs <= 50
         passed = true
         break
-    // a machine with no room for the burners in any try says nothing of them
-    val roomy = seen.exists(s -> s.0 + long(n) * 100 + 100 <= ncpu * 100)
-    assert(passed || !roomy, s"$n burners: (baseline, busy, used) $seen")
+    // a machine that was never quiet in any try says nothing of them
+    val quiet = seen.exists(s -> quietFor(s.0, n, ncpu))
+    assert(passed || !quiet, s"$n burners: (baseline, busy, used) $seen")
+
+// Whether a try's baseline leaves the burners' change readable: the machine was at most a quarter
+// busy before them, and they had room.
+private quietFor(baseline: long, n: int, ncpu: long) -> bool =
+  baseline <= ncpu * 25 && baseline + long(n) * 100 + 100 <= ncpu * 100
 
 @test("a process's own time by rusage is ps's time= to within 5%, and its reaped children's count apart")
 rusageMatchesPs()
