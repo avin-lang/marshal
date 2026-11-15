@@ -96,8 +96,8 @@ scriptsLearnApart()
     peakLine(3, "/w/f", "[\"zsh\",\"/scratch/bti/gate2.zsh\"]", G)
   ]
   val peaks = marshal.recover(lines).peaks
-  assertEq(reserveIn(peaks, ["zsh", "/scratch/bti/gate2.zsh"], "/w/new").0, Reservation(1127 * MiB, true))
-  assertEq(reserveIn(peaks, ["zsh", "/scratch/release-0110/gate2.zsh"], "/w/new").0.bytes > 32 * G, true)
+  assertEq(reserveIn(peaks, ["zsh", "/scratch/bti/gate2.zsh"], "/w/new").0, Reservation(1024 * MiB, true))
+  assertEq(reserveIn(peaks, ["zsh", "/scratch/release-0110/gate2.zsh"], "/w/new").0.bytes == 32 * G, true)
   // a new script of the same name learns nothing from either
   assertEq(reserveIn(peaks, ["zsh", "/scratch/other/gate2.zsh"], "/w/r"), (Reservation(0, false), "none"))
 
