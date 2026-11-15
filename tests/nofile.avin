@@ -39,7 +39,7 @@ nofileConstants()
   // this process's limits read, the soft one no more than the hard one
   val limits = marshal.nofileLimits()
   assert(limits.isDefined)
-  for (soft, hard) in limits do assert(1 <= soft <= hard, s"$soft $hard")
+  for (soft, hard) in limits.toList do assert(1 <= soft <= hard, s"$soft $hard")
 
 @test("config.json's nofile asks for a limit of its own, held to the hard limit, lower than the current one too")
 nofileAsked()

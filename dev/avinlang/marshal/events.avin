@@ -102,7 +102,7 @@ recover(lines: Iterable[string], keep: int = 10) -> Recovered
         if peak > 0 then appendTo(peaks, key, peak)
         if busiest >= 0 then appendTo(cores, key, busiest)
     if kind == "timeout"
-      for ran in ev.get("run_ms").flatMap(v -> v.asLong)
+      for ran in ev.get("run_ms").flatMap(v -> v.asLong).toList
         for key in memoryKeys(
           ev.get("kind").flatMap(v -> v.asString).getOrElse(""),
           ev.get("landing").flatMap(v -> v.asBool).getOrElse(false),
