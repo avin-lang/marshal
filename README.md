@@ -130,6 +130,8 @@ caffeinate -dimsu marshal run --dir . --label "ed: parser tests" --deadline 20m 
   mostly waits). Asking for more starves everyone else; asking for less oversubscribes the machine.
   Once a command has run, marshal knows: it measures the cores every run keeps busy and weighs the
   next run of the same command by them, so **`--units` may be left out for a command it knows**.
+  A given `--units` is a ceiling: once the command has run 3 times, the job weighs the fewer of
+  what it gave and what those runs used (`8→~1.5` in UNITS); `--units-exact` keeps it exactly.
   `ls` shows learned units with `~` in UNITS and what a job used in USED. Where a given `--units`
   is far from what recent runs used (2 units or more apart, and twice or half), `run` and `submit`
   say so on stderr — `marshal: declared 4 units; recent runs used about 1.2` — and that is the
@@ -293,7 +295,8 @@ Options of `submit` and `run`:
 | Option | Meaning |
 | --- | --- |
 | `--kind <k>` | What the job is, for learning its deadline. Default: `test` when a word of the command is `test`, otherwise `build`. |
-| `--units <n>` | Its weight, a number above 0 in steps of 0.25 (`0.5`, `1.25`, `4`); anything else is refused. Default: the cores recent runs of the same command used, rounded up to a quarter (`~` in UNITS; see "The daemon"), and 4 for a `test`, 1 for anything else until the command has been measured. A given value far from what recent runs used gets a one-line hint on stderr. |
+| `--units <n>` | Its weight, a number above 0 in steps of 0.25 (`0.5`, `1.25`, `4`); anything else is refused. Default: the cores recent runs of the same command used, rounded up to a quarter (`~` in UNITS; see "The daemon"), and 4 for a `test`, 1 for anything else until the command has been measured. A given value is a ceiling: once the command has `learn_min_runs` (3) measured runs, the job weighs the fewer of it and what they teach (`8→~1.5` in UNITS, `units_capped` in `status --json`, and a line on stderr). A given value it keeps that is far from what recent runs used gets a one-line hint on stderr. |
+| `--units-exact` | With `--units`: weigh exactly the units given, even where the command's runs used fewer. Refused without `--units`. |
 | `--mem <size>` | Memory it needs: `29G`, `512M` (powers of 1024). Default: the learned peak of the same command in its directory, or anywhere while it has not run in that directory (see Budget); 0 until the command has run once. `--mem 0` reserves nothing and learns nothing. |
 | `--external` | Its work runs outside its own processes: `docker run`, a VM, or a command run as another account through `sudo` (see Work outside the job's processes). It needs `--mem`, and is refused without it; it reserves exactly that and holds it whatever its process tree measures; its measured peak is never learned from, so its kind's later jobs are not taught a near-zero peak. `ls` and `top` show its RESV with `@` before it (`@29G`), `status --json` gives `"external": true`, and `rerun` keeps it. A command whose first word (or the first after `sudo`) is `docker` with `run`, `compose`, `build` or `buildx`, or `docker-compose`, submitted without it gets a warning on stderr and is submitted all the same. |
 | `--landing` | The landing lane: starts before every development job, outside the unit budget, at normal priority, once its memory fits beside what runs; until then nothing else starts, so the running jobs drain for it. One landing job runs at a time. One whose memory alone exceeds the budget starts when nothing else runs. |
@@ -342,7 +345,8 @@ $ marshal stats --kind test --json
 ```
 
 `run-type` and `train` take `--dir`, `--deadline`, `--units` and `--mem` too, which override the
-type's own, `--quiet-timeout`, `--label` and `--quick`, and `--submit`, which prints the job's id instead of
+type's own, `--quiet-timeout`, `--label` and `--quick`, `--units-exact` (the units `--units` or the
+type gives, kept exactly; alone it keeps the type's), and `--submit`, which prints the job's id instead of
 waiting. A type's parameters may not use those names.
 
 A job runs with the caller's environment, plus `MARSHAL_JOB` (its id) and `MARSHAL_HOME`, in a
@@ -508,17 +512,27 @@ ends: nothing polls.
   run recorded before `held_cores` was teaches its peak); a command never measured weighs its
   kind's default (4 for a `test`, 1 for anything else). Memory is still learned from peaks: a job
   over its share of processors only slows the niced jobs beside it, while one over its memory can
-  take the machine into swap. `--units` wins
-  whenever it is given, and a job type's `units` counts as given. An exclusive job still weighs the
+  take the machine into swap. A given `--units` is a **ceiling**, and a job type's `units` counts
+  as given: once the command has at least `learn_min_runs` (3) measured runs, the job weighs the
+  fewer of what it gave and what those runs teach, so `--units 8` on a command that holds one core
+  weighs about 1 and leaves the other cores to the queue. `--units-exact` keeps the given units
+  exactly, for work that needs them whatever it was measured using; with fewer runs, the given
+  units stand as they are. A job that turns out to use more than it weighs is left alone, and its
+  command's next runs learn the higher level. An exclusive job still weighs the
   whole budget, and a quick job its own units outside it. When a run teaches a new value, the
-  queued and waiting jobs that gave no units weigh again at once; a running job keeps what it
-  started with. A restart weighs them again from what the new program reads, and a running job
+  queued and waiting jobs that gave no units, or gave them as a ceiling, weigh again at once; a
+  running job keeps what it started with. A restart weighs them again from what the new program reads, and a running job
   it takes over keeps its measured peak, the levels it held and the groups its tree was found in,
   and is measured on from a fresh baseline. An external
-  job's cores are never learned. `ls` shows a job's units in UNITS (`~` before learned ones) and in
+  job's cores are never learned. `ls` shows a job's units in UNITS (`~` before learned ones, and
+  `8→~1.5` for a job that gave 8 and weighs the 1.5 its command's runs teach) and in
   USED the cores a running job keeps busy or an ended job's peak (`-` where nothing was measured);
-  `status --json` gives `units` as a number (`1.25`), `units_learned`, and `cores`, `peak_cores`,
-  `held_cores` and `cpu_ms` once measured; `top`'s UNITS shows the same units with `~`, and its
+  `status --json` gives `units` as a number (`1.25`), `units_learned`, `units_asked` and
+  `units_capped: true` for a job held under what it gave, and `cores`, `peak_cores`,
+  `held_cores` and `cpu_ms` once measured; the `submitted` event's spec records `units_asked`,
+  `units_capped` and `units_exact` the same way. `run` and `submit` tell a held job so on stderr:
+  `marshal: units 1.5, learned (asked 8); --units-exact keeps 8`. `top`'s UNITS shows the same
+  units with `~`, the given ones and the arrow only where they fit its 5 cells, and its
   PEAK, like `show`'s, stays the peak.
 - **Durations learned per command, and ETAs.** Every run that exits 0 is remembered under its
   command, as memory is (the command's signature, in its directory and anywhere). A job's expected

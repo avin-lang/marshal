@@ -89,7 +89,10 @@ Options of submit and run:
   --kind <k>        what the job is, for learning its deadline (default: test when a word of the command is `test`, else build)
   --units <n>       its weight in units, in steps of 0.25 such as 0.5 or 2 (default: the
                     cores recent runs of what it runs used, rounded up to a quarter, ~ in UNITS;
-                    4 for a test and 1 otherwise until it has run once)
+                    4 for a test and 1 otherwise until it has run once). A given n is a
+                    ceiling: once what it runs has run 3 times, it weighs the fewer of n and
+                    what those runs used (8→~1.5 in UNITS)
+  --units-exact     with --units: weigh exactly n, even where its runs used fewer
   --mem <size>      the memory it needs, such as 29G or 512M (default: the learned peak of
                     what it runs, such as `sysl test compiler` or `zsh gate.zsh`, in its --dir
                     or anywhere, ~ in RESV; 0 until it has run once; --mem 0 reserves none)
@@ -335,6 +338,7 @@ parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]
   var owner = ""
   var external = false
   var exclusive = false
+  var exact = false
   var quietLoad = 0.0
   var i = 0
   while i < args.length
@@ -361,6 +365,10 @@ parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]
       continue
     if word == "--exclusive"
       exclusive = true
+      i += 1
+      continue
+    if word == "--units-exact"
+      exact = true
       i += 1
       continue
     if i + 1 >= args.length then return Err(s"`$word` needs a value")
@@ -401,6 +409,7 @@ parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]
     i += 2
   val cmd = args.drop(i)
   if cmd.isEmpty then return Err("no command to run: give it after `--`")
+  if exact && units.isEmpty then return Err(marshal.ExactWithoutUnits)
   marshal.externalRefusal(external, memoryGiven) match
     Some(why) -> return Err(why)
     None -> ()
@@ -427,7 +436,8 @@ parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]
     exclusive,
     quietLoad,
     units.isDefined,
-    owner
+    owner,
+    exact
   )
   for why in marshal.exclusiveRefusal(spec).toList do return Err(why)
   Ok(spec)

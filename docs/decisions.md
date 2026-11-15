@@ -1978,3 +1978,47 @@ running."
 - **Memory learning stays on peaks.** Why: memory over-committed is dangerous (the machine swaps,
   or a job is killed), while processor time over-committed only slows niced jobs. `show` and `top`'s
   PEAK stay the peak: it is what the job reached, and the learned units say what it held.
+
+## A given `--units` is a ceiling; `--units-exact` keeps it (branch `units-ceiling`)
+
+**Settled on the user's delegation 2026-11-15** (the user agreed to the ceiling). The user's queue of
+25 jobs: almost every one was submitted with `--units 8`, the running one held 8 units while it kept
+one core busy, nothing else fitted, and 11 cores idled. Learned units sized only the jobs that gave
+none.
+
+- **A job that gives `--units N` weighs min(N, learned) once its command has `learn_min_runs`
+  measured runs; with fewer it weighs N.** Learned is what `learnedUnits` teaches a job that gives
+  none: the most of the last 5 runs' held levels (p75), rounded up to a quarter, at least a quarter.
+  Why a ceiling: a submitter's `--units` is written once into a script and copied, while what the
+  command uses is measured on every run, so the measurement is the better guide where it is lower;
+  where it is higher the submitter's figure stands, because a job weighing more than it asked for
+  would push out work the submitter planned around. Why the same held p75 and not something more
+  cautious: it is already what jobs without `--units` weigh, so one rule sizes both, and
+  over-committing processors only slows niced jobs. Why `learn_min_runs` (default 3) and not one
+  run: overriding a figure the submitter gave deserves more evidence than filling in a missing one,
+  and it is the threshold learned deadlines already trust. Alternatives: a hint alone (what 0.3.11
+  did; the user's queue shows it is ignored); a ceiling with headroom (`1.5 × learned`: one more
+  parameter, and the queue fills less); trusting one run (a single light run, a cache hit, would cap
+  a heavy job).
+- **`--units-exact` keeps N exactly** (on `run`, `submit`, `run-type` and `train`; `rerun` keeps
+  it). Why: some work needs its units whatever it was measured using: a benchmark that must not
+  share, a job whose measured level is low because its work runs elsewhere. On `run` and `submit`,
+  `--units-exact` without `--units` is refused naming both, since there is nothing to keep; on
+  `run-type` and `train` it keeps the type's own units, which count as given. `--exclusive` and
+  `--quick` jobs keep what they have, as before.
+- **What was asked for is kept beside what is weighed.** The spec gains `units_asked` and
+  `units_capped` (the event log, the saved state and `status --json`), and `units_exact`. Why: a
+  re-sizing (a run teaching a new level, a restart) starts again from what was asked, so a cap can
+  rise back to N and never above it; and `ls` and `top` can say `8→~1.5`. `top`'s UNITS keeps its 5
+  cells, so the arrow form is shown only where it fits and `~1.5` otherwise: widening the column
+  would take cells from COMMAND on every screen for a rare row. `run` and `submit` say
+  `marshal: units 1.5, learned (asked 8); --units-exact keeps 8` on stderr; there is no per-job
+  `show` command, so that line, `ls` and `status --json` are where it is told.
+- **A capped job that uses more than it weighs is left alone.** No preemption: it keeps running at
+  the weight it started with, and its command's next runs learn the higher level. Why: processors
+  over-committed only slow niced jobs, and stopping work to re-weigh it costs more than it saves.
+- **Memory is unchanged.** A given `--mem` still wins, and memory is still learned from peaks. Why:
+  memory over-committed swaps or kills, processors over-committed only slow.
+- **Queued and waiting jobs that gave units as a ceiling weigh again** when a run teaches a new
+  level and on a restart, under the same rule, starting from what they asked for. A rerun asks for
+  what the job asked for, weighed again.

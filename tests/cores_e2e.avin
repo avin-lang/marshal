@@ -242,6 +242,84 @@ restartResized()
   assertEq(m(home, "stop", "--force").code, 0)
   cleanUp(home)
 
+// Whether `status --json` says job `id` weighs fewer units than it gave, and the units it gave.
+private cappedOf(home: string, id: long) -> (Option[bool], Option[real])
+  val j = statusJob(home, id)
+  (Some(j.get("units_capped").flatMap(v -> v.asBool).getOrElse(false)), j.get("units_asked").flatMap(v -> v.asReal))
+
+@test("a command run twice on one core, then given --units 8, weighs what it used; with --units-exact, 8")
+givenIsACeiling()
+  val home = newHome("{\"learn_min_runs\": 2}")
+  for _ in 1 .. 2 do assertEq(fm(home, (["run"] ++ fakeWork(home, "one", "5", "1"))*).code, 0)
+  val ran = fm(home, (["submit", "--units", "8"] ++ fakeWork(home, "one", "30", "1"))*)
+  assertEq(ran.code, 0)
+  val capped = idOf(ran)
+  val (units, learned) = unitsOf(home, capped)
+  assertEq(learned, Some(true))
+  // about one core: a quarter either way of the stand-in's clock against the daemon's
+  assert(units.exists(u -> 0.75 <= u <= 1.5), s"${statusJob(home, capped)}")
+  assertEq(cappedOf(home, capped), (Some(true), Some(8.0)))
+  assert(ran.out.contains("marshal: units ") && ran.out.contains("learned (asked 8); --units-exact keeps 8"), ran.out)
+  assert(lsRow(home, capped).contains("8→~"), lsRow(home, capped))
+  // the event log records what it asked for
+  val sub = events(home).filter(e -> e("id").asLong == Some(capped) && e("event").asString == Some("submitted")).last
+  assertEq(sub("spec")("units_asked").asReal, Some(8.0))
+  assertEq(sub("spec")("units_capped").asBool, Some(true))
+  val exact = submitted(home, (["--units", "8", "--units-exact"] ++ fakeWork(home, "one", "30", "1"))*)
+  assertEq(unitsOf(home, exact), (Some(8.0), Some(false)))
+  assertEq(cappedOf(home, exact), (Some(false), None))
+  // with no --units it weighs what is learned, as before, and is not capped
+  val none = submitted(home, fakeWork(home, "one", "30", "1")*)
+  assertEq(unitsOf(home, none).0, units)
+  assertEq(cappedOf(home, none), (Some(false), None))
+  // a rerun asks for 8 again
+  assertEq(m(home, "kill", capped.toString()).code, 0)
+  assert(m(home, "wait", capped.toString()).code != 0)
+  val again = idOf(m(home, "rerun", capped.toString()))
+  assertEq(cappedOf(home, again), (Some(true), Some(8.0)))
+  assertEq(m(home, "stop", "--force").code, 0)
+  cleanUp(home)
+
+@test("a command with fewer runs than learning wants keeps --units as given, and is told when it is far off")
+ceilingWaitsForRuns()
+  val home = newHome()
+  fs.writeText(home + "/memory.json", sleepCores("k", "0.5, 0.5")).ok.get
+  val given = m(home, "submit", "--kind", "k", "--units", "8", "--", "sleep", "30")
+  assertEq(unitsOf(home, idOf(given)), (Some(8.0), Some(false)))
+  assertEq(cappedOf(home, idOf(given)), (Some(false), None))
+  assert(given.out.contains("marshal: declared 8 units"), given.out)
+  // --units-exact alone is refused before the daemon
+  val alone = m(home, "submit", "--units-exact", "--", "true")
+  assertEq(alone.code, 2)
+  assert(alone.out.contains("--units-exact") && alone.out.contains("--units <n>"), alone.out)
+  assertEq(m(home, "stop", "--force").code, 0)
+  cleanUp(home)
+
+@test("a restart weighs a queued capped job again under the same rule, and an exact one stays exact")
+restartCeiling()
+  val home = newHome("{\"units\": 4}")
+  fs.writeText(home + "/memory.json", sleepCores("w", "0.5, 0.5, 0.5")).ok.get
+  val blocker = submitted(home, "--kind", "block", "--units", "4", "--", "sleep", "60")
+  val capped = submitted(home, "--kind", "w", "--units", "4", "--", "sleep", "30")
+  val exact = submitted(home, "--kind", "w", "--units", "4", "--units-exact", "--", "sleep", "30")
+  assertEq(unitsOf(home, capped), (Some(0.5), Some(true)))
+  assertEq(cappedOf(home, capped), (Some(true), Some(4.0)))
+  assert(lsRow(home, capped).contains("4→~0.5"), lsRow(home, capped))
+  // the new image reads a memory.json that has learned more, still under what it gave
+  fs.writeText(home + "/memory.json", sleepCores("w", "2.6, 2.6, 2.6")).ok.get
+  restarted(home)
+  assertEq(unitsOf(home, capped), (Some(2.75), Some(true)))
+  assertEq(cappedOf(home, capped), (Some(true), Some(4.0)))
+  // and then more than it gave: it weighs what it gave, no longer capped
+  fs.writeText(home + "/memory.json", sleepCores("w", "6, 6, 6")).ok.get
+  restarted(home)
+  assertEq(unitsOf(home, capped), (Some(4.0), Some(false)))
+  assertEq(cappedOf(home, capped), (Some(false), None))
+  assertEq(unitsOf(home, exact), (Some(4.0), Some(false)))
+  assertEq(statusJob(home, blocker)("state").asString, Some("running"))
+  assertEq(m(home, "stop", "--force").code, 0)
+  cleanUp(home)
+
 // A `finished` event of job `id`, of `kind`, running `sleep`, measured at `cores`.
 private coresLine(id: long, kind: string, cores: string) -> string =
   s"{\"ts\":${time.now().epochMillis},\"event\":\"finished\",\"id\":$id,\"kind\":\"$kind\",\"landing\":false,\"cmd\":[\"sleep\",\"1\"],\"exit\":0,\"run_ms\":1000,\"peak_rss\":1048576,\"peak_cores\":$cores}"

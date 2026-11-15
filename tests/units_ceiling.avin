@@ -1,0 +1,148 @@
+module tests
+
+// Given units as a ceiling: a job that gives `--units` weighs the fewer of them and what its
+// command's runs teach once there are enough runs, `--units-exact` keeps them, and the protocol, the
+// event log, the saved state, the command line and the listings carry what was asked for.
+import dev.avinlang.json
+import dev.avinlang.json.Json
+import dev.avinlang.marshal
+import dev.avinlang.marshal.cli
+import dev.avinlang.marshal.{JobInfo, JobSpec, Sizing}
+
+@test("given units above what runs teach weigh what they teach; below, as many as given; with no history, as given")
+ceilingSizing()
+  // gave 8, runs teach 1.5: weighs 1.5, learned, having asked for 8
+  assertEq(marshal.sizeFor(true, 32, false, Some(6), 4, false, Some(6)), Sizing(6, true, 32))
+  // gave 1, runs teach 2: weighs 1, as given
+  assertEq(marshal.sizeFor(true, 4, false, Some(8), 4, false, Some(8)), Sizing(4, false))
+  // the same as runs teach: as given, not capped
+  assertEq(marshal.sizeFor(true, 8, false, Some(8), 4, false, Some(8)), Sizing(8, false))
+  // too few runs to trust, or none: as given
+  assertEq(marshal.sizeFor(true, 32, false, Some(6), 4, false, None), Sizing(32, false))
+  assertEq(marshal.sizeFor(true, 32, false, None, 4, false, None), Sizing(32, false))
+  // a fraction given is a ceiling too
+  assertEq(marshal.sizeFor(true, 2, false, Some(1), 4, false, Some(1)), Sizing(1, true, 2))
+
+@test("--units-exact keeps the given units; exclusive and quick jobs keep theirs; no units given learns as before")
+exactAndExempt()
+  assertEq(marshal.sizeFor(true, 32, false, Some(6), 4, true, Some(6)), Sizing(32, false))
+  assertEq(marshal.sizeFor(true, 48, true, Some(2), 4, false, Some(2)), Sizing(48, false))
+  assertEq(marshal.sizeFor(true, 8, true, Some(2), 4, true, Some(2)), Sizing(8, false))
+  assertEq(marshal.sizeFor(false, 4, false, Some(2), 4, false, Some(2)), Sizing(2, true))
+  assertEq(marshal.sizeFor(false, 4, false, Some(2), 4, false, None), Sizing(2, true))
+  assertEq(marshal.sizeFor(false, 4, false, None, 16, false, None), Sizing(16, false))
+
+@test("the ceiling is what runs teach once there are enough of them, at least a quarter, held to the budget")
+ceilingFromRuns()
+  // fewer runs than learning wants: no ceiling
+  assertEq(marshal.unitsCeiling([100, 100], 48, 3), None)
+  // a run never measured is not one of them
+  assertEq(marshal.unitsCeiling([100, -1, 100], 48, 3), None)
+  assertEq(marshal.unitsCeiling([100, 140, 100], 48, 3), Some(6))
+  assertEq(marshal.unitsCeiling([100], 48, 1), Some(4))
+  // idle runs teach a quarter, never nothing
+  assertEq(marshal.unitsCeiling([0, 0, 0], 48, 3), Some(1))
+  assertEq(marshal.sizeFor(true, 32, false, Some(1), 4, false, marshal.unitsCeiling([0, 0, 0], 48, 3)), Sizing(1, true, 32))
+  assertEq(marshal.unitsCeiling([5000, 5000, 5000], 48, 3), Some(48))
+  assertEq(marshal.unitsCeiling([], 48, 1), None)
+
+@test("a spec's asked units are kept as it weighs again, and are its own units when it weighs those")
+askedKept()
+  val given = JobSpec("build", 32, 0, false, "/w", None, ["make"], [])
+  assertEq(marshal.askedUnits(given), 32)
+  val capped = marshal.withSizing(given, 6, 32)
+  assertEq((capped.units, capped.unitsAsked, marshal.askedUnits(capped)), (6, 32, 32))
+  // weighing again keeps what was asked for
+  assertEq(marshal.withUnits(capped, 5).unitsAsked, 32)
+  // and weighing as given again clears it
+  assertEq(marshal.withSizing(capped, 32, 0), given)
+  val exact = JobSpec("build", 32, 0, false, "/w", None, ["make"], [], unitsExact = true)
+  assert(marshal.withSizing(exact, 32, 0).unitsExact)
+
+@test("a spec says it is exact, and what it asked for and that it was capped, and reads back; one before them reads as neither")
+specMembers()
+  val capped = JobSpec("build", 6, 0, false, "/w", None, ["make"], [], unitsAsked = 32)
+  val j = marshal.encodeSpec(capped)
+  assertEq(j("units").asReal, Some(1.5))
+  assertEq(j("units_asked").asReal, Some(8.0))
+  assertEq(j("units_capped").asBool, Some(true))
+  assert(!j.has("units_exact"))
+  assertEq(marshal.decodeSpec(json.parse(j.render).ok.get), Ok(capped))
+  val exact = JobSpec("build", 32, 0, false, "/w", None, ["make"], [], unitsExact = true)
+  val e = marshal.encodeSpec(exact)
+  assertEq(e("units_exact").asBool, Some(true))
+  assert(!e.has("units_asked") && !e.has("units_capped"))
+  assertEq(marshal.decodeSpec(e), Ok(exact))
+  val plain = marshal.encodeSpec(JobSpec("build", 4, 0, false, "/w", None, ["make"], []))
+  for key in ["units_exact", "units_asked", "units_capped"] do assert(!plain.has(key), key)
+  // what marshal wrote before given units were a ceiling
+  val old = json.parse("{\"kind\":\"b\",\"units\":8,\"mem\":0,\"dir\":\"/\",\"cmd\":[\"a\"]}").ok.get
+  val read = marshal.decodeSpec(old).ok.get
+  assertEq((read.units, read.unitsExact, read.unitsAsked), (32, false, 0))
+  // asked units that are not units are refused
+  val bad = json.parse("{\"kind\":\"b\",\"units\":1,\"units_asked\":0.3,\"mem\":0,\"dir\":\"/\",\"cmd\":[\"a\"]}").ok.get
+  assert(marshal.decodeSpec(bad).err.exists(e -> e.contains("units_asked")), s"${marshal.decodeSpec(bad)}")
+  // a submit request carries them
+  val req = marshal.Request.Submit(capped)
+  assertEq(marshal.decodeRequest(marshal.encodeRequest(req).render), Ok(req))
+
+private info(units: int, learned: bool, asked: int) -> JobInfo =
+  JobInfo(5, "build", units, 0, false, "/w", ["make"], "queued", None, false, 0, 0, 60000, "/l", None, unitsLearned = learned, unitsAsked = asked)
+
+@test("a job's asked units go out with units_capped and read back; a job not capped and an old reply have none")
+jobMembers()
+  val capped = info(6, true, 32)
+  val j = marshal.encodeJob(capped)
+  assertEq(j("units_asked").asReal, Some(8.0))
+  assertEq(j("units_capped").asBool, Some(true))
+  assertEq(marshal.decodeJob(j), Ok(capped))
+  val plain = marshal.encodeJob(info(32, false, 0))
+  assert(!plain.has("units_asked") && !plain.has("units_capped"))
+  assertEq(marshal.decodeJob(plain), Ok(info(32, false, 0)))
+  // status --json says it for the job
+  val status = marshal.statusJson(marshal.Usage(6, 48, 0, 0, 0, 1, None, None), [capped])
+  assertEq(status("queued").asVector.get(0)("units_capped").asBool, Some(true))
+  // a lost job keeps it
+  assertEq(marshal.asLost(capped).unitsAsked, 32)
+
+@test("a restart hands over a capped or exact job's units as they were")
+savedSizing()
+  for spec in [
+    JobSpec("build", 6, 0, false, "/w", None, ["make"], [], unitsAsked = 32),
+    JobSpec("build", 32, 0, false, "/w", None, ["make"], [], unitsExact = true)
+  ]
+    val saved = marshal.SavedJob(3, spec, "queued", 1, 2, 0, 0, 60000, 1000, "/l", 0, 0, None, false, false, None, 0, 0, unitsLearned = spec.unitsAsked > 0)
+    assertEq(marshal.decodeSavedJob(json.parse(marshal.encodeSavedJob(saved).render).ok.get), Ok(saved))
+
+@test("--units-exact keeps --units exactly, on run and submit and on run-type; alone on run it is refused naming both")
+exactOption()
+  val env = Vector[(string, string)]()
+  val exact = cli.parseSubmission(["--units", "8", "--units-exact", "make"], "/w", env).ok.get
+  assertEq((exact.units, exact.unitsGiven, exact.unitsExact), (32, true, true))
+  // either order
+  assertEq(cli.parseSubmission(["--units-exact", "--units", "2", "--", "make"], "/w", env).map(s -> s.unitsExact), Ok(true))
+  val ceiling = cli.parseSubmission(["--units", "8", "make"], "/w", env).ok.get
+  assertEq((ceiling.unitsExact, ceiling.unitsAsked), (false, 0))
+  val alone = cli.parseSubmission(["--units-exact", "make"], "/w", env)
+  assert(alone.err.exists(e -> e.contains("--units-exact") && e.contains("--units <n>")), s"$alone")
+  // run-type: the type's units, or --units, exactly
+  assertEq(cli.typeLine(["--units-exact", "train", "x"]).map(l -> (l.unitsExact, l.rest)), Ok((true, ["train", "x"])))
+  assertEq(cli.typeLine(["train"]).map(l -> l.unitsExact), Ok(false))
+
+@test("UNITS shows a capped job's given and learned units with an arrow where they fit, else what it weighs")
+cappedText()
+  val capped = info(6, true, 32)
+  assertEq(marshal.unitsText(capped), "8→~1.5")
+  assertEq(marshal.unitsText(capped, 6), "8→~1.5")
+  assertEq(marshal.unitsText(capped, 5), "~1.5")
+  assertEq(marshal.unitsText(info(4, true, 16), 5), "4→~1")
+  assertEq(marshal.unitsText(info(32, false, 0), 5), "8")
+  assertEq(marshal.unitsText(info(6, true, 0), 5), "~1.5")
+  // ls has the room
+  val rows = marshal.listing([capped]).lines.toVector
+  assertEq(rows(1).slice(rows(0).indexOf("UNITS"), rows(0).indexOf("USED")).trim, "8→~1.5")
+
+@test("run and submit tell a capped job what it weighs and what it asked for")
+cappedHintText()
+  assertEq(marshal.cappedHint(32, 6), "marshal: units 1.5, learned (asked 8); --units-exact keeps 8")
+  assertEq(marshal.cappedHint(2, 1), "marshal: units 0.25, learned (asked 0.5); --units-exact keeps 0.5")

@@ -73,12 +73,15 @@ gjob(
     owner: string = "",
     expected: long = 0,
     from: string = "",
-    startsIn: long = -1
+    startsIn: long = -1,
+    quarters: int = 0,
+    unitsLearned: bool = false,
+    asked: int = 0
 ) -> JobInfo =
   JobInfo(
     id,
     kind,
-    marshal.wholeUnits(units),
+    if quarters > 0 then quarters else marshal.wholeUnits(units),
     memory,
     landing,
     "/w",
@@ -106,7 +109,9 @@ gjob(
     owner = owner,
     expectedMs = expected,
     durationFrom = from,
-    startsInMs = startsIn
+    startsInMs = startsIn,
+    unitsLearned = unitsLearned,
+    unitsAsked = asked
   )
 
 // A busy daemon: a landing job, a paused one, take-slot holding units with runs waiting, the queue
@@ -402,6 +407,24 @@ goldenExclusiveMarks()
   golden("exclusive-marks", drawn(viewing(o), 100, 16))
   assert(drawn(viewing(o), 100, 16).rowText(6).contains("bench#"))
   assert(drawn(viewing(o), 100, 16).rowText(7).contains("bench#!"))
+
+@test("golden: a job weighing fewer units than it gave shows both where they fit in UNITS, and else what it weighs")
+goldenUnitsCapped()
+  val running = [
+    // gave 4, weighs the 1 its runs teach: `4→~1` fits
+    gjob(81, quarters = 4, unitsLearned = true, asked = 16, cores = 90),
+    // gave exactly 8, or gave none: as before
+    gjob(82, units = 8, cmd = ["make", "-j8"]),
+    gjob(83, quarters = 6, unitsLearned = true, cmd = ["make", "-j2"])
+  ]
+  // gave 8, weighs 1.5: `8→~1.5` is wider than the column, so `~1.5`
+  val queued = [QueuedJob(gjob(84, state = "queued", quarters = 6, unitsLearned = true, asked = 32), 1, Why.NoUnits)]
+  val o = Overview(Usage(42, 48, 0, 16 * G, 3, 1, None, None), 60000, running, queued, [])
+  golden("units-capped", drawn(viewing(o), 120, 12))
+  val g = drawn(viewing(o), 120, 12)
+  val rows = (0 ..< g.height).map(y -> g.rowText(y)).toVector
+  assert(rows.exists(r -> r.contains(" 4→~1 ")), rows.mkString("\n"))
+  assert(rows.exists(r -> r.contains("84") && r.contains(" ~1.5 ") && !r.contains("→")), rows.mkString("\n"))
 
 // A daemon whose disk is under `disk_min`, with jobs of two owners.
 lowDisk() -> Overview

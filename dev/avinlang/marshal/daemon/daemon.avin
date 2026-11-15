@@ -258,7 +258,8 @@ class Job(
       owner,
       durationFrom,
       if state == "queued" then startsIn else -1,
-      meter.held()
+      meter.held(),
+      spec.unitsAsked
     )
 
 // The daemon's state, owned by its own thread.
@@ -425,21 +426,41 @@ class Daemon(
     for j in queue ++ waitingJobs do estimate(j)
     saveMemory()
 
-  // Gives `job` its units: those it gave, or what its command's runs teach, or its kind's default
-  // before they teach anything. An exclusive or quick job keeps what it has.
+  // Gives `job` its units: those it gave, or fewer where its command's runs teach fewer and it did
+  // not ask for them exactly, or what those runs teach, or its kind's default before they teach
+  // anything. An exclusive or quick job keeps what it has.
   size(job: Job)
     val sizing = sizing(job.spec)
-    if sizing.quarters != job.spec.units then job.spec = marshal.withUnits(job.spec, sizing.quarters)
+    if sizing.quarters != job.spec.units || sizing.asked != job.spec.unitsAsked then job.spec = marshal.withSizing(
+      job.spec,
+      sizing.quarters,
+      sizing.asked
+    )
     job.unitsLearned = sizing.learned
 
   sizing(s: JobSpec) -> marshal.Sizing
-    val learned = marshal.learnedUnits(coresFor(s), config.budget.units)
-    marshal.sizeFor(s.unitsGiven, s.units, s.exclusive || s.quick, learned, marshal.defaultUnits(s.kind))
+    val history = coresFor(s)
+    val learned = marshal.learnedUnits(history, config.budget.units)
+    marshal.sizeFor(
+      s.unitsGiven,
+      marshal.askedUnits(s),
+      s.exclusive || s.quick,
+      learned,
+      marshal.defaultUnits(s.kind),
+      s.unitsExact,
+      marshal.unitsCeiling(history, config.budget.units, config.learning.minRuns)
+    )
+
+  // Whether `s`'s units are weighed again as its command's runs teach: units it did not give, and
+  // units it gave as a ceiling.
+  resizable(s: JobSpec) -> bool = !s.unitsGiven || !s.unitsExact
 
   // Advice for the submitter of `spec` when the units it gave are far from what its command's runs
-  // used: "" otherwise, and for a job whose units are not weighed as others are.
+  // used: "" otherwise, and for a job whose units are not weighed as others are. A job that weighs
+  // fewer than it gave is told what it weighs.
   unitsHint(s: JobSpec) -> string
     if !s.unitsGiven || s.exclusive || s.quick || s.landing then return ""
+    if s.unitsAsked > 0 then return marshal.cappedHint(s.unitsAsked, s.units)
     val history = coresFor(s)
     (marshal.learnedUnits(history, config.budget.units), marshal.recentCores(history)) match
       (Some(q), Some(c)) -> marshal.unitsHint(s.units, q, c)
@@ -476,12 +497,13 @@ class Daemon(
     saveMemory()
 
   // Every job that has not started and gave no memory reserves again from what is learned now, and
-  // every one that gave no units weighs again; a running job keeps its reservation (admission
-  // counts what it measures beyond) and its units, and what was given stays given.
+  // every one that gave no units, or gave them as a ceiling, weighs again; a running job keeps its
+  // reservation (admission counts what it measures beyond) and its units, and what was given
+  // exactly stays given.
   reserveAgain()
     for j in queue ++ waitingJobs
       if !j.spec.memoryGiven && j.spec.memory == 0 then reserve(j)
-      if !j.spec.unitsGiven then size(j)
+      if resizable(j.spec) then size(j)
 
   // Writes what is learned to `<home>/memory.json`; a file that cannot be written is said, and the
   // peaks stay learned in the daemon and in the event log.
@@ -625,11 +647,13 @@ class Daemon(
     if stopping || draining then return Failed("the daemon is stopping and takes no new jobs")
     for why in marshal.exclusiveRefusal(given).toList do return Failed(why)
     // an exclusive job is the only one running, so it weighs the whole budget; one that gave no
-    // units weighs what its command's runs teach
+    // units weighs what its command's runs teach, and one that gave more than they teach weighs
+    // what they teach unless it gave them exactly
     val sized = sizing(given)
-    val spec = if given.exclusive then marshal.exclusiveSpec(given, config.budget.units) else marshal.withUnits(
+    val spec = if given.exclusive then marshal.exclusiveSpec(given, config.budget.units) else marshal.withSizing(
       given,
-      sized.quarters
+      sized.quarters,
+      sized.asked
     )
     // a landing job, and an exclusive one, of any memory can start: when nothing else runs
     marshal.neverFits(config.budget, spec.units, spec.memory, spec.landing || spec.exclusive) match
@@ -691,7 +715,8 @@ class Daemon(
     submit(
       JobSpec(
         spec.kind,
-        spec.units,
+        // what it asked for, weighed again from what its command's runs teach now
+        marshal.askedUnits(spec),
         spec.memory,
         spec.landing,
         spec.dir,
@@ -711,7 +736,8 @@ class Daemon(
         spec.exclusive,
         spec.quietLoad,
         spec.unitsGiven,
-        spec.owner
+        spec.owner,
+        spec.unitsExact
       ),
       [("rerun_of", Json.num(id))]
     )

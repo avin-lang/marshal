@@ -6,7 +6,7 @@ import dev.avinlang.json
 import dev.avinlang.json.Json
 
 // marshal's version, as `avin.hocon` gives it: what `marshal version` and `marshal restart` print.
-val Version: string = "0.3.12"
+val Version: string = "0.3.13"
 
 // What a job is to run and how much of the machine it takes. `urgent` queues it in its lane's urgent
 // band, behind the urgent jobs already queued and ahead of every other. `after` names the jobs it
@@ -25,7 +25,10 @@ val Version: string = "0.3.12"
 // to stay below it for a minute first (0 for none). `units` is in quarters (cores.avin), and
 // `unitsGiven` says the submitter gave them (`--units`, or a job type's file): units not given are
 // the default for the kind until runs of the same command teach better (`learnedUnits`). What
-// marshal wrote before it learned units does not say, and reads as given. `owner` is who submitted
+// marshal wrote before it learned units does not say, and reads as given. Units given are a
+// ceiling: a command whose runs teach fewer weighs those (`sizeFor`), and `unitsAsked` keeps what
+// was given, in quarters, while the job weighs less (0 while it weighs what it gave); `unitsExact`
+// (`--units-exact`) keeps the given units as they are. `owner` is who submitted
 // it as `--owner` named them, "" where it was not named and is derived from the directory and the
 // label (`ownerOf`).
 data JobSpec(
@@ -50,11 +53,19 @@ data JobSpec(
     exclusive: bool = false,
     quietLoad: real = 0.0,
     unitsGiven: bool = true,
-    owner: string = ""
+    owner: string = "",
+    unitsExact: bool = false,
+    unitsAsked: int = 0
 )
 
-// `s` weighing `units` quarters instead of its own.
-withUnits(s: JobSpec, units: int) -> JobSpec =
+// The units `s` was given, in quarters: those it asked for when it weighs fewer, else its own.
+askedUnits(s: JobSpec) -> int = if s.unitsAsked > 0 then s.unitsAsked else s.units
+
+// `s` weighing `units` quarters instead of its own, with what it asked for kept.
+withUnits(s: JobSpec, units: int) -> JobSpec = withSizing(s, units, s.unitsAsked)
+
+// `s` weighing `units` quarters, having asked for `asked` (0 where it weighs what it asked for).
+withSizing(s: JobSpec, units: int, asked: int) -> JobSpec =
   JobSpec(
     s.kind,
     units,
@@ -77,7 +88,9 @@ withUnits(s: JobSpec, units: int) -> JobSpec =
     s.exclusive,
     s.quietLoad,
     s.unitsGiven,
-    s.owner
+    s.owner,
+    s.unitsExact,
+    asked
   )
 
 // The longest label, in characters.
@@ -206,7 +219,8 @@ retryable(_, _) = false
 // gives it an ETA (eta.avin). `startsInMs` is how long a queued job is expected to wait before it
 // starts, as the daemon reckoned it when it answered; -1 where that is not known. `heldCores` is
 // the level the job held (`CpuMeter.held`), in hundredths, -1 where it has not been measured or
-// the daemon did not say: what its command's units are learned from.
+// the daemon did not say: what its command's units are learned from. `unitsAsked` is the units a
+// job gave, in quarters, where it weighs the fewer its command's runs teach (`sizeFor`); 0 otherwise.
 data JobInfo(
     id: long,
     kind: string,
@@ -251,11 +265,18 @@ data JobInfo(
     owner: string = "",
     durationFrom: string = "",
     startsInMs: long = -1,
-    heldCores: long = -1
+    heldCores: long = -1,
+    unitsAsked: int = 0
 )
 
-// The units a listing shows for a job: `~` before units learned from earlier runs' cores.
-unitsText(j: JobInfo) -> string = (if j.unitsLearned then "~" else "") + formatUnits(j.units)
+// The units a listing shows for a job: `~` before units learned from earlier runs' cores, and,
+// where the job weighs fewer than it gave, what it gave and an arrow before them (`8→~1.5`) when
+// that fits in `width` characters.
+unitsText(j: JobInfo, width: int = 1000) -> string
+  val units = (if j.unitsLearned then "~" else "") + formatUnits(j.units)
+  if j.unitsAsked <= 0 then return units
+  val both = formatUnits(j.unitsAsked) + "→" + units
+  if both.charCount <= width then both else units
 
 // The cores a listing shows a job using: a running job's latest measurement, an ended job's peak;
 // `-` where it has not been measured, and for a job that has not run.
@@ -525,8 +546,27 @@ encodeSpec(s: JobSpec) -> Json = Json.Obj(
     ("mem_given", Json.Bool(s.memoryGiven))
   ).asMembers.get ++ labelMember(s.label) ++ quietMember(s.quietMs) ++ externalMember(
     s.external
-  ) ++ quickMember(s.quick) ++ exclusiveMembers(s.exclusive, s.quietLoad) ++ ownerMember(s.owner)
+  ) ++ quickMember(s.quick) ++ exclusiveMembers(s.exclusive, s.quietLoad) ++ ownerMember(s.owner) ++ sizingMembers(
+    s.unitsExact,
+    s.unitsAsked
+  )
 )
+
+// How given units were weighed, as members of an object: `units_exact` for units kept as given,
+// `units_asked` and `units_capped` for a job that weighs fewer than it asked for; none otherwise, as
+// with a label.
+private sizingMembers(exact: bool, asked: int) -> Vector[(string, Json)] =
+  (if exact then [("units_exact", Json.Bool(true))] else Vector[(string, Json)]()) ++ (
+    if asked > 0 then [("units_asked", unitsJson(asked)), ("units_capped", Json.Bool(true))] else Vector[(string, Json)]()
+  )
+
+// The units a job asked for while it weighs fewer, read from an object: 0 where it is absent, as
+// in what marshal wrote before given units were a ceiling.
+private askedOf(j: Json) -> Result[int, string] = j.get("units_asked") match
+  None | Some(Json.Null) -> Ok(0)
+  Some(v) -> quartersOf(v) match
+    Some(q) -> Ok(q)
+    None -> Err(s"`units_asked` is not $unitsWanted")
 
 // An owner's member of an object: none for no owner, as with a label.
 private ownerMember(owner: string) -> Vector[(string, Json)] = if owner.isEmpty then [] else [
@@ -630,7 +670,11 @@ decodeSpec(j: Json) -> Result[JobSpec, string]
       // absent from what marshal wrote before it learned units: given
       optional(j, "units_given", v -> v.asBool, "a bool", true)?,
       // absent from what marshal wrote before owners, and for a job whose owner was not named
-      ownerOf(j)?))
+      ownerOf(j)?,
+      // absent from what marshal wrote before given units were a ceiling, and where there is
+      // nothing to say
+      optional(j, "units_exact", v -> v.asBool, "a bool", false)?,
+      askedOf(j)?))
 
 // What a `units` field must be.
 private val unitsWanted: string = "a number of units in steps of 0.25"
@@ -790,6 +834,7 @@ private coresMembers(i: JobInfo) -> Vector[(string, Json)]
     out += ("peak_cores", coresJson(i.peakCores))
     out += ("cpu_ms", Json.num(i.cpuMs))
   if i.heldCores >= 0 then out += ("held_cores", coresJson(i.heldCores))
+  out ++= sizingMembers(false, i.unitsAsked)
   out.toVector
 
 // `resv_from` is left out where the daemon did not say where a reservation came from.
@@ -872,7 +917,10 @@ decodeJob(j: Json) -> Result[JobInfo, string]
       optional(j, "duration_from", v -> v.asString, "a string", "")?,
       optional(j, "starts_in_ms", wholeNumber, "a whole number", long(-1))?,
       // absent from what marshal wrote before it measured the level a job held
-      optional(j, "held_cores", centiOf, "a number of cores", long(-1))?))
+      optional(j, "held_cores", centiOf, "a number of cores", long(-1))?,
+      // absent from what marshal wrote before given units were a ceiling, and for a job that
+      // weighs what it asked for
+      askedOf(j)?))
 
 encodeTakeSlot(t: TakeSlotUse) -> Json = Json.obj(
   ("dir", Json.str(t.dir)),

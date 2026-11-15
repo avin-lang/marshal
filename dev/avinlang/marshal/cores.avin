@@ -254,16 +254,45 @@ recentCores(peaks: Vector[long]) -> Option[long]
 coresHistory(dirPeaks: Vector[long], cmdPeaks: Vector[long]) -> Vector[long] =
   if dirPeaks.exists(p -> p >= 0) then dirPeaks else cmdPeaks
 
-// The units a job weighs, in quarters, and whether they were learned. Units it gave (`given`) are
-// its; an exclusive or quick job keeps what it has, since neither weighs units the way others do; any
-// other job weighs what its command's runs teach (`learned`), and `default` before there are any.
-data Sizing(quarters: int, learned: bool)
+// The units a job weighs, in quarters, whether they were learned, and the units it gave where it
+// weighs fewer (`asked`, 0 otherwise). An exclusive or quick job keeps what it has, since neither
+// weighs units the way others do. Units it gave (`given`) are a ceiling: it weighs the fewer of them
+// and what its command's runs teach (`ceiling`, once there are enough runs to trust), unless it
+// asked for them exactly (`exact`). Any other job weighs what its command's runs teach (`learned`),
+// and `default` before there are any.
+data Sizing(quarters: int, learned: bool, asked: int = 0)
 
-sizeFor(given: bool, declared: int, exclusiveOrQuick: bool, learned: Option[int], default: int) -> Sizing
-  if given || exclusiveOrQuick then return Sizing(declared, false)
+sizeFor(
+    given: bool,
+    declared: int,
+    exclusiveOrQuick: bool,
+    learned: Option[int],
+    default: int,
+    exact: bool = false,
+    ceiling: Option[int] = None
+) -> Sizing
+  if exclusiveOrQuick then return Sizing(declared, false)
+  if given
+    if exact then return Sizing(declared, false)
+    return ceiling match
+      Some(q) if q < declared -> Sizing(q, true, declared)
+      _ -> Sizing(declared, false)
   learned match
     Some(q) -> Sizing(q, true)
     None -> Sizing(default, false)
+
+// What a given `--units` is held to by the levels `peaks` earlier runs held: what they teach
+// (`learnedUnits`) once there are at least `minRuns` of them, None before.
+unitsCeiling(peaks: Vector[long], budget: int, minRuns: int) -> Option[int] =
+  if peaks.count(p -> p >= 0) < minRuns then None else learnedUnits(peaks, budget)
+
+// Why `--units-exact` alone is refused: it keeps given units exactly, and none were given.
+val ExactWithoutUnits: string = "`--units-exact` keeps the units `--units` gives exactly: give `--units <n>` with it"
+
+// What `run` and `submit` say of a job that gave `asked` quarters and weighs the `quarters` its
+// command's runs teach.
+cappedHint(asked: int, quarters: int) -> string =
+  s"marshal: units ${formatUnits(quarters)}, learned (asked ${formatUnits(asked)}); --units-exact keeps ${formatUnits(asked)}"
 
 // Advice for a job that gave `declared` quarters where its command's recent runs used `recent`
 // hundredths of a core and so teach `learned` quarters: said only when the two are at least 2 units
