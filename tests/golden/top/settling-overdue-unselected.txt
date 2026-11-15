@@ -1,0 +1,52 @@
+|marshal  up 1:00   0 running  1 queued  1 settling   landing: free                                           filter: all|
+|units[                                    0/12]                                                                         |
+|mem  [                                   0/16G] rss 0                                                                   |
+|cpu  [                                    -/12]                                                                         |
+|                                                                                                                        |
+|   ID STATE          KIND     UNITS   RESV   RSS STARTED  ELAPSED     ETA DEADLINE OWNER LABEL COMMAND                  |
+|   70 settling       bench#      12      -     - -          17:00       -    30:00 -           ./bench                  |
+|   71 #2 exclusive … build        1      -     - -              -       -    30:00 -           make -j4                 |
+|   69 exit 0         build        1      -     - -           2:00       -        - -           make -j4                 |
+|                                                                                                                        |
+|                                                                                                                        |
+|hHelp EnterLog kKill fFilter oOwner qQuit                                                                               |
+--
+0 0..7 Default/Default/1
+0 19..28 Basic(2)/Default/0
+0 30..38 Basic(3)/Default/0
+0 40..50 Basic(3)/Default/1
+0 62..66 Basic(8)/Default/0
+0 109..120 Basic(8)/Default/0
+1 6..46 Basic(8)/Default/0
+2 6..46 Basic(8)/Default/0
+3 6..46 Basic(8)/Default/0
+5 0..120 Default/Default/17
+6 0..6 Default/Basic(1)/0
+6 6..20 Basic(3)/Basic(1)/1
+6 20..66 Default/Basic(1)/0
+6 66..73 Basic(8)/Basic(1)/0
+6 73..74 Default/Basic(1)/0
+6 74..82 Basic(8)/Basic(1)/0
+6 82..120 Default/Basic(1)/0
+7 0..6 Default/Default/16
+7 6..20 Basic(3)/Default/16
+7 20..66 Default/Default/16
+7 66..73 Basic(8)/Default/16
+7 73..74 Default/Default/16
+7 74..82 Basic(8)/Default/16
+7 82..120 Default/Default/16
+8 6..20 Basic(2)/Default/0
+8 66..73 Basic(8)/Default/0
+8 74..82 Basic(8)/Default/0
+11 0..1 Default/Default/1
+11 1..6 Basic(0)/Basic(6)/0
+11 6..11 Default/Default/1
+11 11..15 Basic(0)/Basic(6)/0
+11 15..16 Default/Default/1
+11 16..21 Basic(0)/Basic(6)/0
+11 21..22 Default/Default/1
+11 22..29 Basic(0)/Basic(6)/0
+11 29..30 Default/Default/1
+11 30..36 Basic(0)/Basic(6)/0
+11 36..37 Default/Default/1
+11 37..42 Basic(0)/Basic(6)/0

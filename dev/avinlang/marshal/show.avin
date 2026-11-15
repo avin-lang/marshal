@@ -45,14 +45,16 @@ stateColumn(j: JobInfo) -> string = j.outcome match
       "retrying" -> s"retry ${j.attempt}"
       other -> other
 
-// Whether a job is still to run: queued, held, waiting for others or waiting to retry.
+// Whether a job is still to run: queued, settling, held, waiting for others or waiting to retry.
 notRunYet(j: JobInfo) -> bool = j.outcome.isEmpty && (
-  j.state == "queued" || j.state == "waiting" || j.state == "retrying"
+  j.state == "queued" || j.state == "settling" || j.state == "waiting" || j.state == "retrying"
 )
 
 // The ELAPSED column for `ms` of run time: `-` for a job that has not started, whose wait is
-// `queued_ms` in the JSON.
-elapsedColumn(j: JobInfo, ms: long) -> string = if notRunYet(j) then "-" else formatMillis(ms)
+// `queued_ms` in the JSON, except that a settling job shows how long it has waited for the load
+// (`settlingMs`), which is not run time; once it runs, the column counts its run from 0.
+elapsedColumn(j: JobInfo, ms: long) -> string =
+  if settling(j) then formatMillis(j.settlingMs) elif notRunYet(j) then "-" else formatMillis(ms)
 
 // When a job started, as the STARTED column shows it: the local date and minute, `11-07 08:31`, in
 // `zone`; `-` for a job that has not started (queued, or cancelled before it ran).
@@ -87,16 +89,18 @@ whyText(Load(load, limit, calmMs)) =
 whyText(ForExclusive(id)) = s"exclusive $id"
 whyText(DiskLow(free)) = s"disk low: ${roundSize(free)} free"
 
-// A job's state cell in `ls`: `stateColumn`, and for a job that is plainly `queued` and has a reason
-// in `whys` (job id, reason), the reason after it: `queued (draining)`. A job held by hand already
-// says `held`, so its reason adds nothing.
+// A job's state cell in `ls`: `stateColumn`, and for a job that is plainly `queued` or `settling` and
+// has a reason in `whys` (job id, reason), the reason after it: `queued (draining)`,
+// `settling (load 30.4 ≥ 4.5)`. A settling job past `load_wait` adds `overdue`. A job held by hand
+// already says `held`, so its reason adds nothing.
 stateWithWhy(j: JobInfo, whys: Vector[(long, Why)]) -> string
   val state = stateColumn(j)
-  if state != "queued" then return state
+  if state != "queued" && state != "settling" then return state
+  val overdue = if j.loadOverdue then ", overdue" else ""
   whys.find(w -> w.0 == j.id) match
     Some((_, Held)) -> state
-    Some((_, why)) -> s"$state (${whyText(why)})"
-    None -> state
+    Some((_, why)) -> s"$state (${whyText(why)}$overdue)"
+    None -> if overdue.isEmpty then state else s"$state (overdue)"
 
 // The listing `ls` prints: a header, then one row per job. A LABEL column stands before COMMAND, and
 // always, empty for a job without a label. UNITS is what a job weighs (`unitsText`) and USED the cores
@@ -169,7 +173,8 @@ usageLine(u: Usage) -> string
   val held = if u.queueHeld then "; the queue is held: nothing new starts" else ""
   val quick = if u.quick > 0 then s", quick lane ${u.quick}/$QuickSlots" else ""
   val exclusive = u.exclusive.map(id -> s"; exclusive job $id owns the machine: nothing else starts").getOrElse("")
-  s"units ${formatUnits(u.units)}/${formatUnits(u.unitBudget)}, memory $memory, ${u.running} running, ${u.queued} queued, landing lane $lane$quick$outside$exclusive$held${machineText(u)}"
+  val settling = if u.settling > 0 then s", ${u.settling} settling" else ""
+  s"units ${formatUnits(u.units)}/${formatUnits(u.unitBudget)}, memory $memory, ${u.running} running, ${u.queued} queued$settling, landing lane $lane$quick$outside$exclusive$held${machineText(u)}"
 
 // What `status` says of the machine's processors and disk, after the rest: `; cpu 7.4 (jobs 5.1),
 // disk 120G free, open files 10240` (the jobs' soft limit on open files), and that nothing new starts while the disk is under `disk_min`. Nothing for what

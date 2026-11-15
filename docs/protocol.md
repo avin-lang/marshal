@@ -20,7 +20,7 @@ thread of its own, so a client blocked in `wait` holds up nobody else.
 | `wait` | `id` | `{"ok":true,"job":JOB}` once the job has ended (its last attempt); at once for a job already ended, including one an earlier daemon ran |
 | `kill` | `id` | `{"ok":true}`; the job's end is what `wait` answers |
 | `ls` | | `{"ok":true,"jobs":[JOB...]}`: running, then queued, then waiting (for other jobs or to retry), then the last ten ended |
-| `status` | | `{"ok":true,"units":U,"unit_budget":B,"mem":M,"mem_budget":MB,"rss":RSS,"mem_held":H,"machine_mem":MM,"running":R,"queued":Q,"landing":id or null,"take_slot":{"dir":D,"units":TU,"waiting":TW,"landing":bool} or null,"queue_held":bool,"quick":QR,"exclusive":id or null}`; `exclusive` is the exclusive job that runs, if one does; `mem` is what the running jobs reserve (declared or learned), `mem_held` what admission counts them holding (each job's reservation or its `rss`, whichever is more); `quick` how many quick jobs run (their units are not in `units`, their memory is in `mem`); a reply without `queue_held`, `mem_held` or `quick` (an older daemon's) reads as false, 0 and 0. `marshal status --json` adds `quick_slots`, how many quick jobs may run at once |
+| `status` | | `{"ok":true,"units":U,"unit_budget":B,"mem":M,"mem_budget":MB,"rss":RSS,"mem_held":H,"machine_mem":MM,"running":R,"queued":Q,"landing":id or null,"take_slot":{"dir":D,"units":TU,"waiting":TW,"landing":bool} or null,"queue_held":bool,"quick":QR,"exclusive":id or null,"settling":S}`; `exclusive` is the exclusive job that runs, if one does; `settling` how many jobs are settling, counted in neither `running` nor `queued` (absent from an older daemon: 0), and `marshal status --json` lists them under `settling`, beside `running` and `queued`; `mem` is what the running jobs reserve (declared or learned), `mem_held` what admission counts them holding (each job's reservation or its `rss`, whichever is more); `quick` how many quick jobs run (their units are not in `units`, their memory is in `mem`); a reply without `queue_held`, `mem_held` or `quick` (an older daemon's) reads as false, 0 and 0. `marshal status --json` adds `quick_slots`, how many quick jobs may run at once |
 | `snapshot` | | `{"ok":true,"snapshot":{...}}`: the fields of the `status` reply but `running` and `queued`, then `uptime_ms` (how long the daemon has run), `running` (jobs), `queued` (jobs in queue order, each with `position` and `waits`, below), `recent` (the last ten jobs that ended, earlier daemons' included, the latest first) and `waiting` (jobs waiting for others or waiting to retry, oldest first; a reader takes a missing one as `[]`) |
 | `stop` | `force` (bool), `wait` (bool) | `{"ok":true}` once the daemon has removed its socket; refused while jobs run unless one of the two is true |
 | `version` | | `{"ok":true,"version":"<marshal's version>","pid":P}`, the daemon's process |
@@ -100,8 +100,12 @@ for none), and `disk_low`, whether new jobs are held for it. A queued job held f
 `disk-low`, with `disk_free` beside it. `nofile` is the soft limit on open files every job inherits
 from the daemon (absent where it could not be read).
 
-`state` is `waiting` (for the jobs in `after` to end), `queued`, `running`, `retrying` (waiting out
-its retry delay) or `done`. `after` is what a waiting job still waits for; `attempt` counts its runs
+`state` is `waiting` (for the jobs in `after` to end), `queued`, `settling` (an exclusive job with
+`quiet_load` that has the machine to itself and waits only for the load outside marshal; not
+running), `running`, `retrying` (waiting out its retry delay) or `done`. A settling job also has
+`settling_ms`, how long it has settled (not run time: its `elapsed_ms` stays 0), and
+`load_overdue`, true once that is past config.json's `load_wait`; both are absent on every other
+job. `after` is what a waiting job still waits for; `attempt` counts its runs
 from 1. `outcome` is null until
 the job ends, then one of `{"how":"exit","code":C}`, `{"how":"signal","signal":S}`,
 `{"how":"timeout"}` (its deadline), `{"how":"quiet","after_ms":Q}` (stopped because its log had no

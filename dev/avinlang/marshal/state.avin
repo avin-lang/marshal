@@ -30,6 +30,9 @@ import dev.avinlang.json.Json
 // measured at and how often (`CpuMeter.windows`), so the new image's meter goes on knowing what it
 // held, and `groups` the process groups its tree was last found in (stepgroup.avin's `jobTree`), so
 // the new image's signals reach a process whose parent has ended; both empty when absent.
+// `settling` says a queued exclusive job is settling, `settlingSince` when it claimed the machine to
+// wait for the load alone (wall clock, milliseconds; 0 for no claim), and `overdue` that it has
+// waited past `load_wait`; false, 0 and false when absent.
 data SavedJob(
     id: long,
     spec: JobSpec,
@@ -67,7 +70,10 @@ data SavedJob(
     cpuMs: long = 0,
     durationFrom: string = "",
     heldWindows: Map[long, long] = Map(),
-    groups: Vector[long] = []
+    groups: Vector[long] = [],
+    settling: bool = false,
+    settlingSince: long = 0,
+    overdue: bool = false
 )
 
 // The whole daemon: the version and process that saved it, when, when the daemon first began, the
@@ -133,7 +139,10 @@ encodeSavedJob(j: SavedJob) -> Json = Json.obj(
       j.heldWindows.keys.toVector.sorted.map(l -> Json.Arr([Json.num(l), Json.num(j.heldWindows(l))]))
     )
   ),
-  ("groups", Json.Arr(j.groups.map(g -> Json.num(g))))
+  ("groups", Json.Arr(j.groups.map(g -> Json.num(g)))),
+  ("settling", Json.Bool(j.settling)),
+  ("settling_since", Json.num(j.settlingSince)),
+  ("overdue", Json.Bool(j.overdue))
 )
 
 // The level and count pairs of `cpu_levels`; none where a state saved before them lacks it.
@@ -249,7 +258,10 @@ decodeSavedJob(j: Json) -> Result[SavedJob, string]
       wholeOrZero(j, "cpu_ms")?,
       maybeText(j, "duration_from")?.getOrElse(""),
       heldWindowsOf(j)?,
-      wholesOr(j, "groups")?
+      wholesOr(j, "groups")?,
+      truthOr(j, "settling", false)?,
+      wholeOrZero(j, "settling_since")?,
+      truthOr(j, "overdue", false)?
     )
   )
 

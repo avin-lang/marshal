@@ -16,7 +16,7 @@ xDev(id: long, units: int = 1, memory: long = 0) -> Waiting = Waiting(id, units,
 xQuick(id: long) -> Waiting = Waiting(id, 4, 0, false, minute, id * 10, true)
 xLand(id: long, memory: long = 0) -> Waiting = Waiting(id, 4, memory, true, hour, id * 10)
 
-xExcl(id: long, unsettled: Option[Why] = None) -> Waiting = Waiting(
+xExcl(id: long, unsettled: Option[Why] = None, claimed: bool = false) -> Waiting = Waiting(
   id,
   12,
   0,
@@ -26,8 +26,13 @@ xExcl(id: long, unsettled: Option[Why] = None) -> Waiting = Waiting(
   false,
   0,
   true,
-  unsettled
+  unsettled,
+  claimed
 )
+
+// The exclusive job that is settling, if one is.
+xSettles(running: Vector[Started], queue: Vector[Waiting], outside: Outside = marshal.NoOutside) -> Option[long] =
+  marshal.settles(xb, running, queue, 0, outside)
 
 xRun(id: long, units: int = 1, memory: long = 0) -> Started = Started(id, units, memory, false, 0, hour)
 xRunQuick(id: long) -> Started = Started(id, 4, 0, false, 0, minute, true)
@@ -216,18 +221,65 @@ exclSettledReservesAndRunsAlone()
   assertEq(marshal.schedule(xb, [xRunExcl(1)], [xDev(5, 1), xQuick(6), xLand(7)], 0), [])
 
 @test(
-  "an exclusive job flips between waiting for the load and reserving the machine as the load moves, and is never starved: the bound ends the wait"
+  "an exclusive job flips between waiting for the load and reserving the machine as the load moves, and never starts while the load holds it"
 )
-exclLoadFlipsThenBound()
+exclLoadFlipsNeverStartsHigh()
   val high = Some(Load(5.0, 4.0, 0))
   // high: the small job behind it starts
   assertEq(marshal.schedule(xb, [], [xExcl(1, high), xDev(2)], 0), ids(2))
   // low again while job 2 runs: it reserves, and job 3 behind it waits
   assertEq(xWhys([xRun(2)], [xExcl(1), xDev(3)]), [(long(1), Emptying), (long(3), ForExclusive(1))])
-  // the load waited out (settleWhy answers None) is a settled load: it reserves and starts on an empty machine
-  val out = marshal.settleWhy(Some(5.0), 4.0, None, 60000, Some(0), Some(minute), minute)
-  assertEq(out, None)
-  assertEq(marshal.schedule(xb, [], [xExcl(1, out), xDev(3)], 0), ids(1))
+  // a load that stays high never starts it, however long it has held it: alone, settling or claimed
+  assertEq(marshal.schedule(xb, [], [xExcl(1, high)], 0), [])
+  assertEq(marshal.schedule(xb, [], [xExcl(1, high, true)], 0), [])
+  assertEq(marshal.schedule(xb, [], [xExcl(1, high, true), xDev(3)], 0), [])
+
+@test(
+  "an exclusive job settles once its turn has come and nothing of marshal's runs, starts or waits, and not before"
+)
+exclSettlesOnlyOnAnEmptyMachine()
+  val high = Some(Load(30.4, 4.5, 0))
+  // queued behind a running job, emptying it would be, but the load holds it: it is not settling
+  assertEq(xSettles([xRun(2)], [xExcl(1, high)]), None)
+  // a job behind it that starts keeps it from settling
+  assertEq(xSettles([], [xExcl(1, high), xDev(3)]), None)
+  // a job ahead of it that waits on an empty machine (for memory), too
+  assertEq(xSettles([], [xDev(4, 1, 200), xExcl(1, high)]), None)
+  // take-slot's runs or waiters, and a landing job that starts
+  assertEq(xSettles([], [xExcl(1, high)], Outside(1, [], false)), None)
+  assertEq(xSettles([], [xExcl(1, high)], Outside(0, [Ticket(5, 1)], false)), None)
+  assertEq(xSettles([], [xExcl(1, high), xLand(2)]), None)
+  // the machine empty and nothing else waiting: it settles, and waits for the load
+  assertEq(xSettles([], [xExcl(1, high)]), Some(long(1)))
+  assertEq(xWhys([], [xExcl(1, high)]), [(long(1), Load(30.4, 4.5, 0))])
+  // a job with no quiet load, or one whose load has settled, never settles: it starts
+  assertEq(xSettles([], [xExcl(1)]), None)
+  assertEq(marshal.schedule(xb, [], [xExcl(1)], 0), ids(1))
+  // only the first exclusive job settles; a later one waits for it
+  assertEq(xSettles([], [xExcl(1, high), xExcl(2, high)]), Some(long(1)))
+  assertEq(xWhys([], [xExcl(1, high), xExcl(2, high)]), [(long(1), Load(30.4, 4.5, 0)), (long(2), ForExclusive(1))])
+
+@test(
+  "a settling job keeps the machine: what is queued after it waits for it, a landing job still goes first, and it settles again once that has ended"
+)
+exclSettlingHoldsTheMachine()
+  val high = Some(Load(30.4, 4.5, 0))
+  // claimed: the job behind it, which would have run while the load held it, now waits
+  val q = [xExcl(1, high, true), xDev(3), xQuick(4)]
+  assertEq(marshal.schedule(xb, [], q, 0), [])
+  assertEq(xWhys([], q), [(long(1), Load(30.4, 4.5, 0)), (long(3), ForExclusive(1)), (long(4), ForExclusive(1))])
+  assertEq(xSettles([], q), Some(long(1)))
+  // take-slot's later waiters wait for it too, and its ticket stands at its arrival
+  assertEq(xSettles([], [xExcl(1, high, true)], Outside(0, [Ticket(50, 1)], false)), Some(long(1)))
+  // a landing job queued after it still starts first; meanwhile it is emptying, its claim kept
+  assertEq(marshal.schedule(xb, [], [xExcl(1, high, true), xLand(2)], 0), ids(2))
+  assertEq(xWhys([xRunLanding(2)], [xExcl(1, high, true), xDev(3)]), [(long(1), Emptying), (long(3), ForExclusive(1))])
+  assertEq(xSettles([xRunLanding(2)], [xExcl(1, high, true)]), None)
+  // the landing job ended: settling again
+  assertEq(xSettles([], [xExcl(1, high, true), xDev(3)]), Some(long(1)))
+  // the load falls below the limit for the window: it starts, and only it
+  assertEq(marshal.schedule(xb, [], [xExcl(1, None, true), xDev(3)], 0), ids(1))
+  assertEq(xSettles([], [xExcl(1, None, true), xDev(3)]), None)
 
 @test("two exclusive jobs run one after the other")
 exclTwoInTurn()
@@ -371,24 +423,25 @@ exclLoadBoundary()
   assertEq(marshal.loadWhy(Some(1.99), 2.0, Some(100), 60000, 60100), None)
 
 @test(
-  "load_wait bounds the wait for the load: held until the bound, free at it, and unbounded where it is never or the wait has not begun"
+  "load_wait marks a settling job overdue: not before it, at it and after, never where it is never, and never before the job settles"
 )
-exclLoadWaitBound()
-  val held = Some(Load(2.13, 2.0, 0))
-  assertEq(marshal.settleWhy(Some(2.13), 2.0, None, 60000, Some(1000), Some(minute), 1000 + minute - 1), held)
-  assertEq(marshal.settleWhy(Some(2.13), 2.0, None, 60000, Some(1000), Some(minute), 1000 + minute), None)
-  assertEq(marshal.settleWhy(Some(2.13), 2.0, None, 60000, Some(1000), None, 100 * minute), held)
-  assertEq(marshal.settleWhy(Some(2.13), 2.0, None, 60000, None, Some(minute), 100 * minute), held)
-  // a settled load is settled whatever the bound
-  assertEq(marshal.settleWhy(Some(1.0), 2.0, Some(0), 60000, Some(0), Some(minute), 60000), None)
+exclLoadOverdue()
+  assert(!marshal.loadOverdue(Some(1000), Some(minute), 1000 + minute - 1))
+  assert(marshal.loadOverdue(Some(1000), Some(minute), 1000 + minute))
+  assert(marshal.loadOverdue(Some(1000), Some(minute), 1000 + 100 * minute))
+  assert(!marshal.loadOverdue(Some(1000), None, 100 * minute))
+  // the clock starts when it settles: time queued or emptying before that does not count
+  assert(!marshal.loadOverdue(None, Some(minute), 100 * minute))
+  // a zero load_wait marks it the moment it settles
+  assert(marshal.loadOverdue(Some(1000), Some(0), 1000))
 
-@test("the line a job that waited out load_wait starts with names the wait, the limit and the load it saw")
-exclWaitedOutLine()
+@test("the line an overdue job's log gets names the wait, the limit and the load, and says it still waits")
+exclOverdueLine()
   assertEq(
-    marshal.waitedOutLine(15 * minute, 2.0, Some(2.13)),
-    s"marshal exclusive: started after waiting ${marshal.formatMillis(15 * minute)} for the load to fall below 2; the load was 2.13"
+    marshal.overdueLine(15 * minute, 4.5, Some(30.4)),
+    s"marshal exclusive: overdue: waited ${marshal.formatMillis(15 * minute)} for the load to fall below 4.5; the load is 30.4; still waiting"
   )
-  assert(marshal.waitedOutLine(minute, 4.5, None).endsWith("below 4.5; the load could not be read"))
+  assert(marshal.overdueLine(minute, 4.5, None).endsWith("below 4.5; the load cannot be read; still waiting"))
 
 @test("--quiet-load takes a load above 0 or auto, a quarter of the processors and at least 1; anything else is refused")
 exclQuietLoadArg()
@@ -543,6 +596,80 @@ exclWhyRoundTrip()
     marshal.decodeReply(marshal.encodeReply(Reply.Viewed(o)).render).ok.get match
       Reply.Viewed(v) -> assertEq(v.queued(0).why, why)
       other -> fail(s"not a snapshot: $other")
+
+// A settling exclusive job, `settlingMs` into its wait for the load, overdue or not.
+xSettling(settlingMs: long, overdue: bool = false) -> JobInfo = JobInfo(
+  3,
+  "bench",
+  12,
+  0,
+  false,
+  "/w",
+  ["./bench"],
+  "settling",
+  None,
+  false,
+  25 * minute,
+  0,
+  60000,
+  "/l",
+  None,
+  exclusive = true,
+  quietLoad = 4.5,
+  settlingMs = settlingMs,
+  loadOverdue = overdue
+)
+
+@test(
+  "a settling job says so in ls, its ELAPSED the wait for the load and not run time, overdue past load_wait, and its marks survive the protocol"
+)
+exclSettlingShown()
+  val why = Load(30.4, 4.5, 0)
+  val calm = xSettling(3 * minute)
+  assertEq(marshal.stateWithWhy(calm, [(long(3), why)]), "settling (load 30.4 ≥ 4.5)")
+  assertEq(marshal.elapsedColumn(calm, calm.elapsedMs), marshal.formatMillis(3 * minute))
+  val late = xSettling(17 * minute, true)
+  assertEq(marshal.stateWithWhy(late, [(long(3), why)]), "settling (load 30.4 ≥ 4.5, overdue)")
+  assertEq(marshal.stateWithWhy(late, []), "settling (overdue)")
+  assert(marshal.settling(late) && marshal.notRunYet(late))
+  // it has not run: no ETA, and its listing row's STARTED is -
+  assertEq(marshal.etaColumn(late), "-")
+  assert(marshal.listing([late], [(long(3), why)]).contains("settling (load 30.4 ≥ 4.5, overdue)"))
+  // once it runs, ELAPSED is its run time from 0
+  val ran = JobInfo(3, "bench", 12, 0, false, "/w", ["./bench"], "running", None, false, 0, 4000, 60000, "/l", None)
+  assertEq(marshal.elapsedColumn(ran, ran.elapsedMs), marshal.formatMillis(4000))
+  // the protocol keeps both marks, and leaves them out of every other job
+  val back = marshal.decodeJob(marshal.encodeJob(late)).ok.get
+  assertEq(back.state, "settling")
+  assertEq(back.settlingMs, 17 * minute)
+  assert(back.loadOverdue)
+  assertEq(back.elapsedMs, long(0))
+  assert(!marshal.encodeJob(ran).has("settling_ms") && !marshal.encodeJob(ran).has("load_overdue"))
+  // status --json lists it under settling, not under running or queued
+  val u = Usage(0, 12, 0, 100, 0, 0, None, None, settling = 1)
+  val status = marshal.statusJson(u, [late], [(long(3), why)])
+  assertEq(status.get("running").flatMap(v -> v.asVector).map(v -> v.length), Some(0))
+  assertEq(status.get("queued").flatMap(v -> v.asVector).map(v -> v.length), Some(0))
+  val listed = status.get("settling").flatMap(v -> v.asVector).get
+  assertEq(listed.length, 1)
+  assertEq(listed(0).get("settling_ms").flatMap(v -> v.asLong), Some(17 * minute))
+  assertEq(listed(0).get("load_overdue").flatMap(v -> v.asBool), Some(true))
+  assertEq(listed(0).get("state").flatMap(v -> v.asString), Some("settling"))
+  assertEq(listed(0).get("why").flatMap(v -> v.asString), Some("load"))
+  // status says how many settle, apart from running and queued, and only when one does
+  assert(marshal.usageLine(u).contains("0 running, 0 queued, 1 settling, landing lane"), marshal.usageLine(u))
+  assert(!marshal.usageLine(Usage(0, 12, 0, 100, 0, 1, None, None)).contains("settling"))
+  marshal.decodeReply(marshal.encodeReply(Reply.Using(u)).render).ok.get match
+    Reply.Using(v) -> assertEq(v.settling, 1)
+    other -> fail(s"not a usage: $other")
+  // the snapshot counts it as settling, not queued
+  val o = marshal.Overview(u, 0, [], [marshal.QueuedJob(late, 1, why)], [])
+  marshal.decodeReply(marshal.encodeReply(Reply.Viewed(o)).render).ok.get match
+    Reply.Viewed(v) ->
+      assertEq(v.usage.settling, 1)
+      assertEq(v.usage.queued, 0)
+      assert(v.queued(0).job.loadOverdue)
+    other -> fail(s"not a snapshot: $other")
 
 @test(
   "an exclusive job's kind is marked # in listings, before the urgent mark, and kept whole when the column cuts the kind"

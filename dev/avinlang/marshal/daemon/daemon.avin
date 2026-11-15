@@ -191,9 +191,12 @@ class Job(
   // and since when it has stayed below the job's quiet load (the daemon's clock)
   var load: Option[real] = None
   var calm: Option[long] = None
-  // since when it has waited, queued, for the load to settle (the daemon's clock): what config.json's
-  // `load_wait` bounds
-  var loadSince: Option[long] = None
+  // whether it is settling now (sched.avin's `settles`), and since when it has claimed the machine to
+  // wait for the load alone (the daemon's clock), which config.json's `load_wait` measures: past it
+  // the job is overdue (`overdue`, marked, and its log told, once a second by `exclusiveCheck`)
+  var settling = false
+  var settlingSince: Option[long] = None
+  var overdue = false
   // when a running exclusive job's log was last given a sample line (the daemon's clock)
   var sampledMs: long = 0
   val waiters = Buffer[Channel[Reply]]()
@@ -214,6 +217,8 @@ class Job(
     val rss = if state == "running" then resident.now else 0
     // a waiting job that asked to be urgent joins the urgent band once it queues
     val urgent = urgentAt > 0 || (state == "waiting" && spec.urgent)
+    // a settling job is queued to the daemon, and settling to everyone who asks
+    val settles = state == "queued" && settling
     JobInfo(
       id,
       spec.kind,
@@ -222,7 +227,7 @@ class Job(
       spec.landing,
       spec.dir,
       spec.cmd,
-      state,
+      if settles then "settling" else state,
       outcome,
       killed,
       queued,
@@ -257,9 +262,11 @@ class Job(
       meter.cpuMs,
       owner,
       durationFrom,
-      if state == "queued" then startsIn else -1,
+      if state == "queued" && !settles then startsIn else -1,
       meter.held(),
-      spec.unitsAsked
+      spec.unitsAsked,
+      if settles then settlingSince.map(s -> now - s).getOrElse(0) else 0,
+      settles && overdue
     )
 
 // The daemon's state, owned by its own thread.
@@ -543,21 +550,9 @@ class Daemon(
     )
 
   // The queued job `j` as the scheduler weighs it at `t`; an exclusive one with a quiet load says
-  // why the load holds it back, until it no longer does or it has waited config.json's `load_wait`.
-  // Its wait for the load is clocked from the first time the load holds it back.
+  // why the load holds it back, until it no longer does, and whether it has claimed the machine.
   waitingOf(j: Job, t: long) -> Waiting
-    val unsettled = if j.spec.exclusive && j.spec.quietLoad > 0.0 then
-      if j.loadSince.isEmpty && unsettledAt(j, t).isDefined then j.loadSince = Some(t)
-      marshal.settleWhy(
-        j.load,
-        j.spec.quietLoad,
-        j.calm,
-        marshal.quietLoadWindowMs(),
-        j.loadSince,
-        config.loadWaitMs,
-        t
-      )
-    else None
+    val unsettled = if j.spec.exclusive && j.spec.quietLoad > 0.0 then unsettledAt(j, t) else None
     Waiting(
       j.id,
       j.spec.units,
@@ -568,10 +563,11 @@ class Daemon(
       j.spec.quick,
       drainMs(j),
       j.spec.exclusive,
-      unsettled
+      unsettled,
+      j.settlingSince.isDefined
     )
 
-  // Why the load alone holds the exclusive job `j` back at `t`, whatever the bound on its wait.
+  // Why the load alone holds the exclusive job `j` back at `t`.
   unsettledAt(j: Job, t: long) -> Option[marshal.Why] =
     marshal.loadWhy(j.load, j.spec.quietLoad, j.calm, marshal.quietLoadWindowMs(), t)
 
@@ -1057,6 +1053,7 @@ class Daemon(
     val t = now()
     val started = running.map(j -> startedOf(j, t)).toVector
     val waiting = eligible().map(j -> waitingOf(j, t))
+    markSettling(started, waiting, t, outside)
     for (id, ahead) in marshal.starts(
       config.budget,
       started,
@@ -1071,6 +1068,22 @@ class Daemon(
       if job.spec.landing && !slots.forall(ts -> ts.takeLanding()) then continue
       queue.remove(queue.indexOf(job))
       start(job, ahead)
+
+  // Marks the exclusive job that is settling as the scheduler weighs `started` and `waiting` at `t`:
+  // the first time, its claim on the machine and the clock `load_wait` measures begin. A job held by
+  // hand gives up its claim, and waits for the machine afresh once let go.
+  markSettling(started: Vector[Started], waiting: Vector[Waiting], t: long, outside: Outside)
+    for job in queue
+      if job.held
+        job.settling = false
+        job.settlingSince = None
+        job.overdue = false
+    if !waiting.exists(w -> w.exclusive && w.unsettled.isDefined) && !queue.exists(j -> j.settling) then return
+    val id = marshal.settles(config.budget, started, waiting, t, outside, marshal.fairness(config, time.now().epochMicros))
+    for job in queue
+      if job.held then continue
+      job.settling = id == Some(job.id)
+      if job.settling && job.settlingSince.isEmpty then job.settlingSince = Some(t)
 
   // While a development job waits, take-slot sees a ticket of the first one's arrival, so its
   // later runs wait behind it as they wait behind each other. While a landing job drains the
@@ -1108,17 +1121,16 @@ class Daemon(
       val _ = if first then fs.writeText(job.log, line) else fs.appendText(job.log, line)
     // An exclusive job's log begins with what else the machine is doing as it starts; the job's
     // own processes are not started yet, so none of them is in it.
+    // a job that settled gives the machine's claim up as it starts, and a retry settles afresh; an
+    // overdue one's log already holds the line that said so, and keeps it
+    val told = job.overdue
+    job.settling = false
+    job.settlingSince = None
+    job.overdue = false
     if spec.exclusive
-      // one that waited out `load_wait` says so first, with the load it started under
-      val t = now()
-      val waitedOut = if spec.quietLoad > 0.0 && unsettledAt(job, t).isDefined then job.loadSince.map(
-        s -> marshal.waitedOutLine(t - s, spec.quietLoad, job.load) + "\n"
-      ).getOrElse("") else ""
-      val line = waitedOut + sampleNow(job) + "\n"
-      val _ = if first then fs.writeText(job.log, line) else fs.appendText(job.log, line)
+      val line = sampleNow(job) + "\n"
+      val _ = if first && !told then fs.writeText(job.log, line) else fs.appendText(job.log, line)
       job.sampledMs = now()
-      // a retry waits for the load afresh
-      job.loadSince = None
     val placed = program.inDir(spec.dir)
     var command = (
       if job.attempt > 1 || ahead.isDefined || spec.exclusive then placed.appendTo(job.log) else placed.toFile(job.log)
@@ -1229,6 +1241,18 @@ class Daemon(
       marshal.outsiders(marshal.listProcs(), process.pid(), groups, marshal.SampleTop)
     )
 
+  // Marks each queued job that has claimed the machine and waited past config.json's `load_wait` for
+  // the load as overdue, and tells its log once: the load, and the busiest processes outside marshal.
+  // It goes on waiting.
+  markOverdue(t: long)
+    for job in queue.toVector
+      if job.overdue || !marshal.loadOverdue(job.settlingSince, config.loadWaitMs, t) then continue
+      job.overdue = true
+      val waited = t - job.settlingSince.getOrElse(t)
+      val line = marshal.overdueLine(waited, job.spec.quietLoad, job.load) + "\n" + sampleNow(job) + "\n"
+      val _ = fs.appendText(job.log, line)
+      eprintln(s"marshal: job ${job.id} has waited ${marshal.formatMillis(waited)} for the load to settle: overdue, still waiting")
+
   // `job`'s quiet-load clock, after the load is read as `load` at `t`.
   settleSeen(job: Job, load: Option[real], t: long)
     if load.isDefined then job.load = load
@@ -1245,6 +1269,7 @@ class Daemon(
       val load = marshal.loadAverages().headOption
       for job in settling do settleSeen(job, load, t)
       schedule()
+    markOverdue(now())
     val every = marshal.exclusiveSampleMs()
     for job in running.toVector
       if job.spec.exclusive && !job.paused && t - job.sampledMs >= every
@@ -1641,7 +1666,7 @@ class Daemon(
       running.map(j -> j.reserved).sum,
       config.budget.memory,
       running.length,
-      queue.length,
+      queue.filter(j -> !j.settling).length,
       running.find(j -> j.spec.landing).map(j -> j.id),
       slots.flatMap(ts -> outside.map(o -> TakeSlotUse(ts.dir, o.units, o.waiting.length, o.landing))),
       running.map(j -> j.resident.now).sum,
@@ -1654,7 +1679,8 @@ class Daemon(
       if machineMeter.now < 0 then -1 else running.map(j -> if j.meter.now > 0 then j.meter.now else 0).sum,
       diskFree,
       config.diskMin,
-      nofile
+      nofile,
+      queue.filter(j -> j.settling).length
     )
 
   // A stop asks for the daemon to end: at once when nothing is queued or running; with `force`,
@@ -1865,7 +1891,10 @@ class Daemon(
       j.meter.cpuMs,
       j.durationFrom,
       j.meter.windows,
-      j.groups
+      j.groups,
+      j.settling,
+      j.settlingSince.map(s -> wall(s)).getOrElse(0),
+      j.overdue
     )
     SavedState(
       reportedVersion(),
@@ -1923,6 +1952,10 @@ class Daemon(
       job.durationLearned = sj.durationLearned
       job.durationFrom = sj.durationFrom
       job.owner = ownerOf(sj.spec)
+      // a settling job keeps its claim on the machine, its load wait's clock and its overdue mark
+      job.settling = sj.settling
+      job.settlingSince = if sj.settlingSince > 0 then Some(mono(sj.settlingSince)) else None
+      job.overdue = sj.overdue
       // a state saved before reservations were recorded: learned again from the peaks
       if sj.reserved < 0
         reserve(job)

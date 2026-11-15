@@ -321,6 +321,29 @@ savedBeforeQueueControl()
     Ok(SavedState("0.1.0", 1, 2, 3, 4, [savedQueued], [], [], None, false))
   )
 
+@test(
+  "a settling job's claim, its load wait's start and its overdue mark read back as themselves, read as none from a state saved before them, and are refused when of the wrong type"
+)
+savedSettling()
+  val settles = SavedJob(
+    9, savedSpec, "queued", 1, 2, 0, 0, 5, 6, "/l", 0, 0, None, false, false, None, 0, 0,
+    settling = true,
+    settlingSince = 1762000000123,
+    overdue = true
+  )
+  stateRoundTrip(stateOf([settles], [], []))
+  // claimed, not settling now (a landing job went first), not yet overdue
+  stateRoundTrip(stateOf([SavedJob(9, savedSpec, "queued", 1, 2, 0, 0, 5, 6, "/l", 0, 0, None, false, false, None, 0, 0, settlingSince = 7)], [], []))
+  val head = "\"version\": \"0.1.0\", \"pid\": 1, \"saved_at\": 2, \"began_at\": 3, \"next_id\": 4"
+  val withJob = (j: string) -> s"{$head, \"queue\": [$j], \"running\": [], \"ended\": []}"
+  val old = marshal.encodeSavedJob(savedQueued).render.replace(",\"settling\":false,\"settling_since\":0,\"overdue\":false", "")
+  assert(!old.contains("settling") && !old.contains("overdue"), old)
+  assertEq(marshal.decodeState(withJob(old)), Ok(SavedState("0.1.0", 1, 2, 3, 4, [savedQueued], [], [], None)))
+  val good = marshal.encodeSavedJob(settles).render
+  stateRefused(withJob(good.replace("\"settling\":true", "\"settling\":1")), "`settling` is not a bool")
+  stateRefused(withJob(good.replace("\"overdue\":true", "\"overdue\":\"yes\"")), "`overdue` is not a bool")
+  stateRefused(withJob(good.replace("\"settling_since\":1762000000123", "\"settling_since\":\"x\"")), "`settling_since` is not a whole number")
+
 @test("a held mark or priority of the wrong type is refused, naming the field")
 savedBadQueueControl()
   val head = "\"version\": \"0.1.0\", \"pid\": 1, \"saved_at\": 2, \"began_at\": 3, \"next_id\": 4"

@@ -7,9 +7,11 @@ module dev.avinlang.marshal
 //
 // `--quiet-load <n>` also waits out work marshal does not run: the job starts only once the
 // one-minute load average has stayed below `n` for `QuietLoadWindowMs`. The daemon reads the load
-// every second while such a job waits (`calmSince`, `loadWhy`). While the load holds it, it holds
-// nothing else back; after config.json's `load_wait` it starts anyway (`settleWhy`), and its log
-// says with what load (`waitedOutLine`). `--quiet-load auto` is a quarter of the processors.
+// every second while such a job waits (`calmSince`, `loadWhy`). While marshal's own jobs run, the
+// load holds nothing else back; once nothing of marshal's runs, the job is settling (sched.avin's
+// `settles`): it keeps the machine and waits for the load alone. It never starts before the load
+// settles; past config.json's `load_wait` it is overdue (`loadOverdue`), `top` draws it in red, and
+// its log says so once (`overdueLine`). `--quiet-load auto` is a quarter of the processors.
 //
 // While it runs, the daemon writes into its log, at its start and every `ExclusiveSampleMs`, a line
 // beginning `ExclusiveMark` with the load averages and the busiest processes that are not marshal's
@@ -86,31 +88,18 @@ loadWhy(load: Option[real], limit: real, since: Option[long], windowMs: long, no
     Some(s) -> Some(Why.Load(l, limit, now - s))
     None -> Some(Why.Load(l, limit, 0))
 
-// Why an exclusive job with `--quiet-load limit` still waits for the load, as `loadWhy` says, unless
-// it has waited out the bound: it has waited for the load since `waitingSince` (the daemon's clock)
-// and `waitMs` (config.json's `load_wait`, None for no bound) has passed, after which it waits for
-// the load no longer. A machine whose ordinary background load never falls below the limit then
-// still runs the job; the log says so (`waitedOutLine`).
-settleWhy(
-    load: Option[real],
-    limit: real,
-    since: Option[long],
-    windowMs: long,
-    waitingSince: Option[long],
-    waitMs: Option[long],
-    now: long
-) -> Option[Why]
-  for from in waitingSince.toList
-    for bound in waitMs.toList
-      if now - from >= bound then return None
-  loadWhy(load, limit, since, windowMs, now)
+// Whether a settling job is overdue: it has waited for the load alone since `settlingSince` (the
+// daemon's clock) and `waitMs` (config.json's `load_wait`, None for never) has passed by `now`. An
+// overdue job still waits; only the user can quiet the machine or kill it.
+loadOverdue(settlingSince: Option[long], waitMs: Option[long], now: long) -> bool =
+  settlingSince.exists(s -> waitMs.exists(bound -> now - s >= bound))
 
-// The line an exclusive job's log gets when it starts without the load having settled: it waited
-// `waitedMs` for the load to fall below `limit`, and it was last read as `load` (None where it could
-// not be read).
-waitedOutLine(waitedMs: long, limit: real, load: Option[real]) -> string
-  val seen = load.map(l -> s"the load was ${loadText(l)}").getOrElse("the load could not be read")
-  s"$ExclusiveMark started after waiting ${formatMillis(waitedMs)} for the load to fall below ${loadText(limit)}; $seen"
+// The line a settling job's log gets once it is overdue: it has waited `waitedMs` for the load to
+// fall below `limit`, last read as `load` (None where it could not be read), and still waits. The
+// sample line after it names the busiest processes outside marshal.
+overdueLine(waitedMs: long, limit: real, load: Option[real]) -> string
+  val seen = load.map(l -> s"the load is ${loadText(l)}").getOrElse("the load cannot be read")
+  s"$ExclusiveMark overdue: waited ${formatMillis(waitedMs)} for the load to fall below ${loadText(limit)}; $seen; still waiting"
 
 // The quiet load `--quiet-load auto` stands for on a machine with `cores` processors: a quarter of
 // them, and at least 1. Why a quarter: a many-core machine's ordinary background (a desktop, an IDE,

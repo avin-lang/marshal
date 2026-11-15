@@ -6,7 +6,7 @@ import dev.avinlang.json
 import dev.avinlang.json.Json
 
 // marshal's version, as `avin.hocon` gives it: what `marshal version` and `marshal restart` print.
-val Version: string = "0.3.17"
+val Version: string = "0.3.18"
 
 // What a job is to run and how much of the machine it takes. `urgent` queues it in its lane's urgent
 // band, behind the urgent jobs already queued and ahead of every other. `after` names the jobs it
@@ -221,6 +221,10 @@ retryable(_, _) = false
 // the level the job held (`CpuMeter.held`), in hundredths, -1 where it has not been measured or
 // the daemon did not say: what its command's units are learned from. `unitsAsked` is the units a
 // job gave, in quarters, where it weighs the fewer its command's runs teach (`sizeFor`); 0 otherwise.
+// `settlingMs` is how long an exclusive job in the state `settling` has waited for the load alone
+// (the machine its own, nothing of marshal's running), which is not run time: it counts toward no
+// deadline, duration or ETA; 0 otherwise. `loadOverdue` says that wait has passed config.json's
+// `load_wait`: the job still waits, and `top` draws its row in red.
 data JobInfo(
     id: long,
     kind: string,
@@ -266,8 +270,14 @@ data JobInfo(
     durationFrom: string = "",
     startsInMs: long = -1,
     heldCores: long = -1,
-    unitsAsked: int = 0
+    unitsAsked: int = 0,
+    settlingMs: long = 0,
+    loadOverdue: bool = false
 )
+
+// Whether a job is settling: an exclusive job with the machine to itself that waits only for the
+// load outside marshal to fall below its `--quiet-load`.
+settling(j: JobInfo) -> bool = j.outcome.isEmpty && j.state == "settling"
 
 // The units a listing shows for a job: `~` before units learned from earlier runs' cores, and,
 // where the job weighs fewer than it gave, what it gave and an arrow before them (`8→~1.5`) when
@@ -303,7 +313,8 @@ reservedText(j: JobInfo) -> string
 // the free space of the fullest volume holding marshal's home or a job's directory, -1 where not
 // known; `diskMin` the least `disk_min` lets new jobs start beside (0: no guard; disk.avin).
 // `nofile` is the soft limit on open files every job inherits from the daemon, 0 where not known
-// (nofile.avin).
+// (nofile.avin). `settling` is how many exclusive jobs are settling (`settling`): counted neither as
+// running nor in `queued`.
 data Usage(
     units: int,
     unitBudget: int,
@@ -323,7 +334,8 @@ data Usage(
     jobCpu: long = -1,
     diskFree: long = -1,
     diskMin: long = 0,
-    nofile: long = 0
+    nofile: long = 0,
+    settling: int = 0
 )
 
 // The members `status`, `status --json` and the snapshot add for the machine's processors and disk:
@@ -372,7 +384,8 @@ private withMachine(u: Usage, m: (long, long, long, long, long)) -> Usage =
     m.1,
     m.2,
     m.3,
-    m.4
+    m.4,
+    u.settling
   )
 
 // What take-slot.zsh holds in the directory `dir` that marshal shares: units its runs hold, how many
@@ -809,8 +822,14 @@ encodeJob(i: JobInfo) -> Json = Json.Obj(
   ) ++ externalMember(i.external) ++ quickMember(i.quick) ++ expectedMembers(i) ++ exclusiveMembers(
     i.exclusive,
     i.quietLoad
-  ) ++ coresMembers(i) ++ ownerMember(i.owner) ++ etaMembers(i)
+  ) ++ coresMembers(i) ++ ownerMember(i.owner) ++ etaMembers(i) ++ settlingMembers(i)
 )
+
+// `settling_ms` and `load_overdue` are there only on a settling job.
+private settlingMembers(i: JobInfo) -> Vector[(string, Json)] = if i.state == "settling" then [
+  ("settling_ms", Json.num(i.settlingMs)),
+  ("load_overdue", Json.Bool(i.loadOverdue))
+] else Vector[(string, Json)]()
 
 // `duration_from` is left out where the daemon did not say; `eta_ms`, a running job's expected time
 // left, only where its command's runs teach it (`etaLeft`); `starts_in_ms` only on a queued job
@@ -920,7 +939,10 @@ decodeJob(j: Json) -> Result[JobInfo, string]
       optional(j, "held_cores", centiOf, "a number of cores", long(-1))?,
       // absent from what marshal wrote before given units were a ceiling, and for a job that
       // weighs what it asked for
-      askedOf(j)?))
+      askedOf(j)?,
+      // absent on every job but a settling one
+      optional(j, "settling_ms", wholeNumber, "a whole number", 0)?,
+      optional(j, "load_overdue", v -> v.asBool, "a bool", false)?))
 
 encodeTakeSlot(t: TakeSlotUse) -> Json = Json.obj(
   ("dir", Json.str(t.dir)),
@@ -945,7 +967,8 @@ private decodeTakeSlot(j: Json) -> Result[Option[TakeSlotUse], string]
 // What `status --json` prints: the budget in use, what take-slot holds (null when no directory is
 // shared), and the running and queued jobs, each as the protocol gives a job. A queued job in `whys`
 // (job id, reason) also has `why`, the protocol's word for the reason, and `behind`, the job it
-// waits behind, when that is the reason. The machine's processors and disk follow (`machineMembers`).
+// waits behind, when that is the reason. The settling jobs (`settling`) are listed apart, under
+// `settling`, with the same reasons. The machine's processors and disk follow (`machineMembers`).
 statusJson(u: Usage, jobs: Vector[JobInfo], whys: Vector[(long, Why)] = []) -> Json = Json.Obj(
   Json.obj(
     ("units", unitsJson(u.units)),
@@ -962,7 +985,8 @@ statusJson(u: Usage, jobs: Vector[JobInfo], whys: Vector[(long, Why)] = []) -> J
     ("quick_slots", Json.num(QuickSlots)),
     ("exclusive", u.exclusive.map(id -> Json.num(id)).getOrElse(Json.Null)),
     ("running", Json.Arr(jobs.filter(j -> j.state == "running").map(encodeJob))),
-    ("queued", Json.Arr(jobs.filter(j -> j.state == "queued").map(j -> withWhy(j, whys))))
+    ("queued", Json.Arr(jobs.filter(j -> j.state == "queued").map(j -> withWhy(j, whys)))),
+    ("settling", Json.Arr(jobs.filter(j -> settling(j)).map(j -> withWhy(j, whys))))
   ).asMembers.get ++ machineMembers(u)
 )
 
@@ -1010,7 +1034,8 @@ private usageMembers(u: Usage) -> Vector[(string, Json)] = Json.obj(
   ("take_slot", u.takeSlot.map(encodeTakeSlot).getOrElse(Json.Null)),
   ("queue_held", Json.Bool(u.queueHeld)),
   ("quick", Json.num(u.quick)),
-  ("exclusive", u.exclusive.map(id -> Json.num(id)).getOrElse(Json.Null))
+  ("exclusive", u.exclusive.map(id -> Json.num(id)).getOrElse(Json.Null)),
+  ("settling", Json.num(u.settling))
 ).asMembers.get ++ machineMembers(u)
 
 decodeReply(text: string) -> Result[Reply, string]
@@ -1047,7 +1072,8 @@ decodeReply(text: string) -> Result[Reply, string]
             optional(j, "queue_held", v -> v.asBool, "a bool", false)?,
             optional(j, "mem_held", wholeNumber, "a whole number", 0)?,
             optional(j, "quick", v -> v.asInt, "an int", 0)?,
-            optional(j, "exclusive", someLong, "a whole number", None)?
+            optional(j, "exclusive", someLong, "a whole number", None)?,
+            settling = optional(j, "settling", v -> v.asInt, "an int", 0)?
           ),
           machineOf(j)?
         )
@@ -1176,7 +1202,7 @@ decodeOverview(j: Json) -> Result[Overview, string]
           field(j, "mem", v -> v.asLong, "a whole number")?,
           field(j, "mem_budget", v -> v.asLong, "a whole number")?,
           running.length,
-          queued.length,
+          queued.filter(q -> !settling(q.job)).length,
           optional(j, "landing", someLong, "a whole number", None)?,
           decodeTakeSlot(j.get("take_slot").getOrElse(Json.Null))?,
           optional(j, "rss", wholeNumber, "a whole number", 0)?,
@@ -1184,7 +1210,8 @@ decodeOverview(j: Json) -> Result[Overview, string]
           optional(j, "queue_held", v -> v.asBool, "a bool", false)?,
           optional(j, "mem_held", wholeNumber, "a whole number", 0)?,
           optional(j, "quick", v -> v.asInt, "an int", 0)?,
-          optional(j, "exclusive", someLong, "a whole number", None)?
+          optional(j, "exclusive", someLong, "a whole number", None)?,
+          settling = queued.filter(q -> settling(q.job)).length
         ),
         machineOf(j)?
       ),

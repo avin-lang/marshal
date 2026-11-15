@@ -1704,19 +1704,40 @@ load that marshal's own work was not making, and nothing bounded that wait.
   moment can run long, so the reservation has to start earlier anyway, which is what the settled
   load gives); draining for a bounded time (a fixed drain window either wastes the machine or cuts
   a benchmark's turn short, and needs its own clock beside the load's).
-- **The wait for the load is bounded: config.json's `load_wait`, 15 minutes by default, `"never"`
-  for none.** It is clocked from the first time the load holds the queued job back, on the
-  daemon's clock; once it has passed the job counts its load as settled, reserves the machine, and
-  starts once the machine empties. Its log then begins `marshal exclusive: started after waiting
-  15m00s for the load to fall below 2; the load was 2.13`, before the usual sample line, so a result
-  can be read for what it is. The clock is not carried across `marshal restart` (as the quiet-load
-  window is not) and starts afresh for a retry. Why: without a bound the reserve-on-settle rule can
-  starve the exclusive job, since the jobs it lets through raise the load it waits on; with one, its
-  wait is at most `load_wait` and then one drain. 15 minutes is long enough for a passing burst (a
-  build outside marshal, an update) to end and short enough for a benchmark to run in the same
-  sitting. Alternatives: a per-job `--load-wait` option (a protocol field for a setting nobody has
-  needed per job); refusing to start and failing the job (the user asked for the run, and the log
-  line says how quiet the machine was).
+- **Settled on the user's instruction 2026-11-15: the wait for the load is never cut short; once
+  nothing of marshal's runs the job is `settling`, and past `load_wait` it is flagged overdue, not
+  started.** This replaces the earlier bound, under which a job that had waited `load_wait` started
+  anyway with its log saying `started after waiting …`. Job 4294 (`--exclusive --quiet-load 4.5`)
+  spent most of its wait on marshal's own running jobs and then started under a load of 30.4. The
+  user: *"that job was just waiting for other jobs to finish for most of that time. if a job is
+  using load_wait, then it should wait and if it's going on past the 15 minutes there should be an
+  indication in marshal top like the line going red (background), but it should still wait. it's up
+  to the user to fix it"*, and, on the same job: *"even though it's waiting for the machine to be
+  quiet, it holds its place as a 'running' job. maybe we need a new state for that."*
+  - **Settling is its own state.** While marshal's own jobs run (or start, or wait ahead of it, or
+    take-slot holds units), a job whose load has not settled reserves nothing, as above: it is
+    `queued (load …)`. The first time the scheduler finds nothing of marshal's running, starting or
+    waiting and the load still holding it, the job settles (sched.avin's `settles`): it claims the
+    machine (`claimed`), so the jobs queued after it, take-slot's later waiters among them, wait
+    for it as for a settled exclusive job; a landing job still goes first, and the job is then
+    `emptying` with its claim kept, settling again once that job ends. It reports `state:
+    "settling"`: not running (no units, memory, CORES or ETA counted; `status` says `0 running, 1
+    queued, 1 settling`; `status --json` lists it under `settling`), and not an ordinary queued
+    entry. Its ELAPSED is the time it has settled (`settling_ms`), which is not run time: the
+    deadline, the learned duration and the events' `run_ms`/`elapsed_ms` count only the run, which
+    starts from 0.
+  - **`load_wait` (15 minutes, `"never"` for no mark) measures the settling time only**, from the
+    claim, so time spent waiting for marshal's own jobs never counts. Past it the job is overdue:
+    `load_overdue: true`, `ls` adds `overdue`, `top` draws the whole row on red, and its log gets one
+    line, `marshal exclusive: overdue: waited 15m00s for the load to fall below 4.5; the load is 30.4;
+    still waiting`, followed by a sample line naming the busiest processes outside marshal. It still
+    waits; the load settling for the window starts it, and the mark goes with the claim.
+  - The claim, its start and the overdue mark survive `marshal restart` (the quiet-load window, as
+    before, is counted again). Holding a settling job by hand gives the claim up; a retry settles
+    afresh. Why: a benchmark started under load is a wrong number reported as a right one, and the
+    user would rather see the stall and fix it. Alternatives: keeping the bound but counting only the
+    settling time (still a number measured on a busy machine); keeping the job `queued` with a flag
+    (the user asked for a state, and a job that holds the machine is not an ordinary queued one).
 - **`--quiet-load auto` is a quarter of the processors (`sysctl -n hw.ncpu`), at least 1**, resolved
   by the client at submit, so the job records the number (4.5 on an 18-core Mac). Where the count
   cannot be read, `auto` is refused and a number asked for. A number given is kept as given. Why:

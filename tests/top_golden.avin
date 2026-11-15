@@ -76,7 +76,9 @@ gjob(
     startsIn: long = -1,
     quarters: int = 0,
     unitsLearned: bool = false,
-    asked: int = 0
+    asked: int = 0,
+    settlingMs: long = 0,
+    overdue: bool = false
 ) -> JobInfo =
   JobInfo(
     id,
@@ -111,7 +113,9 @@ gjob(
     durationFrom = from,
     startsInMs = startsIn,
     unitsLearned = unitsLearned,
-    unitsAsked = asked
+    unitsAsked = asked,
+    settlingMs = settlingMs,
+    loadOverdue = overdue
   )
 
 // A busy daemon: a landing job, a paused one, take-slot holding units with runs waiting, the queue
@@ -394,6 +398,50 @@ goldenUrgentMarks()
   golden("urgent-marks-80", drawn(viewing(o), 80, 20))
   assert(drawn(viewing(o), 120, 20).rowText(6).contains("test!"))
   assert(drawn(viewing(o), 120, 20).rowText(9).contains("funl-t…!"))
+
+// A daemon whose exclusive job 70 is settling, `settlingMs` into its wait for the load, overdue or
+// not, with job 71 queued behind it and job 69 ended.
+settlingDaemon(settlingMs: long, overdue: bool) -> Overview
+  val x = gjob(
+    70,
+    kind = "bench",
+    state = "settling",
+    units = 12,
+    exclusive = true,
+    elapsed = 0,
+    cmd = ["./bench"],
+    settlingMs = settlingMs,
+    overdue = overdue
+  )
+  val queued = [
+    QueuedJob(x, 1, Why.Load(30.4, 4.5, 0)),
+    QueuedJob(gjob(71, state = "queued", elapsed = 0), 2, Why.ForExclusive(70))
+  ]
+  val ended = [gjob(69, state = "done", outcome = Some(Outcome.Exited(0)))]
+  Overview(Usage(0, 48, 0, 16 * G, 0, 1, None, None, settling = 1), 60000, [], queued, ended)
+
+@test(
+  "golden: a settling job says settling, its ELAPSED the load wait; past load_wait its whole row is red, selected or not, and nothing else changes"
+)
+goldenSettling()
+  val calm = viewing(settlingDaemon(3 * minuteMs, false))
+  golden("settling", drawn(calm, 120, 12))
+  val late = viewing(settlingDaemon(17 * minuteMs, true))
+  golden("settling-overdue", drawn(late, 120, 12))
+  // the selection moved off it: still red
+  late.handle(press(Down))
+  golden("settling-overdue-unselected", drawn(late, 120, 12))
+  // the header counts it apart; ELAPSED moves with the clock, not as run time
+  val g = drawn(viewing(settlingDaemon(3 * minuteMs, false)), 120, 12, 60000)
+  assert(g.rowText(0).contains("0 running  1 queued  1 settling"), g.rowText(0))
+  assert(g.rowText(6).contains("settling") && g.rowText(6).contains("4:00"), g.rowText(6))
+  // the queued job behind it is not red, and nothing is red when no job is overdue
+  val calmGrid = drawn(viewing(settlingDaemon(3 * minuteMs, false)), 120, 12)
+  for y in 0 ..< 12
+    for x in 0 ..< 120 do assert(calmGrid(x, y).style.bg != top.OverdueStyle.bg, s"$x,$y")
+  val lateGrid = drawn(viewing(settlingDaemon(17 * minuteMs, true)), 120, 12)
+  for x in 0 ..< 120 do assertEq(lateGrid(x, 6).style.bg, top.OverdueStyle.bg)
+  for x in 0 ..< 120 do assert(lateGrid(x, 7).style.bg != top.OverdueStyle.bg, s"$x,7")
 
 @test("golden: an exclusive job's kind is marked #, running, queued and ended, with ! after it")
 goldenExclusiveMarks()

@@ -10,7 +10,7 @@ import dev.avinlang.marshal.{NoUnits, NoMemory, LaneBusy, Draining, ForTakeSlot,
 import dev.avinlang.marshal.{Exited, Signalled, TimedOut, Cancelled, Lost, DependencyFailed, Quiet}
 
 import dev.avinlang.tui.{
-  Black, Blue, Bold, BrightBlack, Char, Column, Ctrl, Cyan, Dim, Down, End, Enter, Escape, Event, Fill, Fixed, Green,
+  Black, Blue, Bold, BrightBlack, Char, Cluster, Column, Ctrl, Cyan, Dim, Down, End, Enter, Escape, Event, Fill, Fixed, Green,
   Grid, Home, Key, KeyPress, Magenta, Modal, ModalStack, PageDown, PageUp, Rect, Red, Reverse, Rounded, Scrollbar,
   ScrollView, Segment, Span, Stop, Style, Table, Up, Yellow, textWidth, wrapChars
 }
@@ -123,6 +123,7 @@ leftStyle(left, deadline)
 stateOf(l: Line) -> (string, Style)
   val j = l.job
   l.queued match
+    Some(_) if marshal.settling(j) -> ("settling", Style.fg(Yellow).with(Bold))
     Some((position, why)) -> (s"#$position ${whyText(why)}", Style.fg(Yellow))
     None -> j.outcome match
       None if waiting(l) -> (marshal.stateColumn(j), Style.fg(Yellow))
@@ -159,6 +160,18 @@ elapsedOf(
     l: Line,
     since: long
 ) -> long = if l.job.outcome.isDefined || l.job.paused then l.job.elapsedMs else l.job.elapsedMs + since
+
+// A line's ELAPSED cell: its run time, `-` for a job that has not run, and for a settling job how
+// long it has waited for the load (not run time: it restarts from 0 when the job runs).
+elapsedText(l: Line, since: long) -> string
+  if marshal.settling(l.job) then return clock(l.job.settlingMs + since)
+  if marshal.notRunYet(l.job) then "-" else clock(elapsedOf(l, since))
+
+// The background of an overdue settling job's row: the whole row, so it stands out from every state.
+val OverdueStyle: Style = Style.plain().withBg(Red)
+
+// Whether a line's row is drawn on `OverdueStyle`.
+overdue(l: Line) -> bool = marshal.settling(l.job) && l.job.loadOverdue
 
 // The most cells the LABEL column takes, the fewest (its heading), and the cells COMMAND keeps at
 // least: the LABEL column is narrowed, or left out, on a screen too narrow to leave COMMAND that.
@@ -252,7 +265,7 @@ allCells(l: Line, since: long, zone: time.Zone, today: string, width: int) -> Ve
     Span(measuredText(if j.state == "running" then j.rss else 0)),
     Span(measuredText(j.peakRss)),
     Span(if showsPeak(width) then marshal.startedColumn(j, zone) else marshal.startedShort(j, zone, today)),
-    Span(if marshal.notRunYet(j) then "-" else clock(elapsedOf(l, since))),
+    Span(elapsedText(l, since)),
     styled(etaOf(l, since)),
     styled(deadlineOf(l, since)),
     Span(j.cmd.mkString(" "))
@@ -597,6 +610,11 @@ class App(val sock: string)
       )
       table.selected = drawing.selected
       table.offset = drawing.offset
+      // an overdue settling job's row on red, but for the scrollbar's column
+      val bodyWidth = if shown.length > area.h - 1 && area.h > 1 && area.w >= 2 then area.w - 1 else area.w
+      for k in 0 ..< maxInt(area.h - 1, 0)
+        val i = drawing.offset + k
+        if i < shown.length && overdue(shown(i)) then tintRow(g, area.x, area.y + 1 + k, bodyWidth, OverdueStyle)
       remember()
       position = positionOf(area.h - 1)
       for j in logOf.toList
@@ -829,7 +847,7 @@ drawHeader(
       Span(s"${u.running} running", Some(Style.fg(Green))),
       Span("  "),
       Span(s"${u.queued} queued", Some(Style.fg(Yellow)))
-    ] ++ held ++ [Span("   landing: "), styled(laneText(o))] ++ quickText(u)
+    ] ++ settlingSpans(u) ++ held ++ [Span("   landing: "), styled(laneText(o))] ++ quickText(u)
   )
   val shown = s"filter: ${filterName(f)}" + owner.map(o -> s"  owner: $o").getOrElse("")
   if g.width > textWidth(shown) then g.text(g.width - textWidth(shown), 0, shown, Style.fg(BrightBlack))
@@ -925,6 +943,20 @@ landingUnits(g: Grid, x: int, y: int, o: Overview)
 quickText(u: Usage) -> Vector[Span]
   if u.quick == 0 then return []
   [Span("   quick: "), Span(s"${u.quick}/${marshal.QuickSlots}", Some(Style.fg(Cyan).with(Bold)))]
+
+// The settling jobs in the header, `  1 settling`, while one is; nothing otherwise.
+settlingSpans(u: Usage) -> Vector[Span]
+  if u.settling == 0 then return []
+  [Span("  "), Span(s"${u.settling} settling", Some(Style.fg(Yellow).with(Bold)))]
+
+// Redraws row `y` of `g`, from column `x` for `w` cells, on `bg`, its text and colours kept: what
+// marks an overdue settling job's row.
+tintRow(g: Grid, x: int, y: int, w: int, bg: Style)
+  for col in maxInt(x, 0) ..< minInt(x + w, g.width)
+    val cell = g(col, y)
+    if cell.isContinuation() then continue
+    val wide = col + 1 < g.width && g(col + 1, y).isContinuation()
+    val _ = g.put(col, y, Cluster(cell.text, if wide then 2 else 1), cell.style.withBg(bg.bg))
 
 // Who holds the landing lane, as the header says it.
 laneText(o: Overview) -> (string, Style)

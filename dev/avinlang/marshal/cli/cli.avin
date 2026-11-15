@@ -114,8 +114,10 @@ Options of submit and run:
                     every 30s; # in KIND. Not with --landing or --quick
   --quiet-load <n>  with --exclusive: also wait until the 1-minute load average has stayed below
                     n for a whole minute (ls says why it waits: load 7.9 ≥ 4); auto is a quarter
-                    of the processors. Other jobs run while it waits for the load; after
-                    config.json's load_wait (15m) it starts anyway, and its log says so
+                    of the processors. Other jobs run while it waits for the load; once nothing
+                    of marshal's runs it is settling (ls: settling, ELAPSED the wait so far),
+                    holding the machine until the load falls. It never starts before: past
+                    config.json's load_wait (15m) it is overdue (red in top), and still waits
   --dir <d>         the directory to run it in, relative to this one (default: this one)
   --deadline <t>    stop it after t: minutes, or 90s, 30m, 2h (default: learned from the runs of
                     what it runs, or of its kind while those are fewer than 3: twice their
@@ -745,7 +747,7 @@ simple(request: Request, said: string) -> int = askDaemon(request) match
 // nothing is queued, and when the daemon cannot say (a job that started since `jobs` was read has no
 // reason, and shows as it is).
 queuedWhys(jobs: Vector[JobInfo]) -> Vector[(long, marshal.Why)]
-  if !jobs.exists(j -> j.state == "queued") then return []
+  if !jobs.exists(j -> j.state == "queued" || marshal.settling(j)) then return []
   askDaemon(Request.Snapshot) match
     Ok(marshal.Viewed(o)) -> o.queued.map(q -> (q.job.id, q.why))
     _ -> []
