@@ -2,8 +2,8 @@
 
 marshal runs the heavy commands of building, testing, benchmarking and releasing on one machine
 without them fighting over it. Each command is a **job** with a weight in **units** (about a core
-each) and an amount of **memory**; one daemon per user starts jobs while they fit a budget (12 units
-and the machine's memory less 8G by default), keeps the rest in a first-come queue, gives the
+each) and an amount of **memory**; one daemon per user starts jobs while they fit a budget (a unit per
+logical core and the machine's memory less 8G by default), keeps the rest in a first-come queue, gives the
 **landing lane** to the one job everyone is waiting for, and stops any job that runs far past how
 long its command normally takes. It **learns** each command's cores, memory and duration from its
 runs, so most jobs need no sizing at all.
@@ -457,7 +457,8 @@ The first command that finds no daemon starts one in the background; it listens 
 marshal's home, `~/.marshal` or `$MARSHAL_HOME`. A `wait` is answered the moment the job's process
 ends: nothing polls.
 
-- **Budget.** Development jobs share 12 units and the machine's memory less 8G. A job starts when
+- **Budget.** Development jobs share a unit per logical core (18 on an 18-core Mac; config.json's
+  `units` overrides) and the machine's memory less 8G. A job starts when
   its units and memory fit beside what runs. The queue is first come, first served; a later job
   may start ahead of a head that does not fit only when it fits now and is expected to end before
   the head could start, so it never delays the head.
@@ -631,7 +632,7 @@ peak is never learned.
 
 ### Units
 
-Units come in quarters (`0.25`, `1.5`, `4`): the budget's 12 units are 48 quarters, and the
+Units come in quarters (`0.25`, `1.5`, `4`): a budget of 12 units is 48 quarters, and the
 scheduler adds whole quarters, so fractional jobs fill the budget exactly. Each second, with the
 memory, the daemon lists the machine's processes (one `ps` for all jobs) and asks the kernel
 (`proc_pid_rusage`) the processor time of every process in a running job's tree, its own and that of
@@ -753,7 +754,7 @@ starting, saying which. A change takes effect when the daemon next starts (`mars
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `units` | `12` | the development unit budget |
+| `units` | the machine's logical cores (`hw.ncpu`; `12` where that cannot be read) | the development unit budget; a unit is a core |
 | `memory` | the machine's memory less `reserve` | the memory budget: a size such as `"56G"`, or bytes |
 | `reserve` | `"8G"` | what the default memory budget leaves the rest of the machine |
 | `deadline_floor` | `"5m"` | the shortest deadline learning may give |
