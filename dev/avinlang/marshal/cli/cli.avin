@@ -71,10 +71,7 @@ val Commands: Vector[(string, string)] = [
     "grep <id> <pattern> [-i] [-v] [-n] [-c] [-F] [-m <n>] [-A|-B|-C <n>] [--last <n>]",
     "the lines of the job's log that match the pattern (a regular expression; -F: literal text), as grep prints them; exits 0 when a line matched, 1 when none did, 2 on an error"
   ),
-  (
-    "status [--json]",
-    "the budget in use (units: one per logical core of this machine unless config.json's units says otherwise); --json: one JSON object with the running and queued jobs"
-  ),
+  ("status [--json]", "the budget in use; --json: one JSON object with the running and queued jobs"),
   (
     "history [options]",
     "ended jobs from the event log, newest first: id, kind, outcome, exit code, duration, when, label"
