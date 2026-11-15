@@ -48,9 +48,9 @@ nofileRaisedE2e()
   val (_, hard) = marshal.nofileLimits().get
   val n = jobNofile(home, None)
   assert(n > 256, n.toString())
-  assertEq(n, marshal.nofileTarget(256, hard, None))
-  // where the hard limit is unlimited, a job is given OPEN_MAX, not an unlimited limit
-  if hard == marshal.RlimInfinity then assertEq(n, marshal.OpenMax)
+  assertEq(n, marshal.nofileTarget(256, hard, marshal.maxFilesPerProc(), None))
+  // where the hard limit is unlimited, a job is given the kernel's per-process ceiling, not an unlimited limit
+  if hard == marshal.RlimInfinity then assertEq(Some(n), marshal.maxFilesPerProc())
   assertEq(shownNofile(home), (n, Some(n)))
   cleanUp(home)
 

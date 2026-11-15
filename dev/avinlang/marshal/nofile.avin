@@ -6,12 +6,13 @@ module dev.avinlang.marshal
 // the daemon raises its soft limit at start-up, before any job starts, and every job inherits the
 // raised one.
 //
-// The limit raised to is the hard limit where that is a number. Where the hard limit is unlimited,
-// macOS reports an unlimited soft limit if it is asked for one yet still opens no more than
-// `kern.maxfilesperproc` files, and `ulimit -n` then says "unlimited" of a limit that is not; the
-// setrlimit manual's answer is `min(OPEN_MAX, rlim_max)`, and that is the limit raised to there.
-// A soft limit already higher is kept. config.json's `nofile` asks for a limit of its own, at most
-// the hard one; where the system refuses what is asked, `min(OPEN_MAX, hard)` is asked instead.
+// The limit raised to is the hard limit where that is a number, held to `kern.maxfilesperproc`, the
+// most files the kernel lets one process open. Where the hard limit is unlimited, macOS reports an
+// unlimited soft limit if it is asked for one yet still opens no more than `kern.maxfilesperproc`
+// files, and `ulimit -n` then says "unlimited" of a limit that is not; so `kern.maxfilesperproc` is
+// the limit raised to there, or OPEN_MAX where the kernel will not say. A soft limit already higher
+// is kept. config.json's `nofile` asks for a limit of its own, at most the hard one; where the system
+// refuses what is asked, `min(OPEN_MAX, hard)` is asked instead.
 
 @c(struct: "struct rlimit")
 private data Rlimit(rlimCur: long, rlimMax: long)
@@ -36,13 +37,34 @@ private setrlimit(resource: int, rlp: Rlimit) -> Result[unit, int]
 // The process's soft and hard limits on open files, None where they cannot be read.
 nofileLimits() -> Option[(long, long)] = getrlimit(RlimitNofile).ok.map(r -> (r.rlimCur, r.rlimMax))
 
-// The soft limit to ask for, given the current `soft` and `hard` limits and what config.json's
-// `nofile` asks for: that, held to `hard`; otherwise `hard` where it is a number, `min(OpenMax,
-// hard)` where it is unlimited, and `soft` where that is already more.
-nofileTarget(soft: long, hard: long, asked: Option[long]) -> long = asked match
+@c(
+  "int sysctlbyname(const char *name, void *oldp, length(oldp) inout size_t *oldlenp, null void *newp, size_t newlen)"
+)
+private sysctlRaw(name: string, into: Array[int], newlen: long) -> (int, long)
+
+// The kernel's integer setting `name` (`sysctl -n name`), None where there is no such setting or it
+// is not a four-byte integer.
+sysctlInt(name: string) -> Option[int] =
+  val v = Array.fill(1, 0)
+  sysctlRaw(name, v, 0) match
+    (0, 4) -> Some(v(0))
+    _ -> None
+
+// The most files the kernel lets one process hold open, `kern.maxfilesperproc`; None where it
+// cannot be read or is not positive.
+maxFilesPerProc() -> Option[long] = sysctlInt("kern.maxfilesperproc").filter(n -> n > 0).map(n -> long(n))
+
+// The soft limit to ask for, given the current `soft` and `hard` limits, the kernel's per-process
+// ceiling `perProc` and what config.json's `nofile` asks for: that, held to `hard`; otherwise `hard`
+// where it is a number (held to `perProc` where that is lower, which setrlimit would refuse), the
+// ceiling where the hard limit is unlimited (`OpenMax` where the ceiling is unknown), and `soft`
+// where that is already more.
+nofileTarget(soft: long, hard: long, perProc: Option[long], asked: Option[long]) -> long = asked match
   Some(n) -> if n > hard then hard else n
   None ->
-    val raised = if hard == RlimInfinity then nofileFallback(hard) else hard
+    val raised = perProc match
+      Some(ceiling) -> if hard == RlimInfinity || ceiling < hard then ceiling else hard
+      None -> if hard == RlimInfinity then OpenMax else hard
     if soft > raised then soft else raised
 
 // What is asked where the system refuses the target: `min(OpenMax, hard)`.
@@ -55,7 +77,7 @@ raiseNofile(asked: Option[long]) -> Option[long]
   val (soft, hard) = nofileLimits() match
     Some(limits) -> limits
     None -> return None
-  val target = nofileTarget(soft, hard, asked)
+  val target = nofileTarget(soft, hard, maxFilesPerProc(), asked)
   if target != soft && setrlimit(RlimitNofile, Rlimit(target, hard)).isErr
     val _ = setrlimit(RlimitNofile, Rlimit(nofileFallback(hard), hard)) // refused too, the limit stays as it was
   nofileLimits().map(l -> l.0)

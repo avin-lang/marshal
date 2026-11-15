@@ -10,23 +10,53 @@ import dev.avinlang.marshal.{Using, Viewed}
 
 @test("the soft limit asked for is the hard limit where that is a number, and a higher soft limit is kept")
 nofileFiniteHard()
-  assertEq(marshal.nofileTarget(256, 1000, None), long(1000))
-  assertEq(marshal.nofileTarget(256, 1048576, None), long(1048576))
+  assertEq(marshal.nofileTarget(256, 1000, None, None), long(1000))
+  assertEq(marshal.nofileTarget(256, 1048576, None, None), long(1048576))
   // already at the hard limit, nothing changes
-  assertEq(marshal.nofileTarget(1000, 1000, None), long(1000))
+  assertEq(marshal.nofileTarget(1000, 1000, None, None), long(1000))
   // a hard limit under OPEN_MAX is still the one asked for
-  assertEq(marshal.nofileTarget(256, 300, None), long(300))
+  assertEq(marshal.nofileTarget(256, 300, None, None), long(300))
+  // a hard limit under the kernel's per-process ceiling is the one asked for
+  assertEq(marshal.nofileTarget(256, 1000, Some(245760), None), long(1000))
+  assertEq(marshal.nofileTarget(256, 245760, Some(245760), None), long(245760))
+
+@test("a hard limit above kern.maxfilesperproc is held to it, and an unknown ceiling is not assumed")
+nofilePerProc()
+  assertEq(marshal.nofileTarget(256, 1048576, Some(245760), None), long(245760))
+  assertEq(marshal.nofileTarget(256, 1048576, Some(300), None), long(300))
+  // a ceiling under the soft limit leaves it as it is
+  assertEq(marshal.nofileTarget(256, 1048576, Some(10), None), long(256))
+  // a soft limit already above the ceiling is kept
+  assertEq(marshal.nofileTarget(500000, 1048576, Some(245760), None), long(500000))
+  // the ceiling unknown: the hard limit stands where it is a number
+  assertEq(marshal.nofileTarget(256, 1048576, None, None), long(1048576))
+
+@test("the kernel's settings are read: kern.maxfilesperproc and hw.ncpu are positive, an unknown name is None")
+sysctlSettings()
+  for name in ["kern.maxfilesperproc", "hw.ncpu"]
+    val n = marshal.sysctlInt(name)
+    assert(n.isDefined, name)
+    assert(n.get > 0, name)
+  assertEq(marshal.sysctlInt("kern.no_such_setting_marshal"), None)
+  assertEq(marshal.sysctlInt(""), None)
+  val perProc = marshal.maxFilesPerProc()
+  assert(perProc.isDefined)
+  assertEq(perProc, marshal.sysctlInt("kern.maxfilesperproc").map(n -> long(n)))
 
 @test(
   "where the hard limit is unlimited, the soft limit asked for is OPEN_MAX, never unlimited, unless it is already more"
 )
 nofileUnlimitedHard()
   val inf = marshal.RlimInfinity
-  assertEq(marshal.nofileTarget(256, inf, None), marshal.OpenMax)
-  assert(marshal.nofileTarget(256, inf, None) != inf)
+  assertEq(marshal.nofileTarget(256, inf, None, None), marshal.OpenMax)
+  assert(marshal.nofileTarget(256, inf, None, None) != inf)
   // a soft limit a login shell raised past OPEN_MAX is kept
-  assertEq(marshal.nofileTarget(1048576, inf, None), long(1048576))
-  assertEq(marshal.nofileTarget(marshal.OpenMax, inf, None), marshal.OpenMax)
+  assertEq(marshal.nofileTarget(1048576, inf, None, None), long(1048576))
+  assertEq(marshal.nofileTarget(marshal.OpenMax, inf, None, None), marshal.OpenMax)
+  // the kernel's ceiling is what an unlimited hard limit is raised to, when it is known
+  assertEq(marshal.nofileTarget(256, inf, Some(245760), None), long(245760))
+  assertEq(marshal.nofileTarget(245760, inf, Some(245760), None), long(245760))
+  assertEq(marshal.nofileTarget(1048576, inf, Some(245760), None), long(1048576))
   // the fallback is OPEN_MAX held to the hard limit
   assertEq(marshal.nofileFallback(inf), marshal.OpenMax)
   assertEq(marshal.nofileFallback(1000), long(1000))
@@ -43,10 +73,12 @@ nofileConstants()
 
 @test("config.json's nofile asks for a limit of its own, held to the hard limit, lower than the current one too")
 nofileAsked()
-  assertEq(marshal.nofileTarget(256, marshal.RlimInfinity, Some(65536)), long(65536))
-  assertEq(marshal.nofileTarget(256, 1000, Some(5000)), long(1000))
-  assertEq(marshal.nofileTarget(4096, 8192, Some(512)), long(512))
-  assertEq(marshal.nofileTarget(256, 1000, Some(1000)), long(1000))
+  assertEq(marshal.nofileTarget(256, marshal.RlimInfinity, None, Some(65536)), long(65536))
+  assertEq(marshal.nofileTarget(256, marshal.RlimInfinity, Some(245760), Some(65536)), long(65536))
+  assertEq(marshal.nofileTarget(256, 1000, None, Some(5000)), long(1000))
+  assertEq(marshal.nofileTarget(256, 1000, Some(245760), Some(5000)), long(1000))
+  assertEq(marshal.nofileTarget(4096, 8192, Some(245760), Some(512)), long(512))
+  assertEq(marshal.nofileTarget(256, 1000, None, Some(1000)), long(1000))
 
 @test("config.json's nofile is a whole number of files, at least 1; anything else is refused")
 nofileConfig()

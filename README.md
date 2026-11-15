@@ -565,11 +565,12 @@ ends: nothing polls.
   it.
 - **Open files.** A daemon launchd starts inherits launchd's soft limit of 256 open files, far under
   a login shell's, and a job inherits the daemon's. So the daemon raises its soft limit when it
-  starts, before any job: to the hard limit where that is a number, and to `OPEN_MAX` (10240) where
-  the hard limit is unlimited, keeping a soft limit that is already higher. A job's `ulimit -n` is
-  that limit. `nofile` in `config.json` asks for another, held to the hard limit. The daemon's start
-  line names it (`open files 10240`), `status` ends with `open files 10240` and `status --json` has
-  `nofile`.
+  starts, before any job: to the hard limit where that is a number, and to the kernel's
+  `kern.maxfilesperproc` where the hard limit is unlimited (`OPEN_MAX`, 10240, where the kernel will
+  not say), never above that ceiling, keeping a soft limit that is already higher. A job's
+  `ulimit -n` is that limit. `nofile` in `config.json` asks for another, held to the hard limit. The
+  daemon's start line names it (`open files 245760`), `status` ends with `open files 245760` and
+  `status --json` has `nofile`.
 - **The machine's processors.** The `ps` listing the jobs are measured from each second lists every
   process, so the daemon measures the whole machine's processor use from it the same way, and the
   running jobs' share of it. `status` says `cpu 8.4 (jobs 4.9)`, `status --json` has `cpu` and

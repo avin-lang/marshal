@@ -1934,6 +1934,24 @@ under marshal and passed outside it.
   `OPEN_MAX` is a macOS header's (glibc defines none), so this ties the build to macOS, as the
   `sample` at a deadline already ties that behaviour.
 
+## The limit on open files follows the kernel's per-process ceiling (branch `nofile-sysctl`)
+
+**Settled on the user's delegation 2026-11-15.** This replaces the entry above that raised to
+`OPEN_MAX` (10240) where the hard limit is unlimited, the one the user was asked to review.
+
+- **Where the hard limit is unlimited the soft limit is raised to `kern.maxfilesperproc`; where it
+  is a number, to the hard limit held to that ceiling; a soft limit already higher is kept; the
+  config's `nofile` still wins, held to the hard limit.** Why: the kernel opens no more than
+  `kern.maxfilesperproc` files in a process (245760 here) whatever the limit says, so it is the real
+  limit and 10240 was an arbitrary fraction of it; a test spawning thousands of event loops needed
+  more. `OPEN_MAX` stays the answer where `sysctlbyname` fails, and `min(OPEN_MAX, hard)` the one
+  where `setrlimit` refuses the target. Alternatives: keep 10240 and tell users to set `nofile` (a
+  setting everyone with a large suite must discover); unlimited (misleads programs that size a table
+  by the limit).
+- **The setting is read through an `@c` binding of `sysctlbyname`** whose result buffer is an
+  `Array[int]` (`length(oldp)` and `inout size_t *`, now accepted by the C bindings); only a
+  four-byte answer counts, so an unknown name or a wider setting is None (`sysctlInt`).
+
 ## A job is its whole process tree, and units are learned from the level it held (branch `units`)
 
 **Settled on the user's delegation 2026-11-14.** The user's `marshal top` showed an avin gate at
