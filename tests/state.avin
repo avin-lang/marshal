@@ -332,7 +332,7 @@ savedSettling()
     overdue = true
   )
   stateRoundTrip(stateOf([settles], [], []))
-  // claimed, not settling now (a landing job went first), not yet overdue
+  // it has settled before, not settling now (a landing job went first), not yet overdue
   stateRoundTrip(stateOf([SavedJob(9, savedSpec, "queued", 1, 2, 0, 0, 5, 6, "/l", 0, 0, None, false, false, None, 0, 0, settlingSince = 7)], [], []))
   val head = "\"version\": \"0.1.0\", \"pid\": 1, \"saved_at\": 2, \"began_at\": 3, \"next_id\": 4"
   val withJob = (j: string) -> s"{$head, \"queue\": [$j], \"running\": [], \"ended\": []}"

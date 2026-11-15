@@ -193,8 +193,8 @@ class Job(
   // and since when it has stayed below the job's quiet load (the daemon's clock)
   var load: Option[real] = None
   var calm: Option[long] = None
-  // whether it is settling now (sched.avin's `settles`), and since when it has claimed the machine to
-  // wait for the load alone (the daemon's clock), which config.json's `load_wait` measures: past it
+  // whether it is settling now (sched.avin's `settles`), and since when it has waited, the machine
+  // empty, for the load alone (the daemon's clock), which config.json's `load_wait` measures: past it
   // the job is overdue (`overdue`, marked, and its log told, once a second by `exclusiveCheck`)
   var settling = false
   var settlingSince: Option[long] = None
@@ -577,8 +577,7 @@ class Daemon(
     )
 
   // The queued job `j` as the scheduler weighs it at `t` against `b`; an exclusive one with a quiet
-  // load says why the load holds it back, until it no longer does, and whether it has claimed the
-  // machine.
+  // load says why the load holds it back, until it no longer does.
   waitingOf(j: Job, t: long, b: marshal.Budget) -> Waiting
     val unsettled = if j.spec.exclusive && j.spec.quietLoad > 0.0 then unsettledAt(j, t) else None
     Waiting(
@@ -592,7 +591,6 @@ class Daemon(
       drainMs(j),
       j.spec.exclusive,
       unsettled,
-      j.settlingSince.isDefined,
       alone(j, b)
     )
 
@@ -1289,7 +1287,7 @@ class Daemon(
       marshal.outsiders(marshal.listProcs(), process.pid(), groups, marshal.SampleTop)
     )
 
-  // Marks each queued job that has claimed the machine and waited past config.json's `load_wait` for
+  // Marks each queued job that has settled and waited past config.json's `load_wait` for
   // the load as overdue, and tells its log once: the load, and the busiest processes outside marshal.
   // It goes on waiting.
   markOverdue(t: long)

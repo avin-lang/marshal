@@ -30,8 +30,8 @@ import dev.avinlang.json.Json
 // measured at and how often (`CpuMeter.windows`), so the new image's meter goes on knowing what it
 // held, and `groups` the process groups its tree was last found in (stepgroup.avin's `jobTree`), so
 // the new image's signals reach a process whose parent has ended; both empty when absent.
-// `settling` says a queued exclusive job is settling, `settlingSince` when it claimed the machine to
-// wait for the load alone (wall clock, milliseconds; 0 for no claim), and `overdue` that it has
+// `settling` says a queued exclusive job is settling, `settlingSince` when it began to
+// wait for the load alone (wall clock, milliseconds; 0 for never), and `overdue` that it has
 // waited past `load_wait`; false, 0 and false when absent.
 data SavedJob(
     id: long,

@@ -16,7 +16,7 @@ xDev(id: long, units: int = 1, memory: long = 0) -> Waiting = Waiting(id, units,
 xQuick(id: long) -> Waiting = Waiting(id, 4, 0, false, minute, id * 10, true)
 xLand(id: long, memory: long = 0) -> Waiting = Waiting(id, 4, memory, true, hour, id * 10)
 
-xExcl(id: long, unsettled: Option[Why] = None, claimed: bool = false) -> Waiting = Waiting(
+xExcl(id: long, unsettled: Option[Why] = None) -> Waiting = Waiting(
   id,
   12,
   0,
@@ -26,8 +26,7 @@ xExcl(id: long, unsettled: Option[Why] = None, claimed: bool = false) -> Waiting
   false,
   0,
   true,
-  unsettled,
-  claimed
+  unsettled
 )
 
 // The exclusive job that is settling, if one is.
@@ -173,36 +172,78 @@ exclLandingWaitsForRunning()
   assertEq(xWhys([xRunExcl(1)], [xLand(2)]), [(long(2), ForExclusive(1))])
 
 @test(
-  "the stall: an exclusive job waiting for the load on an empty machine holds nothing back, so small jobs queued behind it start"
+  "the starvation: an exclusive job whose load has not settled empties marshal while its jobs run, so ordinary jobs arriving after it never start"
+)
+exclUnsettledEmpties()
+  val why = Some(Load(15.48, 4.5, 0))
+  // jobs of marshal's run (and keep the load up); a stream of ordinary jobs arrives behind it
+  val r = [xRun(2, 4), xRun(3, 2)]
+  for n in 4 ..< 10
+    val q = [xExcl(1, why)] ++ (4 .. n).map(i -> if i % 2 == 0 then xQuick(long(i)) else xDev(long(i))).toVector
+    assertEq(marshal.schedule(xb, r, q, 0), [])
+    // it is emptying, not waiting for the load, and every later job waits for it
+    assertEq(xWhys(r, q).find(w -> w.0 == 1).map(w -> w.1), Some(Emptying))
+    assert(xWhys(r, q).filter(w -> w.0 != 1).forall(w -> w.1 == ForExclusive(1)))
+    assertEq(xSettles(r, q), None)
+  // one running job ends: still emptying, nothing new starts
+  val q = [xExcl(1, why), xDev(4), xQuick(5)]
+  assertEq(marshal.schedule(xb, [xRun(3, 2)], q, 0), [])
+  assertEq(xWhys([xRun(3, 2)], q), [(long(1), Emptying), (long(4), ForExclusive(1)), (long(5), ForExclusive(1))])
+  // the last ends: it settles, says the load, and still holds the rest back
+  assertEq(xSettles([], q), Some(long(1)))
+  assertEq(marshal.schedule(xb, [], q, 0), [])
+  assertEq(xWhys([], q), [(long(1), Load(15.48, 4.5, 0)), (long(4), ForExclusive(1)), (long(5), ForExclusive(1))])
+  // the load settles: it starts, and only it
+  assertEq(marshal.schedule(xb, [], [xExcl(1), xDev(4), xQuick(5)], 0), ids(1))
+
+@test(
+  "an exclusive job waiting for the load on an empty machine settles at once and holds back what is behind it; a landing job still goes first"
 )
 exclWaitsForLoad()
   val why = Load(2.13, 2.0, 0)
   val q = [xExcl(1, Some(why)), xDev(2, 1), xDev(3, 4), xQuick(4), xDev(5, 2)]
-  // the quick lane is decided first, as always
-  assertEq(marshal.schedule(xb, [], q, 0), ids(4, 2, 3, 5))
+  assertEq(marshal.schedule(xb, [], q, 0), [])
+  assertEq(xSettles([], q), Some(long(1)))
   assertEq(xWhys([], q).find(w -> w.0 == 1).map(w -> w.1), Some(why))
-  // it says the load, not emptying, while jobs run, and still holds nothing back
+  // while jobs run it is emptying, and the job behind it waits for it, though it fits
   val r = [xRun(6, 4)]
-  assertEq(marshal.schedule(xb, r, [xExcl(1, Some(why)), xDev(2, 8)], 0), ids(2))
-  assertEq(xWhys(r, [xExcl(1, Some(why))]), [(long(1), why)])
-  // the jobs behind it are decided as usual: one that does not fit waits for units, not for it
-  assertEq(xWhys([xRun(6, 10)], [xExcl(1, Some(why)), xDev(2, 4)]), [(long(1), why), (long(2), NoUnits)])
+  assertEq(marshal.schedule(xb, r, [xExcl(1, Some(why)), xDev(2, 8)], 0), [])
+  assertEq(xWhys(r, [xExcl(1, Some(why)), xDev(2, 8)]), [(long(1), Emptying), (long(2), ForExclusive(1))])
   // a landing job still goes first
   assertEq(marshal.schedule(xb, [], [xExcl(1, Some(why)), xLand(2)], 0), ids(2))
-  // take-slot's runs and waiters are not held behind it either, and its ticket is not at it
-  assertEq(xWhys([], [xExcl(1, Some(why))], Outside(1, [Ticket(30, 2)], false)), [(long(1), why)])
+  // take-slot's runs hold it in emptying; a waiter that arrived after it waits behind it, and the
+  // ticket stands at its arrival
+  assertEq(xWhys([], [xExcl(1, Some(why))], Outside(1, [Ticket(30, 2)], false)), [(long(1), Emptying)])
+  assertEq(xSettles([], [xExcl(1, Some(why))], Outside(0, [Ticket(30, 2)], false)), Some(long(1)))
   assertEq(
     marshal.ticketFor(xb, [xRun(9, 12)], [xExcl(1, Some(why)), xDev(3, 4)], 0, marshal.NoOutside),
-    Some((long(30), 4))
+    Some((long(10), 12))
   )
-  assertEq(marshal.ticketFor(xb, [xRun(9, 12)], [xExcl(1, Some(why))], 0, marshal.NoOutside), None)
+  // a take-slot waiter that arrived before it goes first
+  assertEq(xWhys([], [xExcl(1, Some(why))], Outside(0, [Ticket(5, 1)], false)), [(long(1), Emptying)])
 
-@test("a later exclusive job waits for the first while the first waits for the load; the jobs between them still start")
+@test(
+  "nothing backfills behind an emptying exclusive job, even a short job that would end before the running ones; the jobs ahead of it are decided as usual"
+)
+exclNoBackfillBehind()
+  val why = Some(Load(15.48, 4.5, 0))
+  // the running job is expected for an hour; a one-minute job behind the exclusive one still waits
+  val r = [xRun(2, 4)]
+  for x in [xExcl(1), xExcl(1, why)]
+    val q = [x, xQuick(3), Waiting(4, 1, 0, false, minute, 40)]
+    assertEq(marshal.schedule(xb, r, q, 0), [])
+    assertEq(xWhys(r, q), [(long(1), Emptying), (long(3), ForExclusive(1)), (long(4), ForExclusive(1))])
+  // a job queued ahead of it that fits still starts, and it waits for that one too
+  assertEq(marshal.schedule(xb, r, [xDev(3), xExcl(10, why)], 0), ids(3))
+  assertEq(xWhys(r, [xDev(3), xExcl(10, why)]), [(long(3), Starting), (long(10), Emptying)])
+
+@test("a later exclusive job waits for the first while the first waits for the load, and so do the jobs between them")
 exclLaterExclusiveWaitsForLoad()
   val why = Load(7.9, 4.0, 0)
   val q = [xExcl(1, Some(why)), xDev(2), xExcl(3)]
-  assertEq(marshal.schedule(xb, [], q, 0), ids(2))
-  assertEq(xWhys([], q), [(long(1), why), (long(2), Starting), (long(3), ForExclusive(1))])
+  assertEq(marshal.schedule(xb, [], q, 0), [])
+  assertEq(xWhys([], q), [(long(1), why), (long(2), ForExclusive(1)), (long(3), ForExclusive(1))])
+  assertEq(xWhys([xRun(4)], q), [(long(1), Emptying), (long(2), ForExclusive(1)), (long(3), ForExclusive(1))])
 
 @test(
   "once its load has settled the exclusive job reserves the machine: what is behind it waits, the running jobs drain, and it then starts with nothing beside it"
@@ -221,29 +262,29 @@ exclSettledReservesAndRunsAlone()
   assertEq(marshal.schedule(xb, [xRunExcl(1)], [xDev(5, 1), xQuick(6), xLand(7)], 0), [])
 
 @test(
-  "an exclusive job flips between waiting for the load and reserving the machine as the load moves, and never starts while the load holds it"
+  "an exclusive job reserves the machine as the load moves, high or low, and never starts while the load holds it"
 )
 exclLoadFlipsNeverStartsHigh()
   val high = Some(Load(5.0, 4.0, 0))
-  // high: the small job behind it starts
-  assertEq(marshal.schedule(xb, [], [xExcl(1, high), xDev(2)], 0), ids(2))
-  // low again while job 2 runs: it reserves, and job 3 behind it waits
-  assertEq(xWhys([xRun(2)], [xExcl(1), xDev(3)]), [(long(1), Emptying), (long(3), ForExclusive(1))])
-  // a load that stays high never starts it, however long it has held it: alone, settling or claimed
+  // high or low while job 2 runs: it is emptying, and job 3 behind it waits
+  for x in [xExcl(1, high), xExcl(1)]
+    assertEq(xWhys([xRun(2)], [x, xDev(3)]), [(long(1), Emptying), (long(3), ForExclusive(1))])
+  // a load that stays high never starts it, alone or with jobs behind it
   assertEq(marshal.schedule(xb, [], [xExcl(1, high)], 0), [])
-  assertEq(marshal.schedule(xb, [], [xExcl(1, high, true)], 0), [])
-  assertEq(marshal.schedule(xb, [], [xExcl(1, high, true), xDev(3)], 0), [])
+  assertEq(marshal.schedule(xb, [], [xExcl(1, high), xDev(3)], 0), [])
 
 @test(
   "an exclusive job settles once its turn has come and nothing of marshal's runs, starts or waits, and not before"
 )
 exclSettlesOnlyOnAnEmptyMachine()
   val high = Some(Load(30.4, 4.5, 0))
-  // queued behind a running job, emptying it would be, but the load holds it: it is not settling
+  // queued behind a running job it is emptying, not settling
   assertEq(xSettles([xRun(2)], [xExcl(1, high)]), None)
-  // a job behind it that starts keeps it from settling
-  assertEq(xSettles([], [xExcl(1, high), xDev(3)]), None)
-  // a job ahead of it that waits on an empty machine (for memory), too
+  assertEq(xWhys([xRun(2)], [xExcl(1, high)]), [(long(1), Emptying)])
+  // a job behind it does not start, so it settles all the same
+  assertEq(xSettles([], [xExcl(1, high), xDev(3)]), Some(long(1)))
+  // a job ahead of it that starts, or that waits on an empty machine (for memory), keeps it from settling
+  assertEq(xSettles([], [xDev(4), xExcl(1, high)]), None)
   assertEq(xSettles([], [xDev(4, 1, 200), xExcl(1, high)]), None)
   // take-slot's runs or waiters, and a landing job that starts
   assertEq(xSettles([], [xExcl(1, high)], Outside(1, [], false)), None)
@@ -264,22 +305,21 @@ exclSettlesOnlyOnAnEmptyMachine()
 )
 exclSettlingHoldsTheMachine()
   val high = Some(Load(30.4, 4.5, 0))
-  // claimed: the job behind it, which would have run while the load held it, now waits
-  val q = [xExcl(1, high, true), xDev(3), xQuick(4)]
+  val q = [xExcl(1, high), xDev(3), xQuick(4)]
   assertEq(marshal.schedule(xb, [], q, 0), [])
   assertEq(xWhys([], q), [(long(1), Load(30.4, 4.5, 0)), (long(3), ForExclusive(1)), (long(4), ForExclusive(1))])
   assertEq(xSettles([], q), Some(long(1)))
-  // take-slot's later waiters wait for it too, and its ticket stands at its arrival
-  assertEq(xSettles([], [xExcl(1, high, true)], Outside(0, [Ticket(50, 1)], false)), Some(long(1)))
-  // a landing job queued after it still starts first; meanwhile it is emptying, its claim kept
-  assertEq(marshal.schedule(xb, [], [xExcl(1, high, true), xLand(2)], 0), ids(2))
-  assertEq(xWhys([xRunLanding(2)], [xExcl(1, high, true), xDev(3)]), [(long(1), Emptying), (long(3), ForExclusive(1))])
-  assertEq(xSettles([xRunLanding(2)], [xExcl(1, high, true)]), None)
+  // take-slot's later waiters wait for it too
+  assertEq(xSettles([], [xExcl(1, high)], Outside(0, [Ticket(50, 1)], false)), Some(long(1)))
+  // a landing job queued after it still starts first; meanwhile it is emptying
+  assertEq(marshal.schedule(xb, [], [xExcl(1, high), xLand(2)], 0), ids(2))
+  assertEq(xWhys([xRunLanding(2)], [xExcl(1, high), xDev(3)]), [(long(1), Emptying), (long(3), ForExclusive(1))])
+  assertEq(xSettles([xRunLanding(2)], [xExcl(1, high)]), None)
   // the landing job ended: settling again
-  assertEq(xSettles([], [xExcl(1, high, true), xDev(3)]), Some(long(1)))
+  assertEq(xSettles([], [xExcl(1, high), xDev(3)]), Some(long(1)))
   // the load falls below the limit for the window: it starts, and only it
-  assertEq(marshal.schedule(xb, [], [xExcl(1, None, true), xDev(3)], 0), ids(1))
-  assertEq(xSettles([], [xExcl(1, None, true), xDev(3)]), None)
+  assertEq(marshal.schedule(xb, [], [xExcl(1), xDev(3)], 0), ids(1))
+  assertEq(xSettles([], [xExcl(1), xDev(3)]), None)
 
 @test("two exclusive jobs run one after the other")
 exclTwoInTurn()

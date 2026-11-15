@@ -186,14 +186,23 @@ exclE2eSettlingPhases()
   // the load is quiet, and the running job holds it: emptying
   assert(within(2000, () -> whyOf(home, x) == Some(Why.Emptying)))
   assert(m(home, "ls").out.contains("queued (emptying)"), m(home, "ls").out)
-  // the load rises (marshal's own job, say): queued for the load, reserving nothing, not settling
+  // the load rises (marshal's own job, say): still emptying, not waiting for the load, not settling
   fs.writeText(loadFile, "9").ok.get
-  assert(within(2000, () -> whyOf(home, x) == Some(Why.Load(9.0, 4.0, 0))))
-  assert(m(home, "ls").out.contains("queued (load 9 ≥ 4)"), m(home, "ls").out)
+  threads.sleep(millis(1500))
+  assertEq(whyOf(home, x), Some(Why.Emptying))
+  assert(m(home, "ls").out.contains("queued (emptying)"), m(home, "ls").out)
+  assert(!m(home, "ls").out.contains("load 9"), m(home, "ls").out)
   assertEq(settlingOf(home, x), None)
+  // an ordinary job submitted after it, which fits beside the running one, waits for it: marshal
+  // empties for the exclusive job rather than starving it
+  val d = submitted(home, "--units", "1", "--", "true")
+  assert(within(2000, () -> whyOf(home, d) == Some(Why.ForExclusive(x))))
+  assert(m(home, "ls").out.contains(s"queued (exclusive $x)"), m(home, "ls").out)
+  assert(!started(home, d))
   // the running job ends: settling now, though the whole wait so far was for that job
   assert(within(4000, () -> settlingOf(home, x).isDefined))
   assert(ended(home, a))
+  assert(!started(home, d))
   val first = settlingOf(home, x).get
   assertEq(first("state").asString, Some("settling"))
   assertEq(first("load_overdue").asBool, Some(false))
@@ -202,7 +211,7 @@ exclE2eSettlingPhases()
   assertEq(status("running").asVector.get.length, 0)
   assertEq(status("units").asInt, Some(0))
   assertEq(status("mem").asLong, Some(long(0)))
-  assert(m(home, "status").out.contains("0 running, 0 queued, 1 settling"), m(home, "status").out)
+  assert(m(home, "status").out.contains("0 running, 1 queued, 1 settling"), m(home, "status").out)
   assertEq(snapshotOf(home).usage.settling, 1)
   assertEq(snapshotOf(home).usage.running, 0)
   // the load wait's clock runs, and ls shows it in ELAPSED
@@ -220,6 +229,8 @@ exclE2eSettlingPhases()
   assert(finished("run_ms").asLong.get < 1400, finished.render)
   assert(finished("elapsed_ms").asLong.get < 1400, finished.render)
   assertEq(eventsOf(home, x), ["submitted", "started", "finished"])
+  assertEq(m(home, "wait", d.toString()).code, 0)
+  assert(at(home, x, "finished") < at(home, d, "started"))
   cleanUp(home)
 
 @test(

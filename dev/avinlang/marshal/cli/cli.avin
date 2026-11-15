@@ -117,9 +117,9 @@ Options of submit and run:
                     line with the load and the busiest processes outside marshal at its start and
                     every 30s; # in KIND. Not with --landing or --quick
   --quiet-load <n>  with --exclusive: also wait until the 1-minute load average has stayed below
-                    n for a whole minute (ls says why it waits: load 7.9 ≥ 4); auto is a quarter
-                    of the processors. Other jobs run while it waits for the load; once nothing
-                    of marshal's runs it is settling (ls: settling, ELAPSED the wait so far),
+                    n for a whole minute; auto is a quarter of the processors. Marshal empties
+                    for it as for any exclusive job (ls: emptying); once nothing of marshal's
+                    runs it is settling (ls: settling (load 7.9 ≥ 4), ELAPSED the wait so far),
                     holding the machine until the load falls. It never starts before: past
                     config.json's load_wait (15m) it is overdue (red in top), and still waits
   --dir <d>         the directory to run it in, relative to this one (default: this one)

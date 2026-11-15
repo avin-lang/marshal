@@ -45,16 +45,14 @@ module dev.avinlang.marshal
 // - An exclusive job owns the machine. While one runs, nothing else starts in any lane: every
 //   waiting job waits for it (`ForExclusive`). One that waits never stops a running job; it starts
 //   once nothing else runs or starts, nothing ahead of it waits, take-slot holds nothing, and the
-//   load has settled when it asked for that (`unsettled`). While its load has not settled it
-//   reserves nothing: every job but the later exclusive ones is decided as if it were not there, so
-//   the queue behind a benchmark runs while marshal's own jobs keep the load up. Once nothing of
+//   load has settled when it asked for that (`unsettled`). The first exclusive job in queue order
+//   reserves the machine from the moment it queues, its load settled or not: it holds back every job
+//   queued behind it, a later quick job and a later exclusive job among them, so no stream of jobs
+//   can keep the machine from emptying (it is `Emptying` while marshal's jobs run, whatever the load);
+//   the jobs ahead of it are decided as if it and the jobs behind it were not there, and nothing
+//   behind it backfills, since it can start only once the machine is empty. Once nothing of
 //   marshal's runs, starts or waits and the load still holds it, it is settling (`settles`): it
-//   claims the machine (`claimed`) and waits for the load alone, however long that takes. Once the
-//   load has settled, or once it has claimed the machine, the
-//   first exclusive job in queue order reserves the machine: it holds back every job queued behind
-//   it, a later quick job and a later exclusive job among them, so no stream of small jobs can keep
-//   the machine from emptying; the jobs ahead of it are decided as if it and the jobs behind it were
-//   not there. Landing jobs are not held back by a waiting
+//   waits for the load alone, however long that takes. Landing jobs are not held back by a waiting
 //   exclusive job: one queued, ahead of it or behind, starts first, so a benchmark never delays a
 //   release train; only a running exclusive job holds the landing lane.
 // - A polite budget (`Budget.fullUnits` above 0; polite.avin) is a part of the full one, admitted
@@ -90,8 +88,7 @@ val Unbounded: Fairness = Fairness(long.MaxValue, 0)
 // `quick` puts it in the quick lane. `drainMs` is how long a drain counts it as running: its learned
 // duration, or its deadline when nothing is learned of its kind; 0 counts it by `expectedMs`.
 // `exclusive` makes it own the machine; `unsettled`, on an exclusive job, is why it still waits for
-// the load to settle (`loadWhy`), None once it need not. `claimed`, on such a job, says it has been
-// settling (`settles`): it has had the machine to itself, and keeps it, its load settled or not.
+// the load to settle (`loadWhy`), None once it need not.
 // `alone` says a job bigger than the polite budget runs alone, as an exclusive job does.
 data Waiting(
     id: long,
@@ -104,13 +101,8 @@ data Waiting(
     drainMs: long = 0,
     exclusive: bool = false,
     unsettled: Option[Why] = None,
-    claimed: bool = false,
     alone: bool = false
 )
-
-// Whether the waiting job `w` reserves the machine for itself: an exclusive job whose load has
-// settled, that asked for none, or that has claimed the machine.
-private reserving(w: Waiting) -> bool = w.unsettled.isEmpty || w.claimed
 
 // Whether `w` owns the machine while it runs: an exclusive job, or one that runs alone.
 private owns(w: Waiting) -> bool = w.exclusive || w.alone
@@ -188,8 +180,8 @@ drainStart(
   decide(budget, running, queue, now, outside, fair).find(d -> d.at.isDefined).map(d -> (d.id, d.at.get))
 
 // The exclusive job that is settling, if one is: its turn has come and nothing of marshal's runs,
-// starts or waits, but the load outside marshal has not settled, so it waits for that alone and
-// holds the machine meanwhile (its `claimed`, from then until it starts).
+// starts or waits, but the load outside marshal has not settled, so it waits for that alone, holding
+// the machine as it has since it queued.
 settles(
     budget: Budget,
     running: Vector[Started],
@@ -261,14 +253,12 @@ ticketFor(
       Some((first.filter(a -> a <= w.arrived).map(a -> a - 1).getOrElse(w.arrived), w.units))
     None -> waitedPast(weighed, fair).orElse(weighed.find(w -> !w.landing && !w.quick)).map(w -> (w.arrived, w.units))
 
-// What the scheduler weighs beside `queue`'s first exclusive job (not a landing one). When that job
-// reserves the machine (its load has settled, or it asked for none): the queue up to and including
-// it, and every landing job. When it still waits for the load: every job but the exclusive ones, so
-// the jobs behind it are decided as if it were not there. All of `queue` when it has none.
+// What the scheduler weighs beside `queue`'s first exclusive job (not a landing one), which reserves
+// the machine whether or not its load has settled: the queue up to and including it, and every
+// landing job. All of `queue` when it has none.
 upToExclusive(queue: Vector[Waiting]) -> Vector[Waiting]
   val at = queue.indexWhere(w -> owns(w) && !w.landing)
   if at < 0 then return queue
-  if !reserving(queue(at)) then return queue.filter(w -> !owns(w) || w.landing)
   queue.take(at + 1) ++ queue.drop(at + 1).filter(w -> w.landing)
 
 // The first development job in queue order that has waited past the bound, if one has.
@@ -304,12 +294,10 @@ private decide(
   val polite = isPolite(budget)
   // The first exclusive job in queue order, or the first to run alone, if one waits; the jobs decided
   // as usual (`weighed`) are those `upToExclusive` names, and take-slot's waiters that arrived before
-  // it while it reserves the machine (all of them while it still waits for the load).
+  // it.
   val exclusive = queue.find(w -> owns(w) && !w.landing)
   val weighed = upToExclusive(queue).filter(w -> exclusive.forall(x -> w.id != x.id))
-  val tickets = exclusive.filter(x -> reserving(x)).map(
-    x -> outside.waiting.filter(t -> t.arrived < x.arrived)
-  ).getOrElse(outside.waiting)
+  val tickets = exclusive.map(x -> outside.waiting.filter(t -> t.arrived < x.arrived)).getOrElse(outside.waiting)
   // When each running or starting job is expected to end, with the units and memory it frees.
   val ends = Buffer[(long, int, long)]()
   // the same, each job counted as a drain counts it (`drainMs`)
@@ -426,9 +414,9 @@ private decide(
       else
         out += Decision(w.id, Some(waitsFor(budget, units, memory, theirs, e, fits, head)))
   for x in exclusive.toList
-    // it waits behind a job ahead of it that waits, then for the machine to empty; one whose load
-    // has not settled reserves nothing until the machine is empty and nothing else waits, when it
-    // settles: it claims the machine and waits for the load alone
+    // it waits behind a job ahead of it that waits, then for the machine to empty (holding back what
+    // is behind it all along, its load settled or not); one whose load has not settled once the
+    // machine is empty and nothing else waits settles: it waits for the load alone
     val ahead = out.find(d -> d.why.isDefined && weighed.exists(w -> w.id == d.id && !w.landing))
     // take-slot's waiters that arrived before it go before it, as take-slot admits them
     val busy = running.nonEmpty || out.exists(
@@ -437,7 +425,7 @@ private decide(
     val free = ahead.isEmpty && !busy
     if x.unsettled.isDefined && free then out += Decision(x.id, x.unsettled, settling = true)
     else
-      val why = if x.unsettled.isDefined && !x.claimed then x.unsettled elif ahead.isDefined then ahead.map(
+      val why = if ahead.isDefined then ahead.map(
         d -> Behind(d.id)
       ) elif busy then Some(if x.exclusive then Emptying else RunsAlone) else None
       out += Decision(x.id, why)
