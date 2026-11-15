@@ -466,7 +466,7 @@ ends: nothing polls.
   start.
 - **Memory reservations.** A job without `--mem` reserves the learned peak of what it runs: the
   most memory any of the last 5 measured runs of the same command held, whatever their outcome,
-  plus a tenth. The command is its signature: the program, its subcommand and its target, each as
+  rounded up to a mebibyte. The command is its signature: the program, its subcommand and its target, each as
   the last part of a path (`sysl test compiler`, `sysl test .`, `gradlew test`), or a shell and its
   script's path as written (`zsh /tmp/rel/gate2.zsh`, a leading `./` left out), with wrappers such
   as `env`, `nice` and `caffeinate` and `NAME=value` settings passed over, and a `zsh -c` as the

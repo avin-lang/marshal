@@ -62,27 +62,27 @@ learnedShown()
   val none = submitted(home, "--kind", "big", "--mem", "0", "--", "sleep", "30")
   val given = submitted(home, "--kind", "big", "--mem", "300M", "--", "sleep", "30")
   val b = submitted(home, "--kind", "big", "--", "sleep", "30")
-  // 600M, the most of the two, and a tenth more
-  assert(lsRow(home, a).contains(" ~660M "), lsRow(home, a))
-  assert(lsRow(home, b).contains(" ~660M "), lsRow(home, b))
+  // 600M, the most of the two
+  assert(lsRow(home, a).contains(" ~600M "), lsRow(home, a))
+  assert(lsRow(home, b).contains(" ~600M "), lsRow(home, b))
   assert(lsRow(home, given).contains(" 300M "), lsRow(home, given))
   assert(!lsRow(home, none).contains("~"), lsRow(home, none))
   val ja = statusJob(home, a)
   assertEq(
     (ja("mem").asLong, ja("resv").asLong, ja("resv_learned").asBool),
-    (Some(long(0)), Some(660 * Mi), Some(true))
+    (Some(long(0)), Some(600 * Mi), Some(true))
   )
   val jn = statusJob(home, none)
   assertEq((jn("resv").asLong, jn("resv_learned").asBool), (Some(long(0)), Some(false)))
   val jg = statusJob(home, given)
   assertEq((jg("resv").asLong, jg("resv_learned").asBool), (Some(300 * Mi), Some(false)))
-  // the opted-out and the 300M jobs run beside the first big one (960M of 1G); the second big one
+  // the opted-out and the 300M jobs run beside the first big one (900M of 1G); the second big one
   // waits for memory
   val status = json.parse(m(home, "status", "--json").out).ok.get
   val running = status("running").asVector.get.map(j -> j("id").asLong.get)
   assert(running.contains(a) && running.contains(none) && !running.contains(b), s"$running")
-  assertEq(status("mem").asLong, Some(660 * Mi + 300 * Mi))
-  assert(status("mem_held").asLong.get >= 960 * Mi, s"${status("mem_held")}")
+  assertEq(status("mem").asLong, Some(600 * Mi + 300 * Mi))
+  assert(status("mem_held").asLong.get >= 900 * Mi, s"${status("mem_held")}")
   // a job of a kind nothing was learned of reserves nothing, as before
   val fresh = submitted(home, "--kind", "fresh", "--", "sleep", "30")
   assertEq(statusJob(home, fresh)("resv").asLong, Some(long(0)))
@@ -113,7 +113,7 @@ learnedAcrossRestart()
   restarted(home)
   for id in [a, b]
     val j = statusJob(home, id)
-    assertEq((j("resv").asLong, j("resv_learned").asBool), (Some(660 * Mi), Some(true)))
+    assertEq((j("resv").asLong, j("resv_learned").asBool), (Some(600 * Mi), Some(true)))
   assertEq(statusJob(home, b)("state").asString, Some("queued"))
   assertEq(m(home, "stop", "--force").code, 0)
   cleanUp(home)
@@ -153,27 +153,27 @@ learnedPerDir()
   val resv = (id: long) ->
     val j = statusJob(home, id)
     (j("resv").asLong.get, j("resv_learned").asBool.get, j("resv_from").asString.get)
-  // 600M and 100M, each with a tenth more, rounded up to a mebibyte
-  assertEq(resv(big), (660 * Mi, true, "cmd+dir"))
-  assertEq(resv(small), (110 * Mi, true, "cmd+dir"))
-  // one run in the directory is enough: 50M and a tenth
-  assertEq(resv(once), (55 * Mi, true, "cmd+dir"))
+  // 600M and 100M, rounded up to a mebibyte
+  assertEq(resv(big), (600 * Mi, true, "cmd+dir"))
+  assertEq(resv(small), (100 * Mi, true, "cmd+dir"))
+  // one run in the directory is enough: 50M
+  assertEq(resv(once), (50 * Mi, true, "cmd+dir"))
   // none there: the command's most anywhere, 600M
-  assertEq(resv(fresh), (660 * Mi, true, "cmd"))
+  assertEq(resv(fresh), (600 * Mi, true, "cmd"))
   assertEq(resv(given), (300 * Mi, false, "given"))
   assertEq(resv(none), (long(0), false, "given"))
   // another kind in a directory that taught `test` learns nothing from it
   assertEq(resv(other), (long(0), false, "none"))
   // a shell's -c is the command it runs; another command of the same kind learns nothing from it
   val viaShell = submitted(home, "--kind", "test", "--dir", home + "/big", "--", "sh", "-c", "sleep 30")
-  assertEq(resv(viaShell), (660 * Mi, true, "cmd+dir"))
+  assertEq(resv(viaShell), (600 * Mi, true, "cmd+dir"))
   val script = submitted(home, "--kind", "test", "--dir", home + "/big", "--", "true", "30")
   assertEq(resv(script), (long(0), false, "none"))
-  assert(lsRow(home, small).contains(" ~110M "), lsRow(home, small))
+  assert(lsRow(home, small).contains(" ~100M "), lsRow(home, small))
   // the source survives a restart
   restarted(home)
-  assertEq(resv(small), (110 * Mi, true, "cmd+dir"))
-  assertEq(resv(fresh), (660 * Mi, true, "cmd"))
+  assertEq(resv(small), (100 * Mi, true, "cmd+dir"))
+  assertEq(resv(fresh), (600 * Mi, true, "cmd"))
   assertEq(m(home, "stop", "--force").code, 0)
   cleanUp(home)
 
@@ -187,10 +187,10 @@ learnedPerDirLive()
   val j = statusJob(home, submitted(home, "--kind", "test", "--dir", home + "/fresh", "--", "sleep", "30"))
   assertEq(j("resv_from").asString, Some("cmd+dir"))
   assert(j("resv").asLong.get < 600 * Mi, s"${j("resv")}")
-  // the command anywhere: of its last five peaks (550M, 90M, 50M and the two runs), 550M and a tenth;
+  // the command anywhere: of its last five peaks (550M, 90M, 50M and the two runs), 550M;
   // the 600M before them is forgotten
   val k = statusJob(home, submitted(home, "--kind", "test", "--dir", home + "/new", "--", "sleep", "30"))
-  assertEq((k("resv").asLong, k("resv_from").asString), (Some(605 * Mi), Some("cmd")))
+  assertEq((k("resv").asLong, k("resv_from").asString), (Some(550 * Mi), Some("cmd")))
   // stats stays per kind: the runs of two directories make one `test` row
   assertEq(m(home, "run", "--kind", "test", "--dir", home + "/small", "--mem", "0", "--", "true").code, 0)
   val rows = m(home, "stats").out.lines.filter(l -> l.startsWith("test ")).toVector
@@ -210,7 +210,7 @@ learnedLive()
   val c = submitted(home, "--kind", "live", "--", "sleep", "30")
   val j = statusJob(home, c)
   assertEq(j("resv_learned").asBool, Some(true))
-  assert(j("resv").asLong.get > peaks.max, s"${j("resv")} $peaks")
+  assert(j("resv").asLong.get >= peaks.max, s"${j("resv")} $peaks")
   assert(lsRow(home, c).contains("~"), lsRow(home, c))
   assertEq(m(home, "stop", "--force").code, 0)
   cleanUp(home)
@@ -232,18 +232,18 @@ restartReservesAgain()
   val running = submitted(home, "--kind", "big", "--", "sleep", "30")
   val queued = submitted(home, "--kind", "big", "--", "sleep", "30")
   val given = submitted(home, "--kind", "big", "--mem", "500M", "--", "sleep", "30")
-  assertEq(statusJob(home, queued)("resv").asLong, Some(660 * Mi))
+  assertEq(statusJob(home, queued)("resv").asLong, Some(600 * Mi))
   assertEq(statusJob(home, queued)("state").asString, Some("queued"))
   // what is learned changes under the daemon; the new image reads it when it starts
   fs.writeText(home + "/memory.json", bigMemory([100 * Mi])).ok.get
   restarted(home)
   val r = statusJob(home, running)
-  assertEq((r("resv").asLong, r("state").asString), (Some(660 * Mi), Some("running")))
+  assertEq((r("resv").asLong, r("state").asString), (Some(600 * Mi), Some("running")))
   val q = statusJob(home, queued)
-  assertEq((q("resv").asLong, q("resv_from").asString), (Some(110 * Mi), Some("cmd")))
+  assertEq((q("resv").asLong, q("resv_from").asString), (Some(100 * Mi), Some("cmd")))
   val g = statusJob(home, given)
   assertEq((g("resv").asLong, g("resv_from").asString), (Some(500 * Mi), Some("given")))
-  // 660M and 110M fit in 1G: the queued job starts beside the running one
+  // 600M and 100M fit in 1G: the queued job starts beside the running one
   assert(within(5000, () -> started(home, queued)), s"${eventsOf(home, queued)}")
   assertEq(m(home, "stop", "--force").code, 0)
   cleanUp(home)
@@ -255,7 +255,7 @@ peerReservesAgain()
   fs.writeText(home + "/memory.json", bigMemory([600 * Mi, 10 * Mi, 10 * Mi, 10 * Mi, 10 * Mi])).ok.get
   val blocker = submitted(home, "--kind", "block", "--mem", "800M", "--", "sleep", "20")
   val waiting = submitted(home, "--kind", "big", "--", "sleep", "0.1")
-  assertEq(statusJob(home, waiting)("resv").asLong, Some(660 * Mi))
+  assertEq(statusJob(home, waiting)("resv").asLong, Some(600 * Mi))
   assertEq(statusJob(home, waiting)("state").asString, Some("queued"))
   // a peer of its command runs and is measured: in the quick lane, so it starts ahead of the queued
   // job, and given 100M, so it fits beside the blocker
@@ -299,7 +299,7 @@ learnedVersion3Scripts()
   fs.writeText(home + "/memory.json", v3).ok.get
   // the file's `sleep`, which the event log does not have, is kept
   val j = statusJob(home, submitted(home, "--kind", "big", "--", "sleep", "30"))
-  assertEq((j("resv").asLong, j("resv_from").asString), (Some(660 * Mi), Some("cmd")))
+  assertEq((j("resv").asLong, j("resv_from").asString), (Some(600 * Mi), Some("cmd")))
   // written again at once, as version 4: the script's old key is gone, its run is under its path
   val text = fs.readText(home + "/memory.json").ok.get
   assert(text.contains("\"version\":4") && text.contains("big\\nsleep"), text)
@@ -322,7 +322,7 @@ learnedFallsBack()
     val dir = home + s"/d$i"
     fs.createDir(dir).ok.get
     val j = statusJob(home, submitted(home, "--kind", "big", "--dir", dir, "--", "sleep", "30"))
-    assertEq((j("resv").asLong, j("resv_from").asString), (Some(660 * Mi), Some("cmd")))
+    assertEq((j("resv").asLong, j("resv_from").asString), (Some(600 * Mi), Some("cmd")))
     // rewritten whole from the log
     assert(fs.readText(home + "/memory.json").ok.get.contains("big\\nsleep"), bad)
     stopDaemon(home)

@@ -172,8 +172,8 @@ noPoisoning()
   val peaks = marshal.recover(poisonedLog()).peaks
   val build = ["sysl", "build", ".", "-o", "sysl"]
   val (r, from) = reserveIn(peaks, build, "/w/sysl-fresh")
-  // 6G and a tenth, from the same command run in other worktrees
-  assertEq((r, from), (Reservation(6759 * MiB, true), "cmd"))
+  // 6G, from the same command run in other worktrees
+  assertEq((r, from), (Reservation(6144 * MiB, true), "cmd"))
   // five of them fit in 56G at once, where each reserved 37G before
   val b = Budget(12, 56 * G)
   val waiting = (1 .. 5).map(i -> Waiting(long(i), 1, r.bytes, false, hour, long(i * 10))).toVector
@@ -181,7 +181,7 @@ noPoisoning()
   // a gate run again, from another directory, still reserves its own 33G, so two of them never
   // start together
   val (g, gFrom) = reserveIn(peaks, ["zsh", "/scratch/s3/gate.zsh"], "/scratch/new")
-  assertEq((g.bytes > 33 * G, gFrom), (true, "cmd"))
+  assertEq((g.bytes == 33 * G, gFrom), (true, "cmd"))
   val gates = [Waiting(1, 1, g.bytes, false, hour, 10), Waiting(2, 1, g.bytes, false, hour, 20)]
   assertEq(marshal.schedule(b, [], gates, 0), [long(1)])
   // a command never run, whatever its kind ran before, reserves nothing
@@ -193,10 +193,10 @@ fallbackOrder()
   val lines = poisonedLog() ++ [peakLine(40, "/w/big", "[\"sysl\",\"build\",\".\"]", 4 * G)]
   val peaks = marshal.recover(lines).peaks
   val build: Vector[string] = ["sysl", "build", "."]
-  // its own directory's 4G, a tenth more
-  assertEq(reserveIn(peaks, build, "/w/big"), (Reservation(4506 * MiB, true), "cmd+dir"))
-  // elsewhere, the most of the command's last five anywhere, 6G, a tenth more
-  assertEq(reserveIn(peaks, build, "/w/other"), (Reservation(6759 * MiB, true), "cmd"))
+  // its own directory's 4G
+  assertEq(reserveIn(peaks, build, "/w/big"), (Reservation(4096 * MiB, true), "cmd+dir"))
+  // elsewhere, the most of the command's last five anywhere, 6G
+  assertEq(reserveIn(peaks, build, "/w/other"), (Reservation(6144 * MiB, true), "cmd"))
   // a different target is a different command
   assertEq(reserveIn(peaks, ["sysl", "build", "compiler"], "/w/big"), (Reservation(0, false), "none"))
 
@@ -209,23 +209,23 @@ private following(runs: Vector[long]) -> Vector[long]
     out += marshal.learnedPeak(memDefaults, seen.toVector).get * 10 / (1024 * MiB)
   out.toVector
 
-@test("a step up raises the very next reservation to the new peak and a tenth")
+@test("a step up raises the very next reservation to the new peak")
 stepUp()
-  assertEq(following([10, 10, 10, 20]), [long(110), long(110), long(110), long(220)])
+  assertEq(following([10, 10, 10, 20]), [long(100), long(100), long(100), long(200)])
 
 @test("a step down reaches the new level in five runs")
 stepDown()
   val after = following([20, 20, 20, 20, 20, 10, 10, 10, 10, 10])
-  assertEq(after.take(5).toSet, {long(220)})
+  assertEq(after.take(5).toSet, {long(200)})
   // still high while any old peak is among the last five; the new level once none is
-  assertEq(after.drop(5).take(4).toSet, {long(220)})
-  assertEq(after.last, long(110))
+  assertEq(after.drop(5).take(4).toSet, {long(200)})
+  assertEq(after.last, long(100))
 
 @test("one spike raises the next reservation and is forgotten five runs later")
 spike()
   assertEq(
     following([10, 10, 30, 10, 10, 10, 10, 10]),
-    [long(110), long(110), long(330), long(330), long(330), long(330), long(330), long(110)]
+    [long(100), long(100), long(300), long(300), long(300), long(300), long(300), long(100)]
   )
 
 @test("noisy peaks keep a steady reservation that covers their range")
@@ -242,7 +242,7 @@ noisy()
   for i in 1 ..< after.length
     if after(i) != after(i - 1) then moves += 1
   assert(moves <= 2, s"$after")
-  assert(after.forall(a -> a == 99 || a == 110), s"$after")
+  assert(after.forall(a -> a == 90 || a == 100), s"$after")
 
 @test("a job measured above its reservation while it still runs holds what it measured, and delays the next start")
 aboveWhileRunning()
@@ -254,7 +254,7 @@ aboveWhileRunning()
   val less = Started(1, 1, marshal.holding(6 * G, 30 * G), false, 0, hour)
   assertEq(marshal.schedule(b, [less], [Waiting(2, 1, 20 * G, false, hour, 20)], 0), [long(2)])
   // and once it ends, the next run of its command reserves that peak
-  assertEq(marshal.learnedPeak(memDefaults, [6 * G, 40 * G]), Some(44 * G))
+  assertEq(marshal.learnedPeak(memDefaults, [6 * G, 40 * G]), Some(40 * G))
 
 @test("--mem overrides learned memory, 0 among them")
 memGiven()

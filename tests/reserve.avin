@@ -11,7 +11,20 @@ import dev.avinlang.marshal.{
 }
 
 val M: long = 1024 * 1024
-val learning0: MemoryLearning = marshal.defaultMemoryLearning
+// A learning with a 10% margin, so the margin's arithmetic stays covered; the default has none.
+val learning0: MemoryLearning = MemoryLearning(5, 1, 10)
+
+@test("the default reserves the learned peak itself, rounded up to a mebibyte, with no margin")
+defaultNoMargin()
+  val d = marshal.defaultMemoryLearning
+  assertEq(d.marginPercent, 0)
+  assertEq(marshal.learnedPeak(d, [20 * G]), Some(20 * G))
+  assertEq(marshal.learnedPeak(d, [10 * G, 20 * G, 15 * G]), Some(20 * G))
+  assertEq(marshal.learnedPeak(d, [1000]), Some(M))
+  assertEq(marshal.learnedPeak(d, [20 * G + 1]), Some(20 * G + M))
+  assertEq(marshal.learnedPeak(d, []), None)
+  assertEq(marshal.reservationFor(d, 0, false, [20 * G], 56 * G), Reservation(20 * G, true))
+  assertEq(marshal.reservationFor(d, 0, false, [80 * G], 56 * G), Reservation(56 * G, true))
 
 @test("no history learns nothing and reserves 0; one measured run is enough")
 littleHistory()

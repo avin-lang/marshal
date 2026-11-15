@@ -878,16 +878,16 @@ four rows.
 ## Learned memory reservations and admission by measured memory (branch `mem-admission`)
 
 **Settled on the user's delegation 2026-11-08**; each says why and what else was weighed. Review
-with the user: the maximum of the last 10 peaks plus 10% rather than a percentile, and two measured
+with the user: the maximum of the last 5 peaks rather than a percentile, and two measured
 runs as the least history. The memory budget did nothing in practice: admission counted only `--mem`, nobody
 passes it, and two builds peaking at 25–35G each were admitted together on a 64G machine.
 
-- **A job without `--mem` reserves its kind's learned peak: the most of its history key's last 10
-  measured peaks, plus 10%, rounded up to a mebibyte.** The history key is the deadline's (kind,
+- **A job without `--mem` reserves its kind's learned peak: the most of its history key's last 5
+  measured peaks, rounded up to a mebibyte.** The history key is the deadline's (kind,
   `+landing` for landing jobs). Why the maximum: memory is not like time, running short costs an
   out-of-memory kill or swapping for every job on the machine, while reserving a little too much
   only delays a start; builds of one kind peak within a narrow band, so the maximum is close to the
-  typical case anyway. The 10% covers a peak between two once-a-second measurements. Alternatives:
+  typical case anyway. Alternatives:
   the median or p90 (under-reserves on the run that matters), p90 plus a larger margin (needs more
   history to mean anything), an exponentially weighted mean (slow to follow a kind that grew).
 - **Every job that ran and was measured is history, whatever its outcome.** A failed or killed
@@ -934,7 +934,7 @@ plus 27.8G came to more than the 60.1G budget while 20.9G was actually resident.
 
 - **The learned peak is keyed by kind (with `+landing`) and the job's working directory, and falls
   back to the kind's peaks, every directory's, while the directory has fewer than two.** The
-  estimate is unchanged: the most of the last 10 peaks plus 10%, rounded up to a mebibyte; `--mem`
+  estimate is unchanged: the most of the last 5 peaks, rounded up to a mebibyte; `--mem`
   overrides both. Why: the directory is what tells two suites of one kind apart without asking the
   user for a finer kind, and the kind's history is still the best guess for a directory not yet
   seen. Alternatives: the command line as part of the key (`sysl test .` and `sysl test . --fast`
@@ -1767,9 +1767,9 @@ max(reservation, measured) are unchanged.
   on the first run of new heavy work, and keep recurring script names stable. One run is enough to
   learn from (`minRuns` 1, was 2): with a specific key one run says what the work needs, and waiting
   for a second would leave the second run unreserved too.
-- **The estimate is the most of the last 5 peaks plus 10% (window 10 before).** This is the user's
-  second direction: it must follow the work up and down. Up at once: the newest peak is always in
-  the window, so the next reservation is at least that peak plus the margin. When a peak is learned,
+- **The estimate is the most of the last 5 peaks, rounded up to a mebibyte (window 10 before).**
+  This is the user's second direction: it must follow the work up and down. Up at once: the newest
+  peak is always in the window, so the next reservation is at least that peak. When a peak is learned,
   every job still queued or waiting reserves again, so queued jobs of that command take the higher
   figure before they start (the reservation was fixed at submit before). Down steadily: once the
   work needs less, the old peaks leave the window one run at a time and the reservation reaches the
@@ -1782,6 +1782,11 @@ max(reservation, measured) are unchanged.
   forgets a spike sooner but follows a real step down more slowly, and is harder to explain; an
   exponentially weighted mean or percentile under-reserves the run that matters, and memory, unlike
   time, costs every job on the machine when it runs short.
+- **There is no margin on a learned reservation: the peak measured once a second is the
+  reservation.** Settled on the user's request 2026-11-15: no margin; the peak measured once a
+  second is the reservation, since reserving more than work uses blocked the queue. This replaces
+  the 10% the entries above once named; the estimate stays rounded up to a mebibyte, and a
+  `MemoryLearning` with a `marginPercent` above 0 still adds it.
 - **The learned peaks are kept in `<home>/memory.json`, written after every job that ends.** This is
   the user's third direction. Format: `{"version": 1, "peaks": {"<key>": [bytes...]}}`, the last 20
   peaks of each key, oldest first (more than the window, so a later wider window has history). The

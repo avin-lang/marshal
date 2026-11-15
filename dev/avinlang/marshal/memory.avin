@@ -50,7 +50,7 @@ impl Resident
 // and moves only when that top leaves the window.
 data MemoryLearning(window: int, minRuns: int, marginPercent: long)
 
-val defaultMemoryLearning: MemoryLearning = MemoryLearning(5, 1, 10)
+val defaultMemoryLearning: MemoryLearning = MemoryLearning(5, 1, 0)
 
 private val Mebi: long = 1024 * 1024
 
