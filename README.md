@@ -465,7 +465,7 @@ ends: nothing polls.
   jobs go on beside it. Time queued never counts against a job's deadline, which runs from its
   start.
 - **Memory reservations.** A job without `--mem` reserves the learned peak of what it runs: the
-  most memory any of the last 5 measured runs of the same command held, whatever their outcome,
+  most memory any of the last 3 measured runs of the same command held, whatever their outcome,
   rounded up to a mebibyte. The command is its signature: the program, its subcommand and its target, each as
   the last part of a path (`sysl test compiler`, `sysl test .`, `gradlew test`), or a shell and its
   script's path as written (`zsh /tmp/rel/gate2.zsh`, a leading `./` left out), with wrappers such
@@ -478,9 +478,9 @@ ends: nothing polls.
   `--label` is not part of it: the same script under another label is the same work. Runs of the command in the job's own directory (`--dir`) come first once there is
   one; then its runs anywhere. A kind (`build`, `test`) is never learned from on its own: a command
   never run before reserves 0, and a landing job learns apart from development ones. Because only
-  the last 5 runs count, a reservation follows the work: a run that peaks higher raises the next
+  the last 3 runs count, a reservation follows the work: a run that peaks higher raises the next
   reservation at once (and the reservations of jobs still queued), and once a command needs less,
-  its reservation comes down within 5 runs. `status --json` says where a reservation came from in
+  its reservation comes down within 3 runs. `status --json` says where a reservation came from in
   `resv_from`: `cmd+dir`, `cmd`, `given` or `none`. A learned reservation above the whole budget is
   held to the budget, so the job starts once nothing else holds memory and runs alone. `--mem 0`
   opts out. A running job counts as holding its reservation or what it was last measured holding,

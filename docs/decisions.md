@@ -1767,16 +1767,18 @@ max(reservation, measured) are unchanged.
   on the first run of new heavy work, and keep recurring script names stable. One run is enough to
   learn from (`minRuns` 1, was 2): with a specific key one run says what the work needs, and waiting
   for a second would leave the second run unreserved too.
-- **The estimate is the most of the last 5 peaks, rounded up to a mebibyte (window 10 before).**
+- **The estimate is the most of the last 3 peaks, rounded up to a mebibyte (window 10 before).**
+  Settled on the user's choice 2026-11-15: 3 runs, so one heavy run stops holding the queue sooner;
+  the reservation still covers the heaviest recent run.
   This is the user's second direction: it must follow the work up and down. Up at once: the newest
   peak is always in the window, so the next reservation is at least that peak. When a peak is learned,
   every job still queued or waiting reserves again, so queued jobs of that command take the higher
   figure before they start (the reservation was fixed at submit before). Down steadily: once the
   work needs less, the old peaks leave the window one run at a time and the reservation reaches the
-  new level on the 5th run; one spike is forgotten the same way. No thrashing: work that varies
-  run to run reserves the top of its last 5 runs, which covers its range and changes only when that
-  top leaves the window. In a test of fifteen peaks wandering between 8G and 10G, the reservation
-  changes once. A job running above its reservation is still counted at what it measures.
+  new level on the 3rd run; one spike is forgotten the same way. Work that varies
+  run to run reserves the top of its last 3 runs, which covers its range and moves only between the
+  levels the top peaks take. In a test of fifteen peaks wandering between 8G and 10G, the reservation
+  stays at 9G or 10G. A job running above its reservation is still counted at what it measures.
   Alternatives: a decaying maximum (est = max(peak, est × d)) moves on every run while the peaks
   are noisy, which is the thrashing the user ruled out; the second-highest of a longer window
   forgets a spike sooner but follows a real step down more slowly, and is harder to explain; an

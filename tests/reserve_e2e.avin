@@ -158,8 +158,8 @@ learnedPerDir()
   assertEq(resv(small), (100 * Mi, true, "cmd+dir"))
   // one run in the directory is enough: 50M
   assertEq(resv(once), (50 * Mi, true, "cmd+dir"))
-  // none there: the command's most anywhere, 600M
-  assertEq(resv(fresh), (600 * Mi, true, "cmd"))
+  // none there: the most of the command's last three anywhere (550M, 90M, 50M), 550M
+  assertEq(resv(fresh), (550 * Mi, true, "cmd"))
   assertEq(resv(given), (300 * Mi, false, "given"))
   assertEq(resv(none), (long(0), false, "given"))
   // another kind in a directory that taught `test` learns nothing from it
@@ -173,12 +173,12 @@ learnedPerDir()
   // the source survives a restart
   restarted(home)
   assertEq(resv(small), (100 * Mi, true, "cmd+dir"))
-  assertEq(resv(fresh), (600 * Mi, true, "cmd"))
+  assertEq(resv(fresh), (550 * Mi, true, "cmd"))
   assertEq(m(home, "stop", "--force").code, 0)
   cleanUp(home)
 
 @test(
-  "a job the daemon ran teaches its own directory, and its command everywhere, the last five runs counting"
+  "a job the daemon ran teaches its own directory, and its command everywhere, the last three runs counting"
 )
 learnedPerDirLive()
   val home = dirSeededHome()
@@ -187,10 +187,10 @@ learnedPerDirLive()
   val j = statusJob(home, submitted(home, "--kind", "test", "--dir", home + "/fresh", "--", "sleep", "30"))
   assertEq(j("resv_from").asString, Some("cmd+dir"))
   assert(j("resv").asLong.get < 600 * Mi, s"${j("resv")}")
-  // the command anywhere: of its last five peaks (550M, 90M, 50M and the two runs), 550M;
-  // the 600M before them is forgotten
+  // the command anywhere: of its last three peaks (50M and the two runs), 50M;
+  // the 600M, 550M and 90M before them are forgotten
   val k = statusJob(home, submitted(home, "--kind", "test", "--dir", home + "/new", "--", "sleep", "30"))
-  assertEq((k("resv").asLong, k("resv_from").asString), (Some(550 * Mi), Some("cmd")))
+  assertEq((k("resv").asLong, k("resv_from").asString), (Some(50 * Mi), Some("cmd")))
   // stats stays per kind: the runs of two directories make one `test` row
   assertEq(m(home, "run", "--kind", "test", "--dir", home + "/small", "--mem", "0", "--", "true").code, 0)
   val rows = m(home, "stats").out.lines.filter(l -> l.startsWith("test ")).toVector
@@ -251,8 +251,8 @@ restartReservesAgain()
 @test("a queued job reserves again when a run of its command ends, so a lower peak lets it start")
 peerReservesAgain()
   val home = newHome("{\"memory\": \"1G\"}")
-  // the oldest of the last five is 600M; one more run pushes it out of the window
-  fs.writeText(home + "/memory.json", bigMemory([600 * Mi, 10 * Mi, 10 * Mi, 10 * Mi, 10 * Mi])).ok.get
+  // the oldest of the last three is 600M; one more run pushes it out of the window
+  fs.writeText(home + "/memory.json", bigMemory([600 * Mi, 10 * Mi, 10 * Mi])).ok.get
   val blocker = submitted(home, "--kind", "block", "--mem", "800M", "--", "sleep", "20")
   val waiting = submitted(home, "--kind", "big", "--", "sleep", "0.1")
   assertEq(statusJob(home, waiting)("resv").asLong, Some(600 * Mi))

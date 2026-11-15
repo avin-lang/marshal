@@ -213,35 +213,43 @@ private following(runs: Vector[long]) -> Vector[long]
 stepUp()
   assertEq(following([10, 10, 10, 20]), [long(100), long(100), long(100), long(200)])
 
-@test("a step down reaches the new level in five runs")
+@test("a step down reaches the new level in three runs")
 stepDown()
   val after = following([20, 20, 20, 20, 20, 10, 10, 10, 10, 10])
   assertEq(after.take(5).toSet, {long(200)})
-  // still high while any old peak is among the last five; the new level once none is
-  assertEq(after.drop(5).take(4).toSet, {long(200)})
-  assertEq(after.last, long(100))
+  // still high while any old peak is among the last three; the new level once none is
+  assertEq(after.drop(5).take(2).toSet, {long(200)})
+  assertEq(after.drop(7).toSet, {long(100)})
 
-@test("one spike raises the next reservation and is forgotten five runs later")
+@test("one spike raises the next reservation and is forgotten three runs later")
 spike()
+  // held after the two runs that follow it, gone after the third
   assertEq(
     following([10, 10, 30, 10, 10, 10, 10, 10]),
-    [long(100), long(100), long(300), long(300), long(300), long(300), long(300), long(100)]
+    [long(100), long(100), long(300), long(300), long(300), long(100), long(100), long(100)]
   )
+
+@test("the default learning window is the last three runs")
+defaultWindow()
+  assertEq(marshal.defaultMemoryLearning.window, 3)
+  // the fourth-last peak no longer counts, the third-last still does
+  assertEq(marshal.learnedPeak(memDefaults, [9 * G, G, 2 * G, 3 * G]), Some(3 * G))
+  assertEq(marshal.learnedPeak(memDefaults, [G, 9 * G, 2 * G, 3 * G]), Some(9 * G))
 
 @test("noisy peaks keep a steady reservation that covers their range")
 noisy()
   // peaks that wander between 8G and 10G, the top one now and then
   val runs: Vector[long] = [9, 10, 8, 9, 8, 9, 10, 8, 9, 8, 10, 9, 8, 9, 9]
   val after = following(runs)
-  // every reservation covers every peak of the last five runs
+  // every reservation covers every peak of the last three runs
   for i in 0 ..< runs.length
-    val recent = runs.take(i + 1).takeRight(5)
+    val recent = runs.take(i + 1).takeRight(3)
     assert(after(i) >= recent.max * 10, s"$i: ${after(i)}")
-  // and it changes on few runs: only when the top leaves the window and comes back
+  // and it moves between the two levels, never beyond: at most on every other run
   var moves = 0
   for i in 1 ..< after.length
     if after(i) != after(i - 1) then moves += 1
-  assert(moves <= 2, s"$after")
+  assert(moves <= 7, s"$after")
   assert(after.forall(a -> a == 90 || a == 100), s"$after")
 
 @test("a job measured above its reservation while it still runs holds what it measured, and delays the next start")

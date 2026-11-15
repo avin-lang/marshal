@@ -55,7 +55,7 @@ lacks a field or has one of the wrong type, names no job, or asks for a job that
 ```
 
 `mem` is the memory the job declared; `resv` the memory the scheduler counts for it, its effective
-reservation: `mem`, or with `resv_learned` true its learned peak (the most of the last 5 measured
+reservation: `mem`, or with `resv_learned` true its learned peak (the most of the last 3 measured
 peaks of the same command, by kind and command signature, in its `dir` once it has run there and
 in every directory before that, rounded up to a mebibyte; held to the budget). A job without `resv` (from an
 older daemon or log) reserves its `mem`, not learned. `resv_from` says where the reservation came
