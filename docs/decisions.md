@@ -2047,3 +2047,13 @@ none.
 - **Queued and waiting jobs that gave units as a ceiling weigh again** when a run teaches a new
   level and on a restart, under the same rule, starting from what they asked for. A rerun asks for
   what the job asked for, weighed again.
+
+## Memory is the physical footprint, not the resident size (branch `mem-footprint`)
+
+- **A job's memory is the physical footprint of its processes, as `proc_pid_rusage` reports it
+  (the figure Activity Monitor's Memory column shows), summed over the job's process group.** The
+  names and JSON fields (`rss`, `peak_rss`, `resv`) are unchanged, so the wire format and every
+  screen look as before. A process that ended, or that may not be asked, counts 0 as before. Settled
+  on the user's choice 2026-11-15: footprint, not RSS (RSS counted shared and droppable pages and
+  missed compressed ones: 24.8G vs 21.5G on a sysl test job); peaks recorded as RSS age out of the
+  three-run window.

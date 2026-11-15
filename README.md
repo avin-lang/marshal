@@ -692,7 +692,7 @@ every use moves forward. It ends by saying how much it freed (`marshal: freed 1.
 `marshal: would free 1.5M`).
 
 `marshal status --json` prints `units`, `unit_budget` (numbers of units, `1.25` among them), `mem` (what the running jobs reserve,
-declared or learned), `mem_budget`, `rss` (what the running jobs hold in RAM, in bytes), `mem_held`
+declared or learned), `mem_budget`, `rss` (the physical footprint of what the running jobs hold, in bytes), `mem_held`
 (what admission counts them holding: each job's reservation or its `rss`, whichever is more),
 `machine_mem` (the machine's memory, 0 if unknown), `landing` (the landing
 job's id or null), `take_slot` (`dir`, `units`, `waiting`, `landing`, or null when none is shared),
@@ -763,8 +763,8 @@ against its own budget. `marshal status` shows what take-slot holds.
   narrow screen.
 - **Memory**: RESV is the memory a job reserves: what it declared with `--mem`, or with `~` before
   it (`~29G`) the learned peak of its command (in its directory, or anywhere), or with `@` before it
-  (`@29G`) what a job submitted with `--external` declared. RSS is what a running job's whole
-  process tree holds in RAM, measured by the daemon every second, and PEAK the most it was measured
+  (`@29G`) what a job submitted with `--external` declared. RSS is the physical footprint (Activity Monitor's Memory column) of a running job's whole
+  process tree, measured by the daemon every second, and PEAK the most it was measured
   holding, kept once it ends; `-` where there is none.
 - **Started**: STARTED is when the job started, in the terminal's local time zone (`TZ`, else the
   system's) to the minute, as `MM-DD hh:mm` (`11-07 08:31`); `-` for a job that has not started.

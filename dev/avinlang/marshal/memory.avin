@@ -1,16 +1,46 @@
 module dev.avinlang.marshal
 
 // What a running job holds in RAM, as the daemon measures it: every so often the processes of the
-// job's process group are listed, and their resident bytes summed.
+// job's process group are listed, and their physical footprint (the figure Activity Monitor's Memory
+// column shows) summed.
+import avin.c.{Errno, ESRCH, EPERM}
 import avin.fs
+import avin.io
 import avin.io.IoError
 import avin.process
 import avin.threads.Atomic
 import dev.avinlang.json
 import dev.avinlang.json.Json
 
-// The resident bytes of the processes `pids`, summed by asking `resident` of each. A process that has
-// ended since it was listed answers NotFound and counts nothing; so does one that cannot be asked.
+@c(const: "RUSAGE_INFO_V2")
+private val rusageInfoV2: int
+
+// The `long`s the fields of `struct rusage_info_v2` are, after the 16 bytes of `ri_uuid`: the ninth
+// `uint64_t` field is `ri_phys_footprint`.
+private val footprintAt = 9
+
+@c(
+  "int proc_pid_rusage(int pid, int flavor, out rusage_info_t *buffer)",
+  array: "buffer",
+  length: "sizeof(struct rusage_info_v2)",
+  errno
+)
+private rusage(pid: int, flavor: int) -> Result[Array[long], Errno]
+
+// The physical footprint of the process `pid`, in bytes: the memory it holds that the system cannot
+// simply take back, compressed pages included and shared or droppable ones left out. A process that
+// does not exist, or a `pid` no process has, answers NotFound; one that may not be asked,
+// PermissionDenied.
+footprintBytes(pid: long) -> Result[long, IoError]
+  if pid <= 0 || pid > long(int.MaxValue) then return Err(IoError(io.NotFound))
+  rusage(int(pid), rusageInfoV2) match
+    Ok(info) -> Ok(info(footprintAt))
+    Err(ESRCH) -> Err(IoError(io.NotFound))
+    Err(EPERM) -> Err(IoError(io.PermissionDenied))
+    Err(e) -> Err(IoError(io.Other(e.message), "measure", s"process $pid"))
+
+// The physical footprint of the processes `pids`, summed by asking `resident` of each. A process that
+// has ended since it was listed answers NotFound and counts nothing; so does one that cannot be asked.
 residentOf(pids: Vector[long], resident: (long) -> Result[long, IoError]) -> long
   var total: long = 0
   for pid in pids
@@ -19,9 +49,9 @@ residentOf(pids: Vector[long], resident: (long) -> Result[long, IoError]) -> lon
       Err(_) -> ()
   total
 
-// The resident bytes of a job's whole process tree: every process of its group `pgid`, the group it
-// was started in and every program it starts joins.
-groupResident(pgid: long) -> long = residentOf(groupMembers(pgid), pid -> process.residentBytes(pid))
+// The physical footprint of a job's whole process tree: every process of its group `pgid`, the group
+// it was started in and every program it starts joins.
+groupResident(pgid: long) -> long = residentOf(groupMembers(pgid), footprintBytes)
 
 // The processes of the process group `pgid`; none where it cannot be asked, for a group nobody is in
 // and for a `pgid` that is not a group's.

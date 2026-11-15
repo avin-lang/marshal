@@ -6,7 +6,7 @@ import dev.avinlang.json
 import dev.avinlang.json.Json
 
 // marshal's version, as `avin.hocon` gives it: what `marshal version` and `marshal restart` print.
-val Version: string = "0.3.16"
+val Version: string = "0.3.17"
 
 // What a job is to run and how much of the machine it takes. `urgent` queues it in its lane's urgent
 // band, behind the urgent jobs already queued and ahead of every other. `after` names the jobs it
@@ -190,7 +190,7 @@ retryable(_, _) = false
 // One job as a listing shows it. `state` is `waiting` (for the jobs it runs after), `queued`,
 // `running`, `retrying` (waiting out its retry delay) or `done`; `elapsedMs` is the time run, 0 for a
 // waiting, queued or retrying job (`queuedMs` is how long it has waited). `memory` is the memory it declared;
-// `rss` the bytes its whole process tree held in RAM when the daemon last measured it, 0 unless it
+// `rss` the physical footprint in bytes its whole process tree held when the daemon last measured it, 0 unless it
 // runs; `peakRss` the most any measurement found, kept once it has ended; `startedAt` when it
 // started on the wall clock, in milliseconds since 1970, 0 while it waits. `held` says a waiting or
 // queued job is kept from starting by hand; `priority` places it in its lane's queue, and `urgent`
@@ -293,7 +293,7 @@ reservedText(j: JobInfo) -> string
   if r == 0 then "-" else formatSize(r)
 
 // The budget in use. `memory` is what the running jobs reserve (declared or learned); `rss` what
-// their process trees hold in RAM, as last measured; `held` what admission counts them as holding,
+// their process trees hold (physical footprint), as last measured; `held` what admission counts them as holding,
 // each job's reservation or its measured memory, whichever is more; `machineMemory` the memory the
 // machine has, 0 where it is not known; `queueHeld` says the queue is held: nothing new starts in
 // either lane; `quick` is how many quick jobs run, of the quick lane's `QuickSlots`; `exclusive` the

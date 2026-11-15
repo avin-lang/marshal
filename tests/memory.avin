@@ -63,6 +63,49 @@ groupTree()
   assertEq(marshal.groupMembers(pgid), [])
   assertEq(marshal.groupResident(pgid), 0)
 
+val mebi: long = 1024 * 1024
+
+@test("a process's footprint is read, and grows by what it allocates and writes")
+footprintGrows()
+  val me = process.pid()
+  val before = marshal.footprintBytes(me).ok.get
+  assert(before > 0, s"$before")
+  val block = Array.fill(13000000, long(1))
+  for i in 0 ..< block.length by 512
+    block(i) = long(i)
+  val after = marshal.footprintBytes(me).ok.get
+  assert(after - before >= mebi * 90, s"before $before after $after")
+  assert(block(512) == 512)
+
+@test("the footprint of a process that has ended, or of a pid no process has, is NotFound")
+footprintNotFound()
+  val child = Command("true").start().ok.get
+  val gone = child.pid()
+  child.waitFor().ok.get
+  assertEq(marshal.footprintBytes(gone).err.map(e -> e.kind), Some(io.NotFound))
+  assertEq(marshal.footprintBytes(0).err.map(e -> e.kind), Some(io.NotFound))
+  assertEq(marshal.footprintBytes(-1).err.map(e -> e.kind), Some(io.NotFound))
+  assertEq(marshal.footprintBytes(long.MaxValue).err.map(e -> e.kind), Some(io.NotFound))
+  assertEq(marshal.residentOf([gone, 0, -1], pid -> marshal.footprintBytes(pid)), 0)
+
+@test("a process that is not ours (launchd, pid 1) answers PermissionDenied and counts nothing")
+footprintOfLaunchd()
+  assertEq(marshal.footprintBytes(1).err.map(e -> e.kind), Some(io.PermissionDenied))
+  assertEq(marshal.residentOf([1], pid -> marshal.footprintBytes(pid)), 0)
+
+@test("a group's footprint is the memory its children hold")
+groupFootprint()
+  val child = Command("sh", "-c", "python3 -c 'import time; b = b\"x\" * 200000000; time.sleep(30)' & wait").inNewGroup.start().ok.get
+  val pgid = child.group().getOrElse(child.pid())
+  var held: long = 0
+  for _ in 0 ..< 100
+    held = marshal.groupResident(pgid)
+    if held >= mebi * 180 then break
+    threads.sleep(millis(100))
+  val _ = process.signal(-pgid, signal.Kill)
+  val _ = child.waitFor()
+  assert(mebi * 180 <= held <= mebi * 400, s"$held")
+
 @test("a group that is not there, or no group at all, has no members")
 noGroup()
   assertEq(marshal.groupMembers(0), [])

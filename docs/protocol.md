@@ -115,9 +115,8 @@ limits are now. `elapsed_ms` is
 the time run, with pauses left out, and 0 for a job that has not started (waiting, queued, held or
 retrying; `queued_ms` is how long it has waited);
 `killed` says `marshal kill` or a forced stop ended it; `sample` names the stack sample of a job
-stopped at its deadline or its quiet timeout. `rss` is the bytes the job's whole process tree (its process group, and the
-group of the step a job type's run is executing) held
-in RAM at the daemon's last measurement, made every second, and 0 unless it runs; `peak_rss` the
+stopped at its deadline or its quiet timeout. `rss` is the physical footprint, in bytes, of the job's whole process tree (its process group, and the
+group of the step a job type's run is executing) at the daemon's last measurement, made every second, and 0 unless it runs; `peak_rss` the
 most any measurement found, kept once it ends; `started_at` when it started, in milliseconds since
 1970, 0 while it waits. The three are absent from what older daemons wrote and read as 0. In
 `status` and `snapshot`, `rss` is the running jobs' sum and `machine_mem` the machine's memory, 0
