@@ -1,7 +1,7 @@
 |marshal  up 0:05   0 running  0 queued   landing: free                                   filter: all|
-|units [·································] 0 / 12                                                    |
-|mem   [                                 ] 0 / 16G   rss 0                                           |
-|cpu   [                                 ] - / 12                                                    |
+|units[                             0/12]                                                            |
+|mem  [                            0/16G] rss 0                                                      |
+|cpu  [                             -/12]                                                            |
 |                                                                                                    |
 |   ID STATE          KIND     UNITS   RESV   RSS STARTED  ELAPSED     ETA DEADLINE COMMAND          |
 |                                                                                                    |
@@ -16,9 +16,9 @@
 0 30..38 Basic(3)/Default/0
 0 50..54 Basic(8)/Default/0
 0 89..100 Basic(8)/Default/0
-1 7..40 Basic(8)/Default/0
-2 7..40 Basic(8)/Default/0
-3 7..40 Basic(8)/Default/0
+1 6..39 Basic(8)/Default/0
+2 6..39 Basic(8)/Default/0
+3 6..39 Basic(8)/Default/0
 5 0..100 Default/Default/17
 11 0..1 Default/Default/1
 11 1..6 Basic(0)/Basic(6)/0

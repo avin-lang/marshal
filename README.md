@@ -728,16 +728,18 @@ against its own budget. `marshal status` shows what take-slot holds.
 
 - **Header**: the daemon's uptime, how many jobs run and wait, who holds the landing lane (a job,
   take-slot, or free), `(held)` in red beside the queued count while the queue is held, and the
-  filter; a bar of the unit budget, marshal's development units in green
-  and take-slot's share after them in magenta, with take-slot's waiting runs; a bar of the memory
-  budget, what the running jobs reserve in cyan and what they hold beyond their reservations in
-  blue, then the reserved total, what they hold in RAM (`rss`) and the machine's memory; and a bar
-  of the machine's processor use, from the same one-second `ps` sample the jobs are measured from,
-  against the unit budget (a unit is about a core): the cores marshal's running jobs keep busy in
-  green and every other process's in yellow, then both (`4.9 jobs + 3.5 other / 12`; `-` before
-  the first measurement) and the free disk (`disk 31G free`), yellow under twice `disk_min` and red
-  under it, where it says `< 20G: nothing starts`. With an owner chosen, `owner: sysl` follows the
-  filter.
+  filter; then three meters drawn as htop draws its own, `units[||||||      5+4/12]`: a `|` in
+  each part's colour for every cell it fills, and the numbers inside the brackets, against `]`.
+  The unit meter has marshal's development units in green and take-slot's share after them in
+  magenta (`5+4/12`: marshal's units, take-slot's, the budget), with take-slot's waiting runs
+  after the bracket; the memory meter what the running jobs reserve in cyan and what they hold
+  beyond their reservations in blue (`12G/56G`, the reserved total and the budget), then what they
+  hold in RAM (`rss`) and the machine's memory; and the processor meter the machine's processor
+  use, from the same one-second `ps` sample the jobs are measured from, against the unit budget (a
+  unit is about a core): the cores marshal's running jobs keep busy in green and every other
+  process's in yellow (`4.9+3.5/12`; `-/12` before the first measurement), then the free disk
+  (`disk 31G free`), yellow under twice `disk_min` and red under it, where it says `< 20G: nothing
+  starts`. With an owner chosen, `owner: sysl` follows the filter.
 - **Cores, ETA and owner**: CORES is the cores a running job keeps busy now, as `ls`'s USED has it
   (`-` for any other). ETA is a running job's expected time left (`~6m`) or a queued job's expected
   start (`in ~3m`, dim), counting on between snapshots, `-` where it is not known (see Durations

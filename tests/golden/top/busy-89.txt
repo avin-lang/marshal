@@ -1,7 +1,7 @@
 |marshal  up 25:01:01   4 running  9 queued (held)   landing: job 21 (2 units) filter: all|
-|units [██████████████████████·······] 6 + take-slot 3 / 12, 2 waiting   landing 2        |
-|mem   [████████████▊█████▏          ] 7G / 16G   rss 6.0G   machine 64G                  |
-|cpu   [███████████▊████████▎        ] 4.9 jobs + 3.5 other / 12   disk 31G free          |
+|units[|||||||||||||||||||||| 6+3/12] take-slot, 2 waiting   landing 2                    |
+|mem  [||||||||||||||||||     7G/16G] rss 6.0G   machine 64G                              |
+|cpu  [|||||||||||||||||||4.9+3.5/12] disk 31G free                                       |
 |                                                                                         |
 |   ID STATE          KIND     UNITS   RESV   RSS STARTED  ELAPSED DEADLINE COMMAND       |
 |   21 landing        test*        2     4G  3.0G -          25:00     5:00 sysl test com…|
@@ -33,19 +33,17 @@
 0 42..49 Basic(1)/Default/1
 0 61..77 Basic(6)/Default/1
 0 78..89 Basic(8)/Default/0
-1 7..22 Basic(2)/Default/0
-1 22..29 Basic(5)/Default/0
-1 29..36 Basic(8)/Default/0
-1 72..81 Basic(6)/Default/0
-2 7..19 Basic(6)/Default/0
-2 19..20 Basic(6)/Basic(4)/0
-2 20..26 Basic(4)/Default/0
-2 26..36 Basic(8)/Default/0
-3 7..18 Basic(2)/Default/0
-3 18..19 Basic(2)/Basic(3)/0
-3 19..28 Basic(3)/Default/0
-3 28..36 Basic(8)/Default/0
-3 66..79 Basic(3)/Default/0
+1 6..21 Basic(2)/Default/0
+1 21..28 Basic(5)/Default/0
+1 28..35 Basic(8)/Default/0
+1 60..69 Basic(6)/Default/0
+2 6..19 Basic(6)/Default/0
+2 19..24 Basic(4)/Default/0
+2 24..35 Basic(8)/Default/0
+3 6..18 Basic(2)/Default/0
+3 18..26 Basic(3)/Default/0
+3 26..35 Basic(8)/Default/0
+3 37..50 Basic(3)/Default/0
 5 0..89 Default/Default/17
 6 0..6 Default/Default/16
 6 6..20 Basic(2)/Default/17

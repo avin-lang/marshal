@@ -1,7 +1,7 @@
 |marshal  up 0:05   filter: all|
-|units [··········] 0 / 12     |
-|mem   [          ] 0 / 16G   r|
-|cpu   [          ] - / 12     |
+|units[      0/12]             |
+|mem  [     0/16G] rss 0       |
+|cpu  [      -/12]             |
 |                              |
 |   ID STATE          KIND     |
 |                              |
@@ -9,9 +9,9 @@
 --
 0 0..7 Default/Default/1
 0 19..30 Basic(8)/Default/0
-1 7..17 Basic(8)/Default/0
-2 7..17 Basic(8)/Default/0
-3 7..17 Basic(8)/Default/0
+1 6..16 Basic(8)/Default/0
+2 6..16 Basic(8)/Default/0
+3 6..16 Basic(8)/Default/0
 5 0..30 Default/Default/17
 7 0..1 Default/Default/1
 7 1..6 Basic(0)/Basic(6)/0

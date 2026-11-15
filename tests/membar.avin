@@ -1,14 +1,16 @@
 module tests
 
-// The memory meter of `marshal top`: the reserved memory solid in cyan, what the running jobs hold
-// beyond their reservations in blue, and, with nothing beyond, exactly the meter it always was.
+// The memory meter of `marshal top`, drawn in bars as htop draws its meters: the reserved memory in
+// cyan, what the running jobs hold beyond their reservations in blue, the rest blank, and the label
+// inside the brackets against `]`.
 import dev.avinlang.marshal.top
-import dev.avinlang.tui.{Blue, BrightBlack, Cyan, Green, Grid, Segment, Style, Yellow}
+import dev.avinlang.tui.{Blue, BrightBlack, Cyan, Grid}
 
-// The meter drawn 16 cells wide at the left of a fresh grid, against a 16G budget unless told.
-bar(reserved: long, held: long, budget: long = 16 * G) -> Grid
+// The meter drawn 16 cells wide at the left of a fresh grid, against a 16G budget unless told, so a
+// cell is a gigabyte.
+bar(reserved: long, held: long, budget: long = 16 * G, label: string = "") -> Grid
   val g = Grid(20, 1)
-  top.memBar(g, 0, 0, 16, reserved, held, budget)
+  top.memBar(g, 0, 0, 16, reserved, held, budget, label)
   g
 
 // The colour of each of the meter's cells, `c` cyan, `b` blue, `.` empty.
@@ -20,110 +22,48 @@ shades(g: Grid) -> string =
     ).text == " " then "." elif g(x, 0).style.fg == Cyan then "c" elif g(x, 0).style.fg == Blue then "b" else "?"
   ).mkString("")
 
-// The meter as it was drawn before measured memory was shown beside it.
-before(reserved: long, budget: long) -> Grid
-  val g = Grid(20, 1)
-  g.text(0, 0, "[")
-  val f = if budget > 0 then real(reserved) / real(budget) else 0.0
-  g.meter(1, 0, 16, if f > 1.0 then 1.0 else f, Style.fg(Cyan), Style.fg(BrightBlack))
-  g.text(17, 0, "]")
-  g
+g0(g: Grid) -> string = g.rowText(0).trim
 
-sameCells(a: Grid, b: Grid)
-  for x in 0 ..< 20
-    assert(a(x, 0) == b(x, 0), s"cell $x: ${a(x, 0)} is not ${b(x, 0)}")
-
-@test("reserved memory alone is the meter as it always was, cyan, held equal or unknown alike")
+@test("reserved memory alone is cyan bars, held equal, less or unknown alike")
 reservedOnly()
   assertEq(shades(bar(4 * G, 4 * G)), "cccc............")
-  assertEq(g0(bar(4 * G, 4 * G)), "[████            ]")
-  for (r, held) in [
-    (4 * G, 4 * G),
-    (4 * G, 0),
-    (4 * G, 2 * G),
-    (G * 9 / 2, 0),
-    (long(0), long(0)),
-    (16 * G, 16 * G),
-    (40 * G, 0)
-  ]
-    sameCells(bar(r, held), before(r, 16 * G))
-  // no budget set: an empty meter, as before
-  sameCells(bar(4 * G, 9 * G, 0), before(4 * G, 0))
+  assertEq(g0(bar(4 * G, 4 * G)), "[||||            ]")
+  assertEq(shades(bar(4 * G, 0)), "cccc............")
+  assertEq(shades(bar(4 * G, 2 * G)), "cccc............")
+  // a half cell rounds up
+  assertEq(shades(bar(G * 9 / 2, 0)), "ccccc...........")
+  assertEq(shades(bar(0, 0)), "................")
+  assertEq(shades(bar(16 * G, 16 * G)), "cccccccccccccccc")
+  assertEq(shades(bar(40 * G, 0)), "cccccccccccccccc")
+  // no budget set: an empty meter
+  assertEq(g0(bar(4 * G, 9 * G, 0)), "[                ]")
 
 @test("measured memory alone, with nothing reserved, fills the meter in blue")
 rssOnly()
   assertEq(shades(bar(0, 8 * G)), "bbbbbbbb........")
-  assertEq(g0(bar(0, 8 * G)), "[████████        ]")
+  assertEq(g0(bar(0, 8 * G)), "[||||||||        ]")
   // more than the budget fills the meter and no more
   assertEq(shades(bar(0, 40 * G)), "bbbbbbbbbbbbbbbb")
-
-g0(g: Grid) -> string = g.rowText(0).trim
 
 @test("reserved and measured beyond it: cyan for the reservations, then blue for the rest")
 both()
   assertEq(shades(bar(4 * G, 10 * G)), "ccccbbbbbb......")
-  assertEq(g0(bar(4 * G, 10 * G)), "[██████████      ]")
-  // a reservation ending part way through a cell keeps its partial block in cyan, blue after it
-  val g = bar(G * 9 / 2, 10 * G)
-  assertEq(shades(g), "cccccbbbbb......")
-  assertEq(g(5, 0).text, "▌")
-  assertEq(g(5, 0).style.fg, Cyan)
-  assertEq(g(6, 0).style.fg, Blue)
+  assertEq(g0(bar(4 * G, 10 * G)), "[||||||||||      ]")
+  assertEq(shades(bar(G * 9 / 2, 10 * G)), "cccccbbbbb......")
   // both past the budget: the reservations fill it
   assertEq(shades(bar(20 * G, 30 * G)), "cccccccccccccccc")
-  // a reservation too small for a cell's eighth leaves the whole span blue
-  assertEq(shades(bar(1, 8 * G)), "bbbbbbbb........")
+  // a reservation too small for half a cell still shows as one cyan cell
+  assertEq(shades(bar(1, 8 * G)), "cbbbbbbb........")
 
-// A meter 12 columns wide, ten cells of eighths, against a budget of 80 so an amount is its eighths.
-eighths(segments: Vector[Segment]) -> Grid
-  val g = Grid(12, 1)
-  g.gauge(0, 0, 12, segments, 80.0, rest = ' ', eighths = true)
-  g
-
-// Each cell of the ten, whole blocks `#`, empty `.`, anything else as its glyph.
-glyphs(g: Grid) -> string = (1 .. 10).map(
-  x -> if g(x, 0).text == "█" then "#" elif g(x, 0).text == " " then "." else g(x, 0).text
-).mkString("")
-
-@test("a first segment of no eighths draws nothing, the next one starting at the first cell")
-zeroFirst()
-  val g = eighths([Segment(0.0, Style.fg(Green)), Segment(24.0, Style.fg(Yellow))])
-  assertEq(glyphs(g), "###.......")
-  for x in 1 ..< 4
-    assertEq(g(x, 0).style, Style.fg(Yellow))
-  assertEq(g(0, 0).text, "[")
-  assertEq(g(11, 0).text, "]")
-
-@test("a tiny first segment is a sliver over the colour of the next, never a black cell")
-tinyFirst()
-  val g = eighths([Segment(1.0, Style.fg(Cyan)), Segment(40.0, Style.fg(Blue))])
-  assertEq(glyphs(g), "▏####▏....")
-  assertEq(g(1, 0).style, Style(Cyan, Blue, 0))
-  assertEq(g(2, 0).style, Style.fg(Blue))
-  assertEq(g(6, 0).style, Style(Blue, Style.plain().bg, 0))
-
-@test("segments exactly filling whole cells draw whole cells and no blocks")
-exactCells()
-  val g = eighths([Segment(16.0, Style.fg(Cyan)), Segment(8.0, Style.fg(Blue))])
-  assertEq(glyphs(g), "###.......")
-  assertEq(g(2, 0).style, Style.fg(Cyan))
-  assertEq(g(3, 0).style, Style.fg(Blue))
-
-@test("no amount draws an empty meter; a full budget fills it")
-emptyAndFull()
-  assertEq(glyphs(eighths([Segment(0.0, Style.fg(Cyan)), Segment(0.0, Style.fg(Blue))])), "..........")
-  assertEq(glyphs(eighths([])), "..........")
-  val g = eighths([Segment(80.0, Style.fg(Cyan))])
-  assertEq(glyphs(g), "##########")
-  assertEq(g(10, 0).style, Style.fg(Cyan))
-
-@test("a cell shared by two segments is the first one's block over the second one's colour")
-sharedCell()
-  val g = eighths([Segment(28.0, Style.fg(Cyan)), Segment(20.0, Style.fg(Blue))])
-  assertEq(glyphs(g), "###▌##....")
-  assertEq(g(4, 0).style, Style(Cyan, Blue, 0))
-  assertEq(g(5, 0).style, Style.fg(Blue))
-  // the last segment's partial cell sits on the empty background
-  val h = eighths([Segment(28.0, Style.fg(Cyan))])
-  assertEq(glyphs(h), "###▌......")
-  assertEq(h(4, 0).style, Style(Cyan, Style.plain().bg, 0))
+@test("the label sits inside the brackets against `]`, in the colour of the cells it covers")
+label()
+  val g = bar(4 * G, 10 * G, label = "4G/16G")
+  assertEq(g0(g), "[||||||||||4G/16G]")
+  assertEq(g(10, 0).style.fg, Blue)
+  assertEq(g(11, 0).style.fg, BrightBlack)
+  // a full meter: the label is drawn over the bars, in the reservations' colour
+  val full = bar(16 * G, 0, label = "16G/16G")
+  assertEq(g0(full), "[|||||||||16G/16G]")
+  assertEq(full(16, 0).style.fg, Cyan)
+  // no budget set: the memory the jobs reserve, on an empty meter
+  assertEq(g0(bar(4 * G, 0, 0, "4G")), "[              4G]")

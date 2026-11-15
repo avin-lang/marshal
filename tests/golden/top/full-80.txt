@@ -1,7 +1,7 @@
 |marshal  up 1:02:03   2 running  3 queued   landing: job 4 (4 units) filter: all|
-|units [████████████████████······] 5 + take-slot 4 / 12, 1 waiting   landing 4  |
-|mem   [██████▌                   ] 1G / 4G   rss 0                              |
-|cpu   [                          ] - / 12                                       |
+|units[||||||||||||||||||||5+4/12] take-slot, 1 waiting   landing 4              |
+|mem  [|||||||              1G/4G] rss 0                                         |
+|cpu  [                      -/12]                                               |
 |                                                                                |
 |   ID STATE          KIND     UNITS   RESV   RSS STARTED  ELAPSED DEADLINE COMM…|
 |    1 running        build        4     1G     - -           1:00    19:00 sysl…|
@@ -22,13 +22,13 @@
 0 33..41 Basic(3)/Default/0
 0 53..68 Basic(6)/Default/1
 0 69..80 Basic(8)/Default/0
-1 7..18 Basic(2)/Default/0
-1 18..27 Basic(5)/Default/0
-1 27..33 Basic(8)/Default/0
-1 69..78 Basic(6)/Default/0
-2 7..14 Basic(6)/Default/0
-2 14..33 Basic(8)/Default/0
-3 7..33 Basic(8)/Default/0
+1 6..17 Basic(2)/Default/0
+1 17..26 Basic(5)/Default/0
+1 26..32 Basic(8)/Default/0
+1 57..66 Basic(6)/Default/0
+2 6..13 Basic(6)/Default/0
+2 13..32 Basic(8)/Default/0
+3 6..32 Basic(8)/Default/0
 5 0..80 Default/Default/17
 6 0..6 Default/Default/16
 6 6..20 Basic(2)/Default/17

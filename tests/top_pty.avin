@@ -73,7 +73,8 @@ topShowsRunningJob()
   assert(shown.contains(s"$id running build 3"), shown)
   assert(shown.contains("sleep 60"), shown)
   assert(shown.contains("1 exit 0 build 1"), shown)
-  assert(shown.contains("3 + take-slot 0 / 12"), shown)
+  // the screen comes back with a space between runs of different styles: the label, then `]`
+  assert(shown.contains("3+0/12 ] take-slot"), shown)
   assertEq(eventsOf(home, id), ["submitted", "started"])
   cleanUp(home)
 

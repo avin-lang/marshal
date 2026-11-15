@@ -1,7 +1,7 @@
 |marshal  up 1:00   2 running  2 queued   landing: free                                                                           filter: all|
-|units [███████·································] 2 / 12                                                                                     |
-|mem   [                                        ] 0 / 16G   rss 0                                                                            |
-|cpu   [██████████                              ] 1.2 jobs + 1.8 other / 12   disk 14G free < 20G: nothing starts                            |
+|units[|||||||                             2/12]                                                                                             |
+|mem  [                                   0/16G] rss 0                                                                                       |
+|cpu  [||||||||||                    1.2+1.8/12] disk 14G free < 20G: nothing starts                                                         |
 |                                                                                                                                            |
 |   ID STATE          KIND     UNITS CORES   RESV   RSS  PEAK STARTED      ELAPSED     ETA DEADLINE OWNER LABEL COMMAND                      |
 |   70 running        build        1   1.2      -     -     - -               4:00     ~6m    26:00 sysl        make -j4                     |
@@ -16,13 +16,13 @@
 0 30..38 Basic(3)/Default/0
 0 50..54 Basic(8)/Default/0
 0 129..140 Basic(8)/Default/0
-1 7..14 Basic(2)/Default/0
-1 14..47 Basic(8)/Default/0
-2 7..47 Basic(8)/Default/0
-3 7..11 Basic(2)/Default/0
-3 11..17 Basic(3)/Default/0
-3 17..47 Basic(8)/Default/0
-3 77..112 Basic(1)/Default/1
+1 6..13 Basic(2)/Default/0
+1 13..46 Basic(8)/Default/0
+2 6..46 Basic(8)/Default/0
+3 6..10 Basic(2)/Default/0
+3 10..16 Basic(3)/Default/0
+3 16..46 Basic(8)/Default/0
+3 48..83 Basic(1)/Default/1
 5 0..140 Default/Default/17
 6 0..6 Default/Default/16
 6 6..20 Basic(2)/Default/17

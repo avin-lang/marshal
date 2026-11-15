@@ -121,15 +121,21 @@ header()
   assert(top.startsWith("marshal  up 1:02:03   2 running  3 queued   landing: job 4 (4 units)"), top)
   assert(top.trim.endsWith("filter: all"), top)
   val units = g.rowText(1)
-  assert(units.startsWith("units ["), units)
-  assert(units.contains("] 5 + take-slot 4 / 12, 1 waiting"), units)
-  // 33 cells: 5 of 12 is 14 green, 9 of 12 is 25, so 11 magenta, 8 dotted
-  assertEq(units.count(c -> c == '█'), 25)
-  assertEq(units.count(c -> c == '·'), 8)
-  assertEq(g(7, 1).style.fg, Green)
-  assertEq(g(7 + 14, 1).style.fg, Magenta)
-  assertEq(g(7 + 25, 1).style.fg, BrightBlack)
-  assert(g.rowText(2).contains("] 1G / 4G"), g.rowText(2))
+  assert(units.startsWith("units[|"), units)
+  assert(units.contains("  5+4/12] take-slot, 1 waiting"), units)
+  // 33 cells from column 6: 5 of 12 is 14 green, 9 of 12 is 25, so 11 magenta, then blanks, and the
+  // label against `]` in the last six
+  assertEq(units.count(c -> c == '|'), 25)
+  assertEq(g(6, 1).style.fg, Green)
+  assertEq(g(6 + 13, 1).style.fg, Green)
+  assertEq(g(6 + 14, 1).style.fg, Magenta)
+  assertEq(g(6 + 25, 1).style.fg, BrightBlack)
+  assertEq(columnOf(g, 1, "5+4/12"), 6 + 33 - 6)
+  assertEq(g(6 + 33 - 6, 1).style.fg, BrightBlack)
+  assertEq(g(6 + 33, 1).text, "]")
+  assert(g.rowText(2).startsWith("mem  ["), g.rowText(2))
+  assert(g.rowText(2).contains(" 1G/4G] rss"), g.rowText(2))
+  assert(g.rowText(3).startsWith("cpu  ["), g.rowText(3))
 
 @test("the header names the daemon's version after marshal, and top's too when they differ")
 headerVersions()
@@ -161,11 +167,12 @@ headerLane()
   val free = Overview(Usage(0, 48, 0, long.MaxValue, 0, 0, None, None), 0, [], [], [])
   val g = drawn(viewing(free), 80, 10)
   assert(g.rowText(0).contains("landing: free"), g.rowText(0))
-  assert(g.rowText(1).contains("] 0 / 12"), g.rowText(1))
+  assert(g.rowText(1).contains(" 0/12]"), g.rowText(1))
   assert(!g.rowText(1).contains("take-slot"))
-  assertEq(g.rowText(1).count(c -> c == '█'), 0)
+  assertEq(g.rowText(1).count(c -> c == '|'), 0)
   // an unbounded memory budget shows what is used, and no bar
-  assert(g.rowText(2).trim.endsWith("] 0   rss 0"), g.rowText(2))
+  assert(g.rowText(2).trim.endsWith(" 0] rss 0"), g.rowText(2))
+  assertEq(g.rowText(2).count(c -> c == '|'), 0)
   val theirs = Overview(Usage(0, 48, 0, 100, 0, 0, None, Some(TakeSlotUse("/s", 0, 0, true))), 0, [], [], [])
   assert(drawn(viewing(theirs), 80, 10).rowText(0).contains("landing: take-slot"))
 
@@ -336,12 +343,12 @@ peakLeftOutWhenNarrow()
 headerMemory()
   val known = Overview(Usage(20, 48, G, 4 * G, 1, 0, None, None, 9 * G + 400 * 1024 * 1024, 64 * G), 0, [], [], [])
   assert(
-    drawn(viewing(known), 100, 10).rowText(2).trim.endsWith("] 1G / 4G   rss 9.4G   machine 64G"),
+    drawn(viewing(known), 100, 10).rowText(2).trim.endsWith(" 1G/4G] rss 9.4G   machine 64G"),
     drawn(viewing(known), 100, 10).rowText(2)
   )
   val unknown = Overview(Usage(20, 48, G, 4 * G, 1, 0, None, None, 1536, 0), 0, [], [], [])
   assert(
-    drawn(viewing(unknown), 100, 10).rowText(2).trim.endsWith("] 1G / 4G   rss 1.5K"),
+    drawn(viewing(unknown), 100, 10).rowText(2).trim.endsWith(" 1G/4G] rss 1.5K"),
     drawn(viewing(unknown), 100, 10).rowText(2)
   )
   // the memory line is cut at a narrow screen, not wrapped

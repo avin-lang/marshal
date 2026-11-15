@@ -1,7 +1,7 @@
 |marshal  up 0:00   2 running  3 queued   landing:filter: all|
-|units [███████████████·····] 5 + take-slot 4 / 12, 1 waiting|
-|mem   [█████               ] 1G / 4G   rss 0                |
-|cpu   [                    ] - / 12                         |
+|units[||||||||||||||5+4/12] take-slot, 1 waiting            |
+|mem  [|||||          1G/4G] rss 0                           |
+|cpu  [                -/12]                                 |
 |                                                            |
 |   ID STATE          KIND     UNITS   RESV   RSS STARTED  EL|
 |    1 running        build        1      -     - -          |
@@ -19,12 +19,12 @@
 0 19..28 Basic(2)/Default/0
 0 30..38 Basic(3)/Default/0
 0 49..60 Basic(8)/Default/0
-1 7..15 Basic(2)/Default/0
-1 15..22 Basic(5)/Default/0
-1 22..27 Basic(8)/Default/0
-2 7..12 Basic(6)/Default/0
-2 12..27 Basic(8)/Default/0
-3 7..27 Basic(8)/Default/0
+1 6..14 Basic(2)/Default/0
+1 14..21 Basic(5)/Default/0
+1 21..26 Basic(8)/Default/0
+2 6..11 Basic(6)/Default/0
+2 11..26 Basic(8)/Default/0
+3 6..26 Basic(8)/Default/0
 5 0..60 Default/Default/17
 6 0..6 Default/Default/16
 6 6..20 Basic(2)/Default/17

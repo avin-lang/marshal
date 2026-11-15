@@ -1,7 +1,7 @@
 |marshal  up 25:01:01   4 running  9 queued (held)   landing: job 21 (2 units)                                filter: all|
-|units [███████████╭─help; any key closes────────────────────────────────────────────────────────────╮                   |
-|mem   [███████████│ Up, Down, PgUp, PgDn, Home, End   select a job                                  │                   |
-|cpu   [███████████│                 (after 5 seconds without a key the highlight hides; the first   │                   |
+|units[||||||||||||╭─help; any key closes────────────────────────────────────────────────────────────╮                   |
+|mem  [||||||||||||│ Up, Down, PgUp, PgDn, Home, End   select a job                                  │                   |
+|cpu  [||||||||||||│                 (after 5 seconds without a key the highlight hides; the first   │                   |
 |                  │                 such key or Enter only shows it again, on the same job)         │                   |
 |   ID STATE       │                 Down or PgDn on the last job loads earlier ones from the        │OMMAND             |
 |   21 landing     │                 event log; End goes to the very oldest; the bottom line         │ysl test compiler …|
@@ -35,11 +35,11 @@
 0 42..49 Basic(1)/Default/1
 0 61..77 Basic(6)/Default/1
 0 109..120 Basic(8)/Default/0
-1 7..18 Basic(2)/Default/0
+1 6..18 Basic(2)/Default/0
 1 18..101 Basic(6)/Default/0
-2 7..19 Basic(6)/Default/0
+2 6..19 Basic(6)/Default/0
 2 100..101 Basic(6)/Default/0
-3 7..18 Basic(2)/Default/0
+3 6..18 Basic(2)/Default/0
 3 18..19 Basic(6)/Default/0
 3 100..101 Basic(6)/Default/0
 4 18..19 Basic(6)/Default/0

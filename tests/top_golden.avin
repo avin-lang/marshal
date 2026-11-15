@@ -480,12 +480,13 @@ landingOnly(units: int, takeSlot: Option[TakeSlotUse]) -> Overview =
 )
 goldenLandingUnits()
   val alone = landingOnly(1, None)
-  // `0 / 12   landing 1` ends at column 40 of a 40-cell screen, and is dropped from a 39-cell one
-  for w in [100, 40, 39, 24]
+  // `0/12]   landing 1` ends at column 29 of a 29-cell screen, and is dropped from a 28-cell one
+  for w in [100, 29, 28, 24]
     golden(s"landing-units-$w", drawn(viewing(alone), w, 10))
   val beside = landingOnly(3, Some(TakeSlotUse("/s/.git", 16, 0, false)))
-  // `0 + take-slot 4 / 12   landing 3` ends at column 61 of a 61-cell screen
-  for w in [120, 61, 60, 40]
+  // `0+4/12] take-slot   landing 3` ends at column 43 of a 43-cell screen, and is dropped from a
+  // 42-cell one
+  for w in [120, 43, 42, 40]
     golden(s"landing-units-takeslot-$w", drawn(viewing(beside), w, 10))
   golden(
     "landing-units-takeslot-waiting",
@@ -505,5 +506,9 @@ goldenLandingUnits()
     drawn(viewing(Overview(Usage(0, 48, 0, 16 * G, 0, 1, Some(9), None), 0, [], [], [])), 100, 10)
   )
   val row = drawn(viewing(alone), 100, 10).rowText(1)
-  assert(row.contains("] 0 / 12   landing 1"), row)
-  assert(!drawn(viewing(alone), 39, 10).rowText(1).contains("landing"))
+  assert(row.contains(" 0/12]   landing 1"), row)
+  assert(drawn(viewing(alone), 29, 10).rowText(1).endsWith("0/12]   landing 1"))
+  assert(!drawn(viewing(alone), 28, 10).rowText(1).contains("landing"))
+  val takeSlot = drawn(viewing(beside), 43, 10).rowText(1)
+  assert(takeSlot.endsWith("0+4/12] take-slot   landing 3"), takeSlot)
+  assert(!drawn(viewing(beside), 42, 10).rowText(1).contains("landing"))
