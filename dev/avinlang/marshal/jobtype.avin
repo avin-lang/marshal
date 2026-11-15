@@ -508,5 +508,5 @@ typeHelp(t: JobType) -> string
     )
     val note = if notes.isEmpty then "" else s" (${notes.mkString("; ")})"
     lines += s"  --${p.name}$value".padEnd(28, ' ') + p.about + note
-  lines += "\nOptions of run-type: --dir <d>, --deadline <t>, --quiet-timeout <t>, --units <n>, --units-exact, --mem <size>, --label <text>, --submit (print the job's id and do not wait)."
+  lines += "\nOptions of run-type: --dir <d>, --deadline <t>, --quiet-timeout <t>, --units <n>, --units-exact, --mem <size>, --label <text>, --quick, --submit (print the job's id and do not wait)."
   lines.mkString("\n")

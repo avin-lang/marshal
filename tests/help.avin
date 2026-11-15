@@ -18,6 +18,27 @@ readmeHasEveryOption()
     assert(text.contains(s"| `$flag"), flag)
     assert(cli.usage.contains(flag), flag)
 
+@test("history's --failed names every outcome that is not ok, quiet among them")
+failedNamesEveryOutcome()
+  val help = cli.commandHelp("history").get
+  for outcome in ["failed", "signal", "killed", "timeout", "quiet", "cancelled", "lost"] do
+    assert(help.contains(outcome), outcome)
+  assert(cli.usage.contains("timeout, quiet, cancelled"), cli.usage)
+
+@test("the README's agent quick start and decision table name the options an agent chooses between")
+readmeGuidesAgents()
+  val text = readme()
+  for words in [
+    "## Quick start for agents",
+    "## Which options do I need?",
+    "## Common mistakes",
+    "caffeinate -dimsu marshal run --dir",
+    "--quiet-load auto",
+    "| `--quick`",
+    "| `--exclusive`",
+    "| `--after"
+  ] do assert(text.contains(words), words)
+
 @test("the usage names every command, and each command has its own usage")
 everyCommandHasUsage()
   for c in cli.Commands do

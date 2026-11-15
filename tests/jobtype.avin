@@ -425,3 +425,5 @@ typeHelpText()
   assert(h.contains("one of report, bisect"), h)
   assert(h.contains("default: x y"), h)
   assert(h.contains("--verbose "), h)
+  for option in ["--dir <d>", "--deadline <t>", "--quiet-timeout <t>", "--units <n>", "--units-exact", "--mem <size>", "--label <text>", "--quick", "--submit"] do
+    assert(h.contains(option), option)
