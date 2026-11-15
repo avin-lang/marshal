@@ -62,6 +62,10 @@ val Commands: Vector[(string, string)] = [
     "stops a running job's processes, keeping its units, its deadline's clock stopped; with no id, holds the queue"
   ),
   ("resume [<id>]", "continues a paused job; with no id, releases the queue"),
+  (
+    "polite [<fraction> | off]",
+    "while you work: admit jobs against only a fraction of the budget (default 0.75, or 3/4 and the like); a job bigger than that runs alone; off: the whole budget again. Running jobs go on; config.json's polite_schedule switches it on by the clock"
+  ),
   ("tail <id> [-f] [-n <lines>]", "the job's log; -f follows it until the job ends"),
   (
     "grep <id> <pattern> [-i] [-v] [-n] [-c] [-F] [-m <n>] [-A|-B|-C <n>] [--last <n>]",
@@ -259,6 +263,7 @@ main(args: Vector[string]) -> int
     "resume" ->
       if rest.isEmpty then simple(Request.ResumeQueue, "marshal: the queue is released")
       else withId(rest, id -> simple(Request.ResumeJob(id), s"marshal: job $id is resumed"))
+    "polite" -> polite(rest)
     "ls" -> list()
     "status" -> rest match
       [] -> status()
@@ -756,6 +761,27 @@ list() -> int
   askDaemon(Request.List) match
     Ok(Jobs(jobs)) ->
       println(marshal.listing(jobs, queuedWhys(jobs)))
+      0
+    Ok(Failed(e)) -> complain(s"marshal: $e")
+    Ok(other) -> complain(s"marshal: unexpected reply $other")
+    Err(e) -> complain(e)
+
+// What `marshal polite` asks for: polite at the fraction given (`DefaultPolite` with none), or not
+// polite with `off`; or why the arguments ask for neither.
+politeRequest(args: Vector[string]) -> Result[Request, string] = args match
+  [] -> Ok(Request.Polite(Some(marshal.DefaultPolite)))
+  ["off"] -> Ok(Request.Polite(None))
+  [text] -> marshal.parseFraction(text).map(f -> Request.Polite(Some(f))).mapErr(e -> s"marshal: polite: $e")
+  _ -> Err("marshal: polite takes a fraction, `off`, or nothing (0.75)")
+
+// Turns polite mode on, changes its fraction or turns it off, and prints the state it leaves.
+polite(args: Vector[string]) -> int
+  val request = politeRequest(args) match
+    Ok(r) -> r
+    Err(e) -> return complain(e)
+  askDaemon(request) match
+    Ok(Using(u)) ->
+      println(marshal.politeLine(u.polite, u.unitBudget, u.memoryBudget))
       0
     Ok(Failed(e)) -> complain(s"marshal: $e")
     Ok(other) -> complain(s"marshal: unexpected reply $other")

@@ -207,6 +207,8 @@ ask that owner. Kill only a job you started.
 | `emptying` | an exclusive job waits for the running jobs to end | wait |
 | `exclusive N` | exclusive job N runs, or waits ahead of this one | wait; the job is not stuck |
 | `queue held` | someone ran `marshal pause` with no id | `marshal resume`, if the hold is yours |
+| `polite budget` | marshal is polite and the polite part of the budget is full | wait, or `marshal polite off` if the machine is free |
+| `polite: runs alone` | marshal is polite and the job is bigger than the polite budget: it waits for marshal to empty, then runs by itself | wait; the jobs behind it say `polite: N runs alone` |
 
 ## Job types
 
@@ -259,6 +261,7 @@ marshal release <id>                       lets a held job start again
 marshal priority <id> <n> | --urgent       places a queued job in its lane: higher first; --urgent: the back of the urgent band
 marshal pause [<id>]                       stops a running job's processes, keeping its units, its deadline's clock stopped; with no id, holds the queue
 marshal resume [<id>]                      continues a paused job; with no id, releases the queue
+marshal polite [<fraction> | off]          while you work: admit jobs against only a fraction of the budget (default 0.75, or 3/4 and the like); a job bigger than that runs alone; off: the whole budget again. Running jobs go on; config.json's polite_schedule switches it on by the clock
 marshal tail <id> [-f] [-n <lines>]        the job's log; -f follows it until the job ends
 marshal grep <id> <pattern> [-i] [-v] [-n] [-c] [-F] [-m <n>] [-A|-B|-C <n>] [--last <n>]  the lines of the job's log that match the pattern (a regular expression; -F: literal text), as grep prints them; exits 0 when a line matched, 1 when none did, 2 on an error
 marshal status [--json]                    the budget in use; --json: one JSON object with the running and queued jobs
@@ -638,6 +641,39 @@ ends: nothing polls.
   own jobs; take-slot's waiters keep their places by arrival. `ls` shows a held job as `held`, and
   `status` and `top` say when the queue is held. A held queue, held jobs, priorities and the urgent
   band survive `marshal restart`. `kill` cancels a held job like any queued one.
+- **Polite mode, for while you work on the machine.** `marshal polite` makes marshal admit jobs
+  against only part of its budget, three quarters by default (`marshal polite 0.5`, `marshal polite
+  2/3` for another part; a fraction above 0 and at most 1), so the machine never jams under you;
+  `marshal polite off` gives the whole budget back at once. Each prints the state it leaves, such as
+  `polite ¾: 9 of 12 units, 42G of 56G memory`. The units are rounded down to a quarter and the
+  memory to a mebibyte. Every lane counts against the polite budget: a landing job's units and a
+  quick job's are counted beside the development jobs' while they run, and a landing job waits for
+  its units to fit as it waits for its memory, draining the machine meanwhile. **A job bigger than
+  the polite budget runs alone**, single file: it is neither refused nor starved; it waits until
+  nothing else of marshal's runs (`ls`: `queued (polite: runs alone)`), holds back the jobs queued
+  behind it so the machine empties (`queued (polite: N runs alone)`), and then runs with its full
+  size, nothing starting beside it, not even a quick job. A job that fits the polite budget but not
+  beside what runs says `queued (polite budget)`. Turning polite mode on stops nothing: running jobs
+  go on whatever their size, and it only governs what starts next. An exclusive job is unchanged.
+  `status` and `top` show `polite ¾` beside the budget, the meters drawn against the polite budget of
+  the full one (`3.25/9 of 12`), and `status --json` gives `polite` (`fraction`, `units`, `memory`) or
+  null. The setting survives `marshal restart`.
+
+  **A schedule.** config.json's `polite_schedule` makes marshal polite by the clock, in local time:
+
+  ```
+  "polite_schedule": [{"days": "mon-fri", "from": "08:00", "until": "16:05", "fraction": 0.75}]
+  ```
+
+  `days` is days and ranges of them (`mon-fri`, `sat,sun`, `fri-mon`), every day when left out;
+  `until` may be `24:00`, and a window whose `until` is before its `from` runs overnight, belonging to
+  the day it begins on; `fraction` is 0.75 when left out; where windows overlap the first holds. Inside
+  a window `status` says `polite ¾ (schedule until 16:05)`. What you say by hand wins for as long as
+  you said it for: a `marshal polite off` inside a window holds until the window ends, a `marshal
+  polite 0.5` there changes the fraction until it ends, and after the window marshal is not polite.
+  A setting made outside every window holds outside them, and a window that begins later overrides
+  it while it lasts. A schedule config.json cannot read keeps the daemon from starting, saying what
+  is wrong.
 - **Stopping.** `marshal stop` or a TERM signal ends the daemon. TERM, like `stop --force`, kills
   what runs and cancels what waits. `stop --wait` is refused while the queue or a queued job is
   held, since what waits would never end.
@@ -802,7 +838,11 @@ against its own budget. `marshal status` shows what take-slot holds.
   `--quick` job, both quick slots taken), `emptying` (an `--exclusive` job waiting for the running
   jobs to end), `load 7.9 ≥ 4` or `load 3.5 < 4 for 20.0s` (an exclusive job's `--quiet-load`) or
   `exclusive N` (exclusive job N runs, or waits ahead of it), `disk low` (the disk is under
-  `disk_min`; the header shows how much is free). A running quick job shows `quick`, a
+  `disk_min`; the header shows how much is free), `polite` (the polite budget is full), `runs alone`
+  (bigger than the polite budget, waiting for marshal to empty) or `alone N` (job N runs alone, or
+  waits to, ahead of it). While marshal is polite the header says `polite ¾` (with `until 16:05`
+  while the schedule sets it) and the units and memory meters are drawn against the polite budget,
+  of the full one: `3.25/9 of 12`, `12G/42G of 56G`. A running quick job shows `quick`, a
   running exclusive job `exclusive`. A job waiting for others
   shows `after 3,4`, one waiting to retry `retry 2`. An ended job shows `exit N` (green for 0, red
   otherwise), `killed`, `timeout`, `lost`, `cancelled`, `dep N failed` or `signal N`.

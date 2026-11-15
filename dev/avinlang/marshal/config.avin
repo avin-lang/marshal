@@ -27,6 +27,9 @@ module dev.avinlang.marshal
 //                   owner.avin)
 //   nofile          the soft limit on open files every job inherits, at least 1 and held to the hard
 //                   limit; by default the hard limit, or OPEN_MAX where that is unlimited (nofile.avin)
+//   polite_schedule the windows of the week marshal is polite in, an array such as
+//                   [{"days": "mon-fri", "from": "08:00", "until": "16:05", "fraction": 0.75}]
+//                   (none; polite.avin)
 import dev.avinlang.json
 import dev.avinlang.json.Json
 
@@ -34,7 +37,8 @@ import dev.avinlang.json.Json
 // development job's wait, None for none. `loadWaitMs` is how long a settling exclusive job waits for
 // the load before it is overdue, None for never. `diskMin` is the disk guard's threshold in bytes, 0 for none; `projects`
 // the directory owners are named under, None where config.json does not say; `nofile` the soft limit
-// on open files config.json asks for, None where it does not.
+// on open files config.json asks for, None where it does not; `politeSchedule` the windows marshal is
+// polite in (polite.avin), none where it gives none.
 data Config(
     budget: Budget,
     learning: Learning,
@@ -44,7 +48,8 @@ data Config(
     loadWaitMs: Option[long] = Some(DefaultLoadWait),
     diskMin: long = DefaultDiskMin,
     projects: Option[string] = None,
-    nofile: Option[long] = None
+    nofile: Option[long] = None,
+    politeSchedule: Vector[PoliteWindow] = []
 )
 
 // How long a development job waits before the machine drains for it, unless config.json says.
@@ -72,7 +77,8 @@ readConfig(text: string, machineMemory: long) -> Result[Config, string]
   for key in j.keys
     if ![
       "units", "memory", "reserve", "deadline_floor", "learn_window", "learn_min_runs", "take_slot", "keep_logs",
-      "keep_jobs", "keep_events", "keep_steps", "drain_after", "load_wait", "disk_min", "projects", "nofile"
+      "keep_jobs", "keep_events", "keep_steps", "drain_after", "load_wait", "disk_min", "projects", "nofile",
+      "polite_schedule"
     ].contains(key)
       return Err(s"config.json: no setting `$key`")
   val units = whole(j, "units", 12)?
@@ -113,6 +119,9 @@ readConfig(text: string, machineMemory: long) -> Result[Config, string]
     Some(v) -> v.asLong.filter(n -> n >= 1) match
       Some(n) -> Some(n)
       None -> return Err("config.json: `nofile` is a whole number of open files, at least 1")
+  val schedule = j.get("polite_schedule") match
+    None -> Vector[PoliteWindow]()
+    Some(v) -> readSchedule(v)?
   Ok(
     Config(
       Budget(wholeUnits(units), memory),
@@ -123,7 +132,8 @@ readConfig(text: string, machineMemory: long) -> Result[Config, string]
       loadWait,
       diskMin,
       projects,
-      nofile
+      nofile,
+      schedule
     )
   )
 

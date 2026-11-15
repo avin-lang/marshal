@@ -6,7 +6,7 @@ import dev.avinlang.json
 import dev.avinlang.json.Json
 
 // marshal's version, as `avin.hocon` gives it: what `marshal version` and `marshal restart` print.
-val Version: string = "0.3.18"
+val Version: string = "0.3.19"
 
 // What a job is to run and how much of the machine it takes. `urgent` queues it in its lane's urgent
 // band, behind the urgent jobs already queued and ahead of every other. `after` names the jobs it
@@ -133,6 +133,9 @@ data Request
   // clock, and continues it.
   PauseJob(id: long)
   ResumeJob(id: long)
+  // Makes marshal polite at `fraction` of its budget (polite.avin), or not polite with None, until
+  // the user says otherwise; answered with the budget then in use.
+  Polite(fraction: Option[real])
   // Keeps one queued job from starting, and lets it start again.
   Hold(id: long)
   Release(id: long)
@@ -314,7 +317,8 @@ reservedText(j: JobInfo) -> string
 // known; `diskMin` the least `disk_min` lets new jobs start beside (0: no guard; disk.avin).
 // `nofile` is the soft limit on open files every job inherits from the daemon, 0 where not known
 // (nofile.avin). `settling` is how many exclusive jobs are settling (`settling`): counted neither as
-// running nor in `queued`.
+// running nor in `queued`. `polite` is the polite budget jobs are admitted against while marshal is
+// polite (polite.avin), None while it is not; `unitBudget` and `memoryBudget` stay the full ones.
 data Usage(
     units: int,
     unitBudget: int,
@@ -335,7 +339,8 @@ data Usage(
     diskFree: long = -1,
     diskMin: long = 0,
     nofile: long = 0,
-    settling: int = 0
+    settling: int = 0,
+    polite: Option[PoliteUse] = None
 )
 
 // The members `status`, `status --json` and the snapshot add for the machine's processors and disk:
@@ -385,7 +390,8 @@ private withMachine(u: Usage, m: (long, long, long, long, long)) -> Usage =
     m.2,
     m.3,
     m.4,
-    u.settling
+    u.settling,
+    u.polite
   )
 
 // What take-slot.zsh holds in the directory `dir` that marshal shares: units its runs hold, how many
@@ -404,7 +410,10 @@ data TakeSlotUse(dir: string, units: int, waiting: int, landing: bool)
 // (`load` the last read, `limit` its quiet load, `calmMs` how long it has been below); every job
 // queued behind it, and every job while one runs, waits `ForExclusive(id)`. While the disk has less
 // free than `disk_min`, every queued job not held by hand waits `DiskLow(free)`, `free` the bytes
-// free when it was last measured (disk.avin).
+// free when it was last measured (disk.avin). While marshal is polite (polite.avin), a job that would
+// fit beside what runs in the full budget but not in the polite one waits `PoliteBudget`; one bigger
+// than the polite budget waits `RunsAlone` until nothing else of marshal's runs, and every job held
+// back by it, waiting or running alone, waits `ForAlone(id)`.
 data Why
   NoUnits
   NoMemory
@@ -421,6 +430,9 @@ data Why
   Load(load: real, limit: real, calmMs: long)
   ForExclusive(id: long)
   DiskLow(free: long)
+  PoliteBudget
+  RunsAlone
+  ForAlone(id: long)
 
 // A queued job, its place in its lane's queue (from 1; landing jobs, quick jobs and development jobs
 // each have a queue), and why it waits.
@@ -486,6 +498,8 @@ encodeRequest(PauseQueue) = Json.obj(("op", Json.str("pause")))
 encodeRequest(ResumeQueue) = Json.obj(("op", Json.str("resume")))
 encodeRequest(PauseJob(id)) = Json.obj(("op", Json.str("pause")), ("id", Json.num(id)))
 encodeRequest(ResumeJob(id)) = Json.obj(("op", Json.str("resume")), ("id", Json.num(id)))
+encodeRequest(Polite(Some(f))) = Json.obj(("op", Json.str("polite")), ("fraction", Json.num(f)))
+encodeRequest(Polite(None)) = Json.obj(("op", Json.str("polite")), ("off", Json.Bool(true)))
 encodeRequest(Hold(id)) = Json.obj(("op", Json.str("hold")), ("id", Json.num(id)))
 encodeRequest(Release(id)) = Json.obj(("op", Json.str("release")), ("id", Json.num(id)))
 encodeRequest(Prioritize(id, Level(n))) = Json.obj(
@@ -570,7 +584,10 @@ encodeSpec(s: JobSpec) -> Json = Json.Obj(
 // with a label.
 private sizingMembers(exact: bool, asked: int) -> Vector[(string, Json)] =
   (if exact then [("units_exact", Json.Bool(true))] else Vector[(string, Json)]()) ++ (
-    if asked > 0 then [("units_asked", unitsJson(asked)), ("units_capped", Json.Bool(true))] else Vector[(string, Json)]()
+    if asked > 0 then [
+      ("units_asked", unitsJson(asked)),
+      ("units_capped", Json.Bool(true))
+    ] else Vector[(string, Json)]()
   )
 
 // The units a job asked for while it weighs fewer, read from an object: 0 where it is absent, as
@@ -745,6 +762,10 @@ decodeRequest(text: string) -> Result[Request, string]
     "resume" -> if j.has("id") then Ok(ResumeJob(field(j, "id", v -> v.asLong, "a whole number")?)) else Ok(ResumeQueue)
     "hold" -> Ok(Hold(field(j, "id", v -> v.asLong, "a whole number")?))
     "release" -> Ok(Release(field(j, "id", v -> v.asLong, "a whole number")?))
+    "polite" ->
+      if optional(j, "off", v -> v.asBool, "a bool", false)? then return Ok(Polite(None))
+      val f = field(j, "fraction", v -> v.asReal, "a number")?
+      checkFraction(f).map(x -> Polite(Some(x)))
     "priority" -> Ok(
       Prioritize(
         field(j, "id", v -> v.asLong, "a whole number")?,
@@ -984,6 +1005,7 @@ statusJson(u: Usage, jobs: Vector[JobInfo], whys: Vector[(long, Why)] = []) -> J
     ("quick", Json.num(u.quick)),
     ("quick_slots", Json.num(QuickSlots)),
     ("exclusive", u.exclusive.map(id -> Json.num(id)).getOrElse(Json.Null)),
+    ("polite", politeJson(u.polite)),
     ("running", Json.Arr(jobs.filter(j -> j.state == "running").map(encodeJob))),
     ("queued", Json.Arr(jobs.filter(j -> j.state == "queued").map(j -> withWhy(j, whys)))),
     ("settling", Json.Arr(jobs.filter(j -> settling(j)).map(j -> withWhy(j, whys))))
@@ -1035,8 +1057,34 @@ private usageMembers(u: Usage) -> Vector[(string, Json)] = Json.obj(
   ("queue_held", Json.Bool(u.queueHeld)),
   ("quick", Json.num(u.quick)),
   ("exclusive", u.exclusive.map(id -> Json.num(id)).getOrElse(Json.Null)),
-  ("settling", Json.num(u.settling))
+  ("settling", Json.num(u.settling)),
+  ("polite", politeJson(u.polite))
 ).asMembers.get ++ machineMembers(u)
+
+// Polite mode as the protocol writes it: `{fraction, units, memory}`, with `until` while the
+// schedule sets it, or null while marshal is not polite.
+politeJson(p: Option[PoliteUse]) -> Json = p match
+  None -> Json.Null
+  Some(u) -> Json.Obj(
+    [("fraction", Json.num(u.fraction)), ("units", unitsJson(u.units)), ("memory", Json.num(u.memory))] ++ (
+      if u.until.isEmpty then Vector[(string, Json)]() else [("until", Json.str(u.until))]
+    )
+  )
+
+// Polite mode as the protocol wrote it under `polite` in `j`: None where it is null or absent.
+private decodePolite(j: Json) -> Result[Option[PoliteUse], string]
+  val p = j.get("polite").getOrElse(Json.Null)
+  if p == Json.Null then return Ok(None)
+  Ok(
+    Some(
+      PoliteUse(
+        field(p, "fraction", v -> v.asReal, "a number")?,
+        field(p, "units", quartersOf, unitsWanted)?,
+        field(p, "memory", v -> v.asLong, "a whole number")?,
+        optional(p, "until", v -> v.asString, "a string", "")?
+      )
+    )
+  )
 
 decodeReply(text: string) -> Result[Reply, string]
   val j = json.parse(text) match
@@ -1073,7 +1121,8 @@ decodeReply(text: string) -> Result[Reply, string]
             optional(j, "mem_held", wholeNumber, "a whole number", 0)?,
             optional(j, "quick", v -> v.asInt, "an int", 0)?,
             optional(j, "exclusive", someLong, "a whole number", None)?,
-            settling = optional(j, "settling", v -> v.asInt, "an int", 0)?
+            settling = optional(j, "settling", v -> v.asInt, "an int", 0)?,
+            polite = decodePolite(j)?
           ),
           machineOf(j)?
         )
@@ -1110,14 +1159,18 @@ whyWord(Emptying) = "emptying"
 whyWord(Load(_, _, _)) = "load"
 whyWord(ForExclusive(_)) = "exclusive"
 whyWord(DiskLow(_)) = "disk-low"
+whyWord(PoliteBudget) = "polite"
+whyWord(RunsAlone) = "alone"
+whyWord(ForAlone(_)) = "for-alone"
 
 // The job a reason names, as the field beside its word: `behind` for `Behind`, `draining_for` for
-// `DrainingFor`, `exclusive_id` for `ForExclusive` (beside the job's own `exclusive`); and for `Load`, `load`, `load_limit` and
-// `calm_ms`. Nothing for the rest.
+// `DrainingFor`, `exclusive_id` for `ForExclusive` (beside the job's own `exclusive`), `alone_id` for
+// `ForAlone`; and for `Load`, `load`, `load_limit` and `calm_ms`. Nothing for the rest.
 private whyId(why: Why) -> Vector[(string, Json)]
 whyId(Behind(id)) = [("behind", Json.num(id))]
 whyId(DrainingFor(id)) = [("draining_for", Json.num(id))]
 whyId(ForExclusive(id)) = [("exclusive_id", Json.num(id))]
+whyId(ForAlone(id)) = [("alone_id", Json.num(id))]
 whyId(DiskLow(free)) = [("disk_free", Json.num(free))]
 whyId(Load(load, limit, calmMs)) = [
   ("load", Json.num(load)),
@@ -1157,6 +1210,9 @@ private decodeWhy(j: Json) -> Result[Why, string]
     )
     "exclusive" -> Ok(ForExclusive(field(j, "exclusive_id", v -> v.asLong, "a whole number")?))
     "disk-low" -> Ok(DiskLow(field(j, "disk_free", v -> v.asLong, "a whole number")?))
+    "polite" -> Ok(PoliteBudget)
+    "alone" -> Ok(RunsAlone)
+    "for-alone" -> Ok(ForAlone(field(j, "alone_id", v -> v.asLong, "a whole number")?))
     other -> Err(s"no such reason to wait: `$other`")
 
 private decodeQueued(j: Json) -> Result[QueuedJob, string] =
@@ -1176,6 +1232,7 @@ encodeOverview(o: Overview) -> Json = Json.Obj(
     ("queue_held", Json.Bool(o.usage.queueHeld)),
     ("quick", Json.num(o.usage.quick)),
     ("exclusive", o.usage.exclusive.map(id -> Json.num(id)).getOrElse(Json.Null)),
+    ("polite", politeJson(o.usage.polite)),
     ("uptime_ms", Json.num(o.uptimeMs)),
     ("running", Json.Arr(o.running.map(encodeJob))),
     ("queued", Json.Arr(o.queued.map(encodeQueued))),
@@ -1211,7 +1268,8 @@ decodeOverview(j: Json) -> Result[Overview, string]
           optional(j, "mem_held", wholeNumber, "a whole number", 0)?,
           optional(j, "quick", v -> v.asInt, "an int", 0)?,
           optional(j, "exclusive", someLong, "a whole number", None)?,
-          settling = queued.filter(q -> settling(q.job)).length
+          settling = queued.filter(q -> settling(q.job)).length,
+          polite = decodePolite(j)?
         ),
         machineOf(j)?
       ),

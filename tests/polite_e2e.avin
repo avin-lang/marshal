@@ -1,0 +1,121 @@
+module tests
+
+// End to end, polite mode through the command line: `marshal polite` turns it on, changes its
+// fraction and turns it off, printing the state it leaves; status and ls show it; running jobs go on
+// when it is switched on; a job bigger than the polite budget runs alone; the setting survives
+// `marshal restart`; and config.json's polite_schedule switches it on. The helpers are e2e.avin's,
+// control_e2e.avin's and ls_why_e2e.avin's.
+import dev.avinlang.json.Json
+
+// Four units and 8G: polite at ½ is 2 units and 4G.
+val PoliteConfig: string = "{\"units\": 4, \"memory\": \"8G\"}"
+
+@test("marshal polite turns it on at ¾, takes a fraction, turns off, and prints the state each leaves")
+politeCommandsE2e()
+  val home = newHome(PoliteConfig)
+  val on = m(home, "polite")
+  assertEq(on.code, 0)
+  assertEq(on.out.trim, "polite ¾: 3 of 4 units, 6G of 8G memory")
+  assert(m(home, "status").out.contains("units 0/3 of 4, memory 0/6G of 8G, polite ¾, "), m(home, "status").out)
+  val half = m(home, "polite", "0.5")
+  assertEq(half.out.trim, "polite ½: 2 of 4 units, 4G of 8G memory")
+  assertEq(m(home, "polite", "3/4").out.trim, "polite ¾: 3 of 4 units, 6G of 8G memory")
+  assertEq(m(home, "polite", "0.6").out.trim, "polite 0.6: 2.25 of 4 units, 4915M of 8G memory")
+  val p = statusJsonOf(home)("polite")
+  assertEq(p("fraction").asReal, Some(0.6))
+  assertEq(p("units").asReal, Some(2.25))
+  assert(!p.has("until"))
+  val off = m(home, "polite", "off")
+  assertEq(off.code, 0)
+  assertEq(off.out.trim, "polite off: 4 units, 8G memory")
+  assertEq(statusJsonOf(home)("polite"), Json.Null)
+  assert(m(home, "status").out.contains("units 0/4, memory 0/8G, 0 running"), m(home, "status").out)
+  m(home, "stop", "--force")
+  cleanUp(home)
+
+@test("marshal polite refuses a fraction that is not above 0 and at most 1, and more than one argument")
+politeRefusalsE2e()
+  val home = newHome(PoliteConfig)
+  for bad in ["0", "1.5", "x", "-1", "5/4"]
+    refusedWith(m(home, "polite", bad), "is not a fraction")
+  refusedWith(m(home, "polite", "0.5", "1"), "polite takes a fraction, `off`, or nothing")
+  assertEq(statusJsonOf(home)("polite"), Json.Null)
+  assert(m(home, "polite", "--help").out.contains("polite [<fraction> | off]"))
+  m(home, "stop", "--force")
+  cleanUp(home)
+
+@test("switching polite on stops no running job; a job past its budget waits for it, and off starts it at once")
+politeRunningGoesOnE2e()
+  val home = newHome(PoliteConfig)
+  val busy = submitted(home, "--units", "2", "--", "sleep", "30")
+  assert(within(2000, () -> started(home, busy)))
+  assertEq(m(home, "polite", "0.5").code, 0)
+  assert(lsRowOf(home, busy).contains("running"), lsRowOf(home, busy))
+  val queued = submitted(home, "--units", "1", "--", "true")
+  assert(lsRowOf(home, queued).contains("queued (polite budget)"), lsRowOf(home, queued))
+  assertEq(lsQueuedJson(home, queued)("why").asString, Some("polite"))
+  assertEq(m(home, "polite", "off").code, 0)
+  assertEq(m(home, "wait", queued.toString()).code, 0)
+  assert(lsRowOf(home, busy).contains("running"), lsRowOf(home, busy))
+  m(home, "stop", "--force")
+  cleanUp(home)
+
+@test("a job bigger than the polite budget runs alone: it waits for marshal to empty, and nothing starts beside it")
+politeAloneE2e()
+  val home = newHome(PoliteConfig)
+  assertEq(m(home, "polite", "0.5").code, 0)
+  val small = submitted(home, "--units", "1", "--", "sleep", "30")
+  assert(within(2000, () -> started(home, small)))
+  val big = submitted(home, "--units", "3", "--", "sleep", "1")
+  val after = submitted(home, "--units", "1", "--", "true")
+  assert(lsRowOf(home, big).contains("queued (polite: runs alone)"), lsRowOf(home, big))
+  assert(lsRowOf(home, after).contains(s"queued (polite: $big runs alone)"), lsRowOf(home, after))
+  assertEq(lsQueuedJson(home, big)("why").asString, Some("alone"))
+  assertEq(lsQueuedJson(home, after)("alone_id").asLong, Some(big))
+  m(home, "kill", small.toString())
+  assertEq(m(home, "wait", big.toString()).code, 0)
+  assertEq(m(home, "wait", after.toString()).code, 0)
+  // it weighed its full 3 units, and the job behind it started only once it had finished
+  assert(at(home, after, "started") > at(home, big, "finished"))
+  assert(at(home, big, "started") > at(home, small, "killed"))
+  m(home, "stop", "--force")
+  cleanUp(home)
+
+@test("the polite setting survives a restart, and so does turning it off")
+politeRestartE2e()
+  val home = newHome(PoliteConfig)
+  assertEq(m(home, "polite", "0.5").code, 0)
+  val pid = daemonPid(home)
+  restarted(home)
+  assertEq(daemonPid(home), pid)
+  assertEq(statusJsonOf(home)("polite")("fraction").asReal, Some(0.5))
+  assertEq(m(home, "polite", "off").code, 0)
+  restarted(home)
+  assertEq(statusJsonOf(home)("polite"), Json.Null)
+  m(home, "stop", "--force")
+  cleanUp(home)
+
+@test("inside a window of polite_schedule marshal is polite and says until when; a polite off inside it holds")
+politeScheduleE2e()
+  val home = newHome(
+    "{\"units\": 4, \"memory\": \"8G\", \"polite_schedule\": [{\"from\": \"00:00\", \"until\": \"24:00\", \"fraction\": 0.5}]}"
+  )
+  val s = m(home, "status").out
+  assert(s.contains("polite ½ (schedule until 24:00)"), s)
+  assertEq(statusJsonOf(home)("polite")("until").asString, Some("24:00"))
+  assertEq(m(home, "polite", "off").out.trim, "polite off: 4 units, 8G memory")
+  assertEq(statusJsonOf(home)("polite"), Json.Null)
+  assertEq(m(home, "polite", "3/4").out.trim, "polite ¾: 3 of 4 units, 6G of 8G memory")
+  m(home, "stop", "--force")
+  cleanUp(home)
+
+@test("a polite_schedule config.json cannot read keeps the daemon from starting, saying why")
+politeBadScheduleE2e()
+  val home = newHome("{\"polite_schedule\": [{\"from\": \"08:00\", \"until\": \"25:00\"}]}")
+  val r = m(home, "status")
+  assert(r.code != 0, r.out)
+  assert(
+    r.out.contains("`until` is a local time") || daemonLog(home).contains("`until` is a local time"),
+    r.out + daemonLog(home)
+  )
+  cleanUp(home)

@@ -2100,3 +2100,73 @@ none.
   `NOTE_EXIT` on every process to catch its final time (bindings for little the reaped times miss).
   What is still not counted: a process whose parent ended first is reaped by process 1, and what it
   used after the last sample is lost.
+
+## Polite mode, while the user works on the machine (branch `polite`)
+
+Settled on the user's design 2026-11-15: *"a new marshal feature to help me when i'm in my day job
+… when in that mode, marshal won't try to make best use of the machine but rather only schedule say
+3/4 of it. for jobs that need more, it just lets those go through single file. that way when i'm
+working, the machine doesn't get jammed."* The name is the user's, **polite**, and so is the command:
+*"it could just be `marshal polite 0.75` (without the "on") for turning it on."* What follows are the
+choices the design left open (settled on the user's delegation 2026-11-15).
+
+- **The polite budget is the fraction of both budgets, units rounded down to a quarter and memory
+  down to a mebibyte, at least one of each.** Down, so polite never admits more than the fraction;
+  12 units at 0.6 is 7 units, not 7.25. An unlimited memory budget stays unlimited. A fraction is
+  above 0 and at most 1 (1 changes no size, so no job runs alone, but the landing and quick lanes
+  still count against the units, below); `marshal polite` alone is 0.75, and `3/4` is
+  read as well as `0.75`. Alternative: rounding to the nearest quarter (could admit slightly more
+  than asked).
+- **Every lane counts against the polite budget.** A landing or quick job's units, which the full
+  budget leaves outside the unit count, are counted beside the development jobs' while it runs, so
+  a train started while the user works does not jam the machine on top of what is already running.
+  The lanes keep their own rules otherwise: a landing job still goes first and starts when the lane
+  is free and its memory fits, and now also when its units fit; when they do not, it drains the
+  machine exactly as it does for memory (nothing else starts until they have freed), so it is never
+  starved, and one bigger than the polite budget starts once nothing else runs. A quick job still
+  starts outside the units, at most two at a time, but its units then count against what
+  development jobs may start. **Review with the user:** whether a landing job should keep its
+  outside-the-units lane even while polite (a release train would then start at once beside a
+  full polite budget, as it does today).
+- **A development or quick job bigger than the polite budget (units or memory) runs alone through
+  the exclusive machinery.** The scheduler marks it `alone` and treats it as an exclusive job that
+  reserves the machine at once: it starts only when nothing of marshal's runs or starts and
+  take-slot holds nothing, nothing starts beside it while it runs (no development, quick, landing,
+  exclusive or backfilled job), and the jobs queued behind it wait for it, so no stream of small
+  jobs starves it. Unlike an exclusive job it keeps its niceness, waits for no load, is not sampled,
+  and does not weigh the whole budget: it runs at its own size. A landing job is never marked alone
+  (it has its own single-file rule above), and an exclusive job is unchanged. Whether a job runs
+  alone is decided at each look from the polite budget then in force, so switching polite off lets
+  a waiting big job start beside others at once, and a job already running past the polite budget
+  when polite is switched on is counted as running alone: nothing starts beside it, and it is never
+  stopped. Alternatives: a separate single-file queue (a second copy of the drain logic the
+  exclusive one already proves), or refusing big jobs while polite (the user said they go through).
+- **Why a job waits says polite.** `polite budget` (it would fit beside what runs in the full
+  budget, not in the polite one), `polite: runs alone` and `polite: N runs alone`; in `top`'s
+  14-cell STATE column `polite`, `runs alone`, `alone N`; in the protocol `polite`, `alone` and
+  `for-alone` with `alone_id`.
+- **The display.** `status`: `units 3.25/9 of 12, memory 12G/42G of 56G, polite ¾, …`; `top`'s
+  header `polite ¾` after the queued count, and its units and memory meters drawn against the polite
+  budget with the full one after `of`; the CPU meter keeps the full budget, since it measures the
+  machine. A vulgar fraction for halves, thirds and quarters, the number otherwise (`polite 0.6`).
+  `status --json` and the snapshot carry `polite` (`fraction`, `units`, `memory`, and `until` while
+  the schedule sets it) or null; `unit_budget` and `mem_budget` stay the full budget, so readers that
+  know nothing of polite mode read what they always did.
+- **The setting is daemon state, kept across `marshal restart`** in `state.json`, like a held queue.
+  A daemon stopped and started again begins not polite (the schedule, if any, still applies).
+  Alternative: a file of its own that survives a stop (left for when it is wanted).
+- **The schedule (`polite_schedule` in config.json) is off unless given.** Windows in local time,
+  the zone read once as the daemon starts. `days` lists days and ranges (`mon-fri`, `sat,sun`,
+  `fri-mon` wraps), every day when absent; `until` may be `24:00`; **an overnight window is
+  supported**: one whose `until` is before its `from` belongs to the day it begins on and runs into
+  the next; `from` equal to `until` is refused. Where windows overlap, the first listed holds. A
+  window's end is exclusive (at 16:05 a 08:00–16:05 window is over). A window is looked at whenever
+  the daemon schedules (each tick while anything is queued), so a window's start or end takes effect
+  within a tick.
+- **What the user says by hand wins for as long as it was said for.** A setting made inside a window
+  (`off`, or another fraction) is tied to that occurrence of the window and holds until it ends;
+  after it marshal is not polite, and the next window is polite again. A setting made outside every
+  window holds outside them, and each window that begins after it overrides it while that window
+  lasts, then the setting applies again. **Review with the user:** whether a fraction set outside the
+  windows (say on a Saturday) should still be in force on Monday evening after the window, as it is
+  now, or end with the next window.

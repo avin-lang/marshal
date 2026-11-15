@@ -1,0 +1,212 @@
+module dev.avinlang.marshal
+
+// Polite mode: while the user works on the machine, marshal admits jobs against a part of its budget
+// instead of all of it, so the machine is never jammed. A job bigger than that part runs alone
+// (sched.avin). It is switched on and off by hand (`marshal polite [fraction]`, `marshal polite
+// off`), and config.json's `polite_schedule` can switch it on in windows of the week:
+//
+//   "polite_schedule": [{"days": "mon-fri", "from": "08:00", "until": "16:05", "fraction": 0.75}]
+//
+// `days` is a list of days and ranges of them (`mon-fri`, `sat,sun`, `mon-wed,fri`, `fri-mon`), every
+// day where it is left out; `from` and `until` are local times, `until` up to `24:00`, never the
+// same, and a window whose `until` is before its `from` runs overnight into the next day, belonging
+// to the day it begins on. `fraction` is 0.75 where it is left out. Where windows overlap, the first one listed
+// holds.
+//
+// What the user said last wins, for as long as it was said for: a setting made inside a window holds
+// until that window ends (a `polite off` keeps marshal impolite, a `polite 0.5` changes the
+// fraction), and then marshal is not polite until the next window. A setting made outside every
+// window holds outside them, and each window that begins after it overrides it while it lasts.
+import avin.time
+import dev.avinlang.json
+import dev.avinlang.json.Json
+
+// The fraction `marshal polite` uses when it is not given one.
+val DefaultPolite: real = 0.75
+
+// One window of `polite_schedule`: the days it begins on (ISO numbers, 1 for Monday to 7 for Sunday),
+// its local times as minutes of the day (`until` up to 1440, and at or before `from` for one that
+// runs overnight), the fraction it is polite at, and `untilText`, its end as config.json wrote it.
+data PoliteWindow(days: Vector[int], from: int, until: int, fraction: real, untilText: string)
+
+// What the user set by hand: the fraction (0 for off) and the window it was set in, as
+// `windowKey` names it ("" for none).
+data PoliteSetting(fraction: real, window: string)
+
+// The polite mode in force: its fraction and, while the schedule sets it, when its window ends
+// ("16:05"; "" when it was set by hand).
+data PoliteNow(fraction: real, until: string)
+
+// Polite mode as `status` and `top` show it: the fraction, the polite budget's units (in quarters)
+// and memory, and the end of the window that set it ("" when it was set by hand).
+data PoliteUse(fraction: real, units: int, memory: long, until: string = "")
+
+// A fraction of the budget, or why it is not one: above 0 and at most 1.
+checkFraction(f: real) -> Result[real, string] =
+  if f.isFinite && 0.0 < f <= 1.0 then Ok(f) else Err(s"a polite fraction is above 0 and at most 1, not $f")
+
+// The fraction `text` writes: a decimal (`0.75`, `.5`, `1`) or a ratio of whole numbers (`3/4`).
+parseFraction(text: string) -> Result[real, string]
+  val t = text.trim
+  val refusal = s"`$t` is not a fraction: give one above 0 and at most 1, such as 0.75 or 3/4"
+  val slash = t.indexOf("/")
+  if slash >= 0
+    val (top, bottom) = (t.take(slash), t.drop(slash + 1))
+    if !allDigits(top) || !allDigits(bottom) || top.charCount > 6 || bottom.charCount > 6 then return Err(refusal)
+    val d = bottom.toInt()
+    if d == 0 then return Err(refusal)
+    return checkFraction(real(top.toInt()) / real(d)).mapErr(_ -> refusal)
+  if t.isEmpty || !t.chars.forall(c -> '0' <= c <= '9' || c == '.') then return Err(refusal)
+  t.toRealOption() match
+    Some(f) -> checkFraction(f).mapErr(_ -> refusal)
+    None -> Err(refusal)
+
+private allDigits(text: string) -> bool = text.nonEmpty && text.chars.forall(c -> '0' <= c <= '9')
+
+// The budget polite at `fraction` of `full`: its units rounded down to a quarter, its memory to a
+// mebibyte, each at least that much, naming `full` as the whole it is a part of. An unlimited memory
+// budget stays unlimited.
+politeBudget(full: Budget, fraction: real) -> Budget
+  val units = long(real(full.units) * fraction + 1e-9)
+  val mib: long = 1024 * 1024
+  val memory = if full.memory == long.MaxValue then full.memory else long(
+    real(full.memory) * fraction / real(mib) + 1e-9
+  ) * mib
+  Budget(
+    if units < 1 then 1 else int(units),
+    if memory < mib then (if full.memory < mib then full.memory else mib) else memory,
+    full.units,
+    full.memory
+  )
+
+// The fractions written as vulgar fractions, and the characters for them: halves, thirds and
+// quarters, the ones read at a glance.
+private val Vulgar: Vector[(int, int, string)] = [(1, 2, "½"), (1, 3, "⅓"), (2, 3, "⅔"), (1, 4, "¼"), (3, 4, "¾")]
+
+// A fraction as `status` and `top` show it: a vulgar fraction where it is a half, a third or a
+// quarter (`¾`, `⅔`), else the number (`0.6`, `1`).
+fractionText(f: real) -> string
+  for (n, d, text) in Vulgar
+    val x = real(n) / real(d)
+    if f - x < 1e-6 && x - f < 1e-6 then return text
+  s"$f"
+
+// What polite mode is called while it is in force: `polite ¾`, with `(schedule until 16:05)` while
+// the schedule sets it.
+politeText(p: PoliteUse) -> string =
+  s"polite ${fractionText(p.fraction)}" + (if p.until.isEmpty then "" else s" (schedule until ${p.until})")
+
+// What `marshal polite` prints of the state it leaves: `polite ¾: 9 of 12 units, 42G of 56G memory`,
+// or `polite off: 12 units, 56G memory`, for a daemon whose full budget is `units` (quarters) and
+// `memory`.
+politeLine(p: Option[PoliteUse], units: int, memory: long) -> string
+  val mem = (m: long) -> if m == long.MaxValue then "unlimited" else formatSize(m)
+  p match
+    Some(
+      u
+    ) -> s"${politeText(u)}: ${formatUnits(u.units)} of ${formatUnits(units)} units, ${mem(u.memory)} of ${mem(memory)} memory"
+    None -> s"polite off: ${formatUnits(units)} units, ${mem(memory)} memory"
+
+// The window of `schedule` in force at `ms` (wall-clock milliseconds) in `zone`, with the key that
+// names this occurrence of it, its start day and its place in the schedule (`20408#0`); None
+// outside every window.
+activeWindow(schedule: Vector[PoliteWindow], ms: long, zone: time.Zone) -> Option[(string, PoliteWindow)]
+  if schedule.isEmpty then return None
+  val at = time.epochMillis(ms).atZone(zone)
+  val minute = at.hour * 60 + at.minute
+  val today = at.weekday.isoNumber
+  val yesterday = if today == 1 then 7 else today - 1
+  val day = at.date.epochDay
+  for (w, i) in schedule.zipWithIndex
+    if w.from < w.until
+      if w.days.contains(today) && w.from <= minute < w.until then return Some((s"$day#$i", w))
+    else
+      if w.days.contains(today) && minute >= w.from then return Some((s"$day#$i", w))
+      if w.days.contains(yesterday) && minute < w.until then return Some((s"${day - 1}#$i", w))
+  None
+
+// The polite mode in force at `ms` in `zone`, from the schedule and what the user set by hand
+// (`manual`); None when marshal is not polite. See the rules at the top of this file.
+politeAt(schedule: Vector[PoliteWindow], manual: Option[PoliteSetting], ms: long, zone: time.Zone) -> Option[PoliteNow]
+  val active = activeWindow(schedule, ms, zone)
+  val fromManual = (
+      s: PoliteSetting,
+      until: string
+  ) -> if s.fraction > 0.0 then Some(PoliteNow(s.fraction, until)) else None
+  active match
+    Some((key, w)) -> manual match
+      Some(s) if s.window == key -> fromManual(s, "")
+      _ -> Some(PoliteNow(w.fraction, w.untilText))
+    None -> manual match
+      Some(s) if s.window.isEmpty -> fromManual(s, "")
+      _ -> None
+
+// What the user sets by hand at `ms` in `zone`: `fraction` (0 for off), in the window in force then.
+settingAt(schedule: Vector[PoliteWindow], fraction: real, ms: long, zone: time.Zone) -> PoliteSetting =
+  PoliteSetting(fraction, activeWindow(schedule, ms, zone).map(a -> a.0).getOrElse(""))
+
+// The days' names, Monday first.
+private val DayNames: Vector[string] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+// The days `text` names (`mon-fri`, `sat,sun`, `fri-mon`), as ISO numbers in order, or None where it
+// is not a list of days and ranges of them.
+parseDays(text: string) -> Option[Vector[int]]
+  if text.trim.isEmpty then return None
+  val days = Buffer[int]()
+  for part in text.split(",")
+    val ends = part.trim.split("-")
+    if ends.length == 0 || ends.length > 2 then return None
+    val first = DayNames.indexOf(ends(0).trim.toLower)
+    val last = DayNames.indexOf(ends(ends.length - 1).trim.toLower)
+    if first < 0 || last < 0 then return None
+    var d = first
+    loop
+      if !days.contains(d + 1) then days += d + 1
+      if d == last then break
+      d = (d + 1) % 7
+  Some(days.toVector.sorted)
+
+// A local time `hh:mm` as a minute of the day, `24:00` too where `end` allows it; None otherwise.
+parseClock(text: string, end: bool) -> Option[int]
+  val parts = text.split(":")
+  if parts.length != 2 || parts(0).charCount != 2 || parts(1).charCount != 2 then return None
+  if !allDigits(parts(0)) || !allDigits(parts(1)) then return None
+  val (h, m) = (parts(0).toInt(), parts(1).toInt())
+  if end && h == 24 && m == 0 then return Some(1440)
+  if h > 23 || m > 59 then None else Some(h * 60 + m)
+
+// The windows config.json's `polite_schedule` gives (an array of objects), or why it is not one.
+readSchedule(v: Json) -> Result[Vector[PoliteWindow], string]
+  val items = v.asVector match
+    Some(xs) -> xs
+    None -> return Err(
+      "config.json: `polite_schedule` is an array of windows, such as [{\"days\": \"mon-fri\", \"from\": \"08:00\", \"until\": \"16:05\"}]"
+    )
+  val out = Buffer[PoliteWindow]()
+  for (item, i) in items.zipWithIndex
+    val at = s"config.json: `polite_schedule` window ${i + 1}"
+    if item.asMembers.isEmpty then return Err(s"$at is an object")
+    for key in item.keys
+      if !["days", "from", "until", "fraction"].contains(key) then return Err(s"$at: no setting `$key`")
+    val days = item.get("days") match
+      None -> [1, 2, 3, 4, 5, 6, 7]
+      Some(d) -> d.asString.flatMap(parseDays) match
+        Some(ds) -> ds
+        None -> return Err(s"$at: `days` is days and ranges of them, such as \"mon-fri\" or \"sat,sun\"")
+    val clock = (key: string, end: bool) -> item.get(key).flatMap(c -> c.asString) match
+      Some(text) -> parseClock(text, end).map(m -> (m, text))
+      None -> None
+    val from = clock("from", false) match
+      Some(c) -> c
+      None -> return Err(s"$at: `from` is a local time such as \"08:00\"")
+    val until = clock("until", true) match
+      Some(c) -> c
+      None -> return Err(s"$at: `until` is a local time such as \"16:05\" or \"24:00\"")
+    if from.0 == until.0 then return Err(s"$at: `from` and `until` are the same time")
+    val fraction = item.get("fraction") match
+      None -> DefaultPolite
+      Some(f) -> f.asReal.map(checkFraction) match
+        Some(Ok(x)) -> x
+        _ -> return Err(s"$at: `fraction` is a number above 0 and at most 1, such as 0.75")
+    out += PoliteWindow(days, from.0, until.0, fraction, until.1)
+  Ok(out.toVector)

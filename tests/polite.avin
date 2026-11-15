@@ -1,0 +1,467 @@
+module tests
+
+// Polite mode: the polite budget's scaling, the scheduler's rules under it (every lane counts
+// against it, a job bigger than it runs alone and is not starved, switching it on stops nothing and
+// switching it off frees the whole budget at once), the fraction's parsing and its words, the
+// schedule's windows and how a setting by hand overrides them, config.json's validation, and the
+// protocol's and the saved state's round trips.
+import avin.time
+import dev.avinlang.json.Json
+import dev.avinlang.marshal
+import dev.avinlang.marshal.{Budget, JobInfo, Outside, Reply, Request, SavedState, Started, Usage, Waiting, Why}
+
+import dev.avinlang.marshal.{
+  NoUnits, NoMemory, Draining, Starting, ForExclusive, Emptying, PoliteBudget, RunsAlone, ForAlone
+}
+
+import dev.avinlang.marshal.{PoliteNow, PoliteSetting, PoliteUse, PoliteWindow}
+
+// `hour` and `minute` are sched.avin's and deadline.avin's, `ids` sched.avin's.
+val pG: long = 1024 * 1024 * 1024
+
+// 12 units and 56G, the full budget, and three quarters of it: 9 units and 42G.
+val pFull: Budget = Budget(48, 56 * pG)
+val pPolite: Budget = marshal.politeBudget(pFull, 0.75)
+
+pDev(id: long, units: int = 4, memory: long = 0, alone: bool = false) -> Waiting =
+  Waiting(id, units, memory, false, hour, id * 10, alone = alone)
+
+pQuick(id: long, units: int = 1, memory: long = 0, alone: bool = false) -> Waiting =
+  Waiting(id, units, memory, false, minute, id * 10, true, alone = alone)
+
+pLand(id: long, units: int = 4, memory: long = 0) -> Waiting = Waiting(id, units, memory, true, hour, id * 10)
+pExcl(id: long) -> Waiting = Waiting(id, 48, 0, false, hour, id * 10, exclusive = true)
+
+pRun(id: long, units: int = 4, memory: long = 0, alone: bool = false) -> Started =
+  Started(id, units, memory, false, 0, hour, alone = alone)
+
+pRunQuick(id: long, units: int = 1) -> Started = Started(id, units, 0, false, 0, minute, true)
+pRunLanding(id: long, units: int = 4, memory: long = 0) -> Started = Started(id, units, memory, true, 0, hour)
+
+// Why each queued job waits under `b`, by id, in queue order.
+pWhys(b: Budget, running: Vector[Started], queue: Vector[Waiting]) -> Vector[(long, Why)] =
+  marshal.waits(b, running, queue, 0).map(w -> (w.0, w.2))
+
+// The wall clock at `hh:mm` on 2026-11-`day` in UTC: the 16th is a Monday.
+pAt(day: int, h: int, mi: int) -> long =
+  time.Zoned(time.dateTime(2026, 11, day, h, mi), time.minutes(0), time.utc).toInstant.epochMillis
+
+// A working week's window: Monday to Friday, 08:00 to 16:05, at three quarters.
+val pWeek: PoliteWindow = PoliteWindow([1, 2, 3, 4, 5], 8 * 60, 16 * 60 + 5, 0.75, "16:05")
+
+@test("the polite budget is the fraction of the full one, units to a quarter and memory to a mebibyte, naming the full")
+politeScaling()
+  assertEq(pPolite, Budget(36, 42 * pG, 48, 56 * pG))
+  assert(marshal.isPolite(pPolite))
+  assert(!marshal.isPolite(pFull))
+  // a fraction of 1 changes no size
+  assertEq(marshal.politeBudget(pFull, 1.0), Budget(48, 56 * pG, 48, 56 * pG))
+  // rounded down to the quarter-unit grain: 12 units at 0.6 is 7.2, so 7
+  assertEq(marshal.politeBudget(pFull, 0.6).units, 28)
+  // two thirds of 12 units is 8 exactly, of 56G a whole number of mebibytes below it
+  val third = marshal.politeBudget(pFull, 2.0 / 3.0)
+  assertEq(third.units, 32)
+  assertEq(third.memory % (1024 * 1024), long(0))
+  assert(third.memory <= 56 * pG * 2 / 3)
+  assert(third.memory > 56 * pG * 2 / 3 - 1024 * 1024)
+  // never below a quarter unit and a mebibyte
+  assertEq(marshal.politeBudget(Budget(4, 4 * pG), 0.01).units, 1)
+  assertEq(marshal.politeBudget(Budget(4, 4 * pG), 0.0001).memory, long(1024 * 1024))
+  // an unlimited memory budget stays unlimited
+  assertEq(marshal.politeBudget(Budget(48, long.MaxValue), 0.5).memory, long.MaxValue)
+  assertEq(marshal.politeBudget(Budget(48, long.MaxValue), 0.5).units, 24)
+
+@test("jobs within the polite budget start beside each other up to it, and the next waits for the polite budget")
+politeAdmitsUpToIt()
+  // 6 units run; 3 more fit the 9 of the polite budget, a fourth unit does not, though the full 12 would take it
+  val r = [pRun(1, 24)]
+  val q = [pDev(2, 12), pDev(3, 4)]
+  assertEq(marshal.schedule(pPolite, r, q, 0), ids(2))
+  assertEq(pWhys(pPolite, r, q), [(long(2), Starting), (long(3), PoliteBudget)])
+  // the full budget starts both
+  assertEq(marshal.schedule(pFull, r, q, 0), ids(2, 3))
+  // one that fits neither budget waits for units, as always
+  assertEq(pWhys(pPolite, [pRun(1, 40)], [pDev(2, 12)]), [(long(2), NoUnits)])
+
+@test("memory counts against the polite budget the same way")
+politeMemory()
+  val r = [pRun(1, 4, 30 * pG)]
+  assertEq(marshal.schedule(pPolite, r, [pDev(2, 4, 12 * pG)], 0), ids(2))
+  assertEq(pWhys(pPolite, r, [pDev(2, 4, 13 * pG)]), [(long(2), PoliteBudget)])
+  assertEq(marshal.schedule(pFull, r, [pDev(2, 4, 13 * pG)], 0), ids(2))
+  // more than even the full budget has free: memory
+  assertEq(pWhys(pPolite, r, [pDev(2, 4, 27 * pG)]), [(long(2), NoMemory)])
+
+@test("off restores the full budget at once: what waited for the polite budget starts")
+politeOffRestores()
+  val r = [pRun(1, 32), pRun(2, 4)]
+  val q = [pDev(3, 8), pDev(4, 4)]
+  assertEq(marshal.schedule(pPolite, r, q, 0), Vector[long]())
+  assertEq(marshal.schedule(pFull, r, q, 0), ids(3, 4))
+
+@test("switching polite on with more running than its budget stops nothing: only what starts next is governed")
+politeOnStopsNothing()
+  // 10 units run, past the polite 9: the scheduler answers only what to start, never a running job
+  val r = [pRun(1, 24), pRun(2, 16)]
+  assertEq(marshal.starts(pPolite, r, [pDev(3, 1)], 0), Vector[(long, Option[long])]())
+  assertEq(pWhys(pPolite, r, [pDev(3, 1)]), [(long(3), PoliteBudget)])
+  // and a job running alone, already past it, keeps running while everything else waits for it
+  assertEq(marshal.schedule(pPolite, [pRun(1, 44, 0, true)], [pDev(2, 1)], 0), Vector[long]())
+
+@test("a job bigger than the polite budget runs alone: it waits while anything of marshal's runs, then starts")
+politeAloneWaitsThenStarts()
+  val big = pDev(2, 40, 0, true)
+  for r in [pRun(1, 1), pRunQuick(1), pRunLanding(1)]
+    assertEq(marshal.schedule(pPolite, [r], [big], 0), Vector[long]())
+    assertEq(pWhys(pPolite, [r], [big]), [(long(2), RunsAlone)])
+  assertEq(marshal.schedule(pPolite, [], [big], 0), ids(2))
+  assertEq(pWhys(pPolite, [], [big]), [(long(2), Starting)])
+  // its memory alone can make it big: 50G of the polite 42G, within the full 56G
+  val heavy = pDev(3, 4, 50 * pG, true)
+  assertEq(pWhys(pPolite, [pRun(1, 1)], [heavy]), [(long(3), RunsAlone)])
+  assertEq(marshal.schedule(pPolite, [], [heavy], 0), ids(3))
+
+@test("nothing starts beside a job running alone: no development, quick, landing or exclusive job, whatever fits")
+politeAloneHoldsEveryLane()
+  val r = [pRun(1, 40, 0, true)]
+  val q = [pDev(2, 1), pQuick(3), pLand(4, 1), pExcl(5)]
+  assertEq(marshal.schedule(pPolite, r, q, 0), Vector[long]())
+  assertEq(
+    pWhys(pPolite, r, q),
+    [(long(2), ForAlone(1)), (long(3), ForAlone(1)), (long(4), ForAlone(1)), (long(5), ForAlone(1))]
+  )
+
+@test("a job that waits to run alone holds back what is queued behind it, so no stream of small jobs starves it")
+politeAloneNotStarved()
+  val running = [pRun(1, 4)]
+  // small development and quick jobs keep arriving behind it while job 1 runs; none starts beside job 1
+  for n in 3 ..< 10
+    val q = [pDev(2, 40, 0, true)] ++ (3 .. n).map(
+      i -> if i % 2 == 0 then pQuick(long(i)) else pDev(long(i), 1)
+    ).toVector
+    assertEq(marshal.schedule(pPolite, running, q, 0), Vector[long]())
+    assertEq(pWhys(pPolite, running, q).drop(1).map(w -> w.1).distinct, [ForAlone(2)])
+  // job 1 ends: it starts, and the stream still waits
+  val q = [pDev(2, 40, 0, true), pDev(3, 1), pQuick(4)]
+  assertEq(marshal.schedule(pPolite, [], q, 0), ids(2))
+  assertEq(pWhys(pPolite, [], q), [(long(2), Starting), (long(3), ForAlone(2)), (long(4), ForAlone(2))])
+
+@test("nothing backfills beside a job waiting to run alone, even one that would end long before it could start")
+politeAloneNoBackfill()
+  // a waited-past bound drains the machine; a short job behind the one waiting to run alone stays queued
+  val fair = marshal.Fairness(1, 1000000)
+  val q = [pDev(2, 40, 0, true), Waiting(3, 1, 0, false, 1, 30)]
+  assertEq(marshal.schedule(pPolite, [pRun(1, 4)], q, 0, marshal.NoOutside, fair), Vector[long]())
+  assertEq(pWhys(pPolite, [pRun(1, 4)], q)(1), (long(3), ForAlone(2)))
+
+@test("jobs queued ahead of a job waiting to run alone start as usual, within the polite budget, and it waits for them")
+politeAheadOfAlone()
+  val q = [pDev(2, 8), pDev(3, 40, 0, true), pDev(4, 1)]
+  assertEq(marshal.schedule(pPolite, [], q, 0), ids(2))
+  assertEq(pWhys(pPolite, [], q), [(long(2), Starting), (long(3), RunsAlone), (long(4), ForAlone(3))])
+
+@test("a landing job's units count against the polite budget: it starts only when they fit, else it drains the machine")
+politeLandingCounts()
+  val r = [pRun(1, 32)]
+  // 8 development units and a 2-unit landing job make 10, past the polite 9: it drains
+  assertEq(marshal.schedule(pPolite, r, [pLand(2, 8)], 0), Vector[long]())
+  assertEq(pWhys(pPolite, r, [pLand(2, 8), pDev(3, 1)]), [(long(2), Draining), (long(3), marshal.Behind(2))])
+  // the full budget keeps the lane outside the units
+  assertEq(marshal.schedule(pFull, r, [pLand(2, 8)], 0), ids(2))
+  // one that fits starts, and its units then count against the development jobs
+  assertEq(marshal.schedule(pPolite, [pRun(1, 16)], [pLand(2, 8), pDev(3, 12), pDev(4, 4)], 0), ids(2, 3))
+  // a running landing job's units count too
+  assertEq(pWhys(pPolite, [pRunLanding(1, 16), pRun(2, 16)], [pDev(3, 8)]), [(long(3), PoliteBudget)])
+  assertEq(marshal.schedule(pFull, [pRunLanding(1, 16), pRun(2, 16)], [pDev(3, 8)], 0), ids(3))
+  // one bigger than the polite budget starts once nothing runs
+  assertEq(marshal.schedule(pPolite, [pRun(1, 1)], [pLand(2, 44)], 0), Vector[long]())
+  assertEq(marshal.schedule(pPolite, [], [pLand(2, 44)], 0), ids(2))
+
+@test("a quick job's units count against the polite budget while it runs, and it still starts outside it")
+politeQuickCounts()
+  // a running quick unit and 8.25 development units are past the polite 9
+  assertEq(pWhys(pPolite, [pRunQuick(1, 4)], [pDev(2, 33)]), [(long(2), PoliteBudget)])
+  assertEq(marshal.schedule(pFull, [pRunQuick(1, 4)], [pDev(2, 33)], 0), ids(2))
+  // a quick job starts beside a full polite budget, and the development job queued with it waits for its units
+  assertEq(marshal.schedule(pPolite, [pRun(1, 32)], [pQuick(2, 4)], 0), ids(2))
+  assertEq(marshal.schedule(pPolite, [pRun(1, 28)], [pQuick(2, 4), pDev(3, 5)], 0), ids(2))
+  assertEq(pWhys(pPolite, [pRun(1, 28)], [pQuick(2, 4), pDev(3, 5)])(1), (long(3), PoliteBudget))
+  assertEq(marshal.schedule(pPolite, [pRun(1, 28)], [pQuick(2, 4), pDev(3, 4)], 0), ids(2, 3))
+  // a quick job bigger than the polite budget runs alone
+  assertEq(pWhys(pPolite, [pRun(1, 1)], [pQuick(2, 4, 50 * pG, true)]), [(long(2), RunsAlone)])
+  assertEq(marshal.schedule(pPolite, [], [pQuick(2, 4, 50 * pG, true)], 0), ids(2))
+
+@test("an exclusive job is unchanged by polite mode: it waits for the machine to empty, and holds it")
+politeExclusiveUnchanged()
+  assertEq(pWhys(pPolite, [pRun(1, 1)], [pExcl(2), pDev(3, 1)]), [(long(2), Emptying), (long(3), ForExclusive(2))])
+  assertEq(marshal.schedule(pPolite, [], [pExcl(2)], 0), ids(2))
+
+@test("a fraction is a decimal or a ratio above 0 and at most 1; anything else is refused, saying so")
+politeFractions()
+  for (text, f) in [
+    ("0.75", 0.75),
+    ("3/4", 0.75),
+    (".5", 0.5),
+    ("1", 1.0),
+    ("1.0", 1.0),
+    (" 0.25 ", 0.25),
+    ("2/3", 2.0 / 3.0)
+  ]
+    assertEq(marshal.parseFraction(text), Ok(f))
+  for text in [
+    "0",
+    "0.0",
+    "0/4",
+    "1.5",
+    "5/4",
+    "-0.5",
+    "abc",
+    "",
+    "3/0",
+    "1/2/3",
+    "1e-1",
+    "nan",
+    "inf",
+    "3/",
+    "/4",
+    "0.7.5"
+  ]
+    val r = marshal.parseFraction(text)
+    assert(r.isErr, text)
+    assert(r.err.get.contains("is not a fraction"), r.err.get)
+  assert(marshal.checkFraction(0.0).isErr)
+  assert(marshal.checkFraction(1.0000001).isErr)
+  assertEq(marshal.checkFraction(1.0), Ok(1.0))
+  val zero = 0.0
+  assert(marshal.checkFraction(zero / zero).isErr)
+  assert(marshal.checkFraction(real.PositiveInfinity).isErr)
+
+@test("a fraction is shown as a vulgar fraction where it is a half, third or quarter, else as its number")
+politeFractionText()
+  assertEq(marshal.fractionText(0.75), "¾")
+  assertEq(marshal.fractionText(0.5), "½")
+  assertEq(marshal.fractionText(2.0 / 3.0), "⅔")
+  assertEq(marshal.fractionText(1.0 / 3.0), "⅓")
+  assertEq(marshal.fractionText(0.25), "¼")
+  assertEq(marshal.fractionText(0.6), "0.6")
+  assertEq(marshal.fractionText(0.667), "0.667")
+  assertEq(marshal.fractionText(1.0), "1")
+  assertEq(marshal.politeText(PoliteUse(0.75, 36, 42 * pG)), "polite ¾")
+  assertEq(marshal.politeText(PoliteUse(0.75, 36, 42 * pG, "16:05")), "polite ¾ (schedule until 16:05)")
+
+@test("marshal polite prints the state it leaves: the polite budget of the full one, or the whole budget")
+politeLines()
+  assertEq(
+    marshal.politeLine(Some(PoliteUse(0.75, 36, 42 * pG)), 48, 56 * pG),
+    "polite ¾: 9 of 12 units, 42G of 56G memory"
+  )
+  assertEq(marshal.politeLine(None, 48, 56 * pG), "polite off: 12 units, 56G memory")
+  assertEq(
+    marshal.politeLine(Some(PoliteUse(0.5, 24, long.MaxValue)), 48, long.MaxValue),
+    "polite ½: 6 of 12 units, unlimited of unlimited memory"
+  )
+
+@test("status shows the units and memory against the polite budget, of the full one, and polite mode after them")
+politeStatusLine()
+  val u = Usage(13, 48, 12 * pG, 56 * pG, 2, 1, None, None, polite = Some(PoliteUse(0.75, 36, 42 * pG, "16:05")))
+  assert(
+    marshal.usageLine(u).startsWith(
+      "units 3.25/9 of 12, memory 12G/42G of 56G, polite ¾ (schedule until 16:05), 2 running, 1 queued"
+    ),
+    marshal.usageLine(u)
+  )
+  val plain = Usage(13, 48, 12 * pG, 56 * pG, 2, 1, None, None)
+  assert(marshal.usageLine(plain).startsWith("units 3.25/12, memory 12G/56G, 2 running"), marshal.usageLine(plain))
+
+@test("ls says why a job waits for polite mode")
+politeWhyWords()
+  assertEq(marshal.whyText(PoliteBudget), "polite budget")
+  assertEq(marshal.whyText(RunsAlone), "polite: runs alone")
+  assertEq(marshal.whyText(ForAlone(7)), "polite: 7 runs alone")
+  val j = JobInfo(3, "test", 40, 0, false, "/w", ["./t"], "queued", None, false, 0, 0, 60000, "/l", None)
+  assertEq(marshal.stateWithWhy(j, [(long(3), RunsAlone)]), "queued (polite: runs alone)")
+  assertEq(marshal.stateWithWhy(j, [(long(3), PoliteBudget)]), "queued (polite budget)")
+
+@test(
+  "polite's request, its reasons to wait and the budget it shows survive the protocol, and null reads as not polite"
+)
+politeProtocol()
+  roundTrip(Request.Polite(Some(0.75)))
+  roundTrip(Request.Polite(Some(1.0)))
+  roundTrip(Request.Polite(None))
+  assertEq(marshal.encodeRequest(Request.Polite(None)).render, "{\"op\":\"polite\",\"off\":true}")
+  for bad in ["{\"op\":\"polite\",\"fraction\":0}", "{\"op\":\"polite\",\"fraction\":1.5}", "{\"op\":\"polite\"}"]
+    assert(marshal.decodeRequest(bad).isErr, bad)
+  val p = PoliteUse(0.75, 36, 42 * pG, "16:05")
+  replyRoundTrip(Reply.Using(Usage(4, 48, 0, 56 * pG, 1, 0, None, None, polite = Some(p))))
+  replyRoundTrip(Reply.Using(Usage(4, 48, 0, 56 * pG, 1, 0, None, None, polite = Some(PoliteUse(0.6, 28, 33 * pG)))))
+  replyRoundTrip(Reply.Using(Usage(4, 48, 0, 56 * pG, 1, 0, None, None)))
+  val json = marshal.encodeReply(Reply.Using(Usage(4, 48, 0, 56 * pG, 1, 0, None, None, polite = Some(p)))).render
+  assert(json.contains("\"polite\":{\"fraction\":0.75,\"units\":9,\"memory\":45097156608,\"until\":\"16:05\"}"), json)
+  assert(
+    marshal.encodeReply(Reply.Using(Usage(4, 48, 0, 56 * pG, 1, 0, None, None))).render.contains("\"polite\":null")
+  )
+  val j = JobInfo(3, "test", 40, 0, false, "/w", ["./t"], "queued", None, false, 0, 0, 60000, "/l", None)
+  for why in [PoliteBudget, RunsAlone, ForAlone(2)]
+    val o = marshal.Overview(
+      Usage(0, 48, 0, 56 * pG, 0, 1, None, None, polite = Some(p)),
+      0,
+      [],
+      [marshal.QueuedJob(j, 1, why)],
+      []
+    )
+    marshal.decodeReply(marshal.encodeReply(Reply.Viewed(o)).render).ok.get match
+      Reply.Viewed(v) ->
+        assertEq(v.queued(0).why, why)
+        assertEq(v.usage.polite, Some(p))
+      other -> fail(s"not a snapshot: $other")
+  // status --json names it, or null
+  val s = marshal.statusJson(Usage(0, 48, 0, 56 * pG, 0, 0, None, None, polite = Some(p)), [])
+  assertEq(s("polite")("fraction").asReal, Some(0.75))
+  assertEq(s("polite")("units").asLong, Some(long(9)))
+  assertEq(marshal.statusJson(Usage(0, 48, 0, 56 * pG, 0, 0, None, None), [])("polite"), Json.Null)
+
+@test("the setting made by hand survives the saved state, and a state without one reads as none")
+politeSavedState()
+  val s = SavedState("0.3.19", 1, 2, 3, 4, [], [], [], None, polite = Some(PoliteSetting(0.5, "20408#0")))
+  assertEq(marshal.decodeState(marshal.encodeState(s).render), Ok(s))
+  val off = SavedState("0.3.19", 1, 2, 3, 4, [], [], [], None, polite = Some(PoliteSetting(0.0, "")))
+  assertEq(marshal.decodeState(marshal.encodeState(off).render), Ok(off))
+  val none = SavedState("0.3.19", 1, 2, 3, 4, [], [], [], None)
+  assertEq(marshal.decodeState(marshal.encodeState(none).render), Ok(none))
+  // what an earlier marshal saved, with no `polite`, reads as no setting
+  val older = "{\"version\":\"0.3.18\",\"pid\":1,\"saved_at\":2,\"began_at\":3,\"next_id\":4,\"queue\":[],\"running\":[],\"ended\":[],\"ticket\":null}"
+  assertEq(marshal.decodeState(older).map(x -> x.polite), Ok(None))
+  assert(marshal.decodeState(older.dropRight(1) + ",\"polite\":{\"fraction\":2,\"window\":\"\"}}").isErr)
+
+@test("a window is in force from its start to just before its end, on its days only")
+politeWindowBounds()
+  val sched = [pWeek]
+  // Monday
+  assert(marshal.activeWindow(sched, pAt(16, 8, 0), time.utc).isDefined)
+  assert(marshal.activeWindow(sched, pAt(16, 16, 4), time.utc).isDefined)
+  assert(marshal.activeWindow(sched, pAt(16, 16, 5), time.utc).isEmpty)
+  assert(marshal.activeWindow(sched, pAt(16, 7, 59), time.utc).isEmpty)
+  // Friday the 20th, Saturday the 21st, Sunday the 15th
+  assert(marshal.activeWindow(sched, pAt(20, 12, 0), time.utc).isDefined)
+  assert(marshal.activeWindow(sched, pAt(21, 12, 0), time.utc).isEmpty)
+  assert(marshal.activeWindow(sched, pAt(15, 12, 0), time.utc).isEmpty)
+  // each day's occurrence has a key of its own
+  assert(
+    marshal.activeWindow(
+      sched,
+      pAt(16, 9, 0),
+      time.utc
+    ).get.0 != marshal.activeWindow(sched, pAt(17, 9, 0), time.utc).get.0
+  )
+  assertEq(
+    marshal.activeWindow(sched, pAt(16, 9, 0), time.utc).get.0,
+    marshal.activeWindow(sched, pAt(16, 15, 0), time.utc).get.0
+  )
+  // the schedule reads the zone it is given: 07:30 UTC is 08:30 an hour east
+  assert(marshal.activeWindow(sched, pAt(16, 7, 30), time.fixedZone(time.minutes(60))).isDefined)
+  assert(marshal.activeWindow([], pAt(16, 9, 0), time.utc).isEmpty)
+
+@test("an overnight window belongs to the day it begins on and runs into the next")
+politeOvernight()
+  val night = [PoliteWindow([1], 22 * 60, 6 * 60, 0.5, "06:00")]
+  assert(marshal.activeWindow(night, pAt(16, 23, 0), time.utc).isDefined)
+  assert(marshal.activeWindow(night, pAt(17, 5, 59), time.utc).isDefined)
+  assertEq(
+    marshal.activeWindow(night, pAt(16, 23, 0), time.utc).get.0,
+    marshal.activeWindow(night, pAt(17, 5, 0), time.utc).get.0
+  )
+  assert(marshal.activeWindow(night, pAt(17, 6, 0), time.utc).isEmpty)
+  // Sunday night is not Monday's, and Tuesday night is not either
+  assert(marshal.activeWindow(night, pAt(16, 5, 0), time.utc).isEmpty)
+  assert(marshal.activeWindow(night, pAt(17, 23, 0), time.utc).isEmpty)
+  // a window to 24:00 ends at midnight
+  val evening = [PoliteWindow([1], 18 * 60, 1440, 0.5, "24:00")]
+  assert(marshal.activeWindow(evening, pAt(16, 23, 59), time.utc).isDefined)
+  assert(marshal.activeWindow(evening, pAt(17, 0, 0), time.utc).isEmpty)
+  // where windows overlap, the first listed holds
+  val two = [PoliteWindow([1], 8 * 60, 12 * 60, 0.5, "12:00"), pWeek]
+  assertEq(marshal.politeAt(two, None, pAt(16, 9, 0), time.utc), Some(PoliteNow(0.5, "12:00")))
+  assertEq(marshal.politeAt(two, None, pAt(16, 13, 0), time.utc), Some(PoliteNow(0.75, "16:05")))
+
+@test("inside a window marshal is polite at its fraction, and outside every window it is not")
+politeScheduled()
+  val sched = [pWeek]
+  assertEq(marshal.politeAt(sched, None, pAt(16, 9, 0), time.utc), Some(PoliteNow(0.75, "16:05")))
+  assertEq(marshal.politeAt(sched, None, pAt(16, 17, 0), time.utc), None)
+  assertEq(marshal.politeAt([], None, pAt(16, 9, 0), time.utc), None)
+
+@test("a polite off inside a window holds until the window ends, and the next window is polite again")
+politeOffInsideWindow()
+  val sched = [pWeek]
+  val off = marshal.settingAt(sched, 0.0, pAt(16, 10, 0), time.utc)
+  assertEq(marshal.politeAt(sched, Some(off), pAt(16, 11, 0), time.utc), None)
+  assertEq(marshal.politeAt(sched, Some(off), pAt(16, 16, 4), time.utc), None)
+  assertEq(marshal.politeAt(sched, Some(off), pAt(16, 17, 0), time.utc), None)
+  assertEq(marshal.politeAt(sched, Some(off), pAt(17, 9, 0), time.utc), Some(PoliteNow(0.75, "16:05")))
+
+@test("a fraction set inside a window overrides the schedule's until the window ends, and marshal is then not polite")
+politeFractionInsideWindow()
+  val sched = [pWeek]
+  val half = marshal.settingAt(sched, 0.5, pAt(16, 10, 0), time.utc)
+  assertEq(marshal.politeAt(sched, Some(half), pAt(16, 11, 0), time.utc), Some(PoliteNow(0.5, "")))
+  assertEq(marshal.politeAt(sched, Some(half), pAt(16, 17, 0), time.utc), None)
+  assertEq(marshal.politeAt(sched, Some(half), pAt(17, 9, 0), time.utc), Some(PoliteNow(0.75, "16:05")))
+
+@test("a setting made outside every window holds outside them, and each window that begins after it overrides it")
+politeOutsideWindows()
+  val sched = [pWeek]
+  // Saturday
+  val half = marshal.settingAt(sched, 0.5, pAt(21, 12, 0), time.utc)
+  assertEq(half, PoliteSetting(0.5, ""))
+  assertEq(marshal.politeAt(sched, Some(half), pAt(21, 13, 0), time.utc), Some(PoliteNow(0.5, "")))
+  assertEq(marshal.politeAt(sched, Some(half), pAt(23, 9, 0), time.utc), Some(PoliteNow(0.75, "16:05")))
+  assertEq(marshal.politeAt(sched, Some(half), pAt(23, 17, 0), time.utc), Some(PoliteNow(0.5, "")))
+  val off = marshal.settingAt(sched, 0.0, pAt(21, 12, 0), time.utc)
+  assertEq(marshal.politeAt(sched, Some(off), pAt(21, 13, 0), time.utc), None)
+  assertEq(marshal.politeAt(sched, Some(off), pAt(23, 9, 0), time.utc), Some(PoliteNow(0.75, "16:05")))
+  // with no schedule a setting simply holds
+  assertEq(marshal.politeAt([], Some(PoliteSetting(0.75, "")), pAt(16, 9, 0), time.utc), Some(PoliteNow(0.75, "")))
+  assertEq(marshal.politeAt([], Some(PoliteSetting(0.0, "")), pAt(16, 9, 0), time.utc), None)
+
+@test("days are names and ranges of them, a range may wrap past Sunday, and anything else is refused")
+politeDays()
+  assertEq(marshal.parseDays("mon-fri"), Some([1, 2, 3, 4, 5]))
+  assertEq(marshal.parseDays("sat,sun"), Some([6, 7]))
+  assertEq(marshal.parseDays("mon-wed,fri"), Some([1, 2, 3, 5]))
+  assertEq(marshal.parseDays("fri-mon"), Some([1, 5, 6, 7]))
+  assertEq(marshal.parseDays("Mon, Tue"), Some([1, 2]))
+  assertEq(marshal.parseDays("wed"), Some([3]))
+  assertEq(marshal.parseDays("mon-mon"), Some([1]))
+  for bad in ["", "monday", "mon-", "mon-fri-sat", "xyz", "mon,,tue"]
+    assertEq(marshal.parseDays(bad), None)
+  assertEq(marshal.parseClock("08:00", false), Some(480))
+  assertEq(marshal.parseClock("23:59", false), Some(1439))
+  assertEq(marshal.parseClock("24:00", true), Some(1440))
+  for bad in ["24:00", "8:00", "08:60", "25:00", "0800", "08:0", "aa:bb", ""]
+    assertEq(marshal.parseClock(bad, false), None)
+
+@test("config.json's polite_schedule reads into windows, and a bad one is refused in config.json's words")
+politeConfig()
+  val c = marshal.readConfig(
+    "{\"polite_schedule\": [{\"days\": \"mon-fri\", \"from\": \"08:00\", \"until\": \"16:05\", \"fraction\": 0.75}, {\"from\": \"22:00\", \"until\": \"06:00\"}]}",
+    0
+  ).ok.get
+  assertEq(c.politeSchedule, [pWeek, PoliteWindow([1, 2, 3, 4, 5, 6, 7], 22 * 60, 6 * 60, 0.75, "06:00")])
+  assertEq(marshal.readConfig("{}", 0).ok.get.politeSchedule, Vector[PoliteWindow]())
+  val refused = (text: string, why: string) ->
+    val r = marshal.readConfig("{\"polite_schedule\": " + text + "}", 0)
+    assert(r.isErr, text)
+    assert(r.err.get.contains(why), r.err.get)
+  refused("{}", "is an array of windows")
+  refused("[3]", "window 1 is an object")
+  refused("[{\"from\": \"08:00\", \"until\": \"16:00\", \"at\": 1}]", "window 1: no setting `at`")
+  refused("[{\"days\": \"mon-xyz\", \"from\": \"08:00\", \"until\": \"16:00\"}]", "window 1: `days` is days")
+  refused("[{\"from\": \"8:00\", \"until\": \"16:00\"}]", "window 1: `from` is a local time")
+  refused("[{\"until\": \"16:00\"}]", "window 1: `from` is a local time")
+  refused("[{\"from\": \"08:00\", \"until\": \"25:00\"}]", "window 1: `until` is a local time")
+  refused("[{\"from\": \"08:00\"}]", "window 1: `until` is a local time")
+  refused("[{\"from\": \"08:00\", \"until\": \"08:00\"}]", "the same time")
+  refused("[{\"from\": \"08:00\", \"until\": \"16:00\", \"fraction\": 0}]", "`fraction` is a number above 0")
+  refused("[{\"from\": \"08:00\", \"until\": \"16:00\", \"fraction\": 1.5}]", "`fraction` is a number above 0")
+  refused("[{\"from\": \"08:00\", \"until\": \"16:00\"}, {\"from\": \"x\", \"until\": \"16:00\"}]", "window 2")

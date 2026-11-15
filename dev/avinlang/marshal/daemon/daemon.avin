@@ -323,6 +323,10 @@ class Daemon(
   var termed = false
   // While the queue is held, nothing new starts in either lane.
   var queueHeld = false
+  // What the user last set polite mode to by hand, if anything (polite.avin), and the zone the
+  // schedule's windows are read in, the machine's as the daemon began.
+  var politeManual: Option[marshal.PoliteSetting] = None
+  val zone: time.Zone = time.localZone()
   // The clients following events.
   val watchers = Buffer[Watcher]()
   // Whether any client has asked to follow events, so a stop gives their streams time to be written.
@@ -535,9 +539,29 @@ class Daemon(
   // learned of its kind.
   drainMs(j: Job) -> long = if j.durationLearned then j.expectedMs else j.deadlineMs
 
-  // The running job `j` as the scheduler weighs it at `t`: its deadline is counted from its start,
-  // the time it has spent paused added, since a pause stops its deadline's clock.
-  startedOf(j: Job, t: long) -> Started =
+  // Polite mode as it is now, from the schedule and what the user set by hand; None while marshal
+  // is not polite.
+  politeNow() -> Option[marshal.PoliteNow] =
+    marshal.politeAt(config.politeSchedule, politeManual, time.now().epochMillis, zone)
+
+  // The budget jobs are admitted against now: the polite part of the full one while marshal is
+  // polite, else the full one.
+  budgetNow() -> marshal.Budget = politeNow() match
+    Some(p) -> marshal.politeBudget(config.budget, p.fraction)
+    None -> config.budget
+
+  // Polite mode as `status` and `top` show it.
+  politeUse() -> Option[marshal.PoliteUse] = politeNow().map(p ->
+    val b = marshal.politeBudget(config.budget, p.fraction)
+    marshal.PoliteUse(p.fraction, b.units, b.memory, p.until))
+
+  // Whether `j` runs alone under `b`: a development or quick job bigger than a polite budget.
+  alone(j: Job, b: marshal.Budget) -> bool =
+    marshal.isPolite(b) && !j.spec.exclusive && !j.spec.landing && (j.spec.units > b.units || j.reserved > b.memory)
+
+  // The running job `j` as the scheduler weighs it at `t` against `b`: its deadline is counted from
+  // its start, the time it has spent paused added, since a pause stops its deadline's clock.
+  startedOf(j: Job, t: long, b: marshal.Budget) -> Started =
     Started(
       j.id,
       j.spec.units,
@@ -548,12 +572,14 @@ class Daemon(
       j.spec.quick,
       drainMs(j),
       j.deadlineMs + (t - j.startedMs - j.ran(t)),
-      j.spec.exclusive
+      j.spec.exclusive,
+      alone(j, b)
     )
 
-  // The queued job `j` as the scheduler weighs it at `t`; an exclusive one with a quiet load says
-  // why the load holds it back, until it no longer does, and whether it has claimed the machine.
-  waitingOf(j: Job, t: long) -> Waiting
+  // The queued job `j` as the scheduler weighs it at `t` against `b`; an exclusive one with a quiet
+  // load says why the load holds it back, until it no longer does, and whether it has claimed the
+  // machine.
+  waitingOf(j: Job, t: long, b: marshal.Budget) -> Waiting
     val unsettled = if j.spec.exclusive && j.spec.quietLoad > 0.0 then unsettledAt(j, t) else None
     Waiting(
       j.id,
@@ -566,7 +592,8 @@ class Daemon(
       drainMs(j),
       j.spec.exclusive,
       unsettled,
-      j.settlingSince.isDefined
+      j.settlingSince.isDefined,
+      alone(j, b)
     )
 
   // Why the load alone holds the exclusive job `j` back at `t`.
@@ -634,6 +661,7 @@ class Daemon(
       Request.ResumeQueue -> give(reply, holdQueue(false))
       Request.PauseJob(id) -> give(reply, pauseJob(id, true))
       Request.ResumeJob(id) -> give(reply, pauseJob(id, false))
+      Request.Polite(fraction) -> give(reply, polite(fraction))
       Request.Hold(id) -> give(reply, hold(id, true))
       Request.Release(id) -> give(reply, hold(id, false))
       Request.Prioritize(id, p) -> give(reply, prioritize(id, p))
@@ -977,6 +1005,17 @@ class Daemon(
     schedule()
     Done
 
+  // Makes marshal polite at `fraction` of its budget, or not polite with None, until the user says
+  // otherwise or, said inside a window of the schedule, until that window ends. What runs goes on;
+  // what starts next is admitted against the new budget, at once. Answers the budget then in use.
+  polite(fraction: Option[real]) -> Reply
+    val f = fraction.getOrElse(0.0)
+    politeManual = Some(marshal.settingAt(config.politeSchedule, f, time.now().epochMillis, zone))
+    val use = politeUse()
+    eprintln("marshal: " + marshal.politeLine(use, config.budget.units, config.budget.memory))
+    schedule()
+    Using(usage())
+
   // The queued job `id`, or why there is none: a job that runs or has ended is refused, saying
   // `what` only a queued job may have done to it.
   queued(id: long, what: string) -> Result[Job, string] = jobs.get(id) match
@@ -1053,11 +1092,12 @@ class Daemon(
 
   plan(outside: Outside)
     val t = now()
-    val started = running.map(j -> startedOf(j, t)).toVector
-    val waiting = eligible().map(j -> waitingOf(j, t))
-    markSettling(started, waiting, t, outside)
+    val b = budgetNow()
+    val started = running.map(j -> startedOf(j, t, b)).toVector
+    val waiting = eligible().map(j -> waitingOf(j, t, b))
+    markSettling(b, started, waiting, t, outside)
     for (id, ahead) in marshal.starts(
-      config.budget,
+      b,
       started,
       waiting,
       t,
@@ -1074,14 +1114,14 @@ class Daemon(
   // Marks the exclusive job that is settling as the scheduler weighs `started` and `waiting` at `t`:
   // the first time, its claim on the machine and the clock `load_wait` measures begin. A job held by
   // hand gives up its claim, and waits for the machine afresh once let go.
-  markSettling(started: Vector[Started], waiting: Vector[Waiting], t: long, outside: Outside)
+  markSettling(b: marshal.Budget, started: Vector[Started], waiting: Vector[Waiting], t: long, outside: Outside)
     for job in queue
       if job.held
         job.settling = false
         job.settlingSince = None
         job.overdue = false
     if !waiting.exists(w -> w.exclusive && w.unsettled.isDefined) && !queue.exists(j -> j.settling) then return
-    val id = marshal.settles(config.budget, started, waiting, t, outside, marshal.fairness(config, time.now().epochMicros))
+    val id = marshal.settles(b, started, waiting, t, outside, marshal.fairness(config, time.now().epochMicros))
     for job in queue
       if job.held then continue
       job.settling = id == Some(job.id)
@@ -1095,9 +1135,10 @@ class Daemon(
       None
     else
       val t = now()
-      val started = running.map(j -> startedOf(j, t)).toVector
-      val waiting = eligible().map(j -> waitingOf(j, t))
-      marshal.ticketFor(config.budget, started, waiting, t, outside, marshal.fairness(config, time.now().epochMicros))
+      val b = budgetNow()
+      val started = running.map(j -> startedOf(j, t, b)).toVector
+      val waiting = eligible().map(j -> waitingOf(j, t, b))
+      marshal.ticketFor(b, started, waiting, t, outside, marshal.fairness(config, time.now().epochMicros))
     val want = head.map(t -> marshal.ticketName(t.0, ts.me))
     if want == ticket then return
     ticket.foreach(name -> ts.removeTicket(name))
@@ -1258,7 +1299,9 @@ class Daemon(
       val waited = t - job.settlingSince.getOrElse(t)
       val line = marshal.overdueLine(waited, job.spec.quietLoad, job.load) + "\n" + sampleNow(job) + "\n"
       val _ = fs.appendText(job.log, line)
-      eprintln(s"marshal: job ${job.id} has waited ${marshal.formatMillis(waited)} for the load to settle: overdue, still waiting")
+      eprintln(
+        s"marshal: job ${job.id} has waited ${marshal.formatMillis(waited)} for the load to settle: overdue, still waiting"
+      )
 
   // `job`'s quiet-load clock, after the load is read as `load` at `t`.
   settleSeen(job: Job, load: Option[real], t: long)
@@ -1571,11 +1614,12 @@ class Daemon(
   // Why each queued job waits, with its place in its lane's queue (`queueWaits`); while the disk is
   // low, every one not held, by hand or with the whole queue, waits for it.
   queuedWhys(t: long, outside: Outside) -> Vector[(long, int, Why)]
-    val started = running.map(j -> startedOf(j, t)).toVector
-    val waiting = queue.map(j -> waitingOf(j, t)).toVector
+    val b = budgetNow()
+    val started = running.map(j -> startedOf(j, t, b)).toVector
+    val waiting = queue.map(j -> waitingOf(j, t, b)).toVector
     val held = queue.filter(j -> j.held).map(j -> j.id).toVector
     val whys = marshal.queueWaits(
-      config.budget,
+      b,
       started,
       waiting,
       held,
@@ -1610,8 +1654,11 @@ class Daemon(
         w.2,
         if marshal.commandLearned(j.durationFrom) then j.expectedMs else -1
       ))
-    val used = running.filter(j -> !j.spec.landing && !j.spec.quick).map(j -> j.spec.units).sum + outside.units
-    marshal.startEstimates(config.budget, used, running.map(j -> holds(j)).sum, runningNow, queuedNow)
+    val b = budgetNow()
+    val used = running.filter(
+      j -> marshal.isPolite(b) || (!j.spec.landing && !j.spec.quick)
+    ).map(j -> j.spec.units).sum + outside.units
+    marshal.startEstimates(b, used, running.map(j -> holds(j)).sum, runningNow, queuedNow)
 
   // What take-slot holds and waits for, read under its mutex; None without a take-slot directory.
   outsideNow() -> Option[Outside] = slots.map(ts ->
@@ -1624,11 +1671,12 @@ class Daemon(
   // None while nothing drains, the queue is held, or the start is not known.
   drainExpected(t: long, outside: Outside) -> Option[(long, long)]
     if blocked() then return None
-    val started = running.map(j -> startedOf(j, t)).toVector
-    val waiting = eligible().map(j -> waitingOf(j, t))
+    val b = budgetNow()
+    val started = running.map(j -> startedOf(j, t, b)).toVector
+    val waiting = eligible().map(j -> waitingOf(j, t, b))
     val wall = time.now().epochMillis
     marshal.drainStart(
-      config.budget,
+      b,
       started,
       waiting,
       t,
@@ -1689,7 +1737,8 @@ class Daemon(
       diskFree,
       config.diskMin,
       nofile,
-      queue.filter(j -> j.settling).length
+      queue.filter(j -> j.settling).length,
+      politeUse()
     )
 
   // A stop asks for the daemon to end: at once when nothing is queued or running; with `force`,
@@ -1916,7 +1965,8 @@ class Daemon(
       ended.takeRight(Recent).map(saved).toVector,
       ticket,
       queueHeld,
-      waitingJobs.map(saved).toVector
+      waitingJobs.map(saved).toVector,
+      politeManual
     )
 
   // Takes over what an earlier image of this daemon saved: its jobs, queue and ticket. The
@@ -1930,6 +1980,7 @@ class Daemon(
     if s.nextId > nextId then nextId = s.nextId
     ticket = s.ticket
     queueHeld = s.queueHeld
+    politeManual = s.polite
     val rebuilt = (sj: SavedJob) ->
       val job = Job(sj.id, sj.spec, mono(sj.submittedAt), sj.arrived, sj.deadlineMs, sj.expectedMs, sj.log)
       job.state = sj.state

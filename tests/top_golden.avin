@@ -583,3 +583,27 @@ goldenLandingUnits()
   val takeSlot = drawn(viewing(beside), 43, 10).rowText(1)
   assert(takeSlot.endsWith("0+4/12] take-slot   landing 3"), takeSlot)
   assert(!drawn(viewing(beside), 42, 10).rowText(1).contains("landing"))
+
+// A daemon running 3.25 units of 12, with a job queued to run alone and one held behind it: polite at
+// `polite` (None for not), and set by the schedule until `until`.
+politeDaemon(polite: Option[marshal.PoliteUse]) -> Overview
+  val running = [gjob(50, units = 13, cmd = ["make", "-j3"], elapsed = 4 * minuteMs)]
+  val queued = [
+    QueuedJob(gjob(51, kind = "test", state = "queued", units = 40), 1, Why.RunsAlone),
+    QueuedJob(gjob(52, state = "queued", units = 4), 2, Why.ForAlone(51)),
+    QueuedJob(gjob(53, state = "queued", units = 4), 3, Why.PoliteBudget)
+  ]
+  Overview(Usage(13, 48, 12 * G, 56 * G, 1, 3, None, None, polite = polite), 60000, running, queued, [])
+
+@test(
+  "golden: polite mode in the header, the meters against the polite budget of the full one, and why jobs wait for it"
+)
+goldenPolite()
+  golden("polite-off", drawn(viewing(politeDaemon(None)), 120, 12))
+  golden("polite-on", drawn(viewing(politeDaemon(Some(marshal.PoliteUse(0.75, 36, 42 * G)))), 120, 12))
+  golden("polite-schedule", drawn(viewing(politeDaemon(Some(marshal.PoliteUse(0.75, 36, 42 * G, "16:05")))), 120, 12))
+  val on = drawn(viewing(politeDaemon(Some(marshal.PoliteUse(0.75, 36, 42 * G)))), 120, 12)
+  assert(on.rowText(0).contains("  polite ¾   landing: free"), on.rowText(0))
+  assert(on.rowText(1).contains("3.25/9 of 12]"), on.rowText(1))
+  assert(on.rowText(2).contains("12G/42G of 56G]"), on.rowText(2))
+  assert(!drawn(viewing(politeDaemon(None)), 120, 12).rowText(0).contains("polite"))

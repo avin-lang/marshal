@@ -10,9 +10,9 @@ import dev.avinlang.marshal.{NoUnits, NoMemory, LaneBusy, Draining, ForTakeSlot,
 import dev.avinlang.marshal.{Exited, Signalled, TimedOut, Cancelled, Lost, DependencyFailed, Quiet}
 
 import dev.avinlang.tui.{
-  Black, Blue, Bold, BrightBlack, Char, Cluster, Column, Ctrl, Cyan, Dim, Down, End, Enter, Escape, Event, Fill, Fixed, Green,
-  Grid, Home, Key, KeyPress, Magenta, Modal, ModalStack, PageDown, PageUp, Rect, Red, Reverse, Rounded, Scrollbar,
-  ScrollView, Segment, Span, Stop, Style, Table, Up, Yellow, textWidth, wrapChars
+  Black, Blue, Bold, BrightBlack, Char, Cluster, Column, Ctrl, Cyan, Dim, Down, End, Enter, Escape, Event, Fill, Fixed,
+  Green, Grid, Home, Key, KeyPress, Magenta, Modal, ModalStack, PageDown, PageUp, Rect, Red, Reverse, Rounded,
+  Scrollbar, ScrollView, Segment, Span, Stop, Style, Table, Up, Yellow, textWidth, wrapChars
 }
 
 // Which jobs the table lists.
@@ -95,10 +95,13 @@ waiting(l: Line) -> bool = l.job.outcome.isEmpty && (l.job.state == "waiting" ||
 // Why a queued job waits, in the words of its STATE cell.
 // The words are `ls`'s too, so they are kept in one place, but for a full quick lane, which `ls`
 // says in full and the 14-cell column, after the queue position, says as `quick full`, and for a low
-// disk, whose free space the header shows.
+// disk, whose free space the header shows, and for polite mode, which the header names.
 whyText(w: Why) -> string
 whyText(Why.QuickFull) = "quick full"
 whyText(Why.DiskLow(_)) = "disk low"
+whyText(Why.PoliteBudget) = "polite"
+whyText(Why.RunsAlone) = "runs alone"
+whyText(Why.ForAlone(id)) = s"alone $id"
 whyText(w) = marshal.whyText(w)
 
 // A time as a clock: `0:07`, `18:12`, `1:02:03`; a negative time is shown as none.
@@ -830,12 +833,12 @@ versionSpans(daemon: Option[string]) -> Vector[Span]
 //   mem  [||||       12G/56G] rss 9.4G   machine 64G
 //   cpu  [|||||||  5.2+3.1/12] disk 120G free
 drawHeader(
-  g: Grid,
-  o: Overview,
-  since: long,
-  f: Filter,
-  owner: Option[string] = None,
-  daemon: Option[string] = None
+    g: Grid,
+    o: Overview,
+    since: long,
+    f: Filter,
+    owner: Option[string] = None,
+    daemon: Option[string] = None
 ) -> int
   val u = o.usage
   val held = if u.queueHeld then [Span(" (held)", Some(Style.fg(Red).with(Bold)))] else []
@@ -847,7 +850,7 @@ drawHeader(
       Span(s"${u.running} running", Some(Style.fg(Green))),
       Span("  "),
       Span(s"${u.queued} queued", Some(Style.fg(Yellow)))
-    ] ++ settlingSpans(u) ++ held ++ [Span("   landing: "), styled(laneText(o))] ++ quickText(u)
+    ] ++ settlingSpans(u) ++ held ++ politeSpans(u) ++ [Span("   landing: "), styled(laneText(o))] ++ quickText(u)
   )
   val shown = s"filter: ${filterName(f)}" + owner.map(o -> s"  owner: $o").getOrElse("")
   if g.width > textWidth(shown) then g.text(g.width - textWidth(shown), 0, shown, Style.fg(BrightBlack))
@@ -855,7 +858,7 @@ drawHeader(
   val bracket = MeterAt + barWidth + 2
   val outside = u.takeSlot.map(t -> t.units).getOrElse(0)
   g.text(0, 1, "units")
-  unitBar(g, MeterAt, 1, barWidth, u.units, outside, u.unitBudget, unitsLabel(u))
+  unitBar(g, MeterAt, 1, barWidth, u.units, outside, u.polite.map(p -> p.units).getOrElse(u.unitBudget), unitsLabel(u))
   val share = u.takeSlot match
     Some(t) -> " take-slot" + (if t.waiting > 0 then s", ${t.waiting} waiting" else "")
     None -> ""
@@ -863,8 +866,11 @@ drawHeader(
   landingUnits(g, after, 1, o)
   g.text(0, 2, "mem")
   val bounded = u.memoryBudget != long.MaxValue && u.memoryBudget > 0
-  val mem = if bounded then s"${marshal.formatSize(u.memory)}/${marshal.formatSize(u.memoryBudget)}" else marshal.formatSize(u.memory)
-  memBar(g, MeterAt, 2, barWidth, u.memory, u.held, if bounded then u.memoryBudget else 0, mem)
+  // while polite, the meter is drawn against the polite budget, the full one named after it
+  val memBudget = u.polite.map(p -> p.memory).getOrElse(u.memoryBudget)
+  val ofFull = if u.polite.isDefined then s" of ${marshal.formatSize(u.memoryBudget)}" else ""
+  val mem = if bounded then s"${marshal.formatSize(u.memory)}/${marshal.formatSize(memBudget)}$ofFull" else marshal.formatSize(u.memory)
+  memBar(g, MeterAt, 2, barWidth, u.memory, u.held, if bounded then memBudget else 0, mem)
   g.text(bracket + 1, 2, memoryText(u))
   g.text(0, 3, "cpu")
   val cores = u.unitBudget * int(marshal.Centi) / marshal.QuartersPerUnit
@@ -876,9 +882,12 @@ drawHeader(
 private val MeterAt: int = 5
 
 // What the units meter says inside its brackets: the units marshal's jobs use, take-slot's after a
-// `+` while it has any share, and the budget: `5+4/12`, `8.25/12`.
+// `+` while it has any share, and the budget: `5+4/12`, `8.25/12`; while marshal is polite, the polite
+// budget, of the full one: `3.25+0/9 of 12`.
 unitsLabel(u: Usage) -> string
-  val budget = marshal.formatUnits(u.unitBudget)
+  val budget = u.polite match
+    Some(p) -> s"${marshal.formatUnits(p.units)} of ${marshal.formatUnits(u.unitBudget)}"
+    None -> marshal.formatUnits(u.unitBudget)
   val used = marshal.formatUnits(u.units)
   u.takeSlot match
     Some(t) -> s"$used+${marshal.formatUnits(t.units)}/$budget"
@@ -943,6 +952,15 @@ landingUnits(g: Grid, x: int, y: int, o: Overview)
 quickText(u: Usage) -> Vector[Span]
   if u.quick == 0 then return []
   [Span("   quick: "), Span(s"${u.quick}/${marshal.QuickSlots}", Some(Style.fg(Cyan).with(Bold)))]
+
+// Polite mode in the header, `  polite ¾`, with `until 16:05` while the schedule sets it, while
+// marshal is polite; nothing otherwise.
+politeSpans(u: Usage) -> Vector[Span]
+  u.polite match
+    None -> []
+    Some(p) ->
+      val until = if p.until.isEmpty then "" else s" until ${p.until}"
+      [Span("  "), Span(s"polite ${marshal.fractionText(p.fraction)}$until", Some(Style.fg(Magenta).with(Bold)))]
 
 // The settling jobs in the header, `  1 settling`, while one is; nothing otherwise.
 settlingSpans(u: Usage) -> Vector[Span]

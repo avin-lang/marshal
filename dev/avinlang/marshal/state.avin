@@ -79,7 +79,8 @@ data SavedJob(
 // The whole daemon: the version and process that saved it, when, when the daemon first began, the
 // next job id, the queue in order, the running jobs, the jobs that ended last (oldest first), the
 // name of its waiting ticket in take-slot's directory, whether the queue is held (false when the
-// state does not say), and the jobs waiting for others or waiting to retry, oldest first.
+// state does not say), the jobs waiting for others or waiting to retry, oldest first, and what the
+// user last set polite mode to by hand (None where they have not, or the state does not say).
 data SavedState(
     version: string,
     pid: long,
@@ -91,8 +92,25 @@ data SavedState(
     ended: Vector[SavedJob],
     ticket: Option[string],
     queueHeld: bool = false,
-    waiting: Vector[SavedJob] = []
+    waiting: Vector[SavedJob] = [],
+    polite: Option[PoliteSetting] = None
 )
+
+// What the user set polite mode to, as the state writes it.
+private encodeSetting(p: PoliteSetting) -> Json = Json.obj(
+  ("fraction", Json.num(p.fraction)),
+  ("window", Json.str(p.window))
+)
+
+// The same read back: None for null or absent, an error for anything else that is not a setting.
+private settingOf(j: Json) -> Result[Option[PoliteSetting], string]
+  val p = j.get("polite").getOrElse(Json.Null)
+  if p == Json.Null then return Ok(None)
+  val fraction = p.get("fraction").flatMap(v -> v.asReal)
+  val window = p.get("window").flatMap(v -> v.asString)
+  if fraction.isEmpty || window.isEmpty || !(0.0 <= fraction.get <= 1.0)
+    return Err("`polite` is a fraction from 0 to 1 and a window")
+  Ok(Some(PoliteSetting(fraction.get, window.get)))
 
 private orNull[T](o: Option[T], f: (T) -> Json) -> Json = o.map(f).getOrElse(Json.Null)
 
@@ -276,7 +294,8 @@ encodeState(s: SavedState) -> Json = Json.obj(
   ("ended", Json.Arr(s.ended.map(encodeSavedJob))),
   ("ticket", orNull(s.ticket, t -> Json.str(t))),
   ("queue_held", Json.Bool(s.queueHeld)),
-  ("waiting", Json.Arr(s.waiting.map(encodeSavedJob)))
+  ("waiting", Json.Arr(s.waiting.map(encodeSavedJob))),
+  ("polite", s.polite.map(encodeSetting).getOrElse(Json.Null))
 )
 
 private savedJobs(j: Json, key: string) -> Result[Vector[SavedJob], string]
@@ -305,6 +324,7 @@ decodeState(saved: string) -> Result[SavedState, string]
       savedJobs(j, "ended")?,
       maybeText(j, "ticket")?,
       truthOr(j, "queue_held", false)?,
-      if j.has("waiting") then savedJobs(j, "waiting")? else Vector[SavedJob]()
+      if j.has("waiting") then savedJobs(j, "waiting")? else Vector[SavedJob](),
+      settingOf(j)?
     )
   )

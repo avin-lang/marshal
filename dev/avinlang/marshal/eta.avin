@@ -112,7 +112,7 @@ private val Never: long = long.MaxValue
 
 // Whether a job waiting for `why` waits only for running jobs to end, so its start can be reckoned.
 private reckonable(why: Why) -> bool = why match
-  NoUnits | NoMemory | Behind(_) | Starting | Draining | DrainingFor(_) | LaneBusy -> true
+  NoUnits | NoMemory | Behind(_) | Starting | Draining | DrainingFor(_) | LaneBusy | PoliteBudget -> true
   _ -> false
 
 // When each queued job is expected to start, in milliseconds from now, by job id; a job whose start
@@ -129,9 +129,11 @@ startEstimates(
   val out = MutableMap[long, long]()
   // the development lane: (time, units, memory) freed at each time, or taken where negative
   val changes = Buffer[(long, int, long)]()
+  // against a polite budget every lane's units count, a quick job's too
+  val polite = isPolite(budget)
   for r in running
-    if r.quick then continue
-    changes += (if r.leftMs < 0 then Never else r.leftMs, if r.landing then 0 else r.units, r.memory)
+    if r.quick && !polite then continue
+    changes += (if r.leftMs < 0 then Never else r.leftMs, if r.landing && !polite then 0 else r.units, r.memory)
   val freeUnits = budget.units - used
   val freeMemory = budget.memory - memory
   var floor: long = 0
