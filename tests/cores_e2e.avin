@@ -129,7 +129,10 @@ busyLearned()
   val next = submitted(home, fakeWork(home, "cpu", "30", "1")*)
   val (units, learned) = unitsOf(home, next)
   assertEq(learned, Some(true))
-  assertEq(units, Some(real(marshal.learnedUnits([marshal.centiOf(end("peak_cores")).get], 48).get) / 4.0))
+  // units are learned from the level the run held, which can sit a quarter below its peak
+  val held = end.get("held_cores").flatMap(marshal.centiOf).getOrElse(-1)
+  val taught = marshal.taught(held, marshal.centiOf(end("peak_cores")).get)
+  assertEq(units, Some(real(marshal.learnedUnits([taught], 48).get) / 4.0))
   assert(lsRow(home, next).contains(" ~"), lsRow(home, next))
   // while it runs, status --json says how many cores it keeps busy
   assert(within(10000, () -> statusJob(home, next).has("cores")), s"${statusJob(home, next)}")
