@@ -1,7 +1,7 @@
 |marshal  up 1:00   5 running  3 queued   landing: job 53 (1 unit)   quick: 1/2                               filter: all|
-|units[|||||||||||||||||||||||||||         8/12]   landing 1                                                             |
-|mem  [                                   0/16G] rss 0                                                                   |
-|cpu  [                                    -/12]                                                                         |
+|units[|||||||||||||||||||||||||||||||||||              8/12]   landing 1                                                |
+|mem  [                                                0/16G] rss 0                                                      |
+|cpu  [                                                 -/12]                                                            |
 |                                                                                                                        |
 |   ID STATE          KIND     UNITS   RESV   RSS STARTED  ELAPSED     ETA DEADLINE OWNER LABEL COMMAND                  |
 |   51 running        test!        1      -     - -           2:00       -    28:00 -           make test                |
@@ -25,11 +25,11 @@
 0 50..65 Basic(6)/Default/1
 0 75..78 Basic(6)/Default/1
 0 109..120 Basic(8)/Default/0
-1 6..33 Basic(2)/Default/0
-1 33..46 Basic(8)/Default/0
-1 50..59 Basic(6)/Default/0
-2 6..46 Basic(8)/Default/0
-3 6..46 Basic(8)/Default/0
+1 6..41 Basic(2)/Default/0
+1 41..59 Basic(8)/Default/0
+1 63..72 Basic(6)/Default/0
+2 6..59 Basic(8)/Default/0
+3 6..59 Basic(8)/Default/0
 5 0..120 Default/Default/17
 6 0..6 Default/Default/16
 6 6..20 Basic(2)/Default/17

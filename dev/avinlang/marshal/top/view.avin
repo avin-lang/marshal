@@ -854,7 +854,7 @@ drawHeader(
   )
   val shown = s"filter: ${filterName(f)}" + owner.map(o -> s"  owner: $o").getOrElse("")
   if g.width > textWidth(shown) then g.text(g.width - textWidth(shown), 0, shown, Style.fg(BrightBlack))
-  val barWidth = minInt(maxInt(g.width / 3, 10), 40)
+  val barWidth = meterWidth(g.width)
   val bracket = MeterAt + barWidth + 2
   val outside = u.takeSlot.map(t -> t.units).getOrElse(0)
   g.text(0, 1, "units")
@@ -880,6 +880,17 @@ drawHeader(
 
 // The column each header meter's `[` is at, after its name (`units`, `mem`, `cpu`).
 private val MeterAt: int = 5
+
+// The most cells a header meter has between its brackets, so that a very wide terminal does not get
+// an absurdly long bar.
+private val MeterMax: int = 120
+
+// The cells between a header meter's brackets on a terminal `width` columns wide: the meters fill the
+// left half of the screen, as htop's do, with the text after them in the right half. Never narrower
+// than a third of the width (10 to 40 cells), which is what they were before they scaled, and never
+// wider than `MeterMax`.
+meterWidth(width: int) -> int =
+  minInt(maxInt(minInt(maxInt(width / 3, 10), 40), width / 2 - MeterAt - 2), MeterMax)
 
 // What the units meter says inside its brackets: the units marshal's jobs use, take-slot's after a
 // `+` while it has any share, and the budget: `5+4/12`, `8.25/12`; while marshal is polite, the polite

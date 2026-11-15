@@ -1,7 +1,7 @@
 |marshal  up 25:06:01   4 running  9 queued (held)   landing: job 21 (2 units)                                filter: all|
-|units[||||||||||||||||||||||||||||||    6+3/12] take-slot, 2 waiting   landing 2                                        |
-|mem  [|||||||||||||||||||||||||         7G/16G] rss 6.0G   machine 64G                                                  |
-|cpu  [||||||||||||||||||||||||||||  4.9+3.5/12] disk 31G free                                                           |
+|units[||||||||||||||||||||||||||||||||||||||||       6+3/12] take-slot, 2 waiting   landing 2                           |
+|mem  [|||||||||||||||||||||||||||||||||              7G/16G] rss 6.0G   machine 64G                                     |
+|cpu  [|||||||||||||||||||||||||||||||||||||      4.9+3.5/12] disk 31G free                                              |
 |                                                                                                                        |
 |   ID STATE          KIND     UNITS   RESV   RSS STARTED  ELAPSED     ETA DEADLINE OWNER LABEL      COMMAND             |
 |   21 landing        test*        2     4G  3.0G -          30:00     ~1m     over sysl  release 0… sysl test compiler …|
@@ -35,17 +35,17 @@
 0 42..49 Basic(1)/Default/1
 0 61..77 Basic(6)/Default/1
 0 109..120 Basic(8)/Default/0
-1 6..26 Basic(2)/Default/0
-1 26..36 Basic(5)/Default/0
-1 36..46 Basic(8)/Default/0
-1 71..80 Basic(6)/Default/0
-2 6..24 Basic(6)/Default/0
-2 24..31 Basic(4)/Default/0
-2 31..46 Basic(8)/Default/0
-3 6..22 Basic(2)/Default/0
-3 22..34 Basic(3)/Default/0
-3 34..46 Basic(8)/Default/0
-3 48..61 Basic(3)/Default/0
+1 6..33 Basic(2)/Default/0
+1 33..46 Basic(5)/Default/0
+1 46..59 Basic(8)/Default/0
+1 84..93 Basic(6)/Default/0
+2 6..29 Basic(6)/Default/0
+2 29..39 Basic(4)/Default/0
+2 39..59 Basic(8)/Default/0
+3 6..28 Basic(2)/Default/0
+3 28..43 Basic(3)/Default/0
+3 43..59 Basic(8)/Default/0
+3 61..74 Basic(3)/Default/0
 5 0..120 Default/Default/17
 6 0..6 Default/Default/16
 6 6..20 Basic(2)/Default/17

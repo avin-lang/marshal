@@ -1,7 +1,7 @@
 |marshal  up 1:00   2 running  2 queued   landing: free                                   filter: all|
-|units[||||||                       2/12]                                                            |
-|mem  [                            0/16G] rss 0                                                      |
-|cpu  [||||||||               1.2+1.8/12] disk 14G free < 20G: nothing starts                        |
+|units[|||||||                                2/12]                                                  |
+|mem  [                                      0/16G] rss 0                                            |
+|cpu  [|||||||||||                      1.2+1.8/12] disk 14G free < 20G: nothing starts              |
 |                                                                                                    |
 |   ID STATE          KIND     UNITS   RESV   RSS STARTED  ELAPSED     ETA DEADLINE COMMAND          |
 |   70 running        build        1      -     - -           4:00     ~6m    26:00 make -j4         |
@@ -16,13 +16,13 @@
 0 30..38 Basic(3)/Default/0
 0 50..54 Basic(8)/Default/0
 0 89..100 Basic(8)/Default/0
-1 6..12 Basic(2)/Default/0
-1 12..39 Basic(8)/Default/0
-2 6..39 Basic(8)/Default/0
-3 6..9 Basic(2)/Default/0
-3 9..14 Basic(3)/Default/0
-3 14..39 Basic(8)/Default/0
-3 41..76 Basic(1)/Default/1
+1 6..13 Basic(2)/Default/0
+1 13..49 Basic(8)/Default/0
+2 6..49 Basic(8)/Default/0
+3 6..10 Basic(2)/Default/0
+3 10..17 Basic(3)/Default/0
+3 17..49 Basic(8)/Default/0
+3 51..86 Basic(1)/Default/1
 5 0..100 Default/Default/17
 6 0..6 Default/Default/16
 6 6..20 Basic(2)/Default/17

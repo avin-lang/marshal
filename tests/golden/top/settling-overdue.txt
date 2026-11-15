@@ -1,7 +1,7 @@
 |marshal  up 1:00   0 running  1 queued  1 settling   landing: free                                           filter: all|
-|units[                                    0/12]                                                                         |
-|mem  [                                   0/16G] rss 0                                                                   |
-|cpu  [                                    -/12]                                                                         |
+|units[                                                 0/12]                                                            |
+|mem  [                                                0/16G] rss 0                                                      |
+|cpu  [                                                 -/12]                                                            |
 |                                                                                                                        |
 |   ID STATE          KIND     UNITS   RESV   RSS STARTED  ELAPSED     ETA DEADLINE OWNER LABEL COMMAND                  |
 |   70 settling       bench#      12      -     - -          17:00       -    30:00 -           ./bench                  |
@@ -17,9 +17,9 @@
 0 40..50 Basic(3)/Default/1
 0 62..66 Basic(8)/Default/0
 0 109..120 Basic(8)/Default/0
-1 6..46 Basic(8)/Default/0
-2 6..46 Basic(8)/Default/0
-3 6..46 Basic(8)/Default/0
+1 6..59 Basic(8)/Default/0
+2 6..59 Basic(8)/Default/0
+3 6..59 Basic(8)/Default/0
 5 0..120 Default/Default/17
 6 0..6 Default/Basic(1)/16
 6 6..20 Basic(3)/Basic(1)/17
