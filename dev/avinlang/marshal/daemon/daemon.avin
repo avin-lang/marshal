@@ -67,14 +67,15 @@ data Message
   // time for the automatic retention sweep
   Sweep
   Sample
-  // The resident bytes of each job's process tree, by job id, and the processor time each of its
-  // processes had used at `atMs` (the daemon's clock).
+  // The resident bytes of each job's process tree, by job id, the processor time each of its
+  // processes had used at `atMs` (the daemon's clock), and the process groups its tree was found in.
   // `machine` is the processor time of every process on the machine at `atMs`.
   Measured(
       sizes: Vector[(long, long)],
       cpu: Vector[(long, Vector[marshal.CpuSample])],
       atMs: long,
-      machine: Vector[marshal.CpuSample]
+      machine: Vector[marshal.CpuSample],
+      groups: Vector[(long, Vector[long])]
   )
   // The least free space of the volumes the daemon watches, -1 where it could not be measured.
   DiskMeasured(free: long)
@@ -144,6 +145,9 @@ class Job(
   var startedAt: long = 0
   var resident = Resident(0, 0)
   var meter = marshal.startMeter(0)
+  // the process groups its tree was last found in (`jobTree`), which its signals reach even once a
+  // process of them is no longer a descendant by parent pid
+  var groups: Vector[long] = []
   var unitsLearned = false
   var endedMs: long = 0
   var pgid: long = 0
@@ -253,7 +257,8 @@ class Job(
       meter.cpuMs,
       owner,
       durationFrom,
-      if state == "queued" then startsIn else -1
+      if state == "queued" then startsIn else -1,
+      meter.held()
     )
 
 // The daemon's state, owned by its own thread.
@@ -348,7 +353,7 @@ class Daemon(
     job.learnedMem = r.learned
     job.reservedFrom = marshal.reservationSource(s.memory, s.memoryGiven, r, h.from)
 
-  // The peak cores of the jobs of `key`, oldest first.
+  // The cores the jobs of `key` held (`taught`), oldest first.
   coresOf(key: string) -> Vector[long] = cores.get(key).map(b -> b.toVector).getOrElse([])
 
   // The peak cores the job of `spec` learns its units from: its command's in its directory, or
@@ -455,11 +460,12 @@ class Daemon(
   // Remembers the peak memory a job of `key` reached, for the reservations of the jobs after it.
   rememberPeak(key: string, peak: long) = if peak > 0 then remember(peaks, key, peak)
 
-  // Remembers the peak cores a job of `key` was measured using, for the units of the jobs after it.
+  // Remembers the cores a job of `key` was measured holding (`taught`), for the units of the jobs
+  // after it.
   rememberCores(key: string, centi: long) = if centi >= 0 then remember(cores, key, centi)
 
-  // Learns the peaks of a job that has ended, its memory and its cores: under what it ran, and in
-  // its directory; then the jobs still waiting to start reserve and weigh again, so a peak above
+  // Learns from a job that has ended, its peak memory and the cores it held: under what it ran, and
+  // in its directory; then the jobs still waiting to start reserve and weigh again, so a peak above
   // what they reserved raises theirs at once, and what is learned is written to `memory.json`.
   learnRun(spec: JobSpec, peak: long, centi: long)
     if peak <= 0 && centi < 0 then return
@@ -574,7 +580,7 @@ class Daemon(
           quietCheck()
           exclusiveCheck()
           measure()
-        Measured(sizes, cpu, at, machine) -> measured(sizes, cpu, at, machine)
+        Measured(sizes, cpu, at, machine, groups) -> measured(sizes, cpu, at, machine, groups)
         DiskMeasured(free) -> diskMeasured(free)
         Unwatch(out) -> unwatch(out)
         Terminate ->
@@ -865,8 +871,8 @@ class Daemon(
     job.killed = true
     if job.paused
       unpause(job)
-      marshal.signalGroups(home, job.id, job.pgid, signal.Continue)
-    terminate(home, job.id, job.pgid, None)
+      marshal.signalGroups(home, job.id, job.pgid, job.groups, signal.Continue)
+    terminate(home, job.id, job.pgid, job.groups, None)
 
   // Ends the job's pause on the daemon's books: the time paused is added up, and its clock runs.
   // Its quiet clock starts again: a pause is not quiet.
@@ -896,7 +902,7 @@ class Daemon(
       Err(e) -> return Failed(s"job $id's processes could not be signalled: ${e.message}")
       Ok(_) -> ()
     // the step a job type's run is executing is in a group of its own
-    marshal.signalGroups(home, id, job.pgid, sig)
+    marshal.signalGroups(home, id, job.pgid, job.groups, sig)
     if on
       job.paused = true
       job.pausedAt = now()
@@ -934,7 +940,7 @@ class Daemon(
 
   stopGroups(job: Job)
     val _ = process.signal(-job.pgid, signal.Stop) // the group may have ended already
-    marshal.signalGroups(home, job.id, job.pgid, signal.Stop)
+    marshal.signalGroups(home, job.id, job.pgid, job.groups, signal.Stop)
 
   // Holds the queue (`on`) or releases it. A release starts what fits at once.
   holdQueue(on: bool) -> Reply
@@ -1148,8 +1154,8 @@ class Daemon(
     if job.state != "running" then return
     // Whatever the job left running in its group goes with it, and a paused group is continued
     // so the TERM reaches it.
-    marshal.signalGroups(home, id, job.pgid, signal.Terminate)
-    if job.paused then marshal.signalGroups(home, id, job.pgid, signal.Continue)
+    marshal.signalGroups(home, id, job.pgid, job.groups, signal.Terminate)
+    if job.paused then marshal.signalGroups(home, id, job.pgid, job.groups, signal.Continue)
     if job.timedOut && job.quietStopped
       // the job's log ends saying why it was stopped, after all it wrote
       val sample = job.sample.map(s -> s"; stack sample in $s").getOrElse("")
@@ -1226,7 +1232,7 @@ class Daemon(
     val sample = s"$home/jobs/${job.id}.sample.txt"
     job.sample = Some(sample)
     eprintln(s"marshal: job ${job.id} $why: sampling and stopping it")
-    terminate(home, job.id, job.pgid, Some(sample))
+    terminate(home, job.id, job.pgid, job.groups, Some(sample))
 
   // Ends a job: records it, answers its waiters and lets the scheduler use what it held.
   conclude(job: Job, outcome: Outcome, event: string)
@@ -1263,7 +1269,7 @@ class Daemon(
   offMachine(job: Job)
     running.remove(running.indexOf(job))
     // an external job's tree is not where its work ran, so its peaks teach nothing
-    if !job.spec.external then learnRun(job.spec, job.resident.peak, job.meter.peak)
+    if !job.spec.external then learnRun(job.spec, job.resident.peak, marshal.taught(job.meter.held(), job.meter.peak))
     val pid = job.pid
     if pid > 0 then slots.foreach(ts -> if job.spec.landing then ts.releaseLanding(pid) else ts.unregister(pid))
 
@@ -1272,15 +1278,21 @@ class Daemon(
   measure()
     if measuring then return
     measuring = true
-    val groups = running.map(j -> (j.id, j.pgid)).toVector
+    val jobsNow = running.map(j -> (j.id, j.pgid, j.groups)).toVector
     val events = self.events
     val home = self.home
     spawn(() ->
-      val sizes = groups.map(g -> (g.0, marshal.jobResident(home, g.0, g.1)))
       val times = marshal.processTimes()
       val at = time.monotonic().toMillis
+      val trees = jobsNow.map(j -> (j.0, marshal.treeOf(home, j.0, j.1, times, j.2)))
       events.send(
-        Measured(sizes, groups.map(g -> (g.0, marshal.jobCpu(home, g.0, g.1, times))), at, times.map(g -> g.sample))
+        Measured(
+          trees.map(t -> (t.0, marshal.jobResident(t.1))),
+          trees.map(t -> (t.0, marshal.jobCpu(t.1, times))),
+          at,
+          times.map(g -> g.sample),
+          trees.map(t -> (t.0, t.1.groups))
+        )
       ))
 
   // What a measurement found, for the jobs still running and for the machine.
@@ -1288,13 +1300,16 @@ class Daemon(
       sizes: Vector[(long, long)],
       cpu: Vector[(long, Vector[marshal.CpuSample])],
       at: long,
-      machine: Vector[marshal.CpuSample]
+      machine: Vector[marshal.CpuSample],
+      groups: Vector[(long, Vector[long])]
   )
     measuring = false
     for (id, bytes) in sizes
       jobs.get(id).foreach(job -> if job.state == "running" then job.resident = job.resident.measured(bytes))
     for (id, table) in cpu
       jobs.get(id).foreach(job -> if job.state == "running" then job.meter = job.meter.sampled(table, at))
+    for (id, found) in groups
+      jobs.get(id).foreach(job -> if job.state == "running" then job.groups = found)
     machineMeter = machineMeter.sampled(machine, at)
 
   // The directories whose volumes the disk guard watches: marshal's home and those of the jobs that
@@ -1777,7 +1792,7 @@ class Daemon(
       Some(Tick) -> ()
       Some(Sweep) -> ()
       Some(Sample) -> ()
-      Some(Measured(sizes, cpu, at, machine)) -> measured(sizes, cpu, at, machine)
+      Some(Measured(sizes, cpu, at, machine, groups)) -> measured(sizes, cpu, at, machine, groups)
       Some(DiskMeasured(free)) -> diskMeasured(free)
       Some(Unwatch(out)) -> unwatch(out)
       None -> ()
@@ -1822,7 +1837,9 @@ class Daemon(
       j.meter.now,
       j.meter.peak,
       j.meter.cpuMs,
-      j.durationFrom
+      j.durationFrom,
+      j.meter.windows,
+      j.groups
     )
     SavedState(
       reportedVersion(),
@@ -1856,7 +1873,8 @@ class Daemon(
       job.startedAt = sj.startedAt
       job.resident = Resident(sj.rss, sj.peakRss)
       // what its processes had used before is not known here: the next sample is a baseline
-      job.meter = marshal.resumedMeter(t, sj.cores, sj.peakCores, sj.cpuMs)
+      job.meter = marshal.resumedMeter(t, sj.cores, sj.peakCores, sj.cpuMs, sj.heldWindows)
+      job.groups = sj.groups
       job.unitsLearned = sj.unitsLearned
       job.endedMs = mono(sj.endedAt)
       job.pid = sj.pid
@@ -1901,7 +1919,7 @@ class Daemon(
       val job = rebuilt(sj)
       running += job
       watch(job)
-      if job.killed || job.timedOut then terminate(home, job.id, job.pgid, None)
+      if job.killed || job.timedOut then terminate(home, job.id, job.pgid, job.groups, None)
       // the old image's stopping again went with it: a job paused just before the restart
       // may have a process the STOP missed
       if job.paused && !job.killed && !job.timedOut
@@ -1927,12 +1945,13 @@ class Daemon(
       if job.state == "retrying" then armRetry(job) else reconsider(job)
     schedule()
 
-// Stops a job's process group: samples its busiest process first when `sample` names a file, then
-// TERM, and KILL after the grace period. Runs on a thread of its own, so the daemon goes on.
-terminate(home: string, id: long, pgid: long, sample: Option[string])
+// Stops a job's process tree: samples its busiest process first when `sample` names a file, then
+// TERM, and KILL after the grace period to the whole tree (`known` the groups it was found in
+// before). Runs on a thread of its own, so the daemon goes on.
+terminate(home: string, id: long, pgid: long, known: Vector[long], sample: Option[string])
   spawn(() ->
     sample.foreach(
-      file -> busiest(marshal.groupsOf(home, id, pgid)).foreach(
+      file -> busiest(marshal.treeOf(home, id, pgid, marshal.liveProcesses(), known).groups).foreach(
         pid -> val _ = Command("sample", pid.toString(), "5", "1", "-file", file).output() // a sample is a courtesy
       )
     )
@@ -1940,8 +1959,8 @@ terminate(home: string, id: long, pgid: long, sample: Option[string])
     // stopped; a step ended under it first would read as a failed step
     val _ = process.signal(-pgid, signal.Terminate) // the runner may have ended already
     threads.sleep(millis(Grace))
-    // the step group is read again: a step may have started since the TERM
-    marshal.signalGroups(home, id, pgid, signal.Kill)
+    // the step group and the tree are read again: a step may have started since the TERM
+    marshal.signalGroups(home, id, pgid, known, signal.Kill)
     ())
 
 // The process of the groups that has used the most processor time.

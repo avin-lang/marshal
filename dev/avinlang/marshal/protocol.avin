@@ -6,7 +6,7 @@ import dev.avinlang.json
 import dev.avinlang.json.Json
 
 // marshal's version, as `avin.hocon` gives it: what `marshal version` and `marshal restart` print.
-val Version: string = "0.3.10"
+val Version: string = "0.3.11"
 
 // What a job is to run and how much of the machine it takes. `urgent` queues it in its lane's urgent
 // band, behind the urgent jobs already queued and ahead of every other. `after` names the jobs it
@@ -204,7 +204,9 @@ retryable(_, _) = false
 // `durationFrom` says where `expectedMs` came from (`durationSource`: `cmd+dir`, `cmd`, `kind` or
 // `none`), "" from a daemon that does not say; only a duration learned from its command's own runs
 // gives it an ETA (eta.avin). `startsInMs` is how long a queued job is expected to wait before it
-// starts, as the daemon reckoned it when it answered; -1 where that is not known.
+// starts, as the daemon reckoned it when it answered; -1 where that is not known. `heldCores` is
+// the level the job held (`CpuMeter.held`), in hundredths, -1 where it has not been measured or
+// the daemon did not say: what its command's units are learned from.
 data JobInfo(
     id: long,
     kind: string,
@@ -248,7 +250,8 @@ data JobInfo(
     cpuMs: long = 0,
     owner: string = "",
     durationFrom: string = "",
-    startsInMs: long = -1
+    startsInMs: long = -1,
+    heldCores: long = -1
 )
 
 // The units a listing shows for a job: `~` before units learned from earlier runs' cores.
@@ -777,7 +780,8 @@ private etaMembers(i: JobInfo) -> Vector[(string, Json)]
   out.toVector
 
 // `units_learned` is there only for learned units; `cores` only while a measured job runs, and
-// `peak_cores` and `cpu_ms` once a job has been measured.
+// `peak_cores` and `cpu_ms` once a job has been measured; `held_cores` once a level it held has
+// been.
 private coresMembers(i: JobInfo) -> Vector[(string, Json)]
   val out = Buffer[(string, Json)]()
   if i.unitsLearned then out += ("units_learned", Json.Bool(true))
@@ -785,6 +789,7 @@ private coresMembers(i: JobInfo) -> Vector[(string, Json)]
   if i.peakCores >= 0
     out += ("peak_cores", coresJson(i.peakCores))
     out += ("cpu_ms", Json.num(i.cpuMs))
+  if i.heldCores >= 0 then out += ("held_cores", coresJson(i.heldCores))
   out.toVector
 
 // `resv_from` is left out where the daemon did not say where a reservation came from.
@@ -865,7 +870,9 @@ decodeJob(j: Json) -> Result[JobInfo, string]
       // absent from what marshal wrote before owners, ETAs and learned durations per command
       optional(j, "owner", v -> v.asString, "a string", "")?,
       optional(j, "duration_from", v -> v.asString, "a string", "")?,
-      optional(j, "starts_in_ms", wholeNumber, "a whole number", long(-1))?))
+      optional(j, "starts_in_ms", wholeNumber, "a whole number", long(-1))?,
+      // absent from what marshal wrote before it measured the level a job held
+      optional(j, "held_cores", centiOf, "a number of cores", long(-1))?))
 
 encodeTakeSlot(t: TakeSlotUse) -> Json = Json.obj(
   ("dir", Json.str(t.dir)),

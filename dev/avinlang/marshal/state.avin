@@ -26,7 +26,10 @@ import dev.avinlang.json.Json
 // counts such a job by its deadline. `unitsLearned` says its units were learned from earlier runs'
 // cores (false when absent); `cores`, `peakCores` (hundredths of a core, -1 when absent or never
 // measured) and `cpuMs` are its processor use as measured (cores.avin). `durationFrom` is where
-// `expectedMs` came from (eta.avin); "" when absent.
+// `expectedMs` came from (eta.avin); "" when absent. `heldWindows` are the levels a running job was
+// measured at and how often (`CpuMeter.windows`), so the new image's meter goes on knowing what it
+// held, and `groups` the process groups its tree was last found in (stepgroup.avin's `jobTree`), so
+// the new image's signals reach a process whose parent has ended; both empty when absent.
 data SavedJob(
     id: long,
     spec: JobSpec,
@@ -62,7 +65,9 @@ data SavedJob(
     cores: long = -1,
     peakCores: long = -1,
     cpuMs: long = 0,
-    durationFrom: string = ""
+    durationFrom: string = "",
+    heldWindows: Map[long, long] = Map(),
+    groups: Vector[long] = []
 )
 
 // The whole daemon: the version and process that saved it, when, when the daemon first began, the
@@ -120,8 +125,46 @@ encodeSavedJob(j: SavedJob) -> Json = Json.obj(
   ("cores", Json.num(j.cores)),
   ("peak_cores", Json.num(j.peakCores)),
   ("cpu_ms", Json.num(j.cpuMs)),
-  ("duration_from", Json.str(j.durationFrom))
+  ("duration_from", Json.str(j.durationFrom)),
+  // level and count pairs, lowest level first
+  (
+    "cpu_levels",
+    Json.Arr(
+      j.heldWindows.keys.toVector.sorted.map(l -> Json.Arr([Json.num(l), Json.num(j.heldWindows(l))]))
+    )
+  ),
+  ("groups", Json.Arr(j.groups.map(g -> Json.num(g))))
 )
+
+// The level and count pairs of `cpu_levels`; none where a state saved before them lacks it.
+private heldWindowsOf(j: Json) -> Result[Map[long, long], string]
+  val items = j.get("cpu_levels") match
+    None | Some(Json.Null) -> return Ok(Map())
+    Some(v) -> v.asVector match
+      Some(xs) -> xs
+      None -> return Err("`cpu_levels` is not an array")
+  var out: Map[long, long] = Map()
+  for item in items
+    val pair = item.asVector.getOrElse([])
+    if pair.length != 2 then return Err("`cpu_levels` holds something that is not a pair")
+    (pair(0).asLong, pair(1).asLong) match
+      (Some(level), Some(count)) if level >= 0 && count > 0 -> out = out.updated(level, count)
+      _ -> return Err("`cpu_levels` holds a pair that is not a level and a count")
+  Ok(out)
+
+// The whole numbers of `key`; none where a state saved before them lacks it.
+private wholesOr(j: Json, key: string) -> Result[Vector[long], string]
+  val items = j.get(key) match
+    None | Some(Json.Null) -> return Ok([])
+    Some(v) -> v.asVector match
+      Some(xs) -> xs
+      None -> return Err(s"`$key` is not an array")
+  val out = Buffer[long]()
+  for item in items
+    item.asLong match
+      Some(n) -> out += n
+      None -> return Err(s"`$key` holds something that is not a whole number")
+  Ok(out.toVector)
 
 private whole(j: Json, key: string) -> Result[long, string] = j.get(key).flatMap(v -> v.asLong) match
   Some(n) -> Ok(n)
@@ -204,7 +247,9 @@ decodeSavedJob(j: Json) -> Result[SavedJob, string]
       wholeOr(j, "cores", -1)?,
       wholeOr(j, "peak_cores", -1)?,
       wholeOrZero(j, "cpu_ms")?,
-      maybeText(j, "duration_from")?.getOrElse("")
+      maybeText(j, "duration_from")?.getOrElse(""),
+      heldWindowsOf(j)?,
+      wholesOr(j, "groups")?
     )
   )
 

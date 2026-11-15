@@ -1,0 +1,119 @@
+module tests
+
+// A job's process tree as one `ps` listing finds it (stepgroup.avin's `jobTree`): its own groups,
+// every descendant of their members by parent pid, the groups those descendants lead, and the
+// groups found earlier while anyone is still in them.
+import dev.avinlang.marshal
+import dev.avinlang.marshal.{CpuSample, GroupedCpu, JobTree}
+
+// A listed process: `pid`, its parent, its group and the processor time it has used.
+private row(pid: long, ppid: long, pgid: long, cpu: long = 0) -> GroupedCpu = GroupedCpu(pgid, CpuSample(pid, cpu), ppid)
+
+private pidsOf(t: JobTree) -> Vector[long] = t.pids.toVector.sorted
+
+// Unrelated processes every listing has: launchd, a shell elsewhere and its child.
+private val others: Vector[GroupedCpu] = [row(1, 0, 1), row(200, 1, 200), row(201, 200, 200), row(0, 0, 0)]
+
+@test("ps's four-column lines read with their parents; the three-column ones say none")
+treeLines()
+  val table = marshal.groupedCpuTable("  101    50   100   0:01.50\n 102 101 100 1:02:03.04\n  bad 1 2 0:00.00\n  103 101 103 x\n 104 104 0:00.07\n")
+  assertEq(table, [row(101, 50, 100, 150), row(102, 101, 100, 372304), row(104, 0, 104, 7)])
+
+@test("a job's own group and every child and grandchild in it are the job's; nothing else is")
+treeNested()
+  val table = others ++ [row(100, 50, 100), row(101, 100, 100), row(102, 101, 100)]
+  val t = marshal.jobTree(table, [100], [])
+  assertEq(pidsOf(t), [long(100), long(101), long(102)])
+  assertEq(t.groups, [long(100)])
+
+@test("a child in a group of its own, and a grandchild in a third, are the job's with their groups")
+treeOwnGroups()
+  val table = others ++ [
+    row(100, 50, 100),
+    row(101, 100, 100),
+    // a test runner's child in its own group, and that child's own child in it
+    row(103, 101, 103),
+    row(104, 103, 103),
+    // a grandchild that starts a third group
+    row(105, 104, 105),
+    row(106, 105, 105)
+  ]
+  val t = marshal.jobTree(table, [100], [])
+  assertEq(pidsOf(t), [long(100), long(101), long(103), long(104), long(105), long(106)])
+  assertEq(t.groups, [long(100), long(103), long(105)])
+  // the processor time counted is theirs
+  val cpu = marshal.jobCpu(t, table.map(r -> row(r.sample.pid, r.ppid, r.pgid, r.sample.pid)))
+  assertEq(cpu.map(s -> s.cpu).sum, long(100 + 101 + 103 + 104 + 105 + 106))
+
+@test("a member of a group the job's descendant leads is the job's even when its parent has ended")
+treeLedGroupMembers()
+  val table = others ++ [row(100, 50, 100), row(103, 100, 103), row(107, 1, 103), row(108, 107, 103)]
+  assertEq(pidsOf(marshal.jobTree(table, [100], [])), [long(100), long(103), long(107), long(108)])
+
+@test("a descendant in a group someone else leads is the job's alone; that group is not")
+treeForeignGroup()
+  val table = others ++ [row(100, 50, 100), row(109, 100, 200)]
+  val t = marshal.jobTree(table, [100], [])
+  assertEq(pidsOf(t), [long(100), long(109)])
+  assertEq(t.groups, [long(100)])
+
+@test("a step's group is the job's with its own descendants")
+treeStepRoot()
+  val table = others ++ [row(100, 50, 100), row(400, 100, 400), row(401, 400, 400), row(402, 401, 402)]
+  val t = marshal.jobTree(table, [100, 400], [])
+  assertEq(pidsOf(t), [long(100), long(400), long(401), long(402)])
+  assertEq(t.groups, [long(100), long(400), long(402)])
+
+@test("a group found earlier stays the job's after its leader's parent ends, while anyone is in it")
+treeRemembered()
+  // first the job runs a child in its own group
+  val before = others ++ [row(100, 50, 100), row(300, 100, 300), row(301, 300, 300)]
+  val first = marshal.jobTree(before, [100], [])
+  assertEq(first.groups, [long(100), long(300)])
+  // the job's main process ends: its child is reparented to 1, unreachable by parent pid
+  val after = others ++ [row(300, 1, 300), row(301, 300, 300)]
+  assertEq(pidsOf(marshal.jobTree(after, [100], [])), Vector[long]())
+  val second = marshal.jobTree(after, [100], first.groups)
+  assertEq(pidsOf(second), [long(300), long(301)])
+  assertEq(second.groups, [long(100), long(300)])
+  // once nobody is left in it, it is forgotten
+  val third = marshal.jobTree(others, [100], second.groups)
+  assertEq(third.groups, [long(100)])
+  // and a new process that takes its number later is not the job's
+  val reused = others ++ [row(300, 1, 300), row(310, 300, 300)]
+  assertEq(pidsOf(marshal.jobTree(reused, [100], third.groups)), Vector[long]())
+
+@test("a reused pid is judged by the listing it is in: a new process under an old parent's pid is the job's only while that pid is")
+treePidReuse()
+  // pid 120 was the job's child; it ended and an unrelated process took the number, with children
+  val table = others ++ [row(100, 50, 100), row(120, 1, 120), row(121, 120, 120)]
+  assertEq(pidsOf(marshal.jobTree(table, [100], [])), [long(100)])
+  // the same listing with 120 started by the job again is the job's
+  val again = others ++ [row(100, 50, 100), row(120, 100, 120), row(121, 120, 120)]
+  assertEq(pidsOf(marshal.jobTree(again, [100], [])), [long(100), long(120), long(121)])
+
+@test("a listing that could not be made keeps the groups known; a cycle of parents ends")
+treeEdges()
+  val empty = marshal.jobTree([], [100, 400], [300, 100, 1])
+  assertEq(empty.groups, [long(100), long(400), long(300)])
+  assertEq(pidsOf(empty), Vector[long]())
+  // an own group nobody is in is still the job's: it is what the job's signals go to
+  assertEq(marshal.jobTree(others, [100], []).groups, [long(100)])
+  // parents that name each other (a listing taken as pids were reused) do not loop
+  val looped = others ++ [row(100, 501, 100), row(501, 100, 501)]
+  assertEq(pidsOf(marshal.jobTree(looped, [100], [])), [long(100), long(501)])
+  // process 1 and 0 are never the job's, whatever names them
+  val odd = [row(1, 100, 1), row(0, 100, 0), row(100, 50, 100)]
+  assertEq(pidsOf(marshal.jobTree(odd, [100], [1])), [long(100)])
+
+@test("many processes in many groups walk in one pass")
+treeWide()
+  val rows = Buffer[GroupedCpu]()
+  rows += row(100, 50, 100)
+  for i in 1 .. 300
+    val leader = long(1000 + i * 10)
+    rows += row(leader, 100, leader)
+    rows += row(leader + 1, leader, leader)
+  val t = marshal.jobTree(others ++ rows.toVector, [100], [])
+  assertEq(t.pids.size, 601)
+  assertEq(t.groups.length, 301)

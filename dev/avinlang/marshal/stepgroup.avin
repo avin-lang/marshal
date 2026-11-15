@@ -5,6 +5,11 @@ module dev.avinlang.marshal
 // group to `<home>/runs/<job>/step.pgid` while the step runs and removes the file when it ends; the
 // daemon reads it to reach the step with every signal it sends the job, and to measure it. A file
 // (not a field of the job) so that a daemon that took the job over in a restart finds it as well.
+//
+// A job is more than its groups: what it runs may start processes in groups of their own, and
+// those are found by parent pid in one listing of the machine's processes (`jobTree`). Every
+// measurement and every signal reaches that whole tree.
+import avin.collections.mutable.{Map as MutableMap, Set as MutableSet}
 import avin.fs
 import avin.process
 import avin.process.Command
@@ -26,31 +31,112 @@ recordStepGroup(home: string, id: string, pgid: long)
 forgetStepGroup(home: string, id: string)
   val _ = fs.remove(s"$home/runs/$id/step.pgid")
 
-// Every process group of job `id`: the group `pgid` it was started in, and its step's group.
+// The process groups job `id` is known by without a listing: the group `pgid` it was started in,
+// and its step's group.
 groupsOf(home: string, id: long, pgid: long) -> Vector[long]
   val step = stepGroupOf(home, id)
   if step > 0 && step != pgid then [pgid, step] else [pgid]
 
-// The resident bytes of all of job `id`'s processes: those of its own group and of its step's.
-jobResident(home: string, id: long, pgid: long) -> long =
-  groupsOf(home, id, pgid).map(g -> groupResident(g)).sum
+// What one listing finds of a job's process tree: its processes (`pids`), and the process groups
+// they are in that are the job's (`groups`), its own and its step's first.
+data JobTree(pids: Set[long], groups: Vector[long])
 
-// The processor time each of job `id`'s processes has used, from `table` (`processTimes`): those of
-// its own group and of its step's.
-jobCpu(home: string, id: long, pgid: long, table: Vector[GroupedCpu]) -> Vector[CpuSample]
-  val groups = groupsOf(home, id, pgid)
-  table.filter(g -> groups.contains(g.pgid)).map(g -> g.sample)
+// The tree of the job whose own groups are `roots` (`groupsOf`), in the listing `table`
+// (`processTimes`). A program a job runs may start children in process groups of their own (a
+// test runner does, to end a test's whole group when it overruns), so the job's groups are not all
+// of it. Its processes are every member of its own groups, and every descendant of one by parent
+// pid; a descendant that leads a group of its own brings that group's members in too, and theirs
+// their descendants. A descendant whose parent ended is a child of process 1 and is no longer
+// reached by its parent pid, so the groups the job was found in earlier (`known`) count as its
+// own groups as well, for as long as anyone is in them: a group with nobody left in it is
+// forgotten, and its number, which a new process can then take, is not the job's any more.
+jobTree(table: Vector[GroupedCpu], roots: Vector[long], known: Vector[long]) -> JobTree
+  // a listing that could not be made says nothing: the groups known stay the job's
+  if table.isEmpty then return JobTree(Set(), (roots ++ known).filter(g -> g > 1).distinct)
+  val children = MutableMap[long, Buffer[long]]()
+  val members = MutableMap[long, Buffer[long]]()
+  for row in table
+    val pid = row.sample.pid
+    if pid <= 1 then continue
+    if row.ppid > 1
+      children.get(row.ppid) match
+        Some(b) -> b += pid
+        None ->
+          val b = Buffer[long]()
+          b += pid
+          children(row.ppid) = b
+    if row.pgid > 1
+      members.get(row.pgid) match
+        Some(b) -> b += pid
+        None ->
+          val b = Buffer[long]()
+          b += pid
+          members(row.pgid) = b
+  val groups = Buffer[long]()
+  val inGroups = MutableSet[long]()
+  val pids = MutableSet[long]()
+  val todo = Buffer[long]()
+  // a group's members are the job's, and each is walked for its children
+  val joined = (g: long) ->
+    if g > 1 && !inGroups.contains(g)
+      inGroups += g
+      groups += g
+      for pid in members.get(g).map(b -> b.toVector).getOrElse([]) do todo += pid
+  for g in roots do joined(g)
+  for g in known do if members.contains(g) then joined(g)
+  var next = 0
+  while next < todo.length
+    val pid = todo(next)
+    next += 1
+    if pids.contains(pid) then continue
+    pids += pid
+    // a process that leads a group brings its group in
+    if members.contains(pid) then joined(pid)
+    for child in children.get(pid).map(b -> b.toVector).getOrElse([]) do todo += child
+  JobTree(pids.toVector.toSet, groups.toVector)
 
-// The processor time of every process on the machine, with its group, as one `ps` lists them; none
-// where `ps` cannot be run. One listing serves every running job. A test names a program that
-// prints the same lines instead (`$MARSHAL_TEST_PS`), so what it measures does not hang on how much
-// of the machine the test's jobs are given.
+// Job `id`'s tree in `table`: from its own group `pgid`, its step's, and the groups it was found in
+// before (`known`).
+treeOf(home: string, id: long, pgid: long, table: Vector[GroupedCpu], known: Vector[long]) -> JobTree =
+  jobTree(table, groupsOf(home, id, pgid), known)
+
+// The resident bytes of all of a job's processes (`tree`); where the listing found none of them
+// (`ps` could not be run), those of its groups' members, asked of the system directly.
+jobResident(tree: JobTree) -> long
+  val pids = if tree.pids.isEmpty then tree.groups.flatMap(g -> groupMembers(g)) else tree.pids.toVector
+  residentOf(pids, pid -> process.residentBytes(pid))
+
+// The processor time each of a job's processes (`tree`) has used, from `table` (`processTimes`).
+jobCpu(tree: JobTree, table: Vector[GroupedCpu]) -> Vector[CpuSample] =
+  table.filter(g -> tree.pids.contains(g.sample.pid)).map(g -> g.sample)
+
+// The processor time of every process on the machine, with its group and its parent, as one `ps`
+// lists them; none where `ps` cannot be run. One listing serves every running job. A test names a
+// program that prints the same lines instead (`$MARSHAL_TEST_PS`), so what it measures does not
+// hang on how much of the machine the test's jobs are given.
 processTimes() -> Vector[GroupedCpu]
   val listing = process.env("MARSHAL_TEST_PS") match
     Some(program) if program.nonEmpty -> Command(program)
-    _ -> Command("ps", "-A", "-o", "pid=,pgid=,time=")
+    _ -> Command("ps", "-A", "-o", "pid=,ppid=,pgid=,time=")
   groupedCpuTable(listing.output().getOrElse(""))
 
-// Signals every group of job `id`; the errors of a group nobody is in are not an error.
-signalGroups(home: string, id: long, pgid: long, sig: int)
-  for g in groupsOf(home, id, pgid) do val _ = process.signal(-g, sig)
+// The processes of the machine as `ps` lists them now, always the real `ps`: what a signal is sent
+// by, which a test's stand-in for measuring must not decide.
+liveProcesses() -> Vector[GroupedCpu] =
+  groupedCpuTable(Command("ps", "-A", "-o", "pid=,ppid=,pgid=,time=").output().getOrElse(""))
+
+// Signals the whole tree of job `id` as it is now: every group of it, and each of its processes
+// that is in a group of someone else's by itself. `known` are the groups it was found in before.
+// The errors of a group nobody is in, and of a process that has ended, are not an error.
+signalGroups(home: string, id: long, pgid: long, known: Vector[long], sig: int)
+  val table = liveProcesses()
+  // the job's own groups are in it even where the listing could not be made
+  val tree = treeOf(home, id, pgid, table, known)
+  for g in tree.groups do val _ = process.signal(-g, sig)
+  // a descendant that joined a group the job does not own is signalled alone
+  val owned = tree.groups.toSet
+  for row in table
+    if tree.pids.contains(row.sample.pid) && !owned.contains(row.pgid) then val _ = process.signal(
+      row.sample.pid,
+      sig
+    )

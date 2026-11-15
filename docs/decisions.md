@@ -1933,3 +1933,48 @@ under marshal and passed outside it.
   against `<sys/resource.h>` and `<limits.h>` (`nofile.avin`); libc needs no `pkg-config`.
   `OPEN_MAX` is a macOS header's (glibc defines none), so this ties the build to macOS, as the
   `sample` at a deadline already ties that behaviour.
+
+## A job is its whole process tree, and units are learned from the level it held (branch `units`)
+
+**Settled on the user's delegation 2026-11-14.** The user's `marshal top` showed an avin gate at
+`CORES 0` while the machine's other CPU was 3.2, and full avin gates' USED at 0.2–1.2 cores though a
+run did 2 h of test time in 17 min: avin's test runner starts each test binary in a process group of
+its own, which a job's two groups (its own and its step's) did not hold. And: "the learned units may
+be too high. they don't seem to match the load and higher units per job tends to block things from
+running."
+
+- **A job's processes are its groups' members and every descendant of them by parent pid, with the
+  groups those descendants lead; measurement, pause, resume, kill, a deadline and the job's end all
+  reach that one set.** One `ps -A -o pid=,ppid=,pgid=,time=` per sample serves every job. A
+  descendant in a group someone else leads is the job's alone and is signalled by pid. Why: process
+  groups are how a program says "these belong together", so following the groups its descendants
+  lead keeps that, and the parent pid is the one link every child has. Alternatives: following
+  parent pids alone (misses a group's members whose parent has gone); sessions (a test runner that
+  calls `setsid` would escape again, and a session holds more than one job's work for an
+  interactive shell); a kqueue `NOTE_TRACK` on each job (follows forks as they happen, but needs
+  bindings Avin does not have, for little that a listing each second misses).
+- **The groups a job was found in are remembered while anyone is in them, and saved across a
+  restart.** Why: a process whose parent has ended is reparented to process 1 and cannot be reached
+  by parent pid, yet is still the job's work (the job's end must still reach it). A group with
+  nobody left in it is forgotten at once, because its number may then be given to a new process
+  that is not the job's. Alternatives: remembering pids (reused far more often than an empty
+  group's number is, and a process that forks again leaves its pid behind).
+- **Memory is still each process's resident bytes asked of the system**, now over the tree's
+  processes; where `ps` cannot be run, over the groups' members as before. Why: exact, and what
+  memory learning has always measured. Alternative: `ps`'s `rss` (kibibytes, and one more column to
+  trust).
+- **Units are learned from the 75th percentile of a run's two-second levels (`held_cores`), not its
+  highest one.** The meter keeps a count of each level it measured, in hundredths of a core (at most
+  a few thousand entries however long the run), and an ending event records the percentile beside
+  `peak_cores`; history written before `held_cores` existed teaches its peak, so the change takes
+  effect run by run. Why p75: a gate that bursts to 8 cores while compiling and then runs at 2 for
+  most of its time held 2, and reserving 8 for its whole run kept everything else off the machine;
+  the median would under-count work that is busy a little over half its time, and three quarters
+  still reserve what the job usually needs. Over-committing processors only slows niced jobs, which
+  share the cores the scheduler gives them. Alternatives: the mean (dragged down by idle stretches
+  at start and end, and up by a burst); the median (too low for a job busy just over half its time);
+  a time-weighted peak with decay (a parameter to tune, and harder to explain in `ls`). Review with
+  the user if p75 still reads high or low against `top`.
+- **Memory learning stays on peaks.** Why: memory over-committed is dangerous (the machine swaps,
+  or a job is killed), while processor time over-committed only slows niced jobs. `show` and `top`'s
+  PEAK stay the peak: it is what the job reached, and the learned units say what it held.

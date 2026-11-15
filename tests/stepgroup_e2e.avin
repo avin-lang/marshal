@@ -64,11 +64,13 @@ residentCountsStep()
   val step = Command("sleep", "30").inNewGroup.start().ok.get
   val ownGroup = own.group().getOrElse(own.pid())
   val stepGroup = step.group().getOrElse(step.pid())
-  val ownOnly = marshal.jobResident(home, 5, ownGroup)
+  val ownOnly = marshal.jobResident(marshal.treeOf(home, 5, ownGroup, marshal.liveProcesses(), []))
   assert(ownOnly > 0, s"$ownOnly")
   marshal.recordStepGroup(home, "5", stepGroup)
-  val both = marshal.jobResident(home, 5, ownGroup)
+  val both = marshal.jobResident(marshal.treeOf(home, 5, ownGroup, marshal.liveProcesses(), []))
   assert(both > ownOnly, s"$both is not above $ownOnly")
+  // with no listing, the groups' members are asked directly
+  assertEq(marshal.jobResident(marshal.treeOf(home, 5, ownGroup, [], [])) > ownOnly, true)
   val _ = process.signal(-ownGroup, 9)
   val _ = process.signal(-stepGroup, 9)
   val _ = own.waitFor()
@@ -260,4 +262,90 @@ noRecordBetweenSteps()
   assertEq(m(home, "wait", plain.toString()).code, 143)
   refusedWith(m(home, "pause", plain.toString()), s"job $plain has already ended")
   refusedWith(m(home, "kill", "99"), "no job 99")
+  cleanUp(home)
+
+// ---- a child in a process group of its own
+
+// Starts a perl in a process group of its own, as a test runner starts each test, which writes its
+// pid to `childpid`, holds about 200 MB and keeps a core busy; then waits for it, or with `leave`,
+// sleeps a few seconds and ends, leaving it behind.
+private ownGroupScript(leave: bool) -> string =
+  "/usr/bin/perl -e 'setpgrp(0, 0); open(F, \">childpid.tmp\"); print F $$; close F; rename(\"childpid.tmp\", \"childpid\"); $x = \"x\" x 200000000; 1 while 1' &\n" + (
+    if leave then "sleep 4\n" else "wait\n"
+  )
+
+// Waits up to ten seconds for the child to say its pid.
+private childPid(dir: string) -> long
+  val until = time.monotonic() + millis(10000)
+  while time.monotonic() < until
+    val pid = fs.readText(dir + "/childpid").getOrElse("").trim.toLongOption()
+    if pid.isDefined then return pid.get
+    threads.sleep(millis(50))
+  fail("the child did not start")
+
+// The group `pid` is in, as `ps` says.
+private groupOf(pid: long) -> long =
+  Command("ps", "-o", "pgid=", "-p", pid.toString()).output().getOrElse("").trim.toLongOption().getOrElse(0)
+
+@test("a child in a process group of its own is measured with its job, paused with it and killed with it")
+ownGroupChild()
+  val home = newHome()
+  fs.writeText(home + "/own.sh", ownGroupScript(false)).ok.get
+  val id = submitted(home, "--dir", home, "--units", "1", "--", "sh", "own.sh")
+  val child = childPid(home)
+  // the child really is outside the job's group
+  val pgid = startedGroup(home, id)
+  assert(groupOf(child) == child && child != pgid, s"child $child in ${groupOf(child)}, job $pgid")
+  // its core and its memory are the job's
+  assert(
+    within(15000, () -> statusJob(home, id).get("cores").flatMap(v -> v.asReal).exists(c -> c > 0.0)),
+    s"${statusJob(home, id)}"
+  )
+  assert(
+    within(15000, () -> statusJob(home, id).get("rss").flatMap(v -> v.asLong).exists(b -> b > 150000000)),
+    s"${statusJob(home, id)}"
+  )
+  // pause stops it, resume continues it
+  assertEq(m(home, "pause", id.toString()).code, 0)
+  assert(waitStopped([child], true), procState(child))
+  assertEq(m(home, "resume", id.toString()).code, 0)
+  assert(waitStopped([child], false), procState(child))
+  // kill ends it
+  assertEq(m(home, "kill", id.toString()).code, 0)
+  assertEq(m(home, "wait", id.toString()).code, 143)
+  assert(waitGone([child], 8000), "the child in its own group survived the kill")
+  // and its run was measured using cores
+  val ended = events(home).find(e -> e("id").asLong == Some(id) && e("event").asString == Some("killed")).get
+  assert(ended("peak_cores").asReal.exists(c -> c > 0.0), ended.render)
+  assert(ended.has("held_cores"), ended.render)
+  assert(ended("peak_rss").asLong.get > 150000000, ended.render)
+  cleanUp(home)
+
+@test("a child in a group of its own that the job leaves behind, its parent gone, ends with the job")
+ownGroupChildLeft()
+  val home = newHome()
+  fs.writeText(home + "/own.sh", ownGroupScript(true)).ok.get
+  val id = submitted(home, "--dir", home, "--units", "1", "--", "sh", "own.sh")
+  val child = childPid(home)
+  // the job ends when its shell does; the child, a child of process 1 by then, goes with it
+  assertEq(m(home, "wait", id.toString()).code, 0)
+  assert(waitGone([child], 8000), "the child left behind in its own group outlived its job")
+  cleanUp(home)
+
+@test("a child in a group of its own is killed after a restart, by the groups the old image found")
+ownGroupChildAfterRestart()
+  val home = newHome()
+  fs.writeText(home + "/own.sh", ownGroupScript(false)).ok.get
+  val id = submitted(home, "--dir", home, "--units", "1", "--", "sh", "own.sh")
+  val child = childPid(home)
+  // measured at least once, so its group is known
+  assert(
+    within(15000, () -> statusJob(home, id).get("cores").flatMap(v -> v.asReal).exists(c -> c > 0.0)),
+    s"${statusJob(home, id)}"
+  )
+  restarted(home)
+  assert(procAlive(child))
+  assertEq(m(home, "kill", id.toString()).code, 0)
+  m(home, "wait", id.toString())
+  assert(waitGone([child], 8000), "the child in its own group survived a kill after a restart")
   cleanUp(home)

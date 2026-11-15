@@ -10,7 +10,8 @@ module dev.avinlang.marshal
 // `pgid`, the job's process group. An ending event's `peak_rss` is the most memory the job's
 // process tree was measured holding, in bytes: what a kind's memory can be learned from. Its
 // `peak_cores` is the most cores the job was measured keeping busy and `cpu_ms` the processor time
-// counted (cores.avin), both absent where it was never measured: what its units are learned from.
+// counted (cores.avin), both absent where it was never measured; `held_cores` the level it held
+// (`CpuMeter.held`), what its units are learned from.
 // `submitted` adds `spec`, the job's whole specification, which `rerun` submits again. A job that
 // is retried ends each attempt with an ending event that adds `"retrying": true`, and then records
 // `retry`, so its last event is an ending only once its last attempt has ended.
@@ -36,9 +37,9 @@ eventLine(ts: long, event: string, job: JobInfo, extra: Vector[(string, Json)]) 
 //   outcome: what reservations are learned from when `memory.json` cannot be used. Each is kept
 //   under the `memoryKey` of its recorded `cmd` and, where the event names its `dir`, under its
 //   `memoryDirKey` too; an event without a command teaches nothing.
-// - `cores`: the `peak_cores` of every ending event that has one, in hundredths of a core, oldest
-//   first, kept under the same keys as `peaks`: what units are learned from when `memory.json`
-//   cannot be used.
+// - `cores`: the `held_cores` of every ending event that has one, and the `peak_cores` of one
+//   written before held levels were, in hundredths of a core, oldest first, kept under the same
+//   keys as `peaks`: what units are learned from when `memory.json` cannot be used.
 // - `durations`: the run time of each job that exited 0, oldest first, kept under the same keys as
 //   `peaks`: what expected durations are learned from when `memory.json` cannot be used or kept
 //   none.
@@ -87,7 +88,11 @@ recover(lines: Iterable[string], keep: int = 10) -> Recovered
         position(id) = last.length
         last += (id, ev)
     val peak = ev.get("peak_rss").flatMap(v -> v.asLong).getOrElse(0)
-    val busiest = ev.get("peak_cores").flatMap(centiOf).getOrElse(-1)
+    // the level the run held; an event written before held levels were teaches its peak
+    val busiest = taught(
+      ev.get("held_cores").flatMap(centiOf).getOrElse(-1),
+      ev.get("peak_cores").flatMap(centiOf).getOrElse(-1)
+    )
     // an external job's peaks are its tree's, not its work's: never learned from
     if endings.contains(kind) && (peak > 0 || busiest >= 0) && ev.get("external").flatMap(v -> v.asBool) != Some(true)
       val evKind = ev.get("kind").flatMap(v -> v.asString).getOrElse("")
@@ -224,7 +229,8 @@ asLost(j: JobInfo) -> JobInfo = JobInfo(
   j.quick,
   unitsLearned = j.unitsLearned,
   peakCores = j.peakCores,
-  cpuMs = j.cpuMs
+  cpuMs = j.cpuMs,
+  heldCores = j.heldCores
 )
 
 // Whether an event ends its job for good: an ending, and not one of an attempt that runs again.

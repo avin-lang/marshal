@@ -8,9 +8,10 @@ module dev.avinlang.marshal
 // protocol, the event log and every listing write units as units (`1.25`); only the arithmetic
 // inside counts quarters.
 //
-// What a job really uses is measured while it runs: the processor time of every process in its
-// process groups, sampled as its memory is (`CpuMeter`), gives the cores it kept busy. A job that
-// says no units weighs what earlier runs of the same command were measured using (`learnedUnits`).
+// What a job really uses is measured while it runs: the processor time of every process of its
+// tree (stepgroup.avin's `jobTree`), sampled as its memory is (`CpuMeter`), gives the cores it kept
+// busy. A job that says no units weighs what earlier runs of the same command were measured holding
+// (`learnedUnits`).
 import dev.avinlang.json.Json
 
 // How many quarters make a unit.
@@ -104,17 +105,24 @@ centiOf(v: Json) -> Option[long]
 // The processor time a process has used: its pid and hundredths of a second.
 data CpuSample(pid: long, cpu: long)
 
-// A process's processor time with its process group, as `ps -A -o pid=,pgid=,time=` lists it.
-data GroupedCpu(pgid: long, sample: CpuSample)
+// A process's processor time with its process group and its parent, as
+// `ps -A -o pid=,ppid=,pgid=,time=` lists it; `ppid` is 0 where the listing does not say.
+data GroupedCpu(pgid: long, sample: CpuSample, ppid: long = 0)
 
-// The `pid pgid time` lines of `ps -A -o pid=,pgid=,time=`; a line that does not read is left out.
+// The `pid ppid pgid time` lines of `ps -A -o pid=,ppid=,pgid=,time=`, and the `pid pgid time` lines
+// of the shorter listing, which says no parents; a line that does not read is left out.
 groupedCpuTable(text: string) -> Vector[GroupedCpu]
   val out = Buffer[GroupedCpu]()
   for line in text.lines
     val words = line.trim.split(" ").filter(w -> w.nonEmpty).toVector
     if words.length < 3 then continue
-    (words(0).toLongOption(), words(1).toLongOption(), parseCpuTime(words(2))) match
-      (Some(pid), Some(pgid), Some(cpu)) -> out += GroupedCpu(pgid, CpuSample(pid, cpu))
+    if words.length == 3
+      (words(0).toLongOption(), words(1).toLongOption(), parseCpuTime(words(2))) match
+        (Some(pid), Some(pgid), Some(cpu)) -> out += GroupedCpu(pgid, CpuSample(pid, cpu))
+        _ -> ()
+      continue
+    (words(0).toLongOption(), words(1).toLongOption(), words(2).toLongOption(), parseCpuTime(words(3))) match
+      (Some(pid), Some(ppid), Some(pgid), Some(cpu)) -> out += GroupedCpu(pgid, CpuSample(pid, cpu), ppid)
       _ -> ()
   out.toVector
 
@@ -138,6 +146,13 @@ cpuUsedSince(before: Map[long, long], now: Vector[CpuSample]) -> long
 // interval was never measured, and both stay -1. `cpuMs` is all the processor time counted, in
 // milliseconds. `primed` false makes the next sample only a baseline, counting nothing: a daemon
 // that took the job over in a restart does not know what its processes had used before.
+//
+// `windows` counts how many times each level was measured (hundredths of a core to the number of
+// samples that found it), and so holds what the run kept up rather than only its top: `held` is
+// the level three quarters of its samples were at or below. A run that bursts to eight cores while
+// it compiles and then runs lighter for most of its time holds its lighter level, and that, not
+// its burst, is what its units are learned from. The levels are whole hundredths no higher than
+// the machine's cores, so the counts stay a few thousand entries at most however long a run is.
 data CpuMeter(
     seen: Map[long, long],
     atMs: long,
@@ -146,7 +161,8 @@ data CpuMeter(
     now: long,
     peak: long,
     cpuMs: long,
-    primed: bool
+    primed: bool,
+    windows: Map[long, long] = Map()
 )
 
 impl CpuMeter
@@ -156,35 +172,69 @@ impl CpuMeter
   sampled(table: Vector[CpuSample], t: long) -> CpuMeter
     if table.isEmpty then return self
     val seenNow = table.map(s -> (s.pid, s.cpu)).toMap
-    if !primed then return CpuMeter(seenNow, t, 0, 0, now, peak, cpuMs, true)
+    if !primed then return CpuMeter(seenNow, t, 0, 0, now, peak, cpuMs, true, windows)
     val wall = t - atMs
     if wall <= 0 then return self
     // hundredths of a second, as milliseconds
     val used = cpuUsedSince(seen, table) * 10
     val window = coresOver(used + lastCpu, wall + lastMs)
-    CpuMeter(seenNow, t, used, wall, window, if window > peak then window else peak, cpuMs + used, true)
+    CpuMeter(
+      seenNow,
+      t,
+      used,
+      wall,
+      window,
+      if window > peak then window else peak,
+      cpuMs + used,
+      true,
+      windows.updated(window, windows.getOrElse(window, 0) + 1)
+    )
+
+  // The level the run held: what three quarters of its measured levels were at or below, in
+  // hundredths of a core; -1 while none has been measured.
+  held() -> long = heldOf(windows)
+
+// The level three quarters of the counted levels `windows` (level to count) are at or below; -1
+// where there are none.
+heldOf(windows: Map[long, long]) -> long
+  val total = windows.values.sum
+  if total <= 0 then return -1
+  // the smallest level with at least three quarters of the samples at or below it
+  val wanted = (total * 3 + 3) / 4
+  var seen: long = 0
+  for level in windows.keys.toVector.sorted
+    seen += windows(level)
+    if seen >= wanted then return level
+  -1
 
 // A meter for a job started at `t`: nothing seen yet, so every process it starts counts.
 startMeter(t: long) -> CpuMeter = CpuMeter(Map(), t, 0, 0, -1, -1, 0, true)
 
-// A meter taken over from an earlier daemon with what it had measured: its next sample is a baseline.
+// A meter taken over from an earlier daemon with what it had measured, the levels it held among
+// it: its next sample is a baseline.
 resumedMeter(
     t: long,
     now: long,
     peak: long,
-    cpuMs: long
-) -> CpuMeter = CpuMeter(Map(), t, 0, 0, now, peak, cpuMs, false)
+    cpuMs: long,
+    windows: Map[long, long] = Map()
+) -> CpuMeter = CpuMeter(Map(), t, 0, 0, now, peak, cpuMs, false, windows)
+
+// What a run teaches its command's units: the level it held, or, for a run recorded before held
+// levels were, its peak.
+taught(held: long, peak: long) -> long = if held >= 0 then held else peak
 
 // The cores `cpuMs` of processor time over `wallMs` kept busy, in hundredths, the nearest; 0 over no
 // time.
 coresOver(cpuMs: long, wallMs: long) -> long = if wallMs <= 0 then 0 else (cpuMs * Centi + wallMs / 2) / wallMs
 
-// How units are learned from the cores earlier runs used: the most of the last `window` measured
-// peaks, rounded up to a quarter, at least a quarter, and no more than the budget.
+// How units are learned from the cores earlier runs used: the most of the last `window` levels
+// those runs held (`taught`), rounded up to a quarter, at least a quarter, and no more than the
+// budget.
 val CoresWindow: int = 5
 
-// The units, in quarters, that the measured peaks `peaks` (hundredths of a core, oldest first)
-// teach, held to `budget` quarters; None while there are none.
+// The units, in quarters, that the levels `peaks` earlier runs held (hundredths of a core, oldest
+// first; `taught`) teach, held to `budget` quarters; None while there are none.
 learnedUnits(peaks: Vector[long], budget: int) -> Option[int]
   val runs = peaks.filter(p -> p >= 0).takeRight(CoresWindow)
   if runs.isEmpty then return None
@@ -193,12 +243,13 @@ learnedUnits(peaks: Vector[long], budget: int) -> Option[int]
   val atLeast = if q < 1 then long(1) else q
   Some(if atLeast > long(budget) then budget else int(atLeast))
 
-// The most of the last `CoresWindow` measured peaks, in hundredths: what a hint says recent runs used.
+// The most of the last `CoresWindow` levels runs held, in hundredths: what a hint says recent runs
+// used.
 recentCores(peaks: Vector[long]) -> Option[long]
   val runs = peaks.filter(p -> p >= 0).takeRight(CoresWindow)
   if runs.isEmpty then None else Some(runs.max)
 
-// The peaks a job learns its units from: those of its command in its directory once there are any,
+// The levels a job learns its units from: those of its command in its directory once there are any,
 // and of its command anywhere until then.
 coresHistory(dirPeaks: Vector[long], cmdPeaks: Vector[long]) -> Vector[long] =
   if dirPeaks.exists(p -> p >= 0) then dirPeaks else cmdPeaks

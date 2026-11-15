@@ -40,7 +40,7 @@ private work(home: string, kind: string, seconds: string, cores: string) -> Vect
 private fakeWork(home: string, kind: string, seconds: string, cores: string) -> Vector[string] =
   work(home, kind, seconds, s"fakecores=$cores")
 
-// A stand-in for `ps -A -o pid=,pgid=,time=`, which the daemon runs instead under
+// A stand-in for `ps -A -o pid=,ppid=,pgid=,time=`, which the daemon runs instead under
 // `$MARSHAL_TEST_PS`: it lists every process as `ps` does, and gives each one whose command holds
 // `fakecores=N` the processor time of N cores busy since it first listed it, by the wall clock,
 // every other one none. So what a job is measured using is what the test says, however much of the
@@ -56,9 +56,9 @@ if (open(my $f, '<', $state)) {
 }
 my $now = time;
 my %keep;
-for my $l (`ps -A -o pid=,pgid=,command=`) {
-  next unless $l =~ /^ *([0-9]+) +([0-9]+) +(.*)$/;
-  my ($pid, $pgid, $cmd) = ($1, $2, $3);
+for my $l (`ps -A -o pid=,ppid=,pgid=,command=`) {
+  next unless $l =~ /^ *([0-9]+) +([0-9]+) +([0-9]+) +(.*)$/;
+  my ($pid, $ppid, $pgid, $cmd) = ($1, $2, $3, $4);
   my $cores = $cmd =~ /fakecores=([0-9.]+)/ ? $1 : 0;
   my $h = 0;
   if ($cores > 0) {
@@ -67,8 +67,8 @@ for my $l (`ps -A -o pid=,pgid=,command=`) {
     $h = int(($now - $seen{$pid}) * $cores * 100);
   }
   my $s = int($h / 100);
-  printf("%d %d %d:%02d:%02d.%02d
-", $pid, $pgid, $s / 3600, ($s / 60) % 60, $s % 60, $h % 100);
+  printf("%d %d %d %d:%02d:%02d.%02d
+", $pid, $ppid, $pgid, $s / 3600, ($s / 60) % 60, $s % 60, $h % 100);
 }
 if (open(my $o, '>', "$state.tmp")) {
   print $o "$_ $keep{$_}

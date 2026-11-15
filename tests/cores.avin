@@ -389,3 +389,185 @@ savedState()
   assertEq((read.unitsLearned, read.cores, read.peakCores, read.cpuMs), (false, long(-1), long(-1), long(0)))
   // what marshal saved before it learned units was given, and weighed whole units
   assertEq((read.spec.units, read.spec.unitsGiven), (4, true))
+
+// ---- the level a run held
+
+@test("the level held is what three quarters of the measured levels are at or below; -1 for none")
+heldPercentile()
+  assertEq(marshal.heldOf(Map()), long(-1))
+  assertEq(marshal.heldOf([(long(300), long(1))].toMap), long(300))
+  // three of four at 100: the fourth, higher, is above the level held
+  assertEq(marshal.heldOf([(long(100), long(3)), (long(800), long(1))].toMap), long(100))
+  // two and two: three quarters reach into the higher level
+  assertEq(marshal.heldOf([(long(100), long(2)), (long(200), long(2))].toMap), long(200))
+  // order of the levels does not matter, only their counts
+  assertEq(marshal.heldOf([(long(900), long(1)), (long(0), long(6)), (long(50), long(1))].toMap), long(0))
+  assertEq(marshal.heldOf([(long(0), long(1)), (long(50), long(1)), (long(900), long(2))].toMap), long(900))
+
+// The meter after `seconds` one-second samples each adding `perSecond` hundredths of processor time.
+private ran(m: CpuMeter, from: long, seconds: int, perSecond: long, cpu: long) -> (CpuMeter, long, long)
+  var meter = m
+  var t = from
+  var used = cpu
+  for _ in 1 .. seconds
+    t += 1000
+    used += perSecond
+    meter = meter.sampled([CpuSample(1, used)], t)
+  (meter, t, used)
+
+@test("a run that bursts and then runs lighter holds its lighter level; its peak stays the burst")
+heldBurstThenQuiet()
+  val (burst, t, cpu) = ran(marshal.startMeter(0), 0, 10, 800, 0)
+  assertEq((burst.peak, burst.held()), (long(800), long(800)))
+  val (quiet, _, _) = ran(burst, t, 39, 100, cpu)
+  assertEq(quiet.peak, long(800))
+  assertEq(quiet.held(), long(100))
+  // ten windows at 8 cores, one across the change at 4.5, the other 38 at 1
+  assertEq(quiet.windows.values.sum, long(49))
+  assertEq(quiet.windows(100), long(38))
+  assertEq(quiet.windows(450), long(1))
+  // and what that teaches: one unit, where the peak taught eight
+  assertEq(marshal.learnedUnits([marshal.taught(quiet.held(), quiet.peak)], 48), Some(4))
+  assertEq(marshal.learnedUnits([quiet.peak], 48), Some(32))
+
+@test("a steady run holds its level, and an idle one holds 0")
+heldSteady()
+  val (steady, _, _) = ran(marshal.startMeter(0), 0, 20, 300, 0)
+  assertEq((steady.held(), steady.peak), (long(300), long(300)))
+  val (idle, _, _) = ran(marshal.startMeter(0), 0, 5, 0, 0)
+  assertEq((idle.held(), idle.peak), (long(0), long(0)))
+  // never measured: none held, as none peaked
+  assertEq(marshal.startMeter(0).held(), long(-1))
+  // a sample that counts nothing adds no level
+  val once = marshal.startMeter(0).sampled([CpuSample(1, 100)], 1000)
+  assertEq(once.sampled([], 2000), once)
+  assertEq(once.sampled([CpuSample(1, 900)], 1000).windows, once.windows)
+
+@test("a run that is busy most of its time holds its busy level")
+heldMostlyBusy()
+  val (quiet, t, cpu) = ran(marshal.startMeter(0), 0, 5, 50, 0)
+  val (busy, _, _) = ran(quiet, t, 30, 600, cpu)
+  assertEq(busy.held(), long(600))
+  assertEq(busy.peak, long(600))
+
+@test("a meter taken over in a restart keeps the levels it held, and adds to them")
+heldResumed()
+  val windows: Map[long, long] = [(long(200), long(6)), (long(900), long(1))].toMap
+  val r = marshal.resumedMeter(10000, 150, 900, 9000, windows)
+  assertEq(r.held(), long(200))
+  // the baseline adds no level
+  val b = r.sampled([CpuSample(1, 500000)], 11000)
+  assertEq(b.windows, windows)
+  val c = b.sampled([CpuSample(1, 500900)], 12000)
+  assertEq(c.windows.values.sum, long(8))
+  // six of eight at 2 cores: still the level held
+  assertEq(c.held(), long(200))
+  // four of ten at 9 cores: three quarters now reach it
+  val e = c.sampled([CpuSample(1, 501800)], 13000).sampled([CpuSample(1, 502700)], 14000)
+  assertEq(e.windows, [(long(200), long(6)), (long(900), long(4))].toMap)
+  assertEq(e.held(), long(900))
+  // one taken over without levels (an older daemon's state) starts holding none
+  assertEq(marshal.resumedMeter(10000, 150, 320, 9000).held(), long(-1))
+
+@test("a run teaches the level it held, and one recorded before held levels its peak")
+taughtFallsBack()
+  assertEq(marshal.taught(150, 800), long(150))
+  assertEq(marshal.taught(0, 800), long(0))
+  assertEq(marshal.taught(-1, 800), long(800))
+  assertEq(marshal.taught(-1, -1), long(-1))
+  // the most of the last five held levels, rounded up to a quarter, at least a quarter, held to the budget
+  val held = [100, 150, 120, 90, 110].map(v -> long(v)).toVector
+  assertEq(marshal.learnedUnits(held, 48), Some(6))
+  assertEq(marshal.learnedUnits(held.map(v -> marshal.taught(v, 800)), 48), Some(6))
+  assertEq(marshal.learnedUnits([marshal.taught(-1, 800), long(100)], 48), Some(32))
+  assertEq(marshal.learnedUnits([marshal.taught(0, 0)], 48), Some(1))
+  assertEq(marshal.learnedUnits([marshal.taught(1300, 1700)], 48), Some(48))
+
+@test("an ending event records the level held beside the peak, and reads back")
+heldInProtocol()
+  val ended = JobInfo(
+    3,
+    "build",
+    16,
+    0,
+    false,
+    "/w",
+    ["make"],
+    "done",
+    Some(Outcome.Exited(0)),
+    false,
+    0,
+    1000,
+    60000,
+    "/l",
+    None,
+    peakCores = 800,
+    cpuMs = 4200,
+    heldCores = 125
+  )
+  val j = marshal.encodeJob(ended)
+  assertEq(j("held_cores").asReal, Some(1.25))
+  assertEq(j("peak_cores").asLong, Some(long(8)))
+  assertEq(marshal.decodeJob(j), Ok(ended))
+  // a job never measured has none, and what marshal wrote before reads as none
+  assert(!marshal.encodeJob(job()).has("held_cores"))
+  val line = marshal.eventLine(1, "finished", ended, [("exit", Json.num(0))])
+  assert(line.contains("\"held_cores\":1.25"), line)
+  val old = Json.Obj(j.asMembers.get.filter(m -> m.0 != "held_cores"))
+  assertEq(marshal.decodeJob(old).map(i -> i.heldCores), Ok(long(-1)))
+  // a lost job keeps it
+  assertEq(marshal.asLost(ended).heldCores, long(125))
+
+@test("the event log teaches the level held, and a run recorded before held levels its peak")
+heldRecovered()
+  val ev = (id: long, extra: string) ->
+    s"{\"ts\":1,\"event\":\"finished\",\"id\":$id,\"kind\":\"k\",\"landing\":false,\"dir\":\"/w\",\"cmd\":[\"make\"],\"exit\":0,\"run_ms\":1000$extra}"
+  val lines = [
+    ev(1, ",\"peak_cores\":8,\"held_cores\":1"),
+    ev(2, ",\"peak_cores\":1.5"),
+    ev(3, ",\"peak_cores\":6,\"held_cores\":0"),
+    ev(4, ",\"peak_cores\":7,\"held_cores\":2,\"external\":true")
+  ]
+  val r = marshal.recover(lines)
+  assertEq(r.cores(marshal.memoryKey("k", false, "make")), [long(100), long(150), long(0)])
+  assertEq(r.cores(marshal.memoryDirKey("k", false, "make", "/w")), [long(100), long(150), long(0)])
+
+@test("a restart hands over the levels a job held and the groups its tree was in; older state has none")
+heldSaved()
+  val spec = marshal.JobSpec("build", 5, 0, false, "/w", None, ["make"], [], unitsGiven = false)
+  val saved = marshal.SavedJob(
+    3,
+    spec,
+    "running",
+    1,
+    2,
+    3,
+    0,
+    60000,
+    1000,
+    "/l",
+    40,
+    40,
+    None,
+    false,
+    false,
+    None,
+    0,
+    0,
+    peakCores = 800,
+    cpuMs = 5000,
+    heldWindows = [(long(100), long(30)), (long(800), long(10)), (long(0), long(2))].toMap,
+    groups = [40, 41, 77]
+  )
+  val text = marshal.encodeSavedJob(saved).render
+  assert(text.contains("\"cpu_levels\":[[0,2],[100,30],[800,10]]"), text)
+  assert(text.contains("\"groups\":[40,41,77]"), text)
+  assertEq(marshal.decodeSavedJob(json.parse(text).ok.get), Ok(saved))
+  val old = text.replace(",\"cpu_levels\":[[0,2],[100,30],[800,10]],\"groups\":[40,41,77]", "")
+  assert(!old.contains("cpu_levels"), old)
+  val read = marshal.decodeSavedJob(json.parse(old).ok.get).ok.get
+  assertEq((read.heldWindows, read.groups), (Map[long, long](), Vector[long]()))
+  // what is not a level and a count, or a group, is refused
+  for bad in ["\"cpu_levels\":5", "\"cpu_levels\":[[1]]", "\"cpu_levels\":[[1,0]]", "\"cpu_levels\":[[-1,2]]", "\"groups\":[\"a\"]", "\"groups\":{}"]
+    val broken = old.dropRight(1) + "," + bad + "}"
+    assert(marshal.decodeSavedJob(json.parse(broken).ok.get).isErr, broken)

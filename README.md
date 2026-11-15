@@ -486,27 +486,40 @@ ends: nothing polls.
 - **Units learned from processor use.** Units come in quarters (`0.25`, `1.5`, `4`): the budget's
   12 units are 48 quarters, and the scheduler adds whole quarters, so fractional jobs fill the
   budget exactly. Each second, with the memory, the daemon lists the processor time of every
-  process in a running job's process groups (one `ps` for all jobs). Over an interval the cores a
+  process in a running job's tree (one `ps` for all jobs): the processes of its own process groups,
+  every descendant of them by parent pid, and the groups those descendants lead, so a program that
+  starts its children in process groups of their own (a test runner that ends a test's whole
+  group when it overruns) is measured with them. A group the tree was found in stays the job's
+  while anyone is in it, so a process whose parent has ended (a child of process 1 by then) is
+  still the job's. Over an interval the cores a
   job keeps busy are the processor time its processes used divided by the time that passed (a
   process seen before counts what it used since; a new one all it has used). The job's level is
   the last two intervals together, so one busy second between quiet ones counts at half, and its
-  peak is the most that level has been. A job's `finished` (or other ending) event records the
-  peak as `peak_cores` and the processor time counted as `cpu_ms`; a job that ended within its
-  first second was never measured and records neither. A process that ends between two samples
+  peak is the most that level has been. What it **held** is the level three quarters of its
+  samples were at or below (the 75th percentile of its levels), so a gate that bursts to 8 cores
+  while it compiles and then runs lighter for most of its time holds its lighter level. A job's
+  `finished` (or other ending) event records the peak as `peak_cores`, what it held as
+  `held_cores` and the processor time counted as `cpu_ms`; a job that ended within its first
+  second was never measured and records none of them. A process that ends between two samples
   takes the time it used since the last one with it, so work made of many processes shorter than a
   second is measured low. A job that gives no `--units` weighs what the runs of the same command
-  teach, learned as memory is (the command's signature, its directory first): the most of the
-  last 5 measured peaks, rounded up to a quarter, at least 0.25 and at most the budget; a command
-  never measured weighs its kind's default (4 for a `test`, 1 for anything else). `--units` wins
+  teach, learned as memory is (the command's signature, its directory first): the most of what
+  the last 5 measured runs held, rounded up to a quarter, at least 0.25 and at most the budget (a
+  run recorded before `held_cores` was teaches its peak); a command never measured weighs its
+  kind's default (4 for a `test`, 1 for anything else). Memory is still learned from peaks: a job
+  over its share of processors only slows the niced jobs beside it, while one over its memory can
+  take the machine into swap. `--units` wins
   whenever it is given, and a job type's `units` counts as given. An exclusive job still weighs the
   whole budget, and a quick job its own units outside it. When a run teaches a new value, the
   queued and waiting jobs that gave no units weigh again at once; a running job keeps what it
   started with. A restart weighs them again from what the new program reads, and a running job
-  it takes over keeps its measured peak and is measured on from a fresh baseline. An external
+  it takes over keeps its measured peak, the levels it held and the groups its tree was found in,
+  and is measured on from a fresh baseline. An external
   job's cores are never learned. `ls` shows a job's units in UNITS (`~` before learned ones) and in
   USED the cores a running job keeps busy or an ended job's peak (`-` where nothing was measured);
-  `status --json` gives `units` as a number (`1.25`), `units_learned`, and `cores`, `peak_cores`
-  and `cpu_ms` once measured; `top`'s UNITS shows the same units with `~`.
+  `status --json` gives `units` as a number (`1.25`), `units_learned`, and `cores`, `peak_cores`,
+  `held_cores` and `cpu_ms` once measured; `top`'s UNITS shows the same units with `~`, and its
+  PEAK, like `show`'s, stays the peak.
 - **Durations learned per command, and ETAs.** Every run that exits 0 is remembered under its
   command, as memory is (the command's signature, in its directory and anywhere). A job's expected
   duration is the median of the last 5 such runs of its command in its directory, or anywhere while
@@ -575,8 +588,9 @@ ends: nothing polls.
   durations and exit status.
   Deadlines are learned from it, and a daemon that starts after one died records the jobs that
   were left open as `lost`.
-- **Pausing a job.** `marshal pause <id>` sends STOP to a running job's whole process group and
-  `marshal resume <id>` sends CONT. A paused job keeps its units and memory, since its processes
+- **Pausing a job.** `marshal pause <id>` sends STOP to a running job's whole process tree (its
+  groups and every descendant's, as it is measured) and `marshal resume <id>` sends CONT; `kill`,
+  a deadline and the end of a job reach the same tree. A paused job keeps its units and memory, since its processes
   still hold their memory, and its deadline's clock stops: its ELAPSED and the time left before its
   deadline count only the time it ran. `ls` and `top` show it as `paused`, and it stays paused, its
   clock stopped, across `marshal restart`. `kill` of a paused job, and `stop --force`, continue it

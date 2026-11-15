@@ -65,11 +65,13 @@ from: `given` (`mem` was given, `0` among them), `cmd+dir` (its command's peaks 
 `rss`, and its ending event's `peak_rss` is never learned from (nor counted by `stats`).
 
 `units` is what the job weighs (`1.25`). `units_learned` is present, and true, only where the units
-were learned from the cores earlier runs of its command used (the most of the last 5 peaks, rounded
-up to a quarter). `cores` is how many cores a running job kept busy over the last two seconds,
-`peak_cores` the most it has, and `cpu_ms` the processor time measured; `cores` is present only on a
-running job that has been measured, `peak_cores` and `cpu_ms` on any job that has (an ending event's
-`peak_cores` is what units are learned from).
+were learned from the cores earlier runs of its command held (the most of the last 5 runs' held
+levels, rounded up to a quarter). `cores` is how many cores a running job kept busy over the last two
+seconds, `peak_cores` the most it has, `held_cores` the level three quarters of its samples were at
+or below, and `cpu_ms` the processor time measured; `cores` is present only on a running job that has
+been measured, `peak_cores`, `held_cores` and `cpu_ms` on any job that has (an ending event's
+`held_cores` is what units are learned from, and its `peak_cores` where an event written before held
+levels has no `held_cores`).
 
 `expected_ms` is how long the job is expected to run: the median of the last 5 successful runs of
 its command in its directory, or anywhere; else the median of its kind's recent runs, or half its
