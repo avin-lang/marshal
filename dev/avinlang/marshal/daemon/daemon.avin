@@ -2201,7 +2201,7 @@ run(home: string, resume: Option[string] = None) -> int
   val _ = fs.removeDirAll(home + "/starting") // a lock that stays names this pid or a dead one, and is taken over
   val configText = if fs.exists(home + "/config.json") then fs.readText(home + "/config.json").getOrElse("") else ""
   val machine = machineMemory()
-  val config = marshal.readConfig(configText, machine) match
+  val config = marshal.readConfigOn(configText, machine, marshal.coreCount()) match
     Ok(c) -> c
     Err(e) ->
       eprintln(s"marshal: $e")

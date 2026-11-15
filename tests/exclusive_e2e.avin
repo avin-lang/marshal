@@ -505,6 +505,25 @@ exclE2eRefused()
   cleanUp(home)
 
 @test(
+  "with no config.json the daemon's unit budget is the machine's processor count, an exclusive job weighs all of it, and config.json's units overrides"
+)
+exclE2eBudgetFollowsProcessors()
+  val home = newHome()
+  assertEq(mWith(home, [("MARSHAL_TEST_NCPU", "18")], "run", "--exclusive", "--", "true").code, 0)
+  assertEq(specOf(home, 1)("units").asInt, Some(18))
+  val status = mWith(home, [], "status")
+  assert(status.out.contains("units 0/18"), status.out)
+  cleanUp(home)
+  val set = newHome("{\"units\": 5}")
+  assertEq(mWith(set, [("MARSHAL_TEST_NCPU", "18")], "run", "--exclusive", "--", "true").code, 0)
+  assertEq(specOf(set, 1)("units").asInt, Some(5))
+  cleanUp(set)
+  val unknown = newHome()
+  assertEq(mWith(unknown, [("MARSHAL_TEST_NCPU", "none")], "run", "--exclusive", "--", "true").code, 0)
+  assertEq(specOf(unknown, 1)("units").asInt, Some(12))
+  cleanUp(unknown)
+
+@test(
   "an exclusive job's spec records the whole budget, --units or not, and rerun keeps it exclusive with its quiet load"
 )
 exclE2eSpecAndRerun()
