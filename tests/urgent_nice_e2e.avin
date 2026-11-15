@@ -1,0 +1,46 @@
+module tests
+
+// End to end, the nice level a job's processes run at: an urgent job, started in its turn or
+// backfilled ahead of a draining job, runs un-niced as a landing and an exclusive job do, while a
+// development job and a quick one stay niced. Each job prints its own nice level; the test may
+// itself run niced, so levels are compared with a landing job's. The helpers are e2e.avin's and
+// landing_e2e.avin's.
+import avin.fs
+import dev.avinlang.marshal.Why
+
+// The nice level job `id` printed: the last line of its log, after any line of marshal's own.
+private printedNice(home: string, id: long) -> int =
+  fs.readText(s"$home/jobs/$id.log").ok.get.trim.lines.toVector.last.trim.toInt()
+
+private val printNice: Vector[string] = ["sh", "-c", "ps -o nice= -p $$"]
+
+@test("an urgent job is not niced, started in its turn or backfilled; landing and exclusive jobs neither; development and quick jobs are")
+urgentNotNiced()
+  val home = newHome("{\"units\": 3, \"drain_after\": \"1s\"}")
+  val land = submitted(home, (["--landing", "--"] ++ printNice)*)
+  assertEq(m(home, "wait", land.toString()).code, 0)
+  val base = printedNice(home, land)
+  // started in its turn
+  val urgent = submitted(home, (["--urgent", "--units", "1", "--"] ++ printNice)*)
+  val dev = submitted(home, (["--units", "1", "--"] ++ printNice)*)
+  val quick = submitted(home, (["--quick", "--"] ++ printNice)*)
+  val excl = submitted(home, (["--exclusive", "--kind", "bench", "--"] ++ printNice)*)
+  for id in [urgent, dev, quick, excl] do assertEq(m(home, "wait", id.toString()).code, 0)
+  assertEq(printedNice(home, urgent), base)
+  assertEq(printedNice(home, excl), base)
+  assert(printedNice(home, dev) > base || printedNice(home, dev) == 20, s"${printedNice(home, dev)} $base")
+  assert(printedNice(home, quick) > base || printedNice(home, quick) == 20, s"${printedNice(home, quick)} $base")
+  // backfilled ahead of a draining job: a running job counts by its deadline, a minute, so the big
+  // job drains, and a short urgent job that fits the free units backfills ahead of it
+  val a = submitted(home, "--units", "1", "--deadline", "60s", "--", "sleep", "60")
+  assert(within(2000, () -> started(home, a)))
+  val big = submitted(home, "--units", "3", "--", "sleep", "0.2")
+  assert(within(4000, () -> whyOf(home, big) == Some(Why.Draining)), s"${whyOf(home, big)}")
+  val back = submitted(home, (["--urgent", "--units", "1", "--deadline", "10s", "--"] ++ printNice)*)
+  assertEq(m(home, "wait", back.toString()).code, 0)
+  val ev = events(home).find(e -> e("id").asLong == Some(back) && e("event").asString == Some("started")).get
+  assertEq(ev("backfilled_ahead_of").asLong, Some(big))
+  assertEq(printedNice(home, back), base)
+  m(home, "kill", a.toString())
+  assertEq(m(home, "wait", big.toString()).code, 0)
+  cleanUp(home)

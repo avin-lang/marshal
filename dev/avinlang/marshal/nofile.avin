@@ -1,0 +1,61 @@
+module dev.avinlang.marshal
+
+// How many files a job may hold open. A job inherits the daemon's soft limit on open files, and a
+// daemon launchd started holds launchd's default, 256, however high a login shell sets its own: a
+// test spawning a thousand event loops runs out of descriptors under marshal and not outside it. So
+// the daemon raises its soft limit at start-up, before any job starts, and every job inherits the
+// raised one.
+//
+// The limit raised to is the hard limit where that is a number. Where the hard limit is unlimited,
+// macOS reports an unlimited soft limit if it is asked for one yet still opens no more than
+// `kern.maxfilesperproc` files, and `ulimit -n` then says "unlimited" of a limit that is not; the
+// setrlimit manual's answer is `min(OPEN_MAX, rlim_max)`, and that is the limit raised to there.
+// A soft limit already higher is kept. config.json's `nofile` asks for a limit of its own, at most
+// the hard one; where the system refuses what is asked, `min(OPEN_MAX, hard)` is asked instead.
+
+@c(struct: "struct rlimit")
+private data Rlimit(rlimCur: long, rlimMax: long)
+
+@c(const: "RLIMIT_NOFILE")
+private val RlimitNofile: int
+
+// The hard limit that is no limit.
+@c(const: "RLIM_INFINITY")
+val RlimInfinity: long
+
+// The open files `setrlimit` asks a soft limit to be held to where the hard one is unlimited.
+@c(const: "OPEN_MAX")
+val OpenMax: long
+
+@c("int getrlimit(int resource, out struct rlimit *rlp)")
+private getrlimit(resource: int) -> Result[Rlimit, int]
+
+@c("int setrlimit(int resource, const struct rlimit *rlp)")
+private setrlimit(resource: int, rlp: Rlimit) -> Result[unit, int]
+
+// The process's soft and hard limits on open files, None where they cannot be read.
+nofileLimits() -> Option[(long, long)] = getrlimit(RlimitNofile).ok.map(r -> (r.rlimCur, r.rlimMax))
+
+// The soft limit to ask for, given the current `soft` and `hard` limits and what config.json's
+// `nofile` asks for: that, held to `hard`; otherwise `hard` where it is a number, `min(OpenMax,
+// hard)` where it is unlimited, and `soft` where that is already more.
+nofileTarget(soft: long, hard: long, asked: Option[long]) -> long = asked match
+  Some(n) -> if n > hard then hard else n
+  None ->
+    val raised = if hard == RlimInfinity then nofileFallback(hard) else hard
+    if soft > raised then soft else raised
+
+// What is asked where the system refuses the target: `min(OpenMax, hard)`.
+nofileFallback(hard: long) -> long = if OpenMax < hard then OpenMax else hard
+
+// Sets the soft limit on open files to `nofileTarget`'s, or to `nofileFallback`'s where the system
+// refuses that, keeping the hard limit; the soft limit it holds afterwards, None where the limits
+// cannot be read.
+raiseNofile(asked: Option[long]) -> Option[long]
+  val (soft, hard) = nofileLimits() match
+    Some(limits) -> limits
+    None -> return None
+  val target = nofileTarget(soft, hard, asked)
+  if target != soft && setrlimit(RlimitNofile, Rlimit(target, hard)).isErr
+    val _ = setrlimit(RlimitNofile, Rlimit(nofileFallback(hard), hard)) // refused too, the limit stays as it was
+  nofileLimits().map(l -> l.0)

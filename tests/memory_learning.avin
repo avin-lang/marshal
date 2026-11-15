@@ -42,12 +42,15 @@ wrapped()
   assertEq(sig("env -u X"), "")
   assertEq(sig("nice"), "")
 
-@test("a shell is its script's name, without the script's arguments; -c is the command it runs")
+@test("a shell is its script's path as written, without the script's arguments; -c is the command it runs")
 shellsLearnTheirScript()
-  assertEq(sig("zsh /tmp/s/gate.zsh tests_a tests_b"), "zsh gate.zsh")
-  assertEq(sig("zsh scripts/release.sh 0.0.21 --out"), "zsh release.sh")
-  assertEq(sig("sh -e /x/train.zsh branch"), "sh train.zsh")
+  assertEq(sig("zsh /tmp/s/gate.zsh tests_a tests_b"), "zsh /tmp/s/gate.zsh")
+  assertEq(sig("zsh scripts/release.sh 0.0.21 --out"), "zsh scripts/release.sh")
+  assertEq(sig("sh -e /x/train.zsh branch"), "sh /x/train.zsh")
   assertEq(sig("zsh -o pipefail run.zsh"), "zsh run.zsh")
+  assertEq(sig("zsh ./run.zsh"), "zsh run.zsh")
+  // wrappers before the shell are passed over as before
+  assertEq(sig("caffeinate -dimsu nice zsh /tmp/s/gate.zsh"), "zsh /tmp/s/gate.zsh")
   assertEq(
     marshal.commandSignature(["zsh", "-c", "env -u SYSL_LIB sysl build . -o sysl && ./sysl test ."]),
     "sysl build ."
@@ -63,12 +66,82 @@ shellsLearnTheirScript()
   assertEq(marshal.commandSignature(["zsh", "-c", "zsh -c 'sysl test .'"]), "zsh -c")
   assertEq(sig("zsh"), "zsh")
 
+@test("two scripts of one name in two directories are two commands; the same script, run again, is one")
+scriptsLearnApart()
+  // the two gates that shared `zsh gate2.zsh`: a release's, and a fix's
+  val release = sig("zsh /scratch/release-0110/gate2.zsh")
+  val fix = sig("zsh /scratch/bti/gate2.zsh")
+  assert(release != fix, release)
+  assertEq(sig("zsh /scratch/release-0110/gate2.zsh tests_a"), release)
+  assertEq(sig("nice -n 15 zsh /scratch/release-0110/gate2.zsh"), release)
+  // a relative script is still one command in every worktree of its repository
+  assertEq(sig("zsh scripts/test.sh"), sig("zsh scripts/test.sh --fast"))
+  // interpreters keep their script's path and its first argument
+  assert(sig("python3 /a/bench.py big") != sig("python3 /b/bench.py big"), sig("python3 /a/bench.py big"))
+  assertEq(sig("python3 -u /a/bench.py big 3 --out x"), "python3 /a/bench.py big")
+  assertEq(sig("node ./tools/build.js"), "node tools/build.js")
+  // inline code and modules are learned as any program is
+  assertEq(sig("python3 -m pytest tests"), "python3 pytest tests")
+  assertEq(sig("perl -e print"), "perl print")
+  assertEq(sig("python3"), "python3")
+  // a script run as a program keeps its path too
+  assert(sig("/scratch/a/gate.zsh") != sig("/scratch/b/gate.zsh"), sig("/scratch/a/gate.zsh"))
+  assertEq(sig("./scripts/test.sh x y"), "scripts/test.sh x")
+  // a binary is still its last component, so worktrees share it
+  assertEq(sig("/w/sysl-a/stage1 test ."), "stage1 test .")
+  // and the learned peaks follow: each gate reserves its own
+  val lines = [
+    peakLine(1, "/w/r", "[\"zsh\",\"/scratch/release-0110/gate2.zsh\"]", 30 * G),
+    peakLine(2, "/w/r", "[\"zsh\",\"/scratch/release-0110/gate2.zsh\"]", 32 * G),
+    peakLine(3, "/w/f", "[\"zsh\",\"/scratch/bti/gate2.zsh\"]", G)
+  ]
+  val peaks = marshal.recover(lines).peaks
+  assertEq(reserveIn(peaks, ["zsh", "/scratch/bti/gate2.zsh"], "/w/new").0, Reservation(1127 * MiB, true))
+  assertEq(reserveIn(peaks, ["zsh", "/scratch/release-0110/gate2.zsh"], "/w/new").0.bytes > 32 * G, true)
+  // a new script of the same name learns nothing from either
+  assertEq(reserveIn(peaks, ["zsh", "/scratch/other/gate2.zsh"], "/w/r"), (Reservation(0, false), "none"))
+
+@test("a key is a script's when its signature is a shell, an interpreter or a script running one")
+scriptKeys()
+  for k in ["build\nzsh gate2.zsh", "build\nzsh /s/gate2.zsh\n/w", "test\npython3 b.py", "build\ngate.zsh x"]
+    assert(marshal.isScriptKey(k), k)
+  for k in ["build\nsysl build .", "build\nzsh -c", "build\nzsh", "build\nmake\n/w", "build"]
+    assert(!marshal.isScriptKey(k), k)
+
+@test(
+  "a version 3 memory.json drops the scripts' keys, which mixed scripts of one name, and keeps the rest; the event log teaches the scripts again"
+)
+memoryFileVersion3Scripts()
+  val text = "{\"version\":3,\"peaks\":{\"build\\nzsh gate2.zsh\":[36000000000],\"build\\nmake\":[1073741824]},\"cores\":{\"build\\nzsh gate2.zsh\":[1],\"build\\nmake\":[2]},\"durations\":{\"build\\nzsh gate2.zsh\":[628102],\"build\\nmake\":[1000]}}"
+  val back = marshal.decodeMemory(text).ok.get
+  assertEq(back.staleScripts, true)
+  assertEq(back.peaks.keys.toVector, ["build\nmake"])
+  assertEq(back.cores, [("build\nmake", [long(200)])].toMap)
+  assertEq(back.durations, [("build\nmake", [long(1000)])].toMap)
+  // what the event log still has of the scripts comes back under their new keys; nothing else of it
+  val newKey = "build\nzsh /s/gate2.zsh"
+  val fromLog: Map[string, Vector[long]] = [(newKey, [long(5)]), ("build\nmake", [long(9)])].toMap
+  val merged = marshal.withRecovered(back, fromLog, fromLog, fromLog)
+  assertEq(merged.peaks, [("build\nmake", [G]), (newKey, [long(5)])].toMap)
+  assertEq(merged.cores, [("build\nmake", [long(200)]), (newKey, [long(5)])].toMap)
+  assertEq(merged.durations, [("build\nmake", [long(1000)]), (newKey, [long(5)])].toMap)
+  assertEq(merged.staleScripts, false)
+  // written again it is version 4, and a version 4 file's script keys are kept as they are
+  val again = marshal.decodeMemory(marshal.encodeMemory(merged)).ok.get
+  assertEq((again.staleScripts, again.peaks), (false, merged.peaks))
+  assertEq(marshal.withRecovered(again, fromLog, fromLog, fromLog).peaks, merged.peaks)
+  // a version 1 file's cores and a version 2 file's durations still come whole from the event log
+  val v1 = marshal.decodeMemory("{\"version\":1,\"peaks\":{\"build\\nzsh g.zsh\":[1048576]}}").ok.get
+  assertEq(v1.peaks, noCores)
+  val m1 = marshal.withRecovered(v1, fromLog, fromLog, fromLog)
+  assertEq((m1.peaks, m1.cores, m1.durations), ([(newKey, [long(5)])].toMap, fromLog, fromLog))
+
 // Today's poisoning, as the event log had it: kind `build` covering compiler gates that peaked at
 // 33G (under many scratch and worktree directories), beside ordinary builds that peak near 6G.
 private poisonedLog() -> Vector[string] =
   val lines = Buffer[string]()
   for i in 0 ..< 8
-    lines += peakLine(long(i + 1), s"/scratch/s$i", "[\"zsh\",\"/scratch/s$i/gate.zsh\",\"tests_a\"]", 33 * G)
+    lines += peakLine(long(i + 1), s"/scratch/s$i", s"[\"zsh\",\"/scratch/s$i/gate.zsh\",\"tests_a\"]", 33 * G)
   for i in 0 ..< 3
     lines += peakLine(
       long(i + 20),
@@ -105,8 +178,9 @@ noPoisoning()
   val b = Budget(12, 56 * G)
   val waiting = (1 .. 5).map(i -> Waiting(long(i), 1, r.bytes, false, hour, long(i * 10))).toVector
   assertEq(marshal.schedule(b, [], waiting, 0), [long(1), long(2), long(3), long(4), long(5)])
-  // the gate itself still reserves its own 33G, so two of them never start together
-  val (g, gFrom) = reserveIn(peaks, ["zsh", "/scratch/new/gate.zsh"], "/scratch/new")
+  // a gate run again, from another directory, still reserves its own 33G, so two of them never
+  // start together
+  val (g, gFrom) = reserveIn(peaks, ["zsh", "/scratch/s3/gate.zsh"], "/scratch/new")
   assertEq((g.bytes > 33 * G, gFrom), (true, "cmd"))
   val gates = [Waiting(1, 1, g.bytes, false, hour, 10), Waiting(2, 1, g.bytes, false, hour, 20)]
   assertEq(marshal.schedule(b, [], gates, 0), [long(1)])
@@ -207,7 +281,7 @@ memoryFileCores()
   val many = (1 .. 30).map(i -> long(i) * 25).toVector
   val cores: Map[string, Vector[long]] = [("build\nmake", [0, 120, 1250]), ("test\nzsh t.zsh", many)].toMap
   val text = marshal.encodeMemory(Learned([("build\nmake", [G])].toMap, cores))
-  assert(text.contains("\"version\":3"), text)
+  assert(text.contains("\"version\":4"), text)
   assert(text.contains("[0,1.2,12.5]"), text)
   val back = marshal.decodeMemory(text).ok.get
   assertEq(back.cores("build\nmake"), [0, 120, 1250])
@@ -216,7 +290,7 @@ memoryFileCores()
   assertEq(back.fromVersion1, false)
   assertEq(back.withoutDurations, false)
 
-@test("memory.json version 3 keeps the durations of the runs that succeeded, in milliseconds, the last twenty")
+@test("memory.json keeps the durations of the runs that succeeded, in milliseconds, the last twenty")
 memoryFileDurations()
   val many = (1 .. 30).map(i -> long(i) * 1000).toVector
   val durations: Map[string, Vector[long]] = [("build\nmake", [0, 61000]), ("test\nzsh t.zsh\n/w", many)].toMap
@@ -250,7 +324,7 @@ memoryFileVersion2()
   // durations a version 2 file holds are not read: it never wrote any
   val stray = marshal.decodeMemory("{\"version\":2,\"peaks\":{},\"cores\":{},\"durations\":{\"k\":[1]}}").ok.get
   assertEq(stray.durations, noCores)
-  // written again, it is version 3 and keeps everything it had
+  // written again, it is the current version and keeps everything it had
   val again = marshal.decodeMemory(marshal.encodeMemory(back)).ok.get
   assertEq((again.peaks, again.cores, again.withoutDurations), (back.peaks, back.cores, false))
 
@@ -291,11 +365,11 @@ memoryFileRefused()
   fs.writeText(file, "").ok.get
   assert(marshal.loadMemory(file).isErr, "empty")
   fs.writeText(file, "{\"peaks\":{}}").ok.get
-  assertEq(marshal.loadMemory(file).err, Some("version missing, not 3"))
+  assertEq(marshal.loadMemory(file).err, Some("version missing, not 4"))
   fs.writeText(file, "{\"version\":0,\"peaks\":{}}").ok.get
-  assertEq(marshal.loadMemory(file).err, Some("version 0, not 3"))
-  fs.writeText(file, "{\"version\":4,\"peaks\":{},\"cores\":{},\"durations\":{}}").ok.get
-  assertEq(marshal.loadMemory(file).err, Some("version 4, not 3"))
+  assertEq(marshal.loadMemory(file).err, Some("version 0, not 4"))
+  fs.writeText(file, "{\"version\":5,\"peaks\":{},\"cores\":{},\"durations\":{}}").ok.get
+  assertEq(marshal.loadMemory(file).err, Some("version 5, not 4"))
   fs.writeText(file, "{\"version\":1,\"peaks\":[]}").ok.get
   assertEq(marshal.loadMemory(file).err, Some("`peaks` is not an object"))
   fs.writeText(file, "{\"version\":1,\"peaks\":{\"k\":[1,\"x\"]}}").ok.get

@@ -212,6 +212,29 @@ histories()
   assertEq(r.histories.get("build"), Some([long(400)]))
   assertEq(r.histories.get("test+landing"), Some([long(500)]))
 
+timedOut(id: long, run: long) -> string =
+  line(
+    "timeout",
+    info(id, "test", false, "done", Some(Outcome.TimedOut), run),
+    [("run_ms", Json.num(run)), ("exit", Json.num(124))]
+  )
+
+@test("overruns hold the longest run its deadline stopped since the command last exited 0, by its keys")
+overruns()
+  val keys = marshal.memoryKeys("test", false, ["make", "it"], "/d")
+  assertEq(keys.length, 2)
+  val stopped = marshal.recover([ended(1, 100, 0), timedOut(2, 700), timedOut(3, 900), timedOut(4, 800)])
+  for k in keys do assertEq(stopped.overruns.get(k), Some(long(900)))
+  // a success ends it; a failure does not
+  assertEq(marshal.recover([timedOut(2, 700), ended(3, 100, 0)]).overruns, Map[string, long]())
+  assertEq(marshal.recover([timedOut(2, 700), ended(3, 100, 1)]).overruns.get(keys(0)), Some(long(700)))
+  // a timeout after the success counts again
+  assertEq(
+    marshal.recover([timedOut(2, 700), ended(3, 100, 0), timedOut(4, 300)]).overruns.get(keys(1)),
+    Some(long(300))
+  )
+  assertEq(marshal.recover([]).overruns, Map[string, long]())
+
 @test("lines that are not events are counted and skipped, blank lines ignored")
 unreadable()
   val r = marshal.recover(["", "not json", "{\"event\": \"started\"}", "[1]", ended(9, 1, 0), "   "])

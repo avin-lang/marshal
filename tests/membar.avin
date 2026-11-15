@@ -3,7 +3,7 @@ module tests
 // The memory meter of `marshal top`: the reserved memory solid in cyan, what the running jobs hold
 // beyond their reservations in blue, and, with nothing beyond, exactly the meter it always was.
 import dev.avinlang.marshal.top
-import dev.avinlang.tui.{Blue, BrightBlack, Cyan, Grid, Style}
+import dev.avinlang.tui.{Blue, BrightBlack, Cyan, Green, Grid, Segment, Style, Yellow}
 
 // The meter drawn 16 cells wide at the left of a fresh grid, against a 16G budget unless told.
 bar(reserved: long, held: long, budget: long = 16 * G) -> Grid
@@ -73,3 +73,57 @@ both()
   assertEq(shades(bar(20 * G, 30 * G)), "cccccccccccccccc")
   // a reservation too small for a cell's eighth leaves the whole span blue
   assertEq(shades(bar(1, 8 * G)), "bbbbbbbb........")
+
+// A meter 12 columns wide, ten cells of eighths, against a budget of 80 so an amount is its eighths.
+eighths(segments: Vector[Segment]) -> Grid
+  val g = Grid(12, 1)
+  g.gauge(0, 0, 12, segments, 80.0, rest = ' ', eighths = true)
+  g
+
+// Each cell of the ten, whole blocks `#`, empty `.`, anything else as its glyph.
+glyphs(g: Grid) -> string = (1 .. 10).map(
+  x -> if g(x, 0).text == "█" then "#" elif g(x, 0).text == " " then "." else g(x, 0).text
+).mkString("")
+
+@test("a first segment of no eighths draws nothing, the next one starting at the first cell")
+zeroFirst()
+  val g = eighths([Segment(0.0, Style.fg(Green)), Segment(24.0, Style.fg(Yellow))])
+  assertEq(glyphs(g), "###.......")
+  for x in 1 ..< 4
+    assertEq(g(x, 0).style, Style.fg(Yellow))
+  assertEq(g(0, 0).text, "[")
+  assertEq(g(11, 0).text, "]")
+
+@test("a tiny first segment is a sliver over the colour of the next, never a black cell")
+tinyFirst()
+  val g = eighths([Segment(1.0, Style.fg(Cyan)), Segment(40.0, Style.fg(Blue))])
+  assertEq(glyphs(g), "▏####▏....")
+  assertEq(g(1, 0).style, Style(Cyan, Blue, 0))
+  assertEq(g(2, 0).style, Style.fg(Blue))
+  assertEq(g(6, 0).style, Style(Blue, Style.plain().bg, 0))
+
+@test("segments exactly filling whole cells draw whole cells and no blocks")
+exactCells()
+  val g = eighths([Segment(16.0, Style.fg(Cyan)), Segment(8.0, Style.fg(Blue))])
+  assertEq(glyphs(g), "###.......")
+  assertEq(g(2, 0).style, Style.fg(Cyan))
+  assertEq(g(3, 0).style, Style.fg(Blue))
+
+@test("no amount draws an empty meter; a full budget fills it")
+emptyAndFull()
+  assertEq(glyphs(eighths([Segment(0.0, Style.fg(Cyan)), Segment(0.0, Style.fg(Blue))])), "..........")
+  assertEq(glyphs(eighths([])), "..........")
+  val g = eighths([Segment(80.0, Style.fg(Cyan))])
+  assertEq(glyphs(g), "##########")
+  assertEq(g(10, 0).style, Style.fg(Cyan))
+
+@test("a cell shared by two segments is the first one's block over the second one's colour")
+sharedCell()
+  val g = eighths([Segment(28.0, Style.fg(Cyan)), Segment(20.0, Style.fg(Blue))])
+  assertEq(glyphs(g), "###▌##....")
+  assertEq(g(4, 0).style, Style(Cyan, Blue, 0))
+  assertEq(g(5, 0).style, Style.fg(Blue))
+  // the last segment's partial cell sits on the empty background
+  val h = eighths([Segment(28.0, Style.fg(Cyan))])
+  assertEq(glyphs(h), "###▌......")
+  assertEq(h(4, 0).style, Style(Cyan, Style.plain().bg, 0))

@@ -525,3 +525,13 @@ neverFits(budget: Budget, units: int, memory: long, landing: bool) -> Option[str
 // The units a job of `kind` weighs, in quarters, when it does not say and nothing is learned of its
 // command: a test 4, anything else 1.
 defaultUnits(kind: string) -> int = wholeUnits(if kind == "test" then 4 else 1)
+
+// The `nice` level a development job, and a quick one, is started under.
+val DevelopmentNice: int = 15
+
+// The `nice` level a job is started under, however it starts (in its turn, or backfilled ahead of a
+// draining job): 0, not niced, for a landing job, an exclusive one and one in the urgent band as it
+// starts (`--urgent`, or moved there by `priority`), since each is work the machine is waiting on;
+// `DevelopmentNice` for every other job.
+niceFor(landing: bool, exclusive: bool, urgent: bool) -> int =
+  if landing || exclusive || urgent then 0 else DevelopmentNice

@@ -1,16 +1,24 @@
 module dev.avinlang.marshal
 
-// Deadlines learned from how long jobs of a kind have taken.
+// Deadlines learned from how long jobs have taken.
 //
-// A job's history key is its kind, with `+landing` for a landing job: a landing run of the same
-// command does more than a development one. Only runs that exited 0 are history: a failure that
-// stops early, a timeout or a kill says nothing about how long the work takes.
+// A job's deadline is learned from the most particular runs there are of it: its command in its
+// directory, else its command anywhere (`memoryDirKey`, `memoryKey`), else its kind. A kind's
+// history key is the kind, with `+landing` for a landing job: a landing run of the same command
+// does more than a development one. Only runs that exited 0 are history: a failure that stops early,
+// a timeout or a kill says nothing about how long the work takes.
+//
+// What the runs teach is twice their median or half again their longest, whichever is later, so a
+// deadline is never tight against a run that has really happened, and a suite that grows by a few
+// tests still fits. A run its deadline stopped says one thing more: the work takes at least that
+// long, so until its command next succeeds, its deadline is at least half again that.
 
 private val Minute: long = 60000
 
 // How deadlines are learned. `window` runs are remembered per key; a key with fewer than `minRuns`
-// has its default; otherwise the deadline is `factor` times the median, and never below `floorMs`.
-data Learning(window: int, minRuns: int, factor: long, floorMs: long)
+// is not learned from; otherwise the deadline is `factor` times the median or `marginPct` percent of
+// the longest, whichever is greater, and never below `floorMs`.
+data Learning(window: int, minRuns: int, factor: long, floorMs: long, marginPct: long = 150)
 
 val defaultLearning: Learning = Learning(20, 3, 2, 5 * Minute)
 
@@ -34,13 +42,55 @@ median(xs: Vector[long]) -> long
 // The last `window` runs of the history, the ones learning reads.
 private recent(learning: Learning, history: Vector[long]) -> Vector[long] = history.takeRight(learning.window)
 
-// The deadline of a job of this kind, given its key's history (oldest first).
+// `ms` times `by`, or the longest time there is where that would overflow.
+private times(ms: long, by: long) -> long = if by > 0 && ms > long.MaxValue / by then long.MaxValue else ms * by
+
+// `pct` percent of `ms`, or the longest time there is where that would overflow.
+private percentOf(
+    ms: long,
+    pct: long
+) -> long = if pct > 0 && ms > long.MaxValue / pct then long.MaxValue else ms * pct / 100
+
+// The deadline enough recent runs teach: `factor` times their median or `marginPct` percent of the
+// longest, whichever is greater, and never below the floor.
+private taught(learning: Learning, runs: Vector[long]) -> long
+  val byMedian = times(median(runs), learning.factor)
+  val byLongest = percentOf(runs.max, learning.marginPct)
+  val learned = if byLongest > byMedian then byLongest else byMedian
+  if learned < learning.floorMs then learning.floorMs else learned
+
+// The deadline of a job of this kind, given its kind's history (oldest first): what the kind's
+// recent runs teach, or its default while it has too few.
 deadlineMs(learning: Learning, kind: string, landing: bool, history: Vector[long]) -> long
   val runs = recent(learning, history)
-  if runs.length < learning.minRuns then return defaultDeadlineMs(kind, landing)
-  val m = median(runs)
-  val learned = if m > long.MaxValue / learning.factor then long.MaxValue else m * learning.factor
-  if learned < learning.floorMs then learning.floorMs else learned
+  if runs.length < learning.minRuns then defaultDeadlineMs(kind, landing) else taught(learning, runs)
+
+// A job's deadline and what it was learned from: `cmd+dir` (its command's runs in its directory),
+// `cmd` (its command's runs anywhere), `kind`, `none` (the kind's default) or `overrun` (a run of
+// its command its deadline stopped, which asks for more than the runs do).
+data LearnedDeadline(ms: long, from: string)
+
+// The deadline of a job of `kind` given the successful runs, oldest first, of its command in its
+// directory (`dirRuns`), of its command anywhere (`cmdRuns`) and of its kind (`history`): learned
+// from the first of them with at least `minRuns`, or the kind's default where none has. Never less
+// than `marginPct` percent of `overrunMs`, the longest a run of its command ran before its deadline
+// stopped it since the command last succeeded (0 for none).
+jobDeadline(
+    learning: Learning,
+    kind: string,
+    landing: bool,
+    history: Vector[long],
+    dirRuns: Vector[long],
+    cmdRuns: Vector[long],
+    overrunMs: long
+) -> LearnedDeadline
+  val (ms, from) = [(dirRuns, "cmd+dir"), (cmdRuns, "cmd"), (history, "kind")].find(
+    c -> recent(learning, c.0).length >= learning.minRuns
+  ) match
+    Some((runs, source)) -> (taught(learning, recent(learning, runs)), source)
+    None -> (defaultDeadlineMs(kind, landing), "none")
+  val past = percentOf(overrunMs, learning.marginPct)
+  if overrunMs > 0 && past > ms then LearnedDeadline(past, "overrun") else LearnedDeadline(ms, from)
 
 // How long a job of this kind is expected to run: the median of its history, or half its default
 // deadline while too little is known. The scheduler's backfill reads it.

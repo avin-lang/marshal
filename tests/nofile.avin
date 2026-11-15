@@ -1,0 +1,82 @@
+module tests
+
+// The limit on open files the daemon raises for its jobs (nofile.avin): the soft limit asked for from
+// the current limits and config.json's `nofile`, the fallback where the hard limit is unlimited, the
+// setting read from config.json, and the limit carried through the protocol and shown by `status`.
+import dev.avinlang.json
+import dev.avinlang.marshal
+import dev.avinlang.marshal.{Overview, Usage}
+import dev.avinlang.marshal.{Using, Viewed}
+
+@test("the soft limit asked for is the hard limit where that is a number, and a higher soft limit is kept")
+nofileFiniteHard()
+  assertEq(marshal.nofileTarget(256, 1000, None), long(1000))
+  assertEq(marshal.nofileTarget(256, 1048576, None), long(1048576))
+  // already at the hard limit, nothing changes
+  assertEq(marshal.nofileTarget(1000, 1000, None), long(1000))
+  // a hard limit under OPEN_MAX is still the one asked for
+  assertEq(marshal.nofileTarget(256, 300, None), long(300))
+
+@test(
+  "where the hard limit is unlimited, the soft limit asked for is OPEN_MAX, never unlimited, unless it is already more"
+)
+nofileUnlimitedHard()
+  val inf = marshal.RlimInfinity
+  assertEq(marshal.nofileTarget(256, inf, None), marshal.OpenMax)
+  assert(marshal.nofileTarget(256, inf, None) != inf)
+  // a soft limit a login shell raised past OPEN_MAX is kept
+  assertEq(marshal.nofileTarget(1048576, inf, None), long(1048576))
+  assertEq(marshal.nofileTarget(marshal.OpenMax, inf, None), marshal.OpenMax)
+  // the fallback is OPEN_MAX held to the hard limit
+  assertEq(marshal.nofileFallback(inf), marshal.OpenMax)
+  assertEq(marshal.nofileFallback(1000), long(1000))
+  assertEq(marshal.nofileFallback(1048576), marshal.OpenMax)
+
+@test("the constants are the system's: OPEN_MAX a real limit, RLIM_INFINITY the largest limit there is")
+nofileConstants()
+  assert(marshal.OpenMax > 256, marshal.OpenMax.toString())
+  assertEq(marshal.RlimInfinity, long.MaxValue)
+  // this process's limits read, the soft one no more than the hard one
+  val limits = marshal.nofileLimits()
+  assert(limits.isDefined)
+  for (soft, hard) in limits do assert(1 <= soft <= hard, s"$soft $hard")
+
+@test("config.json's nofile asks for a limit of its own, held to the hard limit, lower than the current one too")
+nofileAsked()
+  assertEq(marshal.nofileTarget(256, marshal.RlimInfinity, Some(65536)), long(65536))
+  assertEq(marshal.nofileTarget(256, 1000, Some(5000)), long(1000))
+  assertEq(marshal.nofileTarget(4096, 8192, Some(512)), long(512))
+  assertEq(marshal.nofileTarget(256, 1000, Some(1000)), long(1000))
+
+@test("config.json's nofile is a whole number of files, at least 1; anything else is refused")
+nofileConfig()
+  assertEq(marshal.readConfig("", 0).ok.get.nofile, None)
+  assertEq(marshal.readConfig("{\"nofile\": 65536}", 0).ok.get.nofile, Some(long(65536)))
+  assertEq(marshal.readConfig("{\"nofile\": 1}", 0).ok.get.nofile, Some(long(1)))
+  for bad in ["0", "-5", "\"lots\"", "2.5", "true"]
+    assertEq(
+      (bad, marshal.readConfig(s"{\"nofile\": $bad}", 0).err),
+      (bad, Some("config.json: `nofile` is a whole number of open files, at least 1"))
+    )
+
+private nofileUsage(n: long) -> Usage = Usage(8, 48, 0, 1024, 1, 1, None, None, diskFree = 1024, nofile = n)
+
+// The jobs' limit on open files of the snapshot a reply holds.
+private snapshotNofile(r: marshal.Reply) -> Option[long] = r match
+  Viewed(v) -> Some(v.usage.nofile)
+  _ -> None
+
+@test("status, status --json and the snapshot carry the jobs' limit on open files, and leave it out where not known")
+nofileThroughProtocol()
+  for u in [nofileUsage(10240), nofileUsage(0), nofileUsage(1048576)]
+    assertEq(marshal.decodeReply(marshal.encodeReply(Using(u)).render), Ok(Using(u)))
+    val snapshot = marshal.decodeReply(marshal.encodeReply(Viewed(Overview(u, 1000, [], [], []))).render)
+    assertEq(snapshot.ok.flatMap(snapshotNofile), Some(u.nofile))
+  assertEq(marshal.statusJson(nofileUsage(10240), []).get("nofile").flatMap(v -> v.asLong), Some(long(10240)))
+  assertEq(marshal.statusJson(nofileUsage(0), []).get("nofile"), None)
+
+@test("status says the jobs' limit on open files after the disk, and nothing where it is not known")
+nofileStatusLine()
+  val line = marshal.usageLine(nofileUsage(10240))
+  assert(line.endsWith("; disk 1.0K free, open files 10240"), line)
+  assert(!marshal.usageLine(nofileUsage(0)).contains("open files"))

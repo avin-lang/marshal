@@ -1804,3 +1804,132 @@ max(reservation, measured) are unchanged.
 - **`resv_from` says `cmd+dir`, `cmd`, `given` or `none`**, and `ls`/`top` keep `~` for a learned
   reservation. A state saved by an earlier daemon, mid-restart, keeps the `kind+dir` or `kind` it
   recorded until its job ends, so readers accept both old words.
+
+## An urgent job is not niced, and a script is learned by its path (branch `urgent-nice`)
+
+Reported by the sysl session during a release: an `--urgent` gate without `--units` ran its whole
+process tree at nice 15, backfilled ahead of a draining job, while a landing job's processes ran at
+nice 0; and it reserved 34G and expected 10 minutes learned from five other scripts that were all
+called `gate2.zsh`, each in a scratch directory of its own.
+
+- **An urgent job runs un-niced, as a landing and an exclusive job do, however it starts** (in its
+  turn, or backfilled). What decides is the urgent band as it starts, so `priority <id> --urgent`
+  un-nices a job too, and `priority <id> <n>`, which takes a job out of the band, leaves it niced.
+  Why: `--urgent` is for a release's critical path, the work every other session is waiting on; at
+  nice 15 its compilers lost the processors to every development job beside it, which defeats the
+  band. Alternatives: un-nice only a job submitted with `--urgent` (the band, not the flag, is what
+  `ls` and the queue show as urgent); a level between (it would still lose to un-niced work).
+- **A script keeps its path in the command signature.** A shell running a script is the shell and
+  the script's path as written (a leading `./` left out), an interpreter (`python3`, `perl`,
+  `ruby`, `node`, ...) the script's path and its first argument, and a program that is itself a
+  script (by its ending: `.sh`, `.zsh`, `.py`, ...) its path and first argument. Why: a script's
+  name says little: sessions write `gate2.zsh` into a scratch directory per item, and each is
+  different work. A relative path stays relative, so `zsh scripts/test.sh` in every worktree of a
+  repository is still one command. Alternatives: the path resolved against `--dir` (worktrees would
+  stop sharing a relative script's history); the label in the signature (a label names the run,
+  `rel0110 gate2`, so the same script run under a new label would never learn); hashing the
+  script's contents (an edit to a gate would forget its history).
+- **memory.json is version 4; an older file drops its scripts' keys and keeps the rest.** A key
+  under the old form could hold several scripts' runs mixed, so it cannot be split; every other key
+  is the same under both forms and is kept. A key is a script's when its signature begins with a
+  shell or an interpreter followed by a script, or with a script. The scripts' runs the event log
+  still has are learned again under their new keys at the daemon's start, and the file is written
+  as version 4 at once; what the event log has trimmed of them is gone. Alternatives: drop the
+  whole file and learn everything from the event log (it would lose every command's history the log
+  has trimmed); keep the old keys as a fallback (it is the mixing being removed).
+- **Not changed: an urgent job's default units.** A job without `--units` and without learned
+  cores weighs its kind's default, 4 for a `test` and 1 for anything else, urgent or not; the
+  reported job's 1 unit was that default (none of the `gate2.zsh` runs had cores learned), not a
+  learned value. Urgency orders the queue; it does not size a job, and a job that knows it is big
+  says so with `--units`, or learns it after its first measured run.
+
+## A learned deadline is never tight against a real run (branch `deadline-margin`)
+
+Reported by the nex session: job 3470, a `train` (`--test "sysl test . --jobs 4"`) in
+`/Users/ed/dev/sysl-lang/nex`, was stopped at its learned deadline of 13m11s after 13m17s, green and
+still running (591 passed). Its deadline came from the history key `train+landing`, the kind with its
+lane, which held the 19 successful trains in the log: 18 of nex (5m36s to 21m37s) and one 1.6s probe
+train in a scratch directory. Their median was 6m36s (395938 ms), and twice it, 791876 ms, was the
+deadline, below two of the runs the key itself held (12m58s and 21m37s). Durations had been learned
+per command since 0.3.5; deadlines were still learned per kind.
+
+- **A deadline is learned from the most particular runs there are**: the job's command in its
+  directory (`memoryDirKey`), else its command anywhere (`memoryKey`), else its kind
+  (`historyKey`), each only with at least `learn_min_runs` (3) of the last `learn_window` (20)
+  successful runs; else the kind's default. The command is the signature durations, memory and
+  cores are already learned under. Why: a kind covers work of every size (every train of every
+  repository, every `test`), so its median says little of one command; nex's trains would have
+  shared their key with every other repository's. Alternatives: the command only (a new command
+  would have only the default, 45 minutes or 2 hours, where its kind's runs say more); the median
+  window of durations, 5 (a deadline wants the longer memory: one slow run in 20 is a real one).
+- **The deadline is the later of twice the median and 1.5 times the longest recent run, never under
+  the floor.** Why: twice the median alone can sit below runs that really happened (job 3470's key
+  held one of 21m37s under a deadline of 13m11s), and a suite that grows by a few tests between
+  runs runs past its longest; 1.5 times the longest leaves half a run's room over anything seen. A
+  hung job is still stopped, at most 1.5 times its slowest real run. Alternatives: a percentile
+  (p90) times a factor (too few runs make p90 the longest anyway, and it forgets the run that most
+  needs room); 1.25 times the longest (too little for a suite that grew 30% since); 2 times the
+  longest (a single outlier would hold a hung job for twice the slowest run for 20 runs); a larger
+  factor on the median (it moves the deadline of every job, fast or slow, to fix the slow tail).
+  The margin is `Learning.marginPct` (150); it is not a setting in config.json until someone needs
+  one.
+- **A single outlier raises the deadline until it leaves the window.** A 60-minute run among
+  10-minute ones gives 90 minutes for the next 20 runs. Why: the outlier happened, and the cost of
+  a loose deadline (a hung run holds its units longer) is less than that of a tight one (a green
+  run is killed and its whole time is lost). Alternatives: discarding the longest run (that is the
+  run the deadline most needs to allow for).
+- **A run its deadline stopped is a lower bound: until the command next succeeds, its deadline is
+  at least 1.5 times how long that run ran.** It is kept per command key (in its directory and
+  anywhere), the longest such run since the key's last success, and a success clears it. The
+  daemon learns it as it stops a job, and a starting daemon recovers it from the event log's
+  `timeout` events, so memory.json is unchanged. A job retried after a timeout has its learned
+  deadline learned again, so its next attempt does not stop where the last one did; a given
+  `--deadline` (and a quick job's cap) is never changed. Why: a timeout says the work takes at
+  least that long; without it, a command that outgrew its history (a new suite with three short
+  runs that then doubles) would be stopped at the same point on every repeat until someone passed
+  `--deadline`. Alternatives: not adopting it (job 3470's own repeat would have passed with the
+  rest of this change, but the short-history case would not); counting the stopped run as a
+  successful one (it never finished, and its time would lower the median of a long command); a
+  fixed allowance over the stopped run (a deadline that grows by half on each repeat finds a long
+  suite's length in a few runs). The cost: a command that hangs every time is given half again as
+  long on each repeat until it succeeds; `--quiet-timeout` is what stops a hang early. A `quiet` stop is not counted: it says the job had
+  stopped writing, not that its work was long.
+- **`--deadline` overrides everything**, as before. `stats`' DEADLINE is still per kind: the
+  deadline a job of the kind gets while its command has too few runs of its own, now with the same
+  margin over the longest run.
+
+## The daemon raises its jobs' limit on open files (branch `nofile-limit`)
+
+**Settled on the user's delegation 2026-11-14.** Reported by the slate session: every job ran with
+the soft `RLIMIT_NOFILE` 256 (hard unlimited), launchd's default, inherited by the daemon, while a
+login shell has 1048576; slate's test spawning 1024 actors, a libuv loop each, failed with `EMFILE`
+under marshal and passed outside it.
+
+- **The daemon raises its soft limit at start-up, before any job starts, and every job inherits
+  it.** A restarted image raises it again (it is already raised: nothing changes). The start line
+  names it (`open files 10240`), `status` ends with it and `status --json` has `nofile`. Why: the
+  limit is a process attribute a child inherits, so the one place that sets it covers every job,
+  however it is started. Alternatives: setting it in each job's child before `exec` (the daemon
+  starts jobs through `Command`, which has no hook there, and a limit on the daemon itself is what
+  its own sockets and logs want too); a `ulimit` wrapper around each command (a shell between
+  marshal and every job, for one setting).
+- **Raised to the hard limit where it is a number; to `OPEN_MAX` (10240) where the hard limit is
+  unlimited; a soft limit already higher is kept.** Why: on macOS 27 `setrlimit` accepts an
+  unlimited soft limit for open files and `getrlimit` reports it, so `ulimit -n` says `unlimited`,
+  while the kernel still opens no more than `kern.maxfilesperproc`; a program sizing a table or a
+  close-every-descriptor loop by that limit is then misled. The setrlimit manual's answer is
+  `min(OPEN_MAX, rlim_max)`, which is also what is asked where the system refuses the target.
+  Alternatives: `kern.maxfilesperproc` (245760 here), as Go's runtime uses: it needs
+  `sysctlbyname`, whose `void *` result Avin's C bindings refuse (a `void *` other than a callback's
+  `userdata`); reported as a gap for Avin to close, after which the fallback can become
+  `min(hard, kern.maxfilesperproc)`. Review with the user if 10240 by default is too few: the
+  `nofile` setting below asks for more today.
+- **`nofile` in config.json asks for a soft limit of its own**, a whole number at least 1, held to
+  the hard limit, lower than the inherited one too. Why: a machine whose work needs more than
+  OPEN_MAX (or wants less) says so once. Alternatives: no setting (10240 would be the most any job
+  could have under an unlimited hard limit).
+- **The limits are reached through `@c` bindings of `getrlimit` and `setrlimit`** with `struct
+  rlimit` mirrored and `RLIMIT_NOFILE`, `RLIM_INFINITY` and `OPEN_MAX` bound as constants, checked
+  against `<sys/resource.h>` and `<limits.h>` (`nofile.avin`); libc needs no `pkg-config`.
+  `OPEN_MAX` is a macOS header's (glibc defines none), so this ties the build to macOS, as the
+  `sample` at a deadline already ties that behaviour.

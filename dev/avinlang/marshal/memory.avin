@@ -77,21 +77,49 @@ reservationFor(learning: MemoryLearning, memory: long, given: bool, peaks: Vecto
     Some(p) -> Reservation(if p > budget then budget else p, true)
     None -> Reservation(0, false)
 
-// What a job runs, as its memory is learned under: the program's name and its subcommand and
-// target (`sysl test compiler`, `sysl test .`, `gradlew test`), or a shell and the name of its
-// script (`zsh gate.zsh`). A kind such as `build` or `test` covers work of every size, so it is
-// never learned from on its own; the command is what tells a compiler's suite from a small
-// package's.
+// What a job runs, as its memory, cores and durations are learned under: the program's name and its
+// subcommand and target (`sysl test compiler`, `sysl test .`, `gradlew test`), or a shell and the
+// path of its script (`zsh /tmp/s/gate.zsh`). A kind such as `build` or `test` covers work of every
+// size, so it is never learned from on its own; the command is what tells a compiler's suite from a
+// small package's.
 //
 // The program is the first word that is not a wrapper (`env`, `nice`, `caffeinate`, `nohup`,
 // `time`, `timeout`, `sudo`, `exec`, `command`, with their options) or a `NAME=value` setting. Of
 // its arguments, options (`-x`, `--x`) and numbers are passed over, and the next two words are the
 // subcommand and the target; a word that is a path stands for its last component, so worktrees of
 // one repository share what they learn. A shell running `-c` is learned as the command it runs,
-// leaving out leading `cd` and `export` steps; a shell running a script as the shell and the
-// script's name, its arguments left out (a train's branch names change every run). "" for an empty
+// leaving out leading `cd` and `export` steps.
+//
+// A script is the exception to the last component: two scripts of one name in two directories
+// (`/tmp/a/gate.zsh`, `/tmp/b/gate.zsh`) are different work, so a script keeps its path as it was
+// written, a leading `./` left out. A relative path stays relative, so `zsh scripts/test.sh` in two
+// worktrees of one repository is still one command. A shell running a script is the shell and the
+// script's path, its arguments left out (a train's branch names change every run); an interpreter
+// (`python3`, `perl`, `ruby`, `node`, ...) running a script is the interpreter, the script's path
+// and its first argument; a program that is itself a script (its name ends `.sh`, `.zsh`, `.py`,
+// ...) is its path and its first argument. A job's label is not part of it: a label names the run
+// (`rel0110 gate2`), and the same script run under another label is the same work. "" for an empty
 // command, which learns nothing.
 commandSignature(cmd: Vector[string]) -> string = signatureOf(cmd, true)
+
+private val interpreters: Set[string] = {
+  "python", "python3", "perl", "ruby", "node", "deno", "bun", "lua", "tclsh", "php", "Rscript", "osascript"
+}
+
+// The options of an interpreter after which its code is given inline or by module name, not by a
+// script: the command is then learned as any program's is.
+private val inlineOptions: Set[string] = {"-c", "-e", "-E", "-m", "-p", "--eval", "--print", "-r"}
+
+private val scriptEndings: Vector[string] = [".sh", ".zsh", ".bash", ".py", ".pl", ".rb", ".js", ".mjs", ".ts", ".lua", ".tcl"]
+
+// `word` names a script by its ending.
+private isScript(word: string) -> bool = scriptEndings.exists(e -> word.endsWith(e) && word.charCount > e.charCount)
+
+// A script's path as its signature keeps it: as written, without a leading `./`.
+private scriptPath(word: string) -> string
+  var w = word
+  while w.startsWith("./") do w = w.drop(2)
+  w
 
 private val wrappers: Set[string] = {
   "env", "nice", "nohup", "caffeinate", "time", "timeout", "gtimeout", "sudo", "exec", "command"
@@ -135,7 +163,20 @@ private signatureOf(words: Vector[string], shellC: bool) -> string
   if i >= words.length then return ""
   val program = baseName(words(i))
   val rest = words.drop(i + 1)
-  if shells.contains(program) then shellSignature(program, rest, shellC) else program + namedWords(rest, 2)
+  if shells.contains(program) then return shellSignature(program, rest, shellC)
+  if interpreters.contains(program) then return interpreterSignature(program, rest)
+  if isScript(program) then return scriptPath(words(i)) + namedWords(rest, 1)
+  program + namedWords(rest, 2)
+
+// An interpreter running a script: the interpreter, the script's path and its first argument; one
+// given its code inline (`-c`, `-e`) or a module (`-m`) is learned as any program is.
+private interpreterSignature(program: string, args: Vector[string]) -> string
+  var i = 0
+  while i < args.length && isOption(args(i))
+    if inlineOptions.contains(args(i)) then return program + namedWords(args, 2)
+    i += 1
+  if i >= args.length then return program
+  program + " " + scriptPath(args(i)) + namedWords(args.drop(i + 1), 1)
 
 // Where a wrapper's options (and `timeout`'s duration) end, from `from`.
 private afterWrapper(words: Vector[string], from: int, wrapper: string) -> int
@@ -185,7 +226,7 @@ private shellSignature(shell: string, args: Vector[string], shellC: bool) -> str
     else
       i += 1
   if i >= args.length then return shell
-  shell + " " + baseName(args(i))
+  shell + " " + scriptPath(args(i))
 
 // The signature of the first step of a `-c` script that is not a `cd`, `export` or the like.
 private commandOfScript(script: string) -> string
@@ -247,28 +288,81 @@ holding(reserved: long, rss: long) -> long = if rss > reserved then rss else res
 // restart, an upgrade and `marshal clean` trimming the event log: the memory peaks, the peak cores
 // (cores.avin) and the durations of the runs that succeeded (eta.avin), each by key:
 //
-//   {"version": 3, "peaks": {"<key>": [bytes, ...], ...}, "cores": {"<key>": [1.25, ...], ...},
+//   {"version": 4, "peaks": {"<key>": [bytes, ...], ...}, "cores": {"<key>": [1.25, ...], ...},
 //    "durations": {"<key>": [milliseconds, ...], ...}}
 //
 // Each key is a `memoryKey` or `memoryDirKey` and holds its last `MemoryKept` values, oldest first.
 // A file of version 2 has no `durations`, and one of version 1 neither those nor `cores`: what it
 // has is used, and what it lacks is learned again from the event log (`fromVersion1`,
-// `withoutDurations`). A file of another version, or one that does not read, is not used: the
-// daemon learns everything again from the event log.
-val MemoryFileVersion: long = 3
+// `withoutDurations`). Before version 4 a script's signature was only its name, so one key could
+// hold the runs of several scripts of that name: a file of version 1, 2 or 3 keeps every key but
+// those (`isScriptKey`), and the scripts' history is learned again, under its new keys, from what
+// the event log still has (`staleScripts`). A file of another version, or one that does not read,
+// is not used: the daemon learns everything again from the event log.
+val MemoryFileVersion: long = 4
 
 val MemoryKept: int = 20
 
 // `peaks` in bytes, `cores` in hundredths of a core and `durations` in milliseconds, by key, oldest
-// first. `fromVersion1` says they were read from a version 1 file, which kept no cores, and
-// `withoutDurations` from a file of version 1 or 2, which kept no durations.
+// first. `fromVersion1` says they were read from a version 1 file, which kept no cores,
+// `withoutDurations` from a file of version 1 or 2, which kept no durations, and `staleScripts`
+// from a file before version 4, whose scripts' keys were left out.
 data Learned(
     peaks: Map[string, Vector[long]],
     cores: Map[string, Vector[long]],
     fromVersion1: bool = false,
     durations: Map[string, Vector[long]] = Map(),
-    withoutDurations: bool = false
+    withoutDurations: bool = false,
+    staleScripts: bool = false
 )
+
+// Whether `key` is learned under a script's signature (a shell, an interpreter or a program that
+// is a script, running one), whose form changed in version 4.
+isScriptKey(key: string) -> bool
+  val lines = key.split("\n").toVector
+  if lines.length < 2 then return false
+  val words = lines(1).split(" ").toVector
+  if words.isEmpty then return false
+  val first = words(0)
+  if isScript(first) then return true
+  (shells.contains(first) || interpreters.contains(first)) && words.length > 1 && words(1) != "-c"
+
+// The entries of `table` whose key `keep` accepts.
+private entriesWhere(table: Map[string, Vector[long]], keep: (string) -> bool) -> Map[string, Vector[long]]
+  val out = Buffer[(string, Vector[long])]()
+  for (k, v) in table
+    if keep(k) then out += (k, v)
+  out.toVector.toMap
+
+// What a file of `version` holds, as this version learns it: before version 4, without the keys
+// of scripts.
+private upgraded(learned: Learned, version: long) -> Learned
+  if version >= MemoryFileVersion then return learned
+  val keep = (k: string) -> !isScriptKey(k)
+  Learned(
+    entriesWhere(learned.peaks, keep),
+    entriesWhere(learned.cores, keep),
+    learned.fromVersion1,
+    entriesWhere(learned.durations, keep),
+    learned.withoutDurations,
+    true
+  )
+
+// `learned` from a file before version 4 completed by what the event log teaches (`recovered`) of
+// the scripts it left out; where a table is learned whole from the event log (a version 1 file's
+// cores, a version 1 or 2 file's durations) it is taken whole. A current file is used as it is.
+withRecovered(learned: Learned, peaks: Map[string, Vector[long]], cores: Map[string, Vector[long]], durations: Map[string, Vector[long]]) -> Learned
+  val scripts = (k: string) -> isScriptKey(k)
+  val c = if learned.fromVersion1 then cores elif learned.staleScripts then learned.cores ++ entriesWhere(
+    cores,
+    scripts
+  ) else learned.cores
+  val d = if learned.withoutDurations then durations elif learned.staleScripts then learned.durations ++ entriesWhere(
+    durations,
+    scripts
+  ) else learned.durations
+  val p = if learned.staleScripts then learned.peaks ++ entriesWhere(peaks, scripts) else learned.peaks
+  Learned(p, c, false, d, false, false)
 
 encodeMemory(learned: Learned) -> string
   val peakKeys = learned.peaks.keys.toVector.sorted
@@ -291,9 +385,14 @@ decodeMemory(text: string) -> Result[Learned, string]
     Ok(v) -> v
     Err(e) -> return Err(s"not JSON: $e")
   val version = j.get("version").flatMap(v -> v.asLong)
-  if version != Some(MemoryFileVersion) && version != Some(long(2)) && version != Some(long(1)) then return Err(
-    s"version ${version.map(v -> v.toString()).getOrElse("missing")}, not $MemoryFileVersion"
+  val v = version.getOrElse(0)
+  if v < 1 || v > MemoryFileVersion then return Err(
+    s"version ${version.map(n -> n.toString()).getOrElse("missing")}, not $MemoryFileVersion"
   )
+  decodeLayout(j, v).map(l -> upgraded(l, v))
+
+// What a file of `version` holds: version 3's layout is version 4's.
+private decodeLayout(j: Json, version: long) -> Result[Learned, string]
   val members = j.get("peaks").flatMap(v -> v.asMembers) match
     Some(ms) -> ms
     None -> return Err("`peaks` is not an object")
@@ -303,7 +402,7 @@ decodeMemory(text: string) -> Result[Learned, string]
     if v.asVector.isEmpty || !items.forall(i -> i.asLong.exists(n -> n > 0))
       return Err(s"the peaks of `$k` are not sizes")
     out += (k, items.map(i -> i.asLong.get))
-  if version == Some(long(1)) then return Ok(Learned(out.toVector.toMap, Map(), true, Map(), true))
+  if version == 1 then return Ok(Learned(out.toVector.toMap, Map(), true, Map(), true))
   val coreMembers = j.get("cores").flatMap(v -> v.asMembers) match
     Some(ms) -> ms
     None -> return Err("`cores` is not an object")
@@ -313,7 +412,7 @@ decodeMemory(text: string) -> Result[Learned, string]
     if v.asVector.isEmpty || !items.forall(i -> centiOf(i).isDefined)
       return Err(s"the cores of `$k` are not numbers of cores")
     cores += (k, items.map(i -> centiOf(i).get))
-  if version == Some(long(2)) then return Ok(Learned(out.toVector.toMap, cores.toVector.toMap, false, Map(), true))
+  if version == 2 then return Ok(Learned(out.toVector.toMap, cores.toVector.toMap, false, Map(), true))
   val durationMembers = j.get("durations").flatMap(v -> v.asMembers) match
     Some(ms) -> ms
     None -> return Err("`durations` is not an object")

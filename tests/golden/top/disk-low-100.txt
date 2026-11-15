@@ -19,7 +19,8 @@
 1 7..13 Basic(2)/Default/0
 1 13..40 Basic(8)/Default/0
 2 7..40 Basic(8)/Default/0
-3 7..11 Basic(2)/Default/0
+3 7..10 Basic(2)/Default/0
+3 10..11 Basic(2)/Basic(3)/0
 3 11..16 Basic(3)/Default/0
 3 16..40 Basic(8)/Default/0
 5 0..100 Default/Default/17

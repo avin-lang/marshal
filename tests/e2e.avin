@@ -766,6 +766,33 @@ learnedDeadlines()
   assertEq(events(home).find(e -> e("id").asLong == Some(other)).get("deadline_ms").asLong, Some(long(30 * 60000)))
   cleanUp(home)
 
+@test("a command's deadline is its own runs', and a run its deadline stopped lengthens the next, across a restart")
+overrunDeadlines()
+  val home = newHome("{\"deadline_floor\": \"1s\", \"learn_min_runs\": 1}")
+  // `sleep 0` and `sleep 30` are one command: its run teaches the floor
+  assertEq(m(home, "run", "--kind", "nap", "--", "sleep", "0").code, 0)
+  assertEq(m(home, "run", "--kind", "nap", "--", "sleep", "30").code, 124)
+  val stopped = events(home).filter(e -> e("event").asString == Some("timeout")).last("run_ms").asLong.get
+  assert(stopped >= 1000, s"$stopped")
+  // the stopped run's time is taken as the daemon saw it end, a moment before its event
+  val next = submitted(home, "--kind", "nap", "--", "sleep", "30")
+  val nextMs = deadlineOf(home, next)
+  assert(stopped * 3 / 2 - 100 <= nextMs && nextMs <= stopped * 3 / 2, s"$nextMs after a run of $stopped")
+  m(home, "kill", next.toString())
+  // a new daemon learns it from the event log
+  restarted(home)
+  val after = submitted(home, "--kind", "nap", "--", "sleep", "30")
+  assertEq(deadlineOf(home, after), stopped * 3 / 2)
+  m(home, "kill", after.toString())
+  // a success ends it
+  assertEq(m(home, "run", "--kind", "nap", "--", "sleep", "0").code, 0)
+  assertEq(deadlineOf(home, submitted(home, "--kind", "nap", "--", "sleep", "30")), 1000)
+  cleanUp(home)
+
+// The deadline the daemon gave job `id`, as its submission recorded it.
+deadlineOf(home: string, id: long) -> long =
+  events(home).find(e -> e("id").asLong == Some(id)).get("deadline_ms").asLong.get
+
 @test("a bad config.json keeps the daemon from starting, and the command says why")
 badConfig()
   val home = newHome("{\"units\": \"lots\"}")

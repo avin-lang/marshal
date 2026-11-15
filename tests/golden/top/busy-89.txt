@@ -37,10 +37,12 @@
 1 22..29 Basic(5)/Default/0
 1 29..36 Basic(8)/Default/0
 1 72..81 Basic(6)/Default/0
-2 7..20 Basic(6)/Default/0
+2 7..19 Basic(6)/Default/0
+2 19..20 Basic(6)/Basic(4)/0
 2 20..26 Basic(4)/Default/0
 2 26..36 Basic(8)/Default/0
-3 7..19 Basic(2)/Default/0
+3 7..18 Basic(2)/Default/0
+3 18..19 Basic(2)/Basic(3)/0
 3 19..28 Basic(3)/Default/0
 3 28..36 Basic(8)/Default/0
 3 66..79 Basic(3)/Default/0
