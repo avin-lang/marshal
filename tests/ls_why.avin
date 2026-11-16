@@ -68,7 +68,7 @@ otherRowsUnchanged()
 emptyQueueLs()
   assertEq(
     marshal.listing([], []),
-    "ID  STATE  KIND  UNITS  USED  RESV  STARTED  ELAPSED  ETA  OWNER  LABEL  COMMAND"
+    "ID  STATE  KIND  UNITS  USED  RESV  STARTED  ELAPSED  ETA  OWNER  FROM  LABEL  COMMAND"
   )
 
 @test("status --json gives each queued job its why, with behind for a job waiting behind another")

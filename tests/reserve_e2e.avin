@@ -22,7 +22,7 @@ peakLine(id: long, kind: string, peak: long, event: string = "finished", exit: i
 // A home with a 1G memory budget whose event log already holds two jobs of `big` that peaked at
 // 600M, two of `small` at 100M, and two of `huge` at 2G, one of them a failure.
 seededHome() -> string
-  val home = newHome("{\"memory\": \"1G\"}")
+  val home = newHome("{\"memory\": \"1G\", \"learn_min_runs\": 1}")
   val lines = [
     peakLine(1, "big", 600 * Mi),
     peakLine(2, "big", 550 * Mi),
@@ -126,7 +126,7 @@ dirPeakLine(id: long, dir: string, peak: long) -> string =
 // A home with a 1G budget whose log holds `test` jobs running `sleep` in three directories: `big`
 // peaked at 600M twice, `small` at 100M twice, and `once` at 50M once.
 dirSeededHome() -> string
-  val home = newHome("{\"memory\": \"1G\"}")
+  val home = newHome("{\"memory\": \"1G\", \"learn_min_runs\": 1}")
   for d in ["big", "small", "once", "fresh", "new"] do fs.createDir(home + "/" + d).ok.get
   val lines = [
     dirPeakLine(1, home + "/big", 600 * Mi),
@@ -200,7 +200,7 @@ learnedPerDirLive()
 
 @test("the peaks of jobs the daemon itself ran and measured teach the next job of their kind")
 learnedLive()
-  val home = newHome()
+  val home = newHome("{\"learn_min_runs\": 1}")
   for _ in 0 ..< 2
     assertEq(m(home, "run", "--kind", "live", "--", "sleep", "2.5").code, 0)
   val peaks = events(home).filter(
@@ -250,7 +250,7 @@ restartReservesAgain()
 
 @test("a queued job reserves again when a run of its command ends, so a lower peak lets it start")
 peerReservesAgain()
-  val home = newHome("{\"memory\": \"1G\"}")
+  val home = newHome("{\"memory\": \"1G\", \"learn_min_runs\": 1}")
   // the oldest of the last three is 600M; one more run pushes it out of the window
   fs.writeText(home + "/memory.json", bigMemory([600 * Mi, 10 * Mi, 10 * Mi])).ok.get
   val blocker = submitted(home, "--kind", "block", "--mem", "800M", "--", "sleep", "20")
@@ -268,12 +268,12 @@ peerReservesAgain()
 
 @test("what is learned is kept in memory.json and comes back in a new daemon without the event log")
 learnedPersists()
-  val home = newHome()
+  val home = newHome("{\"learn_min_runs\": 1}")
   assertEq(m(home, "run", "--kind", "live", "--", "sleep", "2.5").code, 0)
   val first = statusJob(home, submitted(home, "--kind", "live", "--", "sleep", "30"))
   assertEq(first("resv_learned").asBool, Some(true))
   val text = fs.readText(home + "/memory.json").ok.get
-  assert(text.contains("\"version\":4") && text.contains("live\\nsleep"), text)
+  assert(text.contains("\"version\":5") && text.contains("live\\nsleep"), text)
   assertEq(first("resv_from").asString, Some("cmd+dir"))
   stopDaemon(home)
   // the event log goes; a new daemon learns from the file alone, the job stopped above included
@@ -292,7 +292,7 @@ learnedPersists()
   "a version 3 memory.json keeps what it learned of commands, and its scripts' keys give way to what the event log has under their paths"
 )
 learnedVersion3Scripts()
-  val home = newHome("{\"memory\": \"1G\"}")
+  val home = newHome("{\"memory\": \"1G\", \"learn_min_runs\": 1}")
   val gate = s"{\"ts\":${time.now().epochMillis},\"event\":\"finished\",\"id\":1,\"kind\":\"big\",\"landing\":false,\"cmd\":[\"zsh\",\"/s/a/gate.zsh\"],\"exit\":0,\"run_ms\":1000,\"peak_rss\":${300 * Mi}}"
   fs.writeText(home + "/events.jsonl", gate + "\n").ok.get
   val v3 = s"{\"version\":3,\"peaks\":{\"big\\nzsh gate.zsh\":[${900 * Mi}],\"big\\nsleep\":[${600 * Mi}]},\"cores\":{},\"durations\":{}}\n"
@@ -300,9 +300,9 @@ learnedVersion3Scripts()
   // the file's `sleep`, which the event log does not have, is kept
   val j = statusJob(home, submitted(home, "--kind", "big", "--", "sleep", "30"))
   assertEq((j("resv").asLong, j("resv_from").asString), (Some(600 * Mi), Some("cmd")))
-  // written again at once, as version 4: the script's old key is gone, its run is under its path
+  // written again at once, as version 5: the script's old key is gone, its run is under its path
   val text = fs.readText(home + "/memory.json").ok.get
-  assert(text.contains("\"version\":4") && text.contains("big\\nsleep"), text)
+  assert(text.contains("\"version\":5") && text.contains("big\\nsleep"), text)
   assert(!text.contains("big\\nzsh gate.zsh\""), text)
   assert(text.contains(s"\"big\\nzsh /s/a/gate.zsh\":[${300 * Mi}]"), text)
   assertEq(m(home, "stop", "--force").code, 0)

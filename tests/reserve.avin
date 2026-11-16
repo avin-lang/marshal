@@ -18,13 +18,17 @@ val learning0: MemoryLearning = MemoryLearning(5, 1, 10)
 defaultNoMargin()
   val d = marshal.defaultMemoryLearning
   assertEq(d.marginPercent, 0)
-  assertEq(marshal.learnedPeak(d, [20 * G]), Some(20 * G))
+  assertEq(d.minRuns, 3)
+  assertEq(marshal.learnedPeak(d, [20 * G, 20 * G, 20 * G]), Some(20 * G))
   assertEq(marshal.learnedPeak(d, [10 * G, 20 * G, 15 * G]), Some(20 * G))
-  assertEq(marshal.learnedPeak(d, [1000]), Some(M))
-  assertEq(marshal.learnedPeak(d, [20 * G + 1]), Some(20 * G + M))
+  assertEq(marshal.learnedPeak(d, [1000, 1000, 1000]), Some(M))
+  assertEq(marshal.learnedPeak(d, [1, 1, 20 * G + 1]), Some(20 * G + M))
   assertEq(marshal.learnedPeak(d, []), None)
-  assertEq(marshal.reservationFor(d, 0, false, [20 * G], 56 * G), Reservation(20 * G, true))
-  assertEq(marshal.reservationFor(d, 0, false, [80 * G], 56 * G), Reservation(56 * G, true))
+  // two peaks are too few
+  assertEq(marshal.learnedPeak(d, [20 * G, 20 * G]), None)
+  assertEq(marshal.reservationFor(d, 0, false, [20 * G, 20 * G], 56 * G), Reservation(0, false))
+  assertEq(marshal.reservationFor(d, 0, false, [G, G, 20 * G], 56 * G), Reservation(20 * G, true))
+  assertEq(marshal.reservationFor(d, 0, false, [G, G, 80 * G], 56 * G), Reservation(56 * G, true))
 
 @test("no history learns nothing and reserves 0; one measured run is enough")
 littleHistory()
@@ -116,23 +120,28 @@ resvAdmission()
 @test("a command with history in its directory learns from that; without, from the command anywhere")
 dirHistory()
   val small: Vector[long] = [G, 2 * G]
-  val big: Vector[long] = [26 * G, 20 * G, G, 2 * G]
-  assertEq(marshal.memoryHistory(learning0, small, big), MemoryHistory(small, "cmd+dir"))
-  assertEq(marshal.memoryHistory(learning0, [G], big), MemoryHistory([G], "cmd+dir"))
-  assertEq(marshal.memoryHistory(learning0, [], big), MemoryHistory(big, "cmd"))
+  val big: Vector[long] = [6 * G, 5 * G, 4 * G, 5 * G]
+  val chain = (dir: Vector[long], cmd: Vector[long]) -> [(dir, "cmd+dir"), (cmd, "cmd")]
+  assertEq(marshal.memoryHistory(learning0, chain(small, big)), MemoryHistory(small, "cmd+dir"))
+  assertEq(marshal.memoryHistory(learning0, chain([G], big)), MemoryHistory([G], "cmd+dir"))
+  assertEq(marshal.memoryHistory(learning0, chain([], big)), MemoryHistory(big, "cmd"))
   // peaks of 0 are not history
-  assertEq(marshal.memoryHistory(learning0, [0, 0], big), MemoryHistory(big, "cmd"))
-  // a command never run reserves nothing: there is no wider fallback
-  val fresh = marshal.memoryHistory(learning0, [], [])
-  assertEq(fresh.from, "cmd")
+  assertEq(marshal.memoryHistory(learning0, chain([0, 0], big)), MemoryHistory(big, "cmd"))
+  // a command never run reserves nothing
+  val fresh = marshal.memoryHistory(learning0, chain([], []))
+  assertEq(fresh.from, "")
   assertEq(marshal.reservationFor(learning0, 0, false, fresh.peaks, 60 * G), Reservation(0, false))
   assertEq(marshal.reservationSource(0, false, Reservation(0, false), fresh.from), "none")
   // the directory's estimate is the same rule: the most of its last five, a tenth more
   assertEq(marshal.learnedPeak(learning0, small), Some(2 * G + 205 * M))
   // the minimum follows the learning's minRuns
-  assertEq(marshal.memoryHistory(MemoryLearning(5, 2, 10), [G], big).from, "cmd")
-  assertEq(marshal.memoryHistory(MemoryLearning(5, 2, 10), small, big).from, "cmd+dir")
-  assertEq(marshal.memoryHistory(MemoryLearning(5, 3, 10), small, big).from, "cmd")
+  assertEq(marshal.memoryHistory(MemoryLearning(5, 2, 10), chain([G], big)).from, "cmd")
+  assertEq(marshal.memoryHistory(MemoryLearning(5, 2, 10), chain(small, big)).from, "cmd+dir")
+  assertEq(marshal.memoryHistory(MemoryLearning(5, 3, 10), chain(small, big)).from, "cmd")
+  // a command whose peaks spread widely anywhere is not trusted below its own directory
+  val wide: Vector[long] = [26 * G, 20 * G, G, 2 * G]
+  assertEq(marshal.memoryHistory(learning0, chain([], wide)), MemoryHistory([], ""))
+  assertEq(marshal.memoryHistory(learning0, chain(wide, big)), MemoryHistory(wide, "cmd+dir"))
 
 @test("keys are kind, lane and command, then directory; a kind alone is never a key")
 dirKey()

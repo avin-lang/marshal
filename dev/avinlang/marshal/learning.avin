@@ -1,0 +1,270 @@
+module dev.avinlang.marshal
+
+// Which earlier runs a job learns from.
+//
+// A job that does not say its units, its memory or its deadline learns each from the runs of the
+// same work before it. What counts as the same work is a chain of keys, most particular first, and
+// the job learns from the first key that has enough runs to be trusted:
+//
+// - `cmd+dir`: its command (`commandSignature`) in its directory;
+// - `cmd`: its command in any directory;
+// - `norm+project`: its command with the numbers in it made alike (`normalisedSignature`), in its
+//   project, so `train314.zsh` learns from `train313.zsh` and `release-0115/gate.zsh` from
+//   `release-0114/gate.zsh`;
+// - `kind+project`: any command of its kind in its project.
+//
+// A key is trusted once it has `minRuns` runs (config.json's `learn_min_runs`, 3 by default). The
+// keys below `cmd+dir` gather work that only looks alike, so a key among them whose runs spread
+// widely (`consistent`) is not trusted either, and the search goes on to the next. A kind alone is
+// never a key: `build` covers a one-file build and a whole release gate.
+//
+// A job's project is the repository its directory is in, with a worktree counted as its main
+// repository (`projectOf`): `~/dev/avin-lang/avin-train-al` is in `~/dev/avin-lang/avin`. A
+// directory outside git is a project of its own.
+//
+// Only clean runs are learned from (`cleanRun`): a run that was killed, stopped by its deadline or
+// its quiet timeout, ended by a signal, or that ended abnormally soon says little of what the work
+// needs.
+import avin.fs
+import dev.avinlang.json.Json
+
+// The sources a job's units, memory and deadline can be learned from, most particular first.
+val FromDir: string = "cmd+dir"
+val FromCmd: string = "cmd"
+val FromNorm: string = "norm+project"
+val FromKindProject: string = "kind+project"
+
+// What a run of a job learns under: the key, and the source it stands for.
+data ChainKey(key: string, from: string)
+
+// The keys of a job of `kind` (with its lane) running `cmd` in `dir`, in project `project`, most
+// particular first. A command without a signature has no command keys; a job without a project has
+// no project keys.
+chainKeys(kind: string, landing: bool, cmd: Vector[string], dir: string, project: string) -> Vector[ChainKey]
+  val sig = commandSignature(cmd)
+  val out = Buffer[ChainKey]()
+  if sig.nonEmpty
+    if dir.nonEmpty then out += ChainKey(memoryDirKey(kind, landing, sig, dir), FromDir)
+    out += ChainKey(memoryKey(kind, landing, sig), FromCmd)
+  if project.nonEmpty
+    if sig.nonEmpty then out += ChainKey(normKey(kind, landing, sig, project), FromNorm)
+    out += ChainKey(kindProjectKey(kind, landing, project), FromKindProject)
+  out.toVector
+
+// Every key a run of such a job teaches.
+learningKeys(kind: string, landing: bool, cmd: Vector[string], dir: string, project: string) -> Vector[string] =
+  chainKeys(kind, landing, cmd, dir, project).map(k -> k.key)
+
+// The key of a command made alike (`normalisedSignature`) in a project. Its second line starts with
+// `~`, which no command's signature does.
+normKey(kind: string, landing: bool, signature: string, project: string) -> string =
+  historyKey(kind, landing) + "\n~" + normalisedSignature(signature) + "\n" + project
+
+// The key of every command of a kind in a project. Its second line is `@`, which no command's
+// signature is.
+kindProjectKey(kind: string, landing: bool, project: string) -> string = historyKey(kind, landing) + "\n@\n" + project
+
+// Whether `key` is one of a project's (`normKey`, `kindProjectKey`) rather than a command's.
+isProjectKey(key: string) -> bool
+  val lines = key.split("\n").toVector
+  lines.length == 3 && (lines(1) == "@" || lines(1).startsWith("~"))
+
+// A signature with what changes from one release or train to the next made alike: in every path
+// component and word, a component that is an opaque id (a session's UUID, a hash: `opaqueId`)
+// becomes `*`, and every run of digits, with the dots or underscores between digits of a version
+// (`0.11.5`, `0115`, `314`), becomes `#`. So `zsh /s/train/train314.zsh` and
+// `zsh /s/train/train315.zsh` are alike, and so are `release-0115/gate.zsh` and
+// `release-0116/gate.zsh`; `gate.zsh` and `test.zsh` are not.
+normalisedSignature(signature: string) -> string =
+  signature.split(" ").toVector.map(w -> w.split("/").toVector.map(normalisedPart).mkString("/")).mkString(" ")
+
+private isDigit(c: char) -> bool = '0' <= c <= '9'
+
+private isHex(c: char) -> bool = '0' <= c <= '9' || 'a' <= c <= 'f' || 'A' <= c <= 'F'
+
+// A component that names nothing a reader would: at least 8 hex digits, with dashes between groups
+// at most, and at least one decimal digit among them (`110d1333-fbfb-441f-a9fc-bbf4ec24eda1`,
+// `d97028c4`). A word of letters only (`facade`, `deadbeef`) is a name.
+opaqueId(part: string) -> bool
+  val cs = part.chars.toVector
+  val hex = cs.count(c -> isHex(c))
+  hex >= 8 && cs.forall(c -> isHex(c) || c == '-') && cs.exists(c -> isDigit(c)) && cs.exists(
+    c -> !isDigit(c) && c != '-'
+  )
+
+private normalisedPart(part: string) -> string
+  if opaqueId(part) then return "*"
+  val cs = part.chars.toVector
+  var out = ""
+  var i = 0
+  while i < cs.length
+    if isDigit(cs(i))
+      while i < cs.length && (
+        isDigit(cs(i)) || ((cs(i) == '.' || cs(i) == '_') && i + 1 < cs.length && isDigit(cs(i + 1)) && i > 0 && isDigit(
+          cs(i - 1)
+        ))
+      )
+        i += 1
+      out = out + "#"
+    else
+      out = out + cs(i).toString()
+      i += 1
+  out
+
+// The project `dir` is in: the main repository of the git repository it is in, a worktree's being
+// the repository its common git directory is in; `dir` itself outside git. A directory that is gone
+// (a worktree torn down since its job ran) is its parent's repository beside it whose name its own
+// starts with and a dash follows (`sysl-rel-0115` beside `sysl`), the longest such; otherwise it is
+// itself. `isDir`, `exists` and `readText` are asked of paths, so the rule can be tried on a tree
+// that is not there. "" for an empty directory.
+projectOf(
+    dir: string,
+    isDir: (string) -> bool,
+    exists: (string) -> bool,
+    readText: (string) -> Option[string]
+) -> string
+  val d = trimmedDir(dir)
+  if d.isEmpty then return ""
+  if exists(d) then return repositoryOf(d, isDir, exists, readText).getOrElse(d)
+  // the nearest directory above that is still there, and the name under it that is gone
+  var gone = d
+  var above = parentOf(d)
+  while above.nonEmpty && !exists(above)
+    gone = above
+    above = parentOf(above)
+  if above.isEmpty then return d
+  val name = gone.drop(gone.lastIndexOf("/") + 1)
+  val words = name.split("-").toVector
+  var best = ""
+  var prefix = ""
+  for (w, n) in words.dropRight(1).zipWithIndex
+    prefix = if n == 0 then w else prefix + "-" + w
+    if prefix.nonEmpty && isDir(above + "/" + prefix + "/.git") then best = above + "/" + prefix
+  if best.nonEmpty then best else repositoryOf(above, isDir, exists, readText).getOrElse(d)
+
+// The project of `dir` on this machine's files.
+projectHere(dir: string) -> string = projectOf(
+  dir,
+  p -> fs.isDir(p),
+  p -> fs.exists(p),
+  p -> fs.readText(p).ok
+)
+
+// `dir` without a trailing `/`, and an absolute one with its `.` and `..` components taken out.
+private trimmedDir(dir: string) -> string
+  if dir.startsWith("/") then return resolvedPath("/", dir)
+  var d = dir
+  while d.charCount > 1 && d.endsWith("/") do d = d.dropRight(1)
+  d
+
+private parentOf(dir: string) -> string
+  val at = dir.lastIndexOf("/")
+  if at <= 0 then "" else dir.take(at)
+
+// The main repository of the git repository `dir` is in, looking up from it; None outside git.
+private repositoryOf(
+    dir: string,
+    isDir: (string) -> bool,
+    exists: (string) -> bool,
+    readText: (string) -> Option[string]
+) -> Option[string]
+  var d = dir
+  while d.nonEmpty
+    val git = d + "/.git"
+    if isDir(git) then return Some(d)
+    if exists(git) then return Some(mainOfWorktree(d, git, readText).getOrElse(d))
+    d = parentOf(d)
+  None
+
+// A worktree's main repository: its `.git` file names its git directory (`gitdir: …`), whose
+// `commondir` names the repository's own git directory, relative to it; the repository is the
+// directory that holds that. None where either cannot be read.
+private mainOfWorktree(dir: string, gitFile: string, readText: (string) -> Option[string]) -> Option[string]
+  val text = readText(gitFile).map(t -> t.trim).getOrElse("")
+  if !text.startsWith("gitdir:") then return None
+  val gitDir = resolvedPath(dir, text.drop(7).trim)
+  val common = readText(gitDir + "/commondir").map(c -> resolvedPath(gitDir, c.trim)).getOrElse(gitDir)
+  if common.endsWith("/.git") then Some(common.dropRight(5)) else Some(common)
+
+// `path` resolved against `base` where it is relative, with `.` and `..` components taken out.
+resolvedPath(base: string, path: string) -> string
+  val joined = if path.startsWith("/") then path else base + "/" + path
+  val parts = Buffer[string]()
+  for p in joined.split("/").toVector
+    if p.isEmpty || p == "." then continue
+    if p == ".."
+      if parts.nonEmpty then parts.remove(parts.length - 1)
+    else
+      parts += p
+  "/" + parts.toVector.mkString("/")
+
+// How widely the runs of a fallback key may spread and still be trusted: their 90th percentile at
+// most `SpreadLimitPct` percent of their 10th, each counted at least `floor` (so idle runs a few
+// hundredths apart do not count as spread), over their last `SpreadWindow`.
+val SpreadLimitPct: long = 300
+val SpreadWindow: int = 10
+
+// Whether the runs `values` (oldest first; those at or below 0 are not runs) are alike enough to
+// learn from: at most `SpreadLimitPct` percent from their 10th percentile to their 90th, each
+// counted at least `floor`.
+consistent(values: Vector[long], floor: long) -> bool
+  val runs = values.takeRight(SpreadWindow).map(v -> if v < floor then floor else v)
+  if runs.isEmpty then return true
+  val low = percentile(runs, 10)
+  val high = percentile(runs, 90)
+  if low <= 0 then return high <= 0
+  high <= long.MaxValue / 100 && high * 100 <= low * SpreadLimitPct
+
+// The runs a job learns from and the source they are (`FromDir`...), or none (`from` "").
+data Chosen(values: Vector[long], from: string)
+
+// The first of `chain` (each the runs of a key and its source, most particular first) with at least
+// `minRuns` runs that `counts` accepts and, below `cmd+dir`, whose runs `trusted` accepts.
+choose(
+    chain: Vector[(Vector[long], string)],
+    minRuns: int,
+    counts: (long) -> bool,
+    trusted: (Vector[long]) -> bool
+) -> Chosen
+  for (values, from) in chain
+    val runs = values.filter(counts)
+    if runs.length < minRuns || runs.isEmpty then continue
+    if from != FromDir && !trusted(runs) then continue
+    return Chosen(runs, from)
+  Chosen([], "")
+
+// A run's end, as learning reads it: the event that ended it (`finished`, `timeout`, `quiet`,
+// `killed`, ...), whether marshal killed it, whether it exited on its own (rather than by a
+// signal), and how long it ran.
+data RunEnd(event: string, killed: bool, exited: bool, ranMs: long)
+
+// A run shorter than a `ShortFraction`th of the median of its work's earlier successful runs
+// (`expected`: the most particular key's with `minRuns` of them, `expectedOf`) ended abnormally
+// soon: a build that failed at its first file, a suite that could not start. Work with fewer such
+// runs has no length to be short against, so none of its runs is short: a command that always takes
+// a second still learns.
+val ShortFraction: long = 4
+
+// Whether a run that ended so is learned from: it finished on its own, by exiting, neither killed
+// nor stopped by its deadline or quiet timeout, and it was not abnormally short.
+cleanRun(end: RunEnd, expected: long) -> bool
+  if end.event != "finished" || end.killed || !end.exited then return false
+  expected <= 0 || end.ranMs * ShortFraction >= expected
+
+// Whether an ending event says its job exited rather than being ended by a signal: its `outcome`'s
+// `how` is `exit`; an event that records no outcome is taken to have exited.
+exitedOf(ev: Json) -> bool = ev.get("outcome").flatMap(o -> o.get("how")).flatMap(v -> v.asString) match
+  Some(how) -> how == "exit"
+  None -> true
+
+// The keys a run its deadline stopped is remembered under, so that the next deadline of the same
+// work allows for it: its chain's but its kind's in its project, which covers other work too.
+overrunKeys(chain: Vector[ChainKey]) -> Vector[string] = chain.filter(k -> k.from != FromKindProject).map(k -> k.key)
+
+// The median of the successful runs of the most particular of `chain` (their durations, oldest
+// first) with at least `minRuns`: what `cleanRun` measures a run's length against; 0 for none.
+expectedOf(chain: Vector[Vector[long]], minRuns: int) -> long
+  for runs in chain
+    val r = runs.takeRight(20)
+    if r.length >= minRuns && r.nonEmpty then return median(r)
+  0

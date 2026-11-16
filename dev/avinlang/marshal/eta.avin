@@ -4,13 +4,15 @@ module dev.avinlang.marshal
 // start.
 //
 // Each run of a command that exits 0 is remembered under the keys its memory is learned under
-// (`memoryKeys`: its command, and its command in its directory), and kept in memory.json. A job's
+// (learning.avin's `learningKeys`), and kept in memory.json. A job's
 // expected duration is the median of the last `DurationWindow` such runs of its command in its
-// directory, or of its command anywhere while its directory has none; before any, the median of its
-// kind's runs (deadline.avin), which is guessed rather than learned until the kind has enough. The
-// scheduler's backfill and drains read the expected duration whichever it is; an ETA is shown only
-// for one learned from the command's own runs, since a kind's runs (every test of every project)
-// say little of when one of them ends.
+// directory, or of its command anywhere while its directory has none; before any, of its command
+// made alike in its project, or of its kind in its project (learning.avin), once one of those has
+// enough runs alike enough to trust; before that, the median of its kind's runs (deadline.avin),
+// which is guessed rather than learned until the kind has enough. The scheduler's backfill and
+// drains read the expected duration whichever it is; an ETA is shown only for one learned from the
+// same work's runs, since a kind's runs (every test of every project) say little of when one of
+// them ends.
 //
 // A running job's ETA is its expected duration less the time it has run, nothing once it is past
 // it. A queued job's expected start is reckoned from the running jobs' expected ends: the jobs of
@@ -23,15 +25,27 @@ import avin.collections.mutable.{Map as MutableMap}
 // How many of a command's latest successful runs its duration is learned from.
 val DurationWindow: int = 5
 
-// A duration learned of a command and the key it came from (`cmd+dir` or `cmd`).
+// A duration learned of a command and the key it came from (learning.avin's sources).
 data LearnedDuration(ms: long, from: string)
 
+// The least duration `consistent` tells apart from another: a minute, so runs of a few seconds
+// each are alike however they differ.
+val DurationSpreadFloor: long = 60000
+
 // The duration the runs of a command in its directory (`dirRuns`) and anywhere (`cmdRuns`), oldest
-// first, teach; None while there are none.
-learnedDuration(dirRuns: Vector[long], cmdRuns: Vector[long]) -> Option[LearnedDuration]
+// first, teach, from any run of them; else what the project keys teach (`projectChain`: its
+// command made alike in its project, then its kind in its project, each with its source), from the
+// first with `minRuns` runs alike enough to trust (`consistent`); None while none does.
+learnedDuration(
+    dirRuns: Vector[long],
+    cmdRuns: Vector[long],
+    projectChain: Vector[(Vector[long], string)] = [],
+    minRuns: int = 3
+) -> Option[LearnedDuration]
   if dirRuns.nonEmpty then return Some(LearnedDuration(median(dirRuns.takeRight(DurationWindow)), "cmd+dir"))
   if cmdRuns.nonEmpty then return Some(LearnedDuration(median(cmdRuns.takeRight(DurationWindow)), "cmd"))
-  None
+  val c = choose(projectChain, minRuns, ms -> ms >= 0, runs -> consistent(runs, DurationSpreadFloor))
+  if c.from.isEmpty then None else Some(LearnedDuration(median(c.values.takeRight(DurationWindow)), c.from))
 
 // How long a job is expected to run, whether that is learned rather than guessed, and where it came
 // from (`durationSource`).
@@ -56,8 +70,10 @@ expectationFor(
   val held = if ms < deadline then ms else deadline
   Expectation(if held < 1 then 1 else held, learned, from)
 
-// Whether a duration from `from` is a command's own, which an ETA may be given from.
-commandLearned(from: string) -> bool = from == "cmd" || from == "cmd+dir"
+// Whether a duration from `from` is learned from the same work (a key of learning.avin's chain),
+// which an ETA may be given from, rather than from its kind's runs or guessed.
+commandLearned(from: string) -> bool =
+  from == FromCmd || from == FromDir || from == FromNorm || from == FromKindProject
 
 // A running job's expected time left, in milliseconds: none past its expected duration, and -1 for
 // a job that is not running or whose duration is not its command's own.

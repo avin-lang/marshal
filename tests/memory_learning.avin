@@ -93,13 +93,18 @@ scriptsLearnApart()
   val lines = [
     peakLine(1, "/w/r", "[\"zsh\",\"/scratch/release-0110/gate2.zsh\"]", 30 * G),
     peakLine(2, "/w/r", "[\"zsh\",\"/scratch/release-0110/gate2.zsh\"]", 32 * G),
-    peakLine(3, "/w/f", "[\"zsh\",\"/scratch/bti/gate2.zsh\"]", G)
+    peakLine(3, "/w/r", "[\"zsh\",\"/scratch/release-0110/gate2.zsh\"]", 31 * G),
+    peakLine(4, "/w/f", "[\"zsh\",\"/scratch/bti/gate2.zsh\"]", G),
+    peakLine(5, "/w/f", "[\"zsh\",\"/scratch/bti/gate2.zsh\"]", G),
+    peakLine(6, "/w/f", "[\"zsh\",\"/scratch/bti/gate2.zsh\"]", G)
   ]
   val peaks = marshal.recover(lines).peaks
   assertEq(reserveIn(peaks, ["zsh", "/scratch/bti/gate2.zsh"], "/w/new").0, Reservation(1024 * MiB, true))
   assertEq(reserveIn(peaks, ["zsh", "/scratch/release-0110/gate2.zsh"], "/w/new").0.bytes == 32 * G, true)
-  // a new script of the same name learns nothing from either
-  assertEq(reserveIn(peaks, ["zsh", "/scratch/other/gate2.zsh"], "/w/r"), (Reservation(0, false), "none"))
+  // a new script of the same name is not either command; in the project the release gate ran in,
+  // it learns what that project's builds peaked at, and elsewhere nothing
+  assertEq(reserveIn(peaks, ["zsh", "/scratch/other/gate2.zsh"], "/w/r"), (Reservation(32 * G, true), "kind+project"))
+  assertEq(reserveIn(peaks, ["zsh", "/scratch/other/gate2.zsh"], "/w/x"), (Reservation(0, false), "none"))
 
 @test("a key is a script's when its signature is a shell, an interpreter or a script running one")
 scriptKeys()
@@ -126,7 +131,7 @@ memoryFileVersion3Scripts()
   assertEq(merged.cores, [("build\nmake", [long(200)]), (newKey, [long(5)])].toMap)
   assertEq(merged.durations, [("build\nmake", [long(1000)]), (newKey, [long(5)])].toMap)
   assertEq(merged.staleScripts, false)
-  // written again it is version 4, and a version 4 file's script keys are kept as they are
+  // written again it is version 5, and a version 5 file's script keys are kept as they are
   val again = marshal.decodeMemory(marshal.encodeMemory(merged)).ok.get
   assertEq((again.staleScripts, again.peaks), (false, merged.peaks))
   assertEq(marshal.withRecovered(again, fromLog, fromLog, fromLog).peaks, merged.peaks)
@@ -141,7 +146,8 @@ memoryFileVersion3Scripts()
 private poisonedLog() -> Vector[string] =
   val lines = Buffer[string]()
   for i in 0 ..< 8
-    lines += peakLine(long(i + 1), s"/scratch/s$i", s"[\"zsh\",\"/scratch/s$i/gate.zsh\",\"tests_a\"]", 33 * G)
+    for n in 0 ..< 3
+      lines += peakLine(long(100 + i * 3 + n), s"/scratch/s$i", s"[\"zsh\",\"/scratch/s$i/gate.zsh\",\"tests_a\"]", 33 * G)
   for i in 0 ..< 3
     lines += peakLine(
       long(i + 20),
@@ -156,12 +162,9 @@ private peakLine(id: long, dir: string, cmd: string, peak: long) -> string =
 
 // The reservation the daemon would give a job of kind `build` running `cmd` in `dir`.
 private reserveIn(peaks: Map[string, Vector[long]], cmd: Vector[string], dir: string) -> (Reservation, string)
-  val s = marshal.commandSignature(cmd)
-  val h = marshal.memoryHistory(
-    memDefaults,
-    peaks.get(marshal.memoryDirKey("build", false, s, dir)).getOrElse([]),
-    peaks.get(marshal.memoryKey("build", false, s)).getOrElse([])
-  )
+  val chain = marshal.chainKeys("build", false, cmd, dir, marshal.projectHere(dir)).map(k ->
+    (peaks.get(k.key).getOrElse([]), k.from))
+  val h = marshal.memoryHistory(memDefaults, chain)
   val r = marshal.reservationFor(memDefaults, 0, false, h.peaks, 56 * G)
   (r, marshal.reservationSource(0, false, r, h.from))
 
@@ -190,15 +193,22 @@ noPoisoning()
 
 @test("history in the job's own directory refines the command's: cmd+dir before cmd, cmd before nothing")
 fallbackOrder()
-  val lines = poisonedLog() ++ [peakLine(40, "/w/big", "[\"sysl\",\"build\",\".\"]", 4 * G)]
+  val big = (1 .. 3).map(n -> peakLine(long(40 + n), "/w/big", "[\"sysl\",\"build\",\".\"]", 4 * G)).toVector
+  val lines = big ++ poisonedLog()
   val peaks = marshal.recover(lines).peaks
   val build: Vector[string] = ["sysl", "build", "."]
   // its own directory's 4G
   assertEq(reserveIn(peaks, build, "/w/big"), (Reservation(4096 * MiB, true), "cmd+dir"))
   // elsewhere, the most of the command's last five anywhere, 6G
   assertEq(reserveIn(peaks, build, "/w/other"), (Reservation(6144 * MiB, true), "cmd"))
-  // a different target is a different command
-  assertEq(reserveIn(peaks, ["sysl", "build", "compiler"], "/w/big"), (Reservation(0, false), "none"))
+  // a different target is a different command, which in the same project learns the project's
+  // builds, and in a project nothing has run in learns nothing
+  assertEq(reserveIn(peaks, ["sysl", "build", "compiler"], "/w/big"), (Reservation(4096 * MiB, true), "kind+project"))
+  assertEq(reserveIn(peaks, ["sysl", "build", "compiler"], "/w/new"), (Reservation(0, false), "none"))
+
+// The default learning's window and margin, from the first run on: how a reservation follows a
+// command's peaks, apart from how many runs it takes to trust one.
+private val fromFirstRun: MemoryLearning = MemoryLearning(memDefaults.window, 1, memDefaults.marginPercent)
 
 // The reservation after each of `runs` peaks, in GiB tenths, learned one run at a time.
 private following(runs: Vector[long]) -> Vector[long]
@@ -206,8 +216,15 @@ private following(runs: Vector[long]) -> Vector[long]
   val out = Buffer[long]()
   for p in runs
     seen += p * G
-    out += marshal.learnedPeak(memDefaults, seen.toVector).get * 10 / (1024 * MiB)
+    out += marshal.learnedPeak(fromFirstRun, seen.toVector).get * 10 / (1024 * MiB)
   out.toVector
+
+@test("a key needs three peaks before it is learned from")
+threePeaks()
+  assertEq(memDefaults.minRuns, 3)
+  assertEq(marshal.learnedPeak(memDefaults, [G, G]), None)
+  assertEq(marshal.learnedPeak(memDefaults, [G, 0, G]), None)
+  assertEq(marshal.learnedPeak(memDefaults, [G, G, 2 * G]), Some(2 * G))
 
 @test("a step up raises the very next reservation to the new peak")
 stepUp()
@@ -262,7 +279,7 @@ aboveWhileRunning()
   val less = Started(1, 1, marshal.holding(6 * G, 30 * G), false, 0, hour)
   assertEq(marshal.schedule(b, [less], [Waiting(2, 1, 20 * G, false, hour, 20)], 0), [long(2)])
   // and once it ends, the next run of its command reserves that peak
-  assertEq(marshal.learnedPeak(memDefaults, [6 * G, 40 * G]), Some(40 * G))
+  assertEq(marshal.learnedPeak(memDefaults, [6 * G, 6 * G, 40 * G]), Some(40 * G))
 
 @test("--mem overrides learned memory, 0 among them")
 memGiven()
@@ -289,7 +306,7 @@ memoryFileCores()
   val many = (1 .. 30).map(i -> long(i) * 25).toVector
   val cores: Map[string, Vector[long]] = [("build\nmake", [0, 120, 1250]), ("test\nzsh t.zsh", many)].toMap
   val text = marshal.encodeMemory(Learned([("build\nmake", [G])].toMap, cores))
-  assert(text.contains("\"version\":4"), text)
+  assert(text.contains("\"version\":5"), text)
   assert(text.contains("[0,1.2,12.5]"), text)
   val back = marshal.decodeMemory(text).ok.get
   assertEq(back.cores("build\nmake"), [0, 120, 1250])
@@ -373,11 +390,11 @@ memoryFileRefused()
   fs.writeText(file, "").ok.get
   assert(marshal.loadMemory(file).isErr, "empty")
   fs.writeText(file, "{\"peaks\":{}}").ok.get
-  assertEq(marshal.loadMemory(file).err, Some("version missing, not 4"))
+  assertEq(marshal.loadMemory(file).err, Some("version missing, not 5"))
   fs.writeText(file, "{\"version\":0,\"peaks\":{}}").ok.get
-  assertEq(marshal.loadMemory(file).err, Some("version 0, not 4"))
-  fs.writeText(file, "{\"version\":5,\"peaks\":{},\"cores\":{},\"durations\":{}}").ok.get
-  assertEq(marshal.loadMemory(file).err, Some("version 5, not 4"))
+  assertEq(marshal.loadMemory(file).err, Some("version 0, not 5"))
+  fs.writeText(file, "{\"version\":6,\"peaks\":{},\"cores\":{},\"durations\":{}}").ok.get
+  assertEq(marshal.loadMemory(file).err, Some("version 6, not 5"))
   fs.writeText(file, "{\"version\":1,\"peaks\":[]}").ok.get
   assertEq(marshal.loadMemory(file).err, Some("`peaks` is not an object"))
   fs.writeText(file, "{\"version\":1,\"peaks\":{\"k\":[1,\"x\"]}}").ok.get

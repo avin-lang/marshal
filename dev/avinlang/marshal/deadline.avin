@@ -2,11 +2,12 @@ module dev.avinlang.marshal
 
 // Deadlines learned from how long jobs have taken.
 //
-// A job's deadline is learned from the most particular runs there are of it: its command in its
-// directory, else its command anywhere (`memoryDirKey`, `memoryKey`), else its kind. A kind's
-// history key is the kind, with `+landing` for a landing job: a landing run of the same command
-// does more than a development one. Only runs that exited 0 are history: a failure that stops early,
-// a timeout or a kill says nothing about how long the work takes.
+// A job's deadline is learned from the most particular runs there are of it, by learning.avin's key
+// chain: its command in its directory, its command anywhere, its command made alike in its
+// project, then its kind in its project. Every key holds the kind, with `+landing` for a landing
+// job (`historyKey`): a landing run of the same command does more than a development one. Only runs
+// that exited 0 are history: a failure that stops early, a timeout or a kill says nothing about how
+// long the work takes.
 //
 // What the runs teach is twice their median or half again their longest, whichever is later, so a
 // deadline is never tight against a run that has really happened, and a suite that grows by a few
@@ -65,28 +66,26 @@ deadlineMs(learning: Learning, kind: string, landing: bool, history: Vector[long
   val runs = recent(learning, history)
   if runs.length < learning.minRuns then defaultDeadlineMs(kind, landing) else taught(learning, runs)
 
-// A job's deadline and what it was learned from: `cmd+dir` (its command's runs in its directory),
-// `cmd` (its command's runs anywhere), `kind`, `none` (the kind's default) or `overrun` (a run of
-// its command its deadline stopped, which asks for more than the runs do).
+// A job's deadline and what it was learned from: one of learning.avin's sources (`cmd+dir`, `cmd`,
+// `norm+project`, `kind+project`), `none` (the kind's default) or `overrun` (a run of its work its
+// deadline stopped, which asks for more than the runs do).
 data LearnedDeadline(ms: long, from: string)
 
-// The deadline of a job of `kind` given the successful runs, oldest first, of its command in its
-// directory (`dirRuns`), of its command anywhere (`cmdRuns`) and of its kind (`history`): learned
-// from the first of them with at least `minRuns`, or the kind's default where none has. Never less
-// than `marginPct` percent of `overrunMs`, the longest a run of its command ran before its deadline
-// stopped it since the command last succeeded (0 for none).
+// The deadline of a job of `kind` given the successful runs, oldest first, of each key of its chain
+// (learning.avin's `chainKeys`, most particular first, each with its source): learned from the first
+// with at least `minRuns`, or the kind's default where none has. A kind alone is never learned from:
+// it covers work of every size. A key's runs are taken however widely they spread, since what they
+// teach is already at least half again the longest of them. Never less than `marginPct` percent of
+// `overrunMs`, the longest a run of its work ran before its deadline stopped it since the work last
+// succeeded (0 for none).
 jobDeadline(
     learning: Learning,
     kind: string,
     landing: bool,
-    history: Vector[long],
-    dirRuns: Vector[long],
-    cmdRuns: Vector[long],
+    chain: Vector[(Vector[long], string)],
     overrunMs: long
 ) -> LearnedDeadline
-  val (ms, from) = [(dirRuns, "cmd+dir"), (cmdRuns, "cmd"), (history, "kind")].find(
-    c -> recent(learning, c.0).length >= learning.minRuns
-  ) match
+  val (ms, from) = chain.find(c -> recent(learning, c.0).length >= learning.minRuns) match
     Some((runs, source)) -> (taught(learning, recent(learning, runs)), source)
     None -> (defaultDeadlineMs(kind, landing), "none")
   val past = percentOf(overrunMs, learning.marginPct)

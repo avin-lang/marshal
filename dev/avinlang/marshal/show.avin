@@ -113,7 +113,7 @@ stateWithWhy(j: JobInfo, whys: Vector[(long, Why)]) -> string
 listing(jobs: Vector[JobInfo], whys: Vector[(long, Why)] = []) -> string
   val zone = time.localZone()
   val rows = [
-    ["ID", "STATE", "KIND", "UNITS", "USED", "RESV", "STARTED", "ELAPSED", "ETA", "OWNER", "LABEL", "COMMAND"]
+    ["ID", "STATE", "KIND", "UNITS", "USED", "RESV", "STARTED", "ELAPSED", "ETA", "OWNER", "FROM", "LABEL", "COMMAND"]
   ] ++ jobs.map(
     j -> [
       j.id.toString(),
@@ -126,6 +126,7 @@ listing(jobs: Vector[JobInfo], whys: Vector[(long, Why)] = []) -> string
       elapsedColumn(j, j.elapsedMs),
       etaColumn(j),
       ownerText(j),
+      fromText(j),
       j.label,
       j.cmd.mkString(" ")
     ]
@@ -133,6 +134,26 @@ listing(jobs: Vector[JobInfo], whys: Vector[(long, Why)] = []) -> string
   val last = rows(0).length - 1
   val widths = (0 ..< last).map(c -> rows.map(r -> r(c).charCount).max)
   rows.map(r -> (0 ..< last).map(c -> r(c).padEnd(widths(c), ' ')).mkString("  ") + "  " + r(last)).mkString("\n")
+
+// Where a job's units, memory and deadline came from, as `ls` shows them in FROM, in that order:
+// `units/memory/deadline`, each a short word for its source (`sourceWord`), such as
+// `norm/norm/norm` for a train learned from its numbered siblings or `def/-/def` for work nothing
+// is known of.
+fromText(j: JobInfo) -> string = [j.unitsFrom, j.reservedFrom, j.deadlineFrom].map(sourceWord).mkString("/")
+
+// A source of learning.avin's (or `given`, `default`, ...) in a word: `dir` (cmd+dir), `cmd`,
+// `norm` (norm+project), `proj` (kind+project), `given`, `def` (a default), `live` (raised while it
+// ran), `excl`, `quick`, `over` (a deadline after an overrun), `kind` (a kind's, from an older
+// daemon), `-` for none or not said.
+sourceWord(from: string) -> string = from match
+  "cmd+dir" -> "dir"
+  "norm+project" -> "norm"
+  "kind+project" -> "proj"
+  "default" -> "def"
+  "exclusive" -> "excl"
+  "overrun" -> "over"
+  "none" | "" -> "-"
+  other -> other
 
 // Who a job is for, as a listing shows it: `-` for none.
 ownerText(j: JobInfo) -> string = if j.owner.isEmpty then "-" else j.owner

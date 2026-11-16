@@ -61,13 +61,19 @@ peaks of the same command, by kind and command signature, in its `dir` once it h
 in every directory before that, rounded up to a mebibyte; held to the budget). A job without `resv` (from an
 older daemon or log) reserves its `mem`, not learned. `resv_from` says where the reservation came
 from: `given` (`mem` was given, `0` among them), `cmd+dir` (its command's peaks in its directory),
-`cmd` (its command's peaks in every directory) or `none` (nothing learned yet); `kind+dir` and
+`cmd` (its command's peaks in every directory), `norm+project` (its command made alike, in its
+project), `kind+project` (its kind in its project) or `none` (nothing learned yet); `kind+dir` and
 `kind` from a daemon that learned per kind; absent from an older daemon or log. `external` is present, and true, only for a job submitted with it: its `resv` is its `mem`, admission counts it as holding that whatever its
 `rss`, and its ending event's `peak_rss` is never learned from (nor counted by `stats`).
 
 `units` is what the job weighs (`1.25`). `units_learned` is present, and true, only where the units
-were learned from the cores earlier runs of its command held (the most of the last 5 runs' held
-levels, rounded up to a quarter). `units_asked` (a number of units) and `units_capped` (true) are
+were learned from the cores earlier runs of the same work held (the 80th percentile of the last 10
+clean runs' held levels of the first trusted key, rounded up to a quarter). `units_from` says where
+the units came from: a key (`cmd+dir`, `cmd`, `norm+project`, `kind+project`), `given`, `default`
+(its class's share of the budget), `live` (raised while it ran, having used more than it weighed for
+`raise_after`), `exclusive` or `quick`; `deadline_from` where its deadline did: a key, `given`,
+`quick`, `overrun` or `none` (the kind's default); `project` the project its `dir` is in, which it
+learns under. All three are absent from an older daemon or log. `units_asked` (a number of units) and `units_capped` (true) are
 present only on a job that gave units and weighs the fewer its command's runs teach: `units_asked`
 is what it gave. `cores` is how many cores a running job kept busy over the last two
 seconds, `peak_cores` the most it has, `held_cores` the level three quarters of its samples were at
@@ -177,7 +183,8 @@ refuses it with `no such request: `snapshot``.
 1970) and `event`: `submitted` (adds `spec`, the fields of the `submit` request but `op`, and for a
 `rerun` `rerun_of`, the job run again), `ready` (a job that waited for others joins the queue),
 `held`, `released` and `prioritized` (a hold by hand begins or ends, a queued job is given a
-priority), `paused` and `resumed` (a running job's), `started` (adds `pgid` and `pid`, the job's
+priority), `paused` and `resumed` (a running job's), `raised` (a running job that used more than
+it weighed for `raise_after` weighs what it used, in its `units`), `started` (adds `pgid` and `pid`, the job's
 main process, and `backfilled_ahead_of`, the id of the draining job it started ahead of, when it
 backfilled during a drain), and one ending, `finished`, `timeout` (its deadline), `quiet` (its quiet timeout),
 `killed`, `cancelled` (a job whose dependency failed) or `lost`, which adds `run_ms` and `exit`, the status `wait` exits with. `lost`

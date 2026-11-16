@@ -33,19 +33,20 @@ eventLine(ts: long, event: string, job: JobInfo, extra: Vector[(string, Json)]) 
 // - `histories`: the run time of each job that exited 0, by `historyKey`, oldest first.
 // - `unreadable`: how many lines were not events.
 // - `ended`: the last `keep` jobs the log saw end, as their ending events describe them, by id.
-// - `peaks`: the `peak_rss` of every ending event that has one above 0, oldest first, whatever the
-//   outcome: what reservations are learned from when `memory.json` cannot be used. Each is kept
-//   under the `memoryKey` of its recorded `cmd` and, where the event names its `dir`, under its
-//   `memoryDirKey` too; an event without a command teaches nothing.
-// - `cores`: the `held_cores` of every ending event that has one, and the `peak_cores` of one
-//   written before held levels were, in hundredths of a core, oldest first, kept under the same
-//   keys as `peaks`: what units are learned from when `memory.json` cannot be used.
+// - `peaks`: the `peak_rss` of every clean run's ending event (learning.avin's `cleanRun`) that has
+//   one above 0, oldest first: what reservations are learned from when `memory.json` cannot be
+//   used. Each is kept under every key of its job's chain (`learningKeys`), from its recorded
+//   `kind`, `cmd` and `dir` and its `project` (`projectOf` of its `dir` where the event names
+//   none); an event without a command teaches its kind in its project only.
+// - `cores`: the `held_cores` of every clean run's ending event that has one, and the `peak_cores`
+//   of one written before held levels were, in hundredths of a core, oldest first, kept under the
+//   same keys as `peaks`: what units are learned from when `memory.json` cannot be used.
 // - `durations`: the run time of each job that exited 0, oldest first, kept under the same keys as
-//   `peaks`: what expected durations are learned from when `memory.json` cannot be used or kept
-//   none.
+//   `peaks` (a kind's are `histories`): what expected durations and deadlines are learned from when
+//   `memory.json` cannot be used or kept none.
 // - `overruns`: the longest `run_ms` of a `timeout` event since the last job that exited 0, by the
-//   same keys as `peaks`: a command its deadline stopped takes at least that long, which its next
-//   deadline allows for (deadline.avin).
+//   keys of its chain but its kind's in its project (`overrunKeys`): work its deadline stopped takes
+//   at least that long, which its next deadline allows for (deadline.avin).
 data Recovered(
     nextId: long,
     open: Vector[Json],
@@ -58,7 +59,18 @@ data Recovered(
     overruns: Map[string, long] = Map()
 )
 
-recover(lines: Iterable[string], keep: int = 10) -> Recovered
+recover(lines: Iterable[string], keep: int = 10, projectOf: (string) -> string = projectHere) -> Recovered
+  // a directory's project, asked of the files once per directory
+  val projects = MutableMap[string, string]()
+  val projectFor = (ev: Json, dir: string) ->
+    ev.get("project").flatMap(v -> v.asString).getOrElse(
+      projects.get(dir) match
+        Some(p) -> p
+        None ->
+          val p = projectOf(dir)
+          projects(dir) = p
+          p
+    )
   var maxId: long = 0
   var unreadable = 0
   val last = Buffer[(long, Json)]()
@@ -93,39 +105,32 @@ recover(lines: Iterable[string], keep: int = 10) -> Recovered
       ev.get("held_cores").flatMap(centiOf).getOrElse(-1),
       ev.get("peak_cores").flatMap(centiOf).getOrElse(-1)
     )
-    // an external job's peaks are its tree's, not its work's: never learned from
-    if endings.contains(kind) && (peak > 0 || busiest >= 0) && ev.get("external").flatMap(v -> v.asBool) != Some(true)
-      val evKind = ev.get("kind").flatMap(v -> v.asString).getOrElse("")
-      val evLanding = ev.get("landing").flatMap(v -> v.asBool).getOrElse(false)
-      // the signature comes from the recorded command; an event without one teaches nothing, and
-      // one without a directory teaches its command only
-      val cmd = ev.get("cmd").flatMap(v -> v.asVector).map(
-        items -> items.map(i -> i.asString.getOrElse(""))
-      ).getOrElse(Vector[string]())
-      val dir = ev.get("dir").flatMap(v -> v.asString).getOrElse("")
-      for key in memoryKeys(evKind, evLanding, cmd, dir)
-        if peak > 0 then appendTo(peaks, key, peak)
-        if busiest >= 0 then appendTo(cores, key, busiest)
-    if kind == "timeout"
-      for ran in ev.get("run_ms").flatMap(v -> v.asLong).toList
-        for key in memoryKeys(
-          ev.get("kind").flatMap(v -> v.asString).getOrElse(""),
-          ev.get("landing").flatMap(v -> v.asBool).getOrElse(false),
-          ev.get("cmd").flatMap(v -> v.asVector).map(items -> items.map(i -> i.asString.getOrElse(""))).getOrElse(
-            Vector[string]()
-          ),
-          ev.get("dir").flatMap(v -> v.asString).getOrElse("")
-        )
-          if ran > overruns.get(key).getOrElse(0) then overruns(key) = ran
-    if kind == "finished" && ev.get("exit").flatMap(v -> v.asLong) == Some(long(0)) && !(
-      ev.get("killed").flatMap(v -> v.asBool) == Some(true)
+    if !endings.contains(kind) then continue
+    val evKind = ev.get("kind").flatMap(v -> v.asString).getOrElse("")
+    val evLanding = ev.get("landing").flatMap(v -> v.asBool).getOrElse(false)
+    // the signature comes from the recorded command; an event without one teaches its kind in its
+    // project only, and one without a directory its command only
+    val cmd = ev.get("cmd").flatMap(v -> v.asVector).map(items -> items.map(i -> i.asString.getOrElse(""))).getOrElse(
+      Vector[string]()
     )
-      val run = ev.get("run_ms").flatMap(v -> v.asLong)
-      val key = historyKey(
-        ev.get("kind").flatMap(v -> v.asString).getOrElse(""),
-        ev.get("landing").flatMap(v -> v.asBool).getOrElse(false)
-      )
-      run match
+    val dir = ev.get("dir").flatMap(v -> v.asString).getOrElse("")
+    val chain = chainKeys(evKind, evLanding, cmd, dir, if dir.isEmpty then "" else projectFor(ev, dir))
+    val ran = ev.get("run_ms").flatMap(v -> v.asLong)
+    val end = RunEnd(kind, ev.get("killed").flatMap(v -> v.asBool) == Some(true), exitedOf(ev), ran.getOrElse(0))
+    val expected = expectedOf(chain.map(k -> durations.get(k.key).map(b -> b.toVector).getOrElse([])), defaultLearning.minRuns)
+    // an external job's peaks are its tree's, not its work's: never learned from
+    val external = ev.get("external").flatMap(v -> v.asBool) == Some(true)
+    if (peak > 0 || busiest >= 0) && !external && cleanRun(end, expected)
+      for k in chain
+        if peak > 0 then appendTo(peaks, k.key, peak)
+        if busiest >= 0 then appendTo(cores, k.key, busiest)
+    if kind == "timeout"
+      for ms in ran.toList
+        for key in overrunKeys(chain)
+          if ms > overruns.get(key).getOrElse(0) then overruns(key) = ms
+    if kind == "finished" && ev.get("exit").flatMap(v -> v.asLong) == Some(long(0)) && !end.killed
+      val key = historyKey(evKind, evLanding)
+      ran match
         Some(ms) ->
           histories.get(key) match
             Some(b) -> b += ms
@@ -133,16 +138,9 @@ recover(lines: Iterable[string], keep: int = 10) -> Recovered
               val b = Buffer[long]()
               b += ms
               histories(key) = b
-          for k in memoryKeys(
-            ev.get("kind").flatMap(v -> v.asString).getOrElse(""),
-            ev.get("landing").flatMap(v -> v.asBool).getOrElse(false),
-            ev.get("cmd").flatMap(v -> v.asVector).map(items -> items.map(i -> i.asString.getOrElse(""))).getOrElse(
-              Vector[string]()
-            ),
-            ev.get("dir").flatMap(v -> v.asString).getOrElse("")
-          )
-            appendTo(durations, k, ms)
-            overruns.remove(k)
+          for k in chain
+            appendTo(durations, k.key, ms)
+            overruns.remove(k.key)
         None -> ()
   val open = last.filter(e -> !endings.contains(e.1.get("event").flatMap(v -> v.asString).getOrElse(""))).map(e -> e.1)
   val learned = histories.keys.map(k -> (k, histories(k).toVector)).toMap

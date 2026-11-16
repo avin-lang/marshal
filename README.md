@@ -195,7 +195,7 @@ when the top you are running is another version it adds it in yellow with a hint
 ## Reading the queue
 
 `marshal ls` lists the running and queued jobs and the recently ended ones, with the columns ID,
-STATE, KIND, UNITS, USED, RESV, STARTED, ELAPSED, ETA, OWNER, LABEL and COMMAND. KIND is marked
+STATE, KIND, UNITS, USED, RESV, STARTED, ELAPSED, ETA, OWNER, FROM, LABEL and COMMAND. KIND is marked
 `*` for a landing job, `^` a quick one, `#` an exclusive one, then `!` an urgent one (`test^!`).
 A queued job's STATE says why it waits, as `queued (<reason>)`; `top` shows the same reason after
 the job's place in its lane (`#2 no units`), in a few words shortened as noted.
@@ -233,7 +233,11 @@ peak (`-` where nothing was measured); RESV the memory it reserves (`~29G` learn
 `--external` job's declared, plain a given `--mem`); STARTED the local date and minute; ELAPSED the
 run time (a settling job's wait for the load); ETA a running job's expected time left (`~6m`, `<1m`
 once past it) or a queued job's expected start (`in ~3m`), `-` where not known; OWNER who the job is
-for.
+for; FROM where its units, memory and deadline came from, as `units/memory/deadline` (see
+[How marshal learns](#how-marshal-learns)): `dir` (its command in its directory), `cmd`, `norm`
+(its command made alike, in its project), `proj` (its kind in its project), `given`, `def` (a
+default), `live` (units raised while it ran), `excl`, `quick`, `over` (a deadline after a run that
+overran), `-` for none: `norm/norm/norm` is a train learned from its numbered siblings.
 
 ## Commands
 
@@ -276,7 +280,7 @@ same usage to standard error and exits 2. After `--` nothing is an option, so `m
 | Option | Meaning |
 | --- | --- |
 | `--kind <k>` | What the job is, for learning its deadline. Default: `test` when a word of the command is `test`, otherwise `build`. |
-| `--units <n>` | Its weight, a number above 0 in steps of 0.25 (`0.5`, `1.25`, `4`); anything else is refused. Default: the cores recent runs of the same command used, rounded up to a quarter (`~` in UNITS; see [How marshal learns](#how-marshal-learns)), and 4 for a `test`, 1 for anything else until the command has been measured. A given value is a ceiling: once the command has `learn_min_runs` (3) measured runs, the job weighs the fewer of it and what they teach (`8→~1.5` in UNITS, `units_capped` in `status --json`, and a line on stderr). A given value it keeps that is far from what recent runs used gets a one-line hint on stderr. |
+| `--units <n>` | Its weight, a number above 0 in steps of 0.25 (`0.5`, `1.25`, `4`); anything else is refused. Default: the cores recent clean runs of the same work used, rounded up to a quarter (`~` in UNITS; see [How marshal learns](#how-marshal-learns)), and until a key is trusted a share of the budget by class: a quarter for a gate, train, release or landing job, a sixth for a test, a ninth for a build, 1 unit for anything else. While it runs it is charged what it uses where that is more, and raised to it after `raise_after`. A given value is a ceiling: once the command has `learn_min_runs` (3) measured runs, the job weighs the fewer of it and what they teach (`8→~1.5` in UNITS, `units_capped` in `status --json`, and a line on stderr). A given value it keeps that is far from what recent runs used gets a one-line hint on stderr. |
 | `--units-exact` | With `--units`: weigh exactly the units given, even where the command's runs used fewer. Refused without `--units`. |
 | `--mem <size>` | Memory it needs: `29G`, `512M` (powers of 1024). Default: the learned peak of the same command in its directory, or anywhere while it has not run in that directory; 0 until the command has run once. `--mem 0` reserves nothing and learns nothing. |
 | `--external` | Its work runs outside its own processes: `docker run`, a VM, or a command run as another account through `sudo` (see [Work outside the job's processes](#work-outside-the-jobs-processes)). It needs `--mem`, and is refused without it; it reserves exactly that and holds it whatever its process tree measures; its measured peak is never learned from, so its command's later jobs are not taught a near-zero peak. `ls` and `top` show its RESV with `@` before it (`@29G`), `status --json` gives `"external": true`, and `rerun` keeps it. A command whose first word (or the first after `sudo`) is `docker` with `run`, `compose`, `build` or `buildx`, or `docker-compose`, submitted without it gets a warning on stderr and is submitted all the same. |
@@ -611,19 +615,50 @@ the script's path and its first argument, and a program that is itself a script 
 path and first argument. So a compiler's suite and a small package's suite learn apart, two scripts
 of one name in two directories learn apart, and every worktree of a repository shares what a command
 (or a script named by a relative path) has learned. A job's `--label` is not part of it: the same
-script under another label is the same work. Runs of the command in the job's own directory (`--dir`)
-come first once there is one; then its runs anywhere. A kind (`build`, `test`) is never learned from
-on its own for memory or units, and a landing job learns apart from development ones.
+script under another label is the same work.
+
+Which runs are the same work is a **chain of keys**, most particular first, and a job learns from
+the first key that has at least `learn_min_runs` (3) clean runs:
+
+1. `cmd+dir`: its command in its own directory (`--dir`);
+2. `cmd`: its command in any directory;
+3. `norm+project`: its command **made alike**, in its project: every run of digits in it, with the
+   dots or underscores of a version between them, becomes `#`, and a path component that is an
+   opaque id (a session's UUID, a hash) becomes `*`, so `zsh …/train/train314.zsh` learns from
+   `train313.zsh`, and `…/release-0115/gate.zsh` from `…/release-0114/gate.zsh`, while `gate.zsh`
+   and `test.zsh` stay apart;
+4. `kind+project`: any command of its kind in its project.
+
+A job's **project** is the repository its `--dir` is in, a git worktree counting as its main
+repository (through its git directory's `commondir`), so `~/dev/avin-lang/avin-train-al` is in
+`~/dev/avin-lang/avin`; a directory outside git is a project of its own, and a worktree torn down
+since its job ran is the repository beside it whose name its own begins with (`sysl-rel-0115` beside
+`sysl`). Callers pass nothing new. Every key holds the kind, and a landing job learns apart from
+development ones. A kind alone is never a key (`build` covers a one-file build and a release gate),
+and neither is a label or an owner.
+
+The keys below `cmd+dir` gather work that only looks alike, so one whose runs **spread** widely is
+not trusted: when the 90th percentile of its last 10 runs is more than 3 times their 10th (each run
+counted at least a core, a gibibyte or a minute, for units, memory and durations), the search goes on
+to the next key, and past the last to the cautious default. Deadlines take a key's runs however
+they spread, since they already allow half again the longest.
+
+Only **clean** runs are learned from: a run killed, stopped by its deadline or its quiet timeout,
+or ended by a signal teaches nothing, and neither does one that ended abnormally soon, shorter than
+a quarter of the median of its work's earlier successful runs (its most particular key with 3 of
+them; work with fewer has no length to be short against). A failure that ran its course is clean: a
+failed build holds the memory it holds.
 
 ### Memory
 
 A job without `--mem` reserves the learned peak of what it runs: the most memory (physical
 footprint, Activity Monitor's Memory column, of its whole process tree) any of the **last 3**
-measured runs of the same command held, whatever their outcome, rounded up to a mebibyte. A command
-never run before reserves 0. Because only the last 3 runs count, a reservation follows the work: a
+clean runs of the first trusted key held, rounded up to a mebibyte. Work no key is trusted for
+reserves 0. Because only the last 3 runs count, a reservation follows the work: a
 run that peaks higher raises the next reservation at once (and the reservations of jobs still
 queued), and once a command needs less, its reservation comes down within 3 runs. `status --json`
-says where a reservation came from in `resv_from`: `cmd+dir`, `cmd`, `given` or `none`. A learned
+says where a reservation came from in `resv_from`: `cmd+dir`, `cmd`, `norm+project`,
+`kind+project`, `given` or `none`. A learned
 reservation above the whole budget is held to the budget, so the job starts once nothing else holds
 memory and runs alone. `--mem 0` opts out. A running job counts as holding its reservation or what
 it was last measured holding, whichever is more, so a job that reserved nothing but holds 27G keeps
@@ -656,23 +691,38 @@ the job's own process ends, the time its reaping reports (its own and every desc
 is counted where it is more than the samples found. What is not counted is the time, after the last
 sample, of a process whose parent ended before it (process 1 reaps it).
 
-A job that gives no `--units` weighs what the runs of the same command teach: the most of what the
-**last 5** measured runs held, rounded up to a quarter, at least 0.25 and at most the budget (a run
-recorded before `held_cores` was teaches its peak); a command never measured weighs its kind's
-default (4 for a `test`, 1 for anything else). Memory is still learned from peaks: a job over its
-share of processors only slows the niced jobs beside it, while one over its memory can take the
-machine into swap. A given `--units` is a **ceiling**, and a job type's `units` counts as given:
-once the command has at least `learn_min_runs` (3) measured runs, the job weighs the fewer of what it
-gave and what those runs teach, so `--units 8` on a command that holds one core weighs about 1 and
-leaves the other cores to the queue. `--units-exact` keeps the given units exactly, for work that
-needs them whatever it was measured using; with fewer runs, the given units stand as they are. A job
-that turns out to use more than it weighs is left alone, and its command's next runs learn the
-higher level. An exclusive job still weighs the whole budget, and a quick job its own units outside
-it. When a run teaches a new value, the queued and waiting jobs that gave no units, or gave them as a
+A job that gives no `--units` weighs what the first trusted key's runs teach: the **80th
+percentile** of what the **last 10** clean runs held, rounded up to a quarter, at least 0.25 and at
+most the budget (a run recorded before `held_cores` was teaches its peak), so one run busier than the
+rest no longer sets the units of every run after it. Work no key is trusted for weighs a cautious
+**default by class**: a quarter of the budget for a gate, a train, a release or a landing job (its
+kind, or a dash- or underscore-separated word of it, is `gate`, `train`, `release` or `landing`, or
+it runs in the landing lane), a sixth for a test, a ninth for a build, and 1 unit for anything else,
+never under 1 unit. Memory is still learned from peaks: a job over its share of processors only
+slows the niced jobs beside it, while one over its memory can take the machine into swap. A given
+`--units` is a **ceiling**, and a job type's `units` counts as given: once the command itself (in its
+directory or anywhere, never a project key) has at least `learn_min_runs` (3) measured runs, the job
+weighs the fewer of what it gave and what those runs teach, so `--units 8` on a command that holds
+one core weighs about 1 and leaves the other cores to the queue. `--units-exact` keeps the given
+units exactly, for work that needs them whatever it was measured using; with fewer runs, the given
+units stand as they are.
+
+**Live charging** is the backstop for all of it. While a job runs, admission charges it the more of
+the units it weighs and the cores it was last measured keeping busy, so a job that weighs 1 unit and
+uses 12 holds back the next start rather than taking the machine past its budget; `status` counts
+the charge too. When it has used more than it weighs for `raise_after` (90 seconds) without a break,
+it weighs the least it used in that time from then on: its `units_from` becomes `live`, a `raised`
+event is logged, and the daemon's log says so. It is never stopped, paused or killed for it, and
+what it weighs is never lowered below what it gave or was given. An exclusive job (which weighs the
+whole budget), a quick job and an external one (whose tree is not where its work runs) are charged
+what they weigh. A job that has ended is charged nothing. An exclusive job still weighs the whole
+budget, and a quick job its own units outside it. When a run teaches a new value, the queued and waiting jobs that gave no units, or gave them as a
 ceiling, weigh again at once; a running job keeps what it started with. A restart weighs them again
 from what the new program reads, and a running job it takes over keeps its measured peak, the levels
 it held and the groups its tree was found in, and is measured on from a fresh baseline. An external
-job's cores are never learned. `status --json` gives `units` as a number (`1.25`), `units_learned`,
+job's cores are never learned. `status --json` gives `units` as a number (`1.25`), `units_from`
+(`cmd+dir`, `cmd`, `norm+project`, `kind+project`, `given`, `default`, `live`, `exclusive` or
+`quick`), `deadline_from` (a key, `given`, `quick`, `overrun` or `none`), `project`, `units_learned`,
 `units_asked` and `units_capped: true` for a job held under what it gave, and `cores`, `peak_cores`,
 `held_cores` and `cpu_ms` once measured; the `submitted` event's spec records `units_asked`,
 `units_capped` and `units_exact` the same way. `top`'s UNITS shows the same units with `~`, the given
@@ -680,10 +730,11 @@ ones and the arrow only where they fit its 5 cells, and its PEAK stays the peak.
 
 ### Durations and ETAs
 
-Every run that exits 0 is remembered under its command. A job's expected duration is the median of
-the **last 5** such runs of its command in its directory, or anywhere while it has not run there;
-before any, its kind's (the median of the kind's last runs once it has 3, half its default deadline
-until then); never more than its deadline. The scheduler's backfill and drains read it, whichever it
+Every run that exits 0 is remembered under every key of its chain. A job's expected duration is the
+median of the **last 5** such runs of its command in its directory, or anywhere while it has not run
+there; before any, of its command made alike in its project, or its kind in its project, once one of
+those has 3 runs alike enough to trust; before that, its kind's (the median of the kind's last runs
+once it has 3, half its default deadline until then); never more than its deadline. The scheduler's backfill and drains read it, whichever it
 is, and a command's own runs make them sharper. A queued job estimates again when a run of its
 command ends. Only a duration learned from the command's own runs gives an ETA, since a kind's runs
 (every test of every project) say little of when one of them ends: a running job's ETA is its
@@ -694,19 +745,21 @@ and what is reckoned to start before it (`in ~3m`, and to the hour from an hour 
 a start waits on an end that is not known (a running job whose command has no learned duration), or
 on what no duration measures (take-slot, the load, an exclusive job, a held queue, a low disk), that
 job and every one behind it in its lane have none (`-`); a held job is passed over. `ls` and `top`
-show both in ETA; `status --json` gives `duration_from` (`cmd+dir`, `cmd`, `kind` or `none`), a
+show both in ETA; `status --json` gives `duration_from` (`cmd+dir`, `cmd`, `norm+project`,
+`kind+project`, `kind` or `none`), a
 running job's `eta_ms` and a queued job's `starts_in_ms` (from when the daemon answered), each where
 it is known.
 
 ### Deadlines
 
-A job's deadline is learned from the last 20 successful runs of its command in its directory, or of
-its command anywhere while its directory has fewer than 3, or of its kind (with `+landing` for a
-landing job) while its command has fewer than 3: twice their median or 1.5 times the longest of them,
-whichever is later, never under 5 minutes. Until any of those has 3 runs it is 20 minutes for a
-build, 45 for a test, 30 for anything else and 120 for a landing job. A run its deadline stopped took
-at least that long, so until its command next exits 0, the command's deadline is at least 1.5 times
-how long that run ran: a repeat is not stopped where it was. `--deadline` overrides all of it. A job
+A job's deadline is learned from the last 20 successful runs of the first key of its chain with at
+least 3 of them (its command in its directory, its command anywhere, its command made alike in its
+project, its kind in its project): twice their median or 1.5 times the longest of them, whichever
+is later, never under 5 minutes. A kind alone is never learned from. Until a key has 3 runs it is 20
+minutes for a build, 45 for a test, 30 for anything else and 120 for a landing job. A run its
+deadline stopped took at least that long, so until its work next exits 0, the deadline of the same
+work (its command, in its directory or anywhere, or made alike in its project) is at least 1.5
+times how long that run ran: a repeat is not stopped where it was. `--deadline` overrides all of it. A job
 past its deadline has its busiest process sampled (where the system has `sample`, 5 seconds, to
 `jobs/<id>.sample.txt`, which the result line names), then its group gets TERM and, 5 seconds later,
 KILL. A job with `--quiet-timeout` is stopped the same way once its log's size has not changed for
@@ -715,9 +768,11 @@ that long; the daemon looks at the log once a second, so the stop comes up to a 
 ### memory.json
 
 After every job that ends, the daemon writes what it has learned to `memory.json` in marshal's home:
-`{"version": 4, "peaks": {...}, "cores": {...}, "durations": {...}}`, each key a kind (`+landing`
+`{"version": 5, "peaks": {...}, "cores": {...}, "durations": {...}}`, each key a kind (`+landing`
 for the landing lane), a line feed and a command's signature, with a line feed and a directory
-after it for runs in that directory, holding that key's last 20 memory peaks in bytes (`peaks`),
+after it for runs in that directory; or a kind, a line feed, `~` and a command made alike, a line
+feed and a project; or a kind, a line feed, `@`, a line feed and a project. Each holds that key's
+last 20 memory peaks in bytes (`peaks`),
 peak cores as numbers (`cores`, such as `1.25`) and run times of successful runs in milliseconds
 (`durations`), oldest first. An older file is read: a version 2 file keeps its peaks
 and cores and its durations are learned from the event log's successful `finished` events
@@ -726,8 +781,9 @@ and cores and its durations are learned from the event log's successful `finishe
 (`zsh gate.zsh`), so one key could mix the runs of several scripts of that name: a file of
 version 1, 2 or 3 drops those keys (a shell, an interpreter or a script running a script) and
 keeps every other, and the scripts' runs still in the event log are learned again under their
-paths; what the event log no longer has of them is gone. Any older file is written again as
-version 4 at once. It is written to a temporary file and renamed into place, so a reader sees
+paths; what the event log no longer has of them is gone. A file before version 5 has no project
+keys, which are learned from the event log (each ending event records its `project`; an older one
+is given the project of its `dir`). Any older file is written again as version 5 at once. It is written to a temporary file and renamed into place, so a reader sees
 the whole of one write, never part. A starting daemon reads it, so what was learned survives
 `stop`, `restart`, an upgrade, a reboot and `marshal clean` trimming the event log. When the file
 is missing, does not read, or is of another version, the daemon says so on stderr (a missing one
@@ -759,7 +815,8 @@ starting, saying which. A change takes effect when the daemon next starts (`mars
 | `reserve` | `"8G"` | what the default memory budget leaves the rest of the machine |
 | `deadline_floor` | `"5m"` | the shortest deadline learning may give |
 | `learn_window` | `20` | how many recent successful runs deadline learning reads |
-| `learn_min_runs` | `3` | how many runs a command (or kind) needs before its deadline is learned, and before a given `--units` becomes a ceiling |
+| `learn_min_runs` | `3` | how many clean runs a key needs before units, memory or a deadline are learned from it, and before a given `--units` becomes a ceiling |
+| `raise_after` | `"90s"` | how long a running job must use more cores than it weighs before it weighs what it used; `"never"` only charges it what it uses |
 | `drain_after` | `"10m"` | how long a development job waits before the machine drains for it; `"never"` never drains |
 | `load_wait` | `"15m"` | how long a settling exclusive job waits for its `--quiet-load` before it is marked overdue (it still waits); `"never"` never marks it |
 | `disk_min` | `"20G"` | the least free disk new jobs start beside; `"0"` for no guard |

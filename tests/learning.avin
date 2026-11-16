@@ -1,0 +1,364 @@
+module tests
+
+// Which earlier runs a job learns from (learning.avin): the key chain cmd+dir, cmd, norm+project,
+// kind+project; a job's project from its directory; commands made alike; three runs a key; a
+// fallback key whose runs spread widely not trusted; only clean runs learned; the cautious default
+// by class; and live charging, which charges a running job what it uses and raises its units once
+// that lasts.
+import dev.avinlang.marshal
+import dev.avinlang.marshal.{Budget, LiveCharge, MemoryLearning, RunEnd, Started, UnitsHistory, Waiting}
+
+// A tree of files for `projectOf`: the directories, the `.git` files and what they say, and the
+// other files.
+private data GitTree(dirs: Vector[string], files: Vector[(string, string)])
+
+private projectIn(t: GitTree, dir: string) -> string = marshal.projectOf(
+  dir,
+  p -> t.dirs.contains(p),
+  p -> t.dirs.contains(p) || t.files.exists(f -> f.0 == p),
+  p -> t.files.find(f -> f.0 == p).map(f -> f.1)
+)
+
+// `~/dev/avin-lang/avin` with its worktree `avin-train-al` beside it, and a directory outside git.
+private gitTree() -> GitTree = GitTree(
+  [
+    "/u", "/u/dev", "/u/dev/avin-lang", "/u/dev/avin-lang/avin", "/u/dev/avin-lang/avin/.git",
+    "/u/dev/avin-lang/avin/.git/worktrees", "/u/dev/avin-lang/avin/.git/worktrees/avin-train-al",
+    "/u/dev/avin-lang/avin/compiler", "/u/dev/avin-lang/avin-train-al", "/u/dev/avin-lang/avin-train-al/compiler",
+    "/u/scratch", "/u/scratch/s1"
+  ],
+  [
+    ("/u/dev/avin-lang/avin-train-al/.git", "gitdir: /u/dev/avin-lang/avin/.git/worktrees/avin-train-al\n"),
+    ("/u/dev/avin-lang/avin/.git/worktrees/avin-train-al/commondir", "../..\n")
+  ]
+)
+
+@test("a job's project is its repository; a worktree's is its main repository; a directory outside git is its own")
+projects()
+  val t = gitTree()
+  assertEq(projectIn(t, "/u/dev/avin-lang/avin"), "/u/dev/avin-lang/avin")
+  assertEq(projectIn(t, "/u/dev/avin-lang/avin/compiler"), "/u/dev/avin-lang/avin")
+  assertEq(projectIn(t, "/u/dev/avin-lang/avin/"), "/u/dev/avin-lang/avin")
+  assertEq(projectIn(t, "/u/scratch/s1/."), "/u/scratch/s1")
+  assertEq(projectIn(t, "/u/dev/avin-lang/avin/compiler/.."), "/u/dev/avin-lang/avin")
+  // the worktree, through its .git file and its git directory's commondir
+  assertEq(projectIn(t, "/u/dev/avin-lang/avin-train-al"), "/u/dev/avin-lang/avin")
+  assertEq(projectIn(t, "/u/dev/avin-lang/avin-train-al/compiler"), "/u/dev/avin-lang/avin")
+  // outside git
+  assertEq(projectIn(t, "/u/scratch/s1"), "/u/scratch/s1")
+  assertEq(projectIn(t, "/u/dev"), "/u/dev")
+  assertEq(projectIn(t, ""), "")
+
+@test("a worktree torn down since its job ran is the repository beside it its name begins with")
+goneWorktrees()
+  val t = gitTree()
+  assertEq(projectIn(t, "/u/dev/avin-lang/avin-rel-0115"), "/u/dev/avin-lang/avin")
+  assertEq(projectIn(t, "/u/dev/avin-lang/avin-rel-0115/compiler"), "/u/dev/avin-lang/avin")
+  // a name no repository beside it begins with is itself
+  assertEq(projectIn(t, "/u/dev/avin-lang/sysl-x"), "/u/dev/avin-lang/sysl-x")
+  assertEq(projectIn(t, "/u/dev/avin-lang/avinx"), "/u/dev/avin-lang/avinx")
+  // a directory gone from inside a repository is that repository's
+  assertEq(projectIn(t, "/u/dev/avin-lang/avin/old/deep"), "/u/dev/avin-lang/avin")
+  // nothing of it is there at all
+  assertEq(projectIn(t, "/nowhere/a"), "/nowhere/a")
+
+@test("a worktree whose git files cannot be read is a project of its own")
+unreadableWorktree()
+  val t = GitTree(["/r", "/r/w"], [("/r/w/.git", "not a gitdir line")])
+  assertEq(projectIn(t, "/r/w"), "/r/w")
+  // no commondir: the git directory it names is the repository's own
+  val u = GitTree(["/r", "/r/w", "/r/m", "/r/m/.git"], [("/r/w/.git", "gitdir: ../m/.git")])
+  assertEq(projectIn(u, "/r/w"), "/r/m")
+
+@test("paths resolve against a base, with . and .. taken out")
+paths()
+  assertEq(marshal.resolvedPath("/a/b/.git/worktrees/x", "../.."), "/a/b/.git")
+  assertEq(marshal.resolvedPath("/a", "/c/./d"), "/c/d")
+  assertEq(marshal.resolvedPath("/a", "../../.."), "/")
+  assertEq(marshal.resolvedPath("/a/b", "c/../d"), "/a/b/d")
+
+@test("commands made alike: numbers and versions, and opaque ids, become placeholders")
+normalised()
+  val n = (s: string) -> marshal.normalisedSignature(s)
+  val scratch = "/Users/ed/.claude/tmp/claude-501/-Users-ed-dev-sysl-lang/110d1333-fbfb-441f-a9fc-bbf4ec24eda1/scratchpad"
+  val other = "/Users/ed/.claude/tmp/claude-501/-Users-ed-dev-sysl-lang/0a5c9e22-7f3b-4c1d-9e8f-123456789abc/scratchpad"
+  // the train and the release gate of the finding
+  assertEq(n(s"zsh $scratch/train/train314.zsh"), n(s"zsh $scratch/train/train315.zsh"))
+  assertEq(n(s"zsh $scratch/release-0115/gate.zsh"), n(s"zsh $scratch/release-0116/gate.zsh"))
+  // in another session's scratch directory too
+  assertEq(n(s"zsh $scratch/train/train314.zsh"), n(s"zsh $other/train/train9.zsh"))
+  assertEq(n(s"zsh $scratch/release-0115/gate.zsh"), "zsh /Users/ed/.claude/tmp/claude-#/-Users-ed-dev-sysl-lang/*/scratchpad/release-#/gate.zsh")
+  // versions are one placeholder however many parts
+  assertEq(n("zsh /s/rel-0.11.5/gate.zsh"), "zsh /s/rel-#/gate.zsh")
+  assertEq(n("zsh /s/rel-0.11.5/gate.zsh"), n("zsh /s/rel-0.12/gate.zsh"))
+  assertEq(n("zsh /s/v1_2_3/x.sh"), "zsh /s/v#/x.sh")
+  // a dot after a number that is no version stays
+  assertEq(n("zsh /s/t1.zsh"), "zsh /s/t#.zsh")
+  // what differs in words is not made alike
+  assert(n(s"zsh $scratch/release-0115/gate.zsh") != n(s"zsh $scratch/release-0115/test.zsh"), "gate and test")
+  assert(n("zsh /s/a/gate.zsh") != n("zsh /s/b/gate.zsh"), "two directories")
+  assert(n("sysl test .") != n("sysl build ."), "two subcommands")
+  assertEq(n("sysl test ."), "sysl test .")
+  assertEq(n(""), "")
+  // names of letters only, hex or not, are names
+  assertEq(n("zsh /s/deadbeefcafe/x.sh"), "zsh /s/deadbeefcafe/x.sh")
+  assertEq(n("zsh /s/facade/x.sh"), "zsh /s/facade/x.sh")
+
+@test("an opaque id is eight hex digits or more, with dashes at most, a decimal digit and a letter among them")
+opaque()
+  assert(marshal.opaqueId("110d1333-fbfb-441f-a9fc-bbf4ec24eda1"), "uuid")
+  assert(marshal.opaqueId("d97028c4"), "short sha")
+  assert(!marshal.opaqueId("d97028c"), "seven")
+  assert(!marshal.opaqueId("12345678"), "a number is a number")
+  assert(!marshal.opaqueId("deadbeef"), "letters only")
+  assert(!marshal.opaqueId("release-0115"), "a word")
+  assert(!marshal.opaqueId(""), "empty")
+
+@test("the chain's keys, most particular first: cmd+dir, cmd, norm+project, kind+project")
+chain()
+  val keys = marshal.chainKeys("build", true, ["zsh", "/s/train314.zsh"], "/w/sysl-t", "/w/sysl")
+  assertEq(keys.map(k -> k.from), ["cmd+dir", "cmd", "norm+project", "kind+project"])
+  assertEq(keys(0).key, marshal.memoryDirKey("build", true, "zsh /s/train314.zsh", "/w/sysl-t"))
+  assertEq(keys(1).key, marshal.memoryKey("build", true, "zsh /s/train314.zsh"))
+  assertEq(keys(2).key, "build+landing\n~zsh /s/train#.zsh\n/w/sysl")
+  assertEq(keys(3).key, "build+landing\n@\n/w/sysl")
+  // a kind alone is never a key, nor a label or an owner
+  assert(!keys.exists(k -> k.key == "build+landing" || k.key == "build"), s"$keys")
+  // no directory: no cmd+dir, nor a project
+  assertEq(marshal.chainKeys("build", false, ["make"], "", "").map(k -> k.from), ["cmd"])
+  // no command: the kind in its project only
+  assertEq(marshal.chainKeys("build", false, [], "/w/a", "/w/a").map(k -> k.from), ["kind+project"])
+  // project keys are told from a command's
+  assert(marshal.isProjectKey(keys(2).key) && marshal.isProjectKey(keys(3).key), "project keys")
+  assert(!marshal.isProjectKey(keys(0).key) && !marshal.isProjectKey(keys(1).key), "command keys")
+  assert(!marshal.isScriptKey(keys(2).key) && !marshal.isScriptKey(keys(3).key), "not a script's")
+
+@test("the same kind in another project is another key; a worktree's is its repository's")
+otherProject()
+  val t = gitTree()
+  val inMain = marshal.kindProjectKey("test", false, projectIn(t, "/u/dev/avin-lang/avin"))
+  val inWorktree = marshal.kindProjectKey("test", false, projectIn(t, "/u/dev/avin-lang/avin-train-al"))
+  val elsewhere = marshal.kindProjectKey("test", false, projectIn(t, "/u/scratch/s1"))
+  assertEq(inMain, inWorktree)
+  assert(inMain != elsewhere, inMain)
+  assert(marshal.normKey("test", false, "zsh /s/t1.zsh", "/a") != marshal.normKey("test", false, "zsh /s/t1.zsh", "/b"), "norm")
+
+// A chain of the four sources holding `dir`, `cmd`, `norm` and `kp`.
+private chainOf(dir: Vector[long], cmd: Vector[long], norm: Vector[long], kp: Vector[long]) -> Vector[(Vector[long], string)] =
+  [(dir, "cmd+dir"), (cmd, "cmd"), (norm, "norm+project"), (kp, "kind+project")]
+
+@test("each level of the chain wins when the ones above it have too few runs")
+levels()
+  val a: Vector[long] = [100, 100, 100]
+  val b: Vector[long] = [200, 200, 200]
+  val c: Vector[long] = [300, 300, 300]
+  val d: Vector[long] = [400, 400, 400]
+  assertEq(marshal.unitsHistory(chainOf(a, b, c, d), 3), UnitsHistory(a, "cmd+dir"))
+  assertEq(marshal.unitsHistory(chainOf([], b, c, d), 3), UnitsHistory(b, "cmd"))
+  assertEq(marshal.unitsHistory(chainOf([100, 100], [200], c, d), 3), UnitsHistory(c, "norm+project"))
+  assertEq(marshal.unitsHistory(chainOf([], [], [300, 300], d), 3), UnitsHistory(d, "kind+project"))
+  // too few runs anywhere: nothing
+  assertEq(marshal.unitsHistory(chainOf([1, 1], [1, 1], [1, 1], [1, 1]), 3), UnitsHistory([], ""))
+  // memory follows the same chain
+  val g: long = 1024 * 1024 * 1024
+  val learning = MemoryLearning(3, 3, 0)
+  assertEq(marshal.memoryHistory(learning, chainOf([], [], [4 * g, 4 * g, 5 * g], [g, g, g])).from, "norm+project")
+  assertEq(marshal.memoryHistory(learning, chainOf([], [], [4 * g, 4 * g], [g, g, g])).from, "kind+project")
+
+@test("a fallback key whose runs spread more than threefold is not trusted; the search goes on")
+spread()
+  val wide: Vector[long] = [100, 1500, 120, 1400, 110]
+  val alike: Vector[long] = [1200, 1500, 1300]
+  assert(!marshal.consistent(wide, 100), "wide")
+  assert(marshal.consistent(alike, 100), "alike")
+  // three times exactly is alike, a little more is not
+  assert(marshal.consistent([100, 300, 300], 100), "threefold")
+  assert(!marshal.consistent([100, 301, 301], 100), "past threefold")
+  // runs under the floor count as the floor: idle runs are alike
+  assert(marshal.consistent([0, 5, 40, 90], 100), "idle")
+  // only the last ten count
+  val old: Vector[long] = [1]
+  assert(marshal.consistent(old ++ Vector.fill(10, long(500)), 100), "the old run left")
+  assertEq(marshal.unitsHistory(chainOf([], [], wide, alike), 3), UnitsHistory(alike, "kind+project"))
+  assertEq(marshal.unitsHistory(chainOf([], wide, [], alike), 3), UnitsHistory(alike, "kind+project"))
+  // every key spread: the cautious default
+  assertEq(marshal.unitsHistory(chainOf([], [], wide, wide), 3), UnitsHistory([], ""))
+  // the job's own command in its own directory is trusted however it spreads
+  assertEq(marshal.unitsHistory(chainOf(wide, alike, [], []), 3), UnitsHistory(wide, "cmd+dir"))
+
+@test("only clean runs are learned from: killed, timed out, quiet, signalled and abnormally short runs are not")
+clean()
+  val ok = RunEnd("finished", false, true, 60000)
+  assert(marshal.cleanRun(ok, 0), "a finished run")
+  assert(marshal.cleanRun(RunEnd("finished", false, true, 60000), 200000), "a run past a quarter of the median")
+  // a failure that ran its course is clean
+  assert(marshal.cleanRun(RunEnd("finished", false, true, 600000), 600000), "a full-length failure")
+  assert(!marshal.cleanRun(RunEnd("killed", true, false, 60000), 0), "killed")
+  assert(!marshal.cleanRun(RunEnd("finished", true, true, 60000), 0), "finished but killed")
+  assert(!marshal.cleanRun(RunEnd("timeout", false, false, 60000), 0), "timed out")
+  assert(!marshal.cleanRun(RunEnd("quiet", false, false, 60000), 0), "quiet")
+  assert(!marshal.cleanRun(RunEnd("finished", false, false, 60000), 0), "a signal")
+  // under a quarter of the median of the work's earlier successful runs
+  assert(!marshal.cleanRun(RunEnd("finished", false, true, 3000), 1200000), "short")
+  assert(marshal.cleanRun(RunEnd("finished", false, true, 300000), 1200000), "a quarter exactly")
+  assert(!marshal.cleanRun(RunEnd("finished", false, true, 299999), 1200000), "just under")
+  // with no earlier runs nothing is short, so a command that always takes a second still learns
+  assert(marshal.cleanRun(RunEnd("finished", false, true, 1000), 0), "fast work")
+  // the median a run is measured against is the most particular key's with three runs
+  assertEq(marshal.expectedOf([[1, 1], [10, 20, 30], [100, 100, 100]], 3), 20)
+  assertEq(marshal.expectedOf([[1, 1]], 3), 0)
+  assertEq(marshal.expectedOf([], 3), 0)
+
+// An ending event of job `id` running `cmd` in `dir`.
+private endLine(id: long, event: string, dir: string, cmd: string, peak: long, held: string, runMs: long, extra: string = "") -> string =
+  s"{\"ts\":1,\"event\":\"$event\",\"id\":$id,\"kind\":\"build\",\"units\":1,\"landing\":false,\"dir\":\"$dir\",\"cmd\":$cmd,\"exit\":0,\"run_ms\":$runMs,\"peak_rss\":$peak,\"held_cores\":$held$extra}"
+
+@test("the event log teaches every key of a clean run's chain, its recorded project first, and none of an unclean one's")
+recovered()
+  val g: long = 1024 * 1024 * 1024
+  val gate = (i: int) -> s"[\"zsh\",\"/s/release-0${110 + i}/gate.zsh\"]"
+  val project = (d: string) -> if d.startsWith("/w/sysl") then "/w/sysl" else d
+  val lines = [
+    endLine(1, "finished", "/w/sysl-r1", gate(1), 30 * g, "15", 3000000),
+    endLine(2, "finished", "/w/sysl-r2", gate(2), 31 * g, "14", 3100000),
+    endLine(3, "finished", "/w/sysl-r3", gate(3), 29 * g, "16", 2900000),
+    // killed, timed out, signalled and short runs teach nothing
+    endLine(4, "killed", "/w/sysl-r4", gate(4), 2 * g, "1", 3000, ",\"killed\":true"),
+    endLine(5, "timeout", "/w/sysl-r5", gate(5), 2 * g, "1", 3000),
+    endLine(6, "finished", "/w/sysl-r6", gate(6), 2 * g, "1", 600000, ",\"outcome\":{\"how\":\"signal\",\"signal\":11}"),
+    endLine(7, "finished", "/w/sysl-r7", gate(7), 2 * g, "1", 3000),
+    // a recorded project is the event's own
+    endLine(8, "finished", "/elsewhere", gate(8), 30 * g, "15", 3000000, ",\"project\":\"/w/sysl\"")
+  ]
+  val r = marshal.recover(lines, 10, project)
+  val normKey = marshal.normKey("build", false, "zsh /s/release-0111/gate.zsh", "/w/sysl")
+  assertEq(r.cores.get(normKey), Some([long(1500), long(1400), long(1600), long(1500)]))
+  assertEq(r.peaks.get(normKey).map(p -> p.length), Some(4))
+  assertEq(r.cores.get(marshal.kindProjectKey("build", false, "/w/sysl")).map(c -> c.length), Some(4))
+  // the release gate after them learns 4 units from its numbered siblings
+  val next = marshal.chainKeys("build", false, ["zsh", "/s/release-0120/gate.zsh"], "/w/sysl-r9", "/w/sysl")
+  val h = marshal.unitsHistory(next.map(k -> (r.cores.get(k.key).getOrElse([]), k.from)), 3)
+  assertEq(h.from, "norm+project")
+  assertEq(marshal.learnedUnits(h.levels, 72), Some(64))
+  // durations of the runs that exited 0 are learned under the chain's keys too, so deadlines follow
+  // it: jobs 1, 2, 3, 6, 7 and 8, whatever else ruled them out of learning units
+  assertEq(r.durations.get(normKey).map(d -> d.length), Some(6))
+  // a timeout is remembered under its own command's keys, and under its numbered siblings' until
+  // one of them succeeds, but never its kind's in its project
+  assertEq(r.overruns.get(marshal.memoryKey("build", false, "zsh /s/release-0115/gate.zsh")), Some(long(3000)))
+  assertEq(r.overruns.get(normKey), None)
+  assertEq(r.overruns.get(marshal.kindProjectKey("build", false, "/w/sysl")), None)
+
+@test("a memory.json before version 5 takes its project keys from the event log, its command keys kept")
+staleProjects()
+  val old = marshal.decodeMemory("{\"version\":4,\"peaks\":{\"build\\nmake\":[1048576]},\"cores\":{\"build\\nmake\":[1]},\"durations\":{\"build\\nmake\":[5]}}").ok.get
+  assertEq(old.staleProjects, true)
+  val kp = marshal.kindProjectKey("build", false, "/w")
+  val fromLog: Map[string, Vector[long]] = [(kp, [long(7)]), ("build\nmake", [long(9)])].toMap
+  val merged = marshal.withRecovered(old, fromLog, fromLog, fromLog)
+  assertEq(merged.peaks, [("build\nmake", [long(1048576)]), (kp, [long(7)])].toMap)
+  assertEq(merged.cores, [("build\nmake", [long(100)]), (kp, [long(7)])].toMap)
+  assertEq(merged.durations, [("build\nmake", [long(5)]), (kp, [long(7)])].toMap)
+  assertEq(merged.staleProjects, false)
+  // a version 5 file is used as it is
+  val again = marshal.decodeMemory(marshal.encodeMemory(merged)).ok.get
+  assertEq(again.staleProjects, false)
+  assertEq(marshal.withRecovered(again, Map(), Map(), Map()).peaks, merged.peaks)
+
+@test("a job no key is trusted for weighs its class's share: a quarter for a gate, train, release or landing job")
+unknownDefault()
+  val b = 72
+  assertEq(marshal.unknownUnits("gate", false, b), 18)
+  assertEq(marshal.unknownUnits("avin-gate", false, b), 18)
+  assertEq(marshal.unknownUnits("train", false, b), 18)
+  assertEq(marshal.unknownUnits("release_build", false, b), 18)
+  assertEq(marshal.unknownUnits("build", true, b), 18)
+  assertEq(marshal.unknownUnits("test", false, b), 12)
+  assertEq(marshal.unknownUnits("marshal-test", false, b), 12)
+  assertEq(marshal.unknownUnits("build", false, b), 8)
+  assertEq(marshal.unknownUnits("avin-build", false, b), 8)
+  assertEq(marshal.unknownUnits("bench", false, b), 4)
+  assertEq(marshal.unknownUnits("", false, b), 4)
+  // a word that only holds a class's name is not that class
+  assertEq(marshal.unknownUnits("gateway", false, b), 4)
+  assertEq(marshal.unknownUnits("testing", false, b), 4)
+  // never under a unit, never over the budget
+  assertEq(marshal.unknownUnits("build", false, 8), 4)
+  assertEq(marshal.unknownUnits("gate", false, 2), 2)
+  assertEq(marshal.unknownUnits("other", false, 2), 2)
+
+@test("a running job is charged the more of what it weighs and what it uses; explicit units are the floor")
+liveCharge()
+  // 12.4 cores used against 1 unit weighed: charged 12.5
+  assertEq(marshal.charged(4, 1240, 72), 50)
+  // under what it weighs: what it weighs
+  assertEq(marshal.charged(16, 300, 72), 16)
+  // not measured yet: what it weighs
+  assertEq(marshal.charged(16, -1, 72), 16)
+  assertEq(marshal.charged(16, 0, 72), 16)
+  // never more than the budget
+  assertEq(marshal.charged(4, 9000, 72), 72)
+  assertEq(marshal.usedQuarters(101, 72), 5)
+  assertEq(marshal.usedQuarters(100, 72), 4)
+  assertEq(marshal.usedQuarters(-1, 72), 0)
+  // an external, exclusive or quick job, or one not running, is not charged by use
+  assert(marshal.chargedLive(false, false, false, true), "a running job")
+  assert(!marshal.chargedLive(true, false, false, true), "external")
+  assert(!marshal.chargedLive(false, true, false, true), "exclusive")
+  assert(!marshal.chargedLive(false, false, true, true), "quick")
+  assert(!marshal.chargedLive(false, false, false, false), "not running")
+
+@test("admission counts the charge: a job using more than it weighs holds back the next start, and frees it as it ends")
+chargeAdmits()
+  val b = Budget(72, 64 * 1024 * 1024 * 1024)
+  val hour: long = 3600000
+  val waiter = Waiting(2, 32, 0, false, hour, 20)
+  // job 1 weighs a unit and uses 12.4 cores: 12.5 charged, so 8 more do not fit in 18
+  val charged = Started(1, marshal.charged(4, 1240, 72), 0, false, 0, hour)
+  assertEq(marshal.schedule(b, [charged], [waiter], 0), Vector[long]())
+  // weighed at what it gave, they would
+  assertEq(marshal.schedule(b, [Started(1, 4, 0, false, 0, hour)], [waiter], 0), [long(2)])
+  // once it ends it is not running, and holds nothing
+  assertEq(marshal.schedule(b, [], [waiter], 0), [long(2)])
+
+@test("a job using more than it weighs for 90 seconds weighs the least it used in that time; a dip starts the clock again")
+sustainedRaise()
+  val none = marshal.NotOver
+  // under or at what it weighs: nothing changes
+  assertEq(marshal.liveStep(none, 16, 10, 0), (none, 16))
+  assertEq(marshal.liveStep(none, 16, 16, 0), (none, 16))
+  // over: the clock starts
+  val (a, qa) = marshal.liveStep(none, 4, 50, 1000)
+  assertEq((a, qa), (LiveCharge(1000, 50), 4))
+  val (b2, qb) = marshal.liveStep(a, 4, 40, 60000)
+  assertEq((b2, qb), (LiveCharge(1000, 40), 4))
+  // just short of 90 s: still what it weighed
+  val (c, qc) = marshal.liveStep(b2, 4, 60, 90999)
+  assertEq((c, qc), (LiveCharge(1000, 40), 4))
+  // 90 s over: it weighs 10 units, the least it used, and the clock is over
+  assertEq(marshal.liveStep(c, 4, 60, 91000), (none, 40))
+  // a dip to what it weighs starts again
+  val (d, _) = marshal.liveStep(c, 4, 4, 80000)
+  assertEq(d, none)
+  val (e, _) = marshal.liveStep(d, 4, 50, 81000)
+  assertEq(marshal.liveStep(e, 4, 50, 170000).1, 4)
+  assertEq(marshal.liveStep(e, 4, 50, 171000).1, 50)
+  assertEq(marshal.RaiseAfterMs, 90000)
+
+@test("ls's FROM says each source in a word")
+sourceWords()
+  val words = ["cmd+dir", "cmd", "norm+project", "kind+project", "given", "default", "live", "exclusive", "quick", "overrun", "none", "", "kind"]
+  assertEq(words.map(marshal.sourceWord), ["dir", "cmd", "norm", "proj", "given", "def", "live", "excl", "quick", "over", "-", "-", "kind"])
+
+@test("the job of the finding: a release gate after three of its siblings reserves what they held, not one unit")
+finding()
+  // 4621 held 15.24 cores; its siblings in sysl's project held about that
+  val levels: Vector[long] = [1524, 1400, 1610]
+  val chain = chainOf([], [], levels, [100, 2000, 300, 50])
+  val h = marshal.unitsHistory(chain, 3)
+  assertEq(h.from, "norm+project")
+  assertEq(marshal.learnedUnits(h.levels, 72), Some(65))
+  // with nothing learned at all, a build in the landing lane starts at a quarter of the budget
+  assertEq(marshal.sizeFor(false, 4, false, None, marshal.unknownUnits("build", true, 72)).quarters, 18)
+  // given units still win over the default
+  assertEq(marshal.sizeFor(true, 8, false, None, marshal.unknownUnits("build", true, 72)).quarters, 8)

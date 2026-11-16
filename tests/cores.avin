@@ -7,7 +7,7 @@ module tests
 import dev.avinlang.json
 import dev.avinlang.json.Json
 import dev.avinlang.marshal
-import dev.avinlang.marshal.{Budget, CpuMeter, CpuSample, JobInfo, Outcome, Sizing, Started, Waiting}
+import dev.avinlang.marshal.{Budget, CpuMeter, CpuSample, JobInfo, Outcome, Sizing, Started, UnitsHistory, Waiting}
 
 @test("units are written with no trailing zeros, in quarter steps")
 unitsWritten()
@@ -230,7 +230,7 @@ meterResumed()
   val c = b.sampled(samples([(1, 500400)]), 12000)
   assertEq((c.now, c.peak, c.cpuMs), (long(400), long(400), long(13000)))
 
-@test("units are the most of the last five measured peaks, rounded up to a quarter, at least a quarter")
+@test("units are the 80th percentile of the last ten measured levels, rounded up to a quarter, at least a quarter")
 learnedFromPeaks()
   assertEq(marshal.learnedUnits([], 48), None)
   assertEq(marshal.learnedUnits([-1, -1], 48), None)
@@ -243,20 +243,40 @@ learnedFromPeaks()
   assertEq(marshal.learnedUnits([150], 48), Some(6))
   assertEq(marshal.learnedUnits([151], 48), Some(7))
 
-@test("learned units follow the work: up at once, down once the high run leaves the last five")
+@test("learned units follow the work: a busier run counts at once, and one among five or more is outweighed")
 learnedUpAndDown()
   val peaks = Buffer[long]()
   peaks += 100
   peaks += 100
   assertEq(marshal.learnedUnits(peaks.toVector, 48), Some(4))
   peaks += 400
+  // of three, the 80th percentile is the busiest
   assertEq(marshal.learnedUnits(peaks.toVector, 48), Some(16))
-  // four lighter runs leave the high one in the last five
-  for _ in 1 ..< 5
-    peaks += 50
-    assertEq(marshal.learnedUnits(peaks.toVector, 48), Some(16))
   peaks += 50
+  assertEq(marshal.learnedUnits(peaks.toVector, 48), Some(16))
+  // of five, it is the fourth: one busy run no longer sets the units
+  peaks += 50
+  assertEq(marshal.learnedUnits(peaks.toVector, 48), Some(4))
+  // the work grows: once a fifth of the runs are busier, they set the units
+  peaks += 400
+  peaks += 400
+  assertEq(marshal.learnedUnits(peaks.toVector, 48), Some(16))
+  // only the last ten count: ten lighter runs forget the busy ones
+  for _ in 0 ..< 10 do peaks += 50
   assertEq(marshal.learnedUnits(peaks.toVector, 48), Some(2))
+
+@test("the percentile is the nearest rank: the least value at least that share of them are at or below")
+percentileRank()
+  val ten = (1 ..< 11).map(v -> long(v * 10)).toVector
+  assertEq(marshal.percentile(ten, 80), long(80))
+  assertEq(marshal.percentile(ten, 81), long(90))
+  assertEq(marshal.percentile(ten, 10), long(10))
+  assertEq(marshal.percentile(ten, 90), long(90))
+  assertEq(marshal.percentile(ten, 100), long(100))
+  assertEq(marshal.percentile([long(7)], 80), long(7))
+  // order does not matter
+  assertEq(marshal.percentile([long(300), long(100), long(200)], 80), long(300))
+  assertEq(marshal.percentile([long(300), long(100), long(200), long(150), long(120)], 80), long(200))
 
 @test("learned units are held to the budget")
 learnedClamped()
@@ -266,12 +286,18 @@ learnedClamped()
   assertEq(marshal.learnedUnits([1175], 48), Some(47))
   assertEq(marshal.learnedUnits([300], 4), Some(4))
 
-@test("the directory's peaks are used once it has any; the command's anywhere until then")
+@test("units come from the first key with three measured levels; an unmeasured run is not one")
 coresFallback()
-  assertEq(marshal.coresHistory([], [100]), [long(100)])
-  assertEq(marshal.coresHistory([0], [100]), [long(0)])
-  assertEq(marshal.coresHistory([-1], [100]), [long(100)])
-  assertEq(marshal.coresHistory([], []), Vector[long]())
+  val three: Vector[long] = [100, 100, 100]
+  assertEq(marshal.unitsHistory([(three, "cmd+dir"), ([200, 200, 200], "cmd")], 3), UnitsHistory(three, "cmd+dir"))
+  assertEq(marshal.unitsHistory([([0, 0], "cmd+dir"), (three, "cmd")], 3), UnitsHistory(three, "cmd"))
+  assertEq(marshal.unitsHistory([([-1, -1, -1, 100], "cmd+dir"), (three, "cmd")], 3), UnitsHistory(three, "cmd"))
+  // idle runs are runs
+  assertEq(marshal.unitsHistory([([0, 0, 0], "cmd+dir")], 3), UnitsHistory([0, 0, 0], "cmd+dir"))
+  assertEq(marshal.unitsHistory([], 3), UnitsHistory([], ""))
+  assertEq(marshal.unitsHistory([([100, 100], "cmd")], 3), UnitsHistory([], ""))
+  // the minimum follows config.json's `learn_min_runs`
+  assertEq(marshal.unitsHistory([([100, 100], "cmd")], 2), UnitsHistory([100, 100], "cmd"))
 
 @test("given units win; exclusive and quick jobs keep theirs; a never-seen command takes the default")
 sizing()
@@ -541,10 +567,11 @@ taughtFallsBack()
   assertEq(marshal.taught(0, 800), long(0))
   assertEq(marshal.taught(-1, 800), long(800))
   assertEq(marshal.taught(-1, -1), long(-1))
-  // the most of the last five held levels, rounded up to a quarter, at least a quarter, held to the budget
+  // the 80th percentile of the last ten held levels, rounded up to a quarter, at least a quarter,
+  // held to the budget: 1.2 cores of these five
   val held = [100, 150, 120, 90, 110].map(v -> long(v)).toVector
-  assertEq(marshal.learnedUnits(held, 48), Some(6))
-  assertEq(marshal.learnedUnits(held.map(v -> marshal.taught(v, 800)), 48), Some(6))
+  assertEq(marshal.learnedUnits(held, 48), Some(5))
+  assertEq(marshal.learnedUnits(held.map(v -> marshal.taught(v, 800)), 48), Some(5))
   assertEq(marshal.learnedUnits([marshal.taught(-1, 800), long(100)], 48), Some(32))
   assertEq(marshal.learnedUnits([marshal.taught(0, 0)], 48), Some(1))
   assertEq(marshal.learnedUnits([marshal.taught(1300, 1700)], 48), Some(48))

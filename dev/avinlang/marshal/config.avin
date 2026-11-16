@@ -9,7 +9,10 @@ module dev.avinlang.marshal
 //   reserve         what the default memory budget leaves the rest of the machine ("8G")
 //   deadline_floor  the shortest deadline learning may give, as `--deadline` writes one ("5m")
 //   learn_window    how many recent runs of a kind learning reads (20)
-//   learn_min_runs  how many runs a kind needs before its deadline is learned (3)
+//   learn_min_runs  how many runs a key needs before its units, memory or deadline are learned (3;
+//                   learning.avin)
+//   raise_after     how long a running job must use more cores than it weighs before its units
+//                   are raised to what it used ("90s"); "never" only charges it (cores.avin)
 //   keep_logs       how long the files of an ended job (log, run directory) are kept, such as "30d"
 //                   (30d); "never" keeps them for ever
 //   keep_jobs       how many ended jobs' files are kept at most (1000); "never" for no limit
@@ -39,7 +42,8 @@ import dev.avinlang.json.Json
 // the load before it is overdue, None for never. `diskMin` is the disk guard's threshold in bytes, 0 for none; `projects`
 // the directory owners are named under, None where config.json does not say; `nofile` the soft limit
 // on open files config.json asks for, None where it does not; `politeSchedule` the windows marshal is
-// polite in (polite.avin), none where it gives none.
+// polite in (polite.avin), none where it gives none. `raiseAfterMs` is how long a running job must
+// use more than it weighs before its units are raised (cores.avin's `liveStep`), None for never.
 data Config(
     budget: Budget,
     learning: Learning,
@@ -50,7 +54,8 @@ data Config(
     diskMin: long = DefaultDiskMin,
     projects: Option[string] = None,
     nofile: Option[long] = None,
-    politeSchedule: Vector[PoliteWindow] = []
+    politeSchedule: Vector[PoliteWindow] = [],
+    raiseAfterMs: Option[long] = Some(RaiseAfterMs)
 )
 
 // How long a development job waits before the machine drains for it, unless config.json says.
@@ -87,7 +92,7 @@ readConfigOn(text: string, machineMemory: long, processors: Option[int]) -> Resu
     if ![
       "units", "memory", "reserve", "deadline_floor", "learn_window", "learn_min_runs", "take_slot", "keep_logs",
       "keep_jobs", "keep_events", "keep_steps", "drain_after", "load_wait", "disk_min", "projects", "nofile",
-      "polite_schedule"
+      "polite_schedule", "raise_after"
     ].contains(key)
       return Err(s"config.json: no setting `$key`")
   val units = whole(j, "units", processors.filter(n -> n >= 1).getOrElse(FallbackUnits))?
@@ -117,6 +122,7 @@ readConfigOn(text: string, machineMemory: long, processors: Option[int]) -> Resu
   )
   val drainAfter = waitSetting(j, "drain_after", DefaultDrainAfter)?
   val loadWait = waitSetting(j, "load_wait", DefaultLoadWait)?
+  val raiseAfter = waitSetting(j, "raise_after", RaiseAfterMs)?
   val diskMin = size(j, "disk_min", DefaultDiskMin)?
   val projects = j.get("projects") match
     None -> None
@@ -142,7 +148,8 @@ readConfigOn(text: string, machineMemory: long, processors: Option[int]) -> Resu
       diskMin,
       projects,
       nofile,
-      schedule
+      schedule,
+      raiseAfter
     )
   )
 

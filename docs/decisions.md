@@ -2207,3 +2207,85 @@ on"*.
   `status` and `top` draw it. `$MARSHAL_TEST_NCPU` names the count for a test (the e2e helpers set 12).
 - **The budget is read once, at daemon start**: a change needs `marshal restart`, as `units` in
   config.json always did.
+
+## Learning by a chain of keys, and live charging (branch `units-by-kind`)
+
+**The cause (finding of the sysl session, 2026-11-15).** Units, memory and durations were learned
+per command signature, and a script's signature is its path as written. A release gate or a train
+is a script whose path is new every time (`…/release-0115/gate.zsh`, `…/train/train314.zsh`), so it
+was always a command never run before: job 4621 (`zsh …/release-0115/gate.zsh`, kind `build`)
+weighed the default 1 unit and held 15.24 cores (USED 12.4), and job 4611 (`zsh …/train314.zsh`)
+weighed 1 and peaked at 16.7, while the load average stood at 39–50 against an 18-unit budget. Its
+expected duration came from the kind alone (2 minutes, for a 54-minute gate).
+
+**The design (decided with the user).** A key chain, most particular first: `cmd+dir`, `cmd`,
+`norm+project` (the command made alike, in the job's project), `kind+project`; never a kind alone,
+a label or an owner; each key trusted from 3 runs (`learn_min_runs`); a fallback key whose runs
+spread widely not trusted; only clean runs learned from; a cautious default by class where no key
+is trusted; and live charging as the backstop, which never preempts. Deadlines and memory move to
+the same chain, and `ls` (FROM) and `status --json` (`units_from`, `resv_from`, `deadline_from`)
+say which key each came from.
+
+The constants below are **settled on the user's delegation 2026-11-15**. **Review with the user**,
+each of them:
+
+- **The raise window is 90 seconds** (`RaiseAfterMs`, config.json's `raise_after`; `"never"` only
+  charges). Long past a burst of linking or a test's parallel moment, short beside the runs that
+  matter. The raise is to the *least* level seen during the window, the level it sustained, not its
+  peak, and a job that dips to what it weighs starts the clock again. Weighed 60 s (bursts of a
+  parallel link raise too readily) and 120 s (a 20-minute train spends a tenth of its run
+  under-weighed). Charging itself is immediate: admission counts the more of the weighed units and
+  the last measured level from the first sample.
+- **Commands are made alike by digits and opaque ids.** In each path component and word, a run of
+  digits, with the `.` or `_` between digits of a version, becomes `#` (`0.11.5`, `0115`, `314`); a
+  component of at least 8 hex digits and dashes with a decimal digit and a letter among them (a
+  session UUID, a hash) becomes `*`. The UUID rule is needed: the sysl session's scripts live under a
+  scratch directory named by its session id, so without it no train of one session would learn from
+  another's. Weighed: making only the last component alike (misses `release-0115/`), and dropping the
+  script's directory altogether (merges unrelated scripts of one name).
+- **The project is the main repository of the job's `--dir`**, a worktree resolved through its git
+  directory's `commondir` (read from the files, not by running git); a directory outside git is its
+  own project. For the event log's older runs, whose worktrees are often torn down, a directory that
+  no longer exists is the repository beside it whose name its own begins with and a dash follows
+  (`sysl-rel-0115` → `sysl`), the longest such; failing that, its nearest existing ancestor's
+  repository, else itself. Every event now records `project`, so the guess is needed only for
+  history written before this.
+- **Spread: the 90th percentile of a key's last 10 runs more than 3 times its 10th** rejects a key
+  below `cmd+dir`. Each run counts at least a floor (1 core for units, 1 GiB for memory, 1 minute for
+  durations), so idle or tiny runs that differ by fractions are not spread. `cmd+dir` is trusted
+  however it spreads (it is the work itself in its own tree). Deadlines take any key's runs however
+  they spread, because what they teach is already at least 1.5 times the longest run, and rejecting a
+  spread key would drop a gate to the 20-minute build default. Weighed: a coefficient of variation
+  (needs more runs to mean anything), max/min (one outlier rejects a key).
+- **Units are the 80th percentile, by nearest rank, of the last 10 clean runs' held levels**
+  (`CoresWindow` 10, was the most of the last 5). Memory stays the most of the last 3 clean peaks.
+  A single busy run among five or more no longer sets the units of every run after it; live charging
+  covers the run that needs more.
+- **A run is clean** when its ending event is `finished`, it exited (no signal), and marshal did not
+  kill it; timeouts, quiet timeouts and kills are not. **Abnormally short** is under a quarter of the
+  median of the work's earlier successful runs, read from its most particular key with 3 of them;
+  work with fewer has nothing to be short against, so nothing is short (a command that always takes
+  a second still learns). Weighed: an absolute floor (2 s), which would have kept every short command
+  from ever learning. A failure that ran its course is clean: a failed build holds the memory it
+  holds. Durations are still learned only from runs that exited 0.
+- **The cautious default by class**, as a share of the budget: a quarter for a gate, train, release
+  or landing job (the kind or a dash- or underscore-separated word of it is `gate`, `train`,
+  `release` or `landing`, or it runs in the landing lane), a sixth for a test, a ninth for a build,
+  and 1 unit for anything else; never under 1 unit nor over the budget. On the 18-unit machine: 4.5,
+  3, 2 and 1. Before it was 4 for a `test` and 1 for anything else.
+- **Three runs a key, for memory too.** Memory reservations were learned from one run; they now wait
+  for 3 like everything else, admission still counting a running job's measured memory meanwhile.
+- **A given `--units` is lowered (the ceiling) only by the command's own keys** (`cmd+dir`, `cmd`),
+  never by a project key: work that only looks alike does not override what a job asked for. A given
+  `--units` is the floor of live charging: a raise only ever goes up.
+- **Expected durations (ETAs, drains)** take the project keys after the command's own (which still
+  teach from one run, as before), with the same spread check (floor 1 minute), and the kind's history
+  only after them all.
+- **The external, exclusive and quick cases.** An external job's tree is not where its work runs, so
+  it is charged its weighed units and never raised; an exclusive job already weighs the budget; a
+  quick job weighs no units in the development budget. Each keeps its semantics, and so does the
+  landing lane, whose units count against the budget only where they did before.
+- **Overruns** (a run its deadline stopped) are remembered under the chain's keys but
+  `kind+project`, which covers other work.
+- **memory.json is version 5**; a file before it takes every project key from the event log and
+  keeps its command keys.

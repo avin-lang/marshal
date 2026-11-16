@@ -76,7 +76,7 @@ landingTicketAheadOfTakeSlot()
   val earlier = time.now().epochMicros - 1000000
   val theirs = slots(home) + "/slot-waiting/" + marshal.ticketName(earlier, waiter.pid)
   fs.writeText(theirs, "1\n").ok.get
-  val land = submitted(home, "--landing", "--mem", "600M", "--", "sleep", "0.3")
+  val land = submitted(home, "--landing", "--units", "1", "--mem", "600M", "--", "sleep", "0.3")
   val mine = s"-${daemonPid(home)}"
   val ours = () -> tickets(home).find(t -> t.endsWith(mine)).flatMap(t -> marshal.parseTicket(t))
   assert(within(5000, () -> ours().exists(t -> t.0 < earlier)), tickets(home).mkString(" "))

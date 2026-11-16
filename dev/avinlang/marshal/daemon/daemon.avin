@@ -187,6 +187,13 @@ class Job(
   // one by its deadline; and where it came from (`Expectation.from`)
   var durationLearned = false
   var durationFrom = ""
+  // where its units and its deadline came from (`unitsSource`, `LearnedDeadline.from`), and the
+  // project its directory is in, which its runs are learned under (learning.avin)
+  var unitsFrom = ""
+  var deadlineFrom = ""
+  var project = ""
+  // a running job's use beyond what it weighs, which raises its units once it lasts (`liveStep`)
+  var live = marshal.NotOver
   // who it is for (owner.avin)
   var owner = ""
   // an exclusive job's `--quiet-load`: the load last read (None until read, or where it cannot be),
@@ -268,7 +275,10 @@ class Job(
       meter.held(),
       spec.unitsAsked,
       if settles then settlingSince.map(s -> now - s).getOrElse(0) else 0,
-      settles && overdue
+      settles && overdue,
+      unitsFrom,
+      deadlineFrom,
+      project
     )
 
 // The daemon's state, owned by its own thread.
@@ -306,6 +316,8 @@ class Daemon(
   // The longest a job ran before its deadline stopped it, by the same keys, since a job of the key
   // last exited 0: its command takes at least that long.
   val overruns = MutableMap[string, long]()
+  // The project of each directory a job has named (learning.avin's `projectOf`).
+  val projects = MutableMap[string, string]()
   // The processor use of the whole machine, from its tick counters, measured with the jobs'.
   var machineMeter = marshal.startMachineMeter(marshal.logicalCpus().getOrElse(1))
   // The least free space of the volumes of the home and the jobs' directories, -1 until measured,
@@ -351,17 +363,34 @@ class Daemon(
   // The peaks of the jobs of `key`, oldest first.
   peaksOf(key: string) -> Vector[long] = peaks.get(key).map(b -> b.toVector).getOrElse([])
 
-  // Gives `job` its reservation: the memory it gave, or the peak learned of what it runs in its
-  // directory, or of what it runs anywhere while its directory has too few.
+  // The project `dir` is in (learning.avin's `projectOf`), asked of the files once per directory.
+  projectFor(dir: string) -> string
+    if dir.isEmpty then return ""
+    projects.get(dir) match
+      Some(p) -> p
+      None ->
+        val p = marshal.projectHere(dir)
+        projects(dir) = p
+        p
+
+  // The keys of `s`'s chain (learning.avin), most particular first.
+  chainOf(s: JobSpec) -> Vector[marshal.ChainKey] =
+    marshal.chainKeys(s.kind, s.landing, s.cmd, s.dir, projectFor(s.dir))
+
+  // What `table` holds under each key of `s`'s chain, with the key's source.
+  chainIn(table: MutableMap[string, Buffer[long]], s: JobSpec) -> Vector[(Vector[long], string)] =
+    chainOf(s).map(k -> (table.get(k.key).map(b -> b.toVector).getOrElse([]), k.from))
+
+  // How memory is learned: `defaultMemoryLearning`, with config.json's `learn_min_runs`.
+  memoryLearning() -> marshal.MemoryLearning =
+    marshal.MemoryLearning(marshal.defaultMemoryLearning.window, config.learning.minRuns, marshal.defaultMemoryLearning.marginPercent)
+
+  // Gives `job` its reservation: the memory it gave, or the peak learned from the first trusted key
+  // of its chain (learning.avin), or nothing before any is.
   reserve(job: Job)
     val s = job.spec
-    val learning = marshal.defaultMemoryLearning
-    val sig = marshal.commandSignature(s.cmd)
-    val h = marshal.memoryHistory(
-      learning,
-      if sig.isEmpty then [] else peaksOf(marshal.memoryDirKey(s.kind, s.landing, sig, s.dir)),
-      if sig.isEmpty then [] else peaksOf(marshal.memoryKey(s.kind, s.landing, sig))
-    )
+    val learning = memoryLearning()
+    val h = marshal.memoryHistory(learning, chainIn(peaks, s))
     val r = marshal.reservationFor(learning, s.memory, s.memoryGiven, h.peaks, config.budget.memory)
     job.reserved = r.bytes
     job.learnedMem = r.learned
@@ -370,27 +399,29 @@ class Daemon(
   // The cores the jobs of `key` held (`taught`), oldest first.
   coresOf(key: string) -> Vector[long] = cores.get(key).map(b -> b.toVector).getOrElse([])
 
-  // The peak cores the job of `spec` learns its units from: its command's in its directory, or
-  // anywhere while its directory has none.
-  coresFor(s: JobSpec) -> Vector[long]
-    val sig = marshal.commandSignature(s.cmd)
-    if sig.isEmpty then return []
-    marshal.coresHistory(
-      coresOf(marshal.memoryDirKey(s.kind, s.landing, sig, s.dir)),
-      coresOf(marshal.memoryKey(s.kind, s.landing, sig))
-    )
+  // The levels the job of `spec` learns its units from: the first trusted key of its chain's.
+  coresFor(s: JobSpec) -> marshal.UnitsHistory = marshal.unitsHistory(chainIn(cores, s), config.learning.minRuns)
+
+  // The levels a given `--units` is held to: its command's own, in its directory or anywhere; the
+  // project keys gather work that only looks alike, which does not lower what a job asked for.
+  ownCoresFor(s: JobSpec) -> marshal.UnitsHistory = marshal.unitsHistory(
+    chainIn(cores, s).filter(c -> c.1 == marshal.FromDir || c.1 == marshal.FromCmd),
+    config.learning.minRuns
+  )
 
   // The run times of the successful jobs of `key`, oldest first.
   durationsOf(key: string) -> Vector[long] = durations.get(key).map(b -> b.toVector).getOrElse([])
 
-  // The duration the successful runs of `spec`'s command teach: in its directory, or anywhere while
-  // its directory has none; None before any.
+  // The duration the successful runs of `spec`'s work teach: its command's in its directory, or
+  // anywhere, or its project keys' (`learnedDuration`); None before any.
   commandDuration(s: JobSpec) -> Option[marshal.LearnedDuration]
-    val sig = marshal.commandSignature(s.cmd)
-    if sig.isEmpty then return None
+    val chain = chainIn(durations, s)
+    val of = (from: string) -> chain.find(c -> c.1 == from).map(c -> c.0).getOrElse([])
     marshal.learnedDuration(
-      durationsOf(marshal.memoryDirKey(s.kind, s.landing, sig, s.dir)),
-      durationsOf(marshal.memoryKey(s.kind, s.landing, sig))
+      of(marshal.FromDir),
+      of(marshal.FromCmd),
+      chain.filter(c -> c.1 == marshal.FromNorm || c.1 == marshal.FromKindProject),
+      config.learning.minRuns
     )
 
   // Gives `job` how long it is expected to run: what its command's runs teach, or its kind's.
@@ -407,41 +438,36 @@ class Daemon(
   // Remembers how long a successful job of `key` ran, for the estimates of the jobs after it.
   rememberDuration(key: string, ms: long) = if ms >= 0 then remember(durations, key, ms)
 
-  // The deadline a job of `s` is given when it names none: learned from its command's runs in its
-  // directory, or anywhere, or its kind's, and at least half again what a run its deadline stopped
-  // since its command last succeeded ran.
+  // The deadline a job of `s` is given when it names none: learned from the first key of its chain
+  // with enough successful runs (deadline.avin), and at least half again what a run its deadline
+  // stopped since its work last succeeded ran, by the most particular key that remembers one.
   learnedDeadline(s: JobSpec) -> marshal.LearnedDeadline
-    val sig = marshal.commandSignature(s.cmd)
-    val dirKey = marshal.memoryDirKey(s.kind, s.landing, sig, s.dir)
-    val cmdKey = marshal.memoryKey(s.kind, s.landing, sig)
-    val overrun = if sig.isEmpty then 0 else overruns.get(dirKey).orElse(overruns.get(cmdKey)).getOrElse(0)
-    marshal.jobDeadline(
-      config.learning,
-      s.kind,
-      s.landing,
-      history(s),
-      if sig.isEmpty then [] else durationsOf(dirKey),
-      if sig.isEmpty then [] else durationsOf(cmdKey),
-      overrun
-    )
+    var overrun: long = 0
+    for k in marshal.overrunKeys(chainOf(s))
+      overruns.get(k) match
+        Some(ms) ->
+          overrun = ms
+          break
+        None -> ()
+    marshal.jobDeadline(config.learning, s.kind, s.landing, chainIn(durations, s), overrun)
 
   // Remembers that a job of `key` ran `ms` before its deadline stopped it.
   rememberOverrun(key: string, ms: long)
     if ms > overruns.get(key).getOrElse(0) then overruns(key) = ms
 
-  // Learns how long a job that succeeded ran, under what it ran and in its directory; the jobs not
-  // started yet are estimated again, and what is learned is written to `memory.json`. A success
-  // ends what a run its deadline stopped said of the command.
+  // Learns how long a job that succeeded ran, under every key of its chain; the jobs not started
+  // yet are estimated again, and what is learned is written to `memory.json`. A success ends what a
+  // run its deadline stopped said of the work.
   learnDuration(spec: JobSpec, ms: long)
-    for key in marshal.memoryKeys(spec.kind, spec.landing, spec.cmd, spec.dir)
+    for key in chainOf(spec).map(k -> k.key)
       rememberDuration(key, ms)
       overruns.remove(key)
     for j in queue ++ waitingJobs do estimate(j)
     saveMemory()
 
   // Gives `job` its units: those it gave, or fewer where its command's runs teach fewer and it did
-  // not ask for them exactly, or what those runs teach, or its kind's default before they teach
-  // anything. An exclusive or quick job keeps what it has.
+  // not ask for them exactly, or what the first trusted key of its chain teaches, or its class's
+  // default (`unknownUnits`) before any does. An exclusive or quick job keeps what it has.
   size(job: Job)
     val sizing = sizing(job.spec)
     if sizing.quarters != job.spec.units || sizing.asked != job.spec.unitsAsked then job.spec = marshal.withSizing(
@@ -450,19 +476,24 @@ class Daemon(
       sizing.asked
     )
     job.unitsLearned = sizing.learned
+    job.unitsFrom = unitsFromOf(job.spec, sizing)
 
   sizing(s: JobSpec) -> marshal.Sizing
-    val history = coresFor(s)
-    val learned = marshal.learnedUnits(history, config.budget.units)
+    val learned = marshal.learnedUnits(coresFor(s).levels, config.budget.units)
     marshal.sizeFor(
       s.unitsGiven,
       marshal.askedUnits(s),
       s.exclusive || s.quick,
       learned,
-      marshal.defaultUnits(s.kind),
+      marshal.unknownUnits(s.kind, s.landing, config.budget.units),
       s.unitsExact,
-      marshal.unitsCeiling(history, config.budget.units, config.learning.minRuns)
+      marshal.unitsCeiling(ownCoresFor(s).levels, config.budget.units, config.learning.minRuns)
     )
+
+  // Where the units of a job of `s`, sized so, came from (`unitsSource`).
+  unitsFromOf(s: JobSpec, sizing: marshal.Sizing) -> string
+    if s.quick then return "quick"
+    marshal.unitsSource(sizing, s.unitsGiven, s.exclusive, coresFor(s).from, ownCoresFor(s).from)
 
   // Whether `s`'s units are weighed again as its command's runs teach: units it did not give, and
   // units it gave as a ceiling.
@@ -474,7 +505,9 @@ class Daemon(
   unitsHint(s: JobSpec) -> string
     if !s.unitsGiven || s.exclusive || s.quick || s.landing then return ""
     if s.unitsAsked > 0 then return marshal.cappedHint(s.unitsAsked, s.units)
-    val history = coresFor(s)
+    // advice reads the command's own runs however few: its directory's once there are any
+    val own = chainIn(cores, s).filter(c -> c.1 == marshal.FromDir || c.1 == marshal.FromCmd).map(c -> c.0)
+    val history = own.find(levels -> levels.exists(p -> p >= 0)).getOrElse([])
     (marshal.learnedUnits(history, config.budget.units), marshal.recentCores(history)) match
       (Some(q), Some(c)) -> marshal.unitsHint(s.units, q, c)
       _ -> ""
@@ -498,12 +531,16 @@ class Daemon(
   // after it.
   rememberCores(key: string, centi: long) = if centi >= 0 then remember(cores, key, centi)
 
-  // Learns from a job that has ended, its peak memory and the cores it held: under what it ran, and
-  // in its directory; then the jobs still waiting to start reserve and weigh again, so a peak above
+  // Learns from a job that has ended so (`end`), its peak memory and the cores it held, under every
+  // key of its chain, when it was a clean run (`cleanRun`, measured against its work's earlier
+  // successful runs); then the jobs still waiting to start reserve and weigh again, so a peak above
   // what they reserved raises theirs at once, and what is learned is written to `memory.json`.
-  learnRun(spec: JobSpec, peak: long, centi: long)
+  learnRun(spec: JobSpec, peak: long, centi: long, end: marshal.RunEnd)
     if peak <= 0 && centi < 0 then return
-    for key in marshal.memoryKeys(spec.kind, spec.landing, spec.cmd, spec.dir)
+    val chain = chainOf(spec)
+    val expected = marshal.expectedOf(chain.map(k -> durationsOf(k.key)), config.learning.minRuns)
+    if !marshal.cleanRun(end, expected) then return
+    for key in chain.map(k -> k.key)
       rememberPeak(key, peak)
       rememberCores(key, centi)
     reserveAgain()
@@ -535,6 +572,32 @@ class Daemon(
   // it holds its reservation whatever its tree measures.
   holds(j: Job) -> long = if j.spec.external then j.reserved else marshal.holding(j.reserved, j.resident.now)
 
+  // The units admission charges a running job (`charged`): what it weighs, or the cores it was last
+  // measured keeping busy where that is more. An external job's tree is not where its work runs, and
+  // an exclusive or quick job is not weighed as others are, so each is charged what it weighs.
+  chargeOf(j: Job) -> int =
+    if marshal.chargedLive(j.spec.external, j.spec.exclusive, j.spec.quick, j.state == "running") then marshal.charged(
+      j.spec.units,
+      j.meter.now,
+      config.budget.units
+    ) else j.spec.units
+
+  // After a measurement at `t`: a running job that has used more than it weighs for
+  // `RaiseAfterMs` weighs the least it used in that time from then on (`liveStep`), with its units
+  // said to be `live`. It is never stopped for it. An external, exclusive or quick job is left as it
+  // is (`chargeOf`).
+  chargeLive(j: Job, t: long)
+    if !marshal.chargedLive(j.spec.external, j.spec.exclusive, j.spec.quick, j.state == "running") || j.paused then return
+    val after = config.raiseAfterMs.getOrElse(long.MaxValue)
+    val used = marshal.usedQuarters(j.meter.now, config.budget.units)
+    val (c, quarters) = marshal.liveStep(j.live, j.spec.units, used, t, after)
+    j.live = c
+    if quarters > j.spec.units
+      eprintln(s"marshal: job ${j.id} used ${marshal.formatUnits(quarters)} units or more for ${marshal.formatMillis(after)}; it weighs ${marshal.formatUnits(quarters)} now (was ${marshal.formatUnits(j.spec.units)})")
+      j.spec = marshal.withSizing(j.spec, quarters, j.spec.unitsAsked)
+      j.unitsFrom = "live"
+      record("raised", j)
+
   // How long a drain counts a job as running: its learned duration, or its deadline when nothing is
   // learned of its kind.
   drainMs(j: Job) -> long = if j.durationLearned then j.expectedMs else j.deadlineMs
@@ -564,7 +627,7 @@ class Daemon(
   startedOf(j: Job, t: long, b: marshal.Budget) -> Started =
     Started(
       j.id,
-      j.spec.units,
+      chargeOf(j),
       holds(j),
       j.spec.landing,
       j.startedMs,
@@ -698,15 +761,20 @@ class Daemon(
         Err(e) -> return Failed(e)
         Ok(_) -> ()
     val past = history(spec)
-    val deadline = if spec.quick then marshal.quickDeadlineMs(spec) else spec.deadlineMs.getOrElse(
-      learnedDeadline(spec).ms
-    )
+    val (deadline, deadlineFrom) = if spec.quick then (marshal.quickDeadlineMs(spec), "quick") else spec.deadlineMs match
+      Some(ms) -> (ms, "given")
+      None ->
+        val d = learnedDeadline(spec)
+        (d.ms, d.from)
     val id = nextId
     nextId += 1
     val job = Job(id, spec, now(), time.now().epochMicros, deadline, 0, s"$home/jobs/$id.log")
+    job.project = projectFor(spec.dir)
+    job.deadlineFrom = deadlineFrom
     estimate(job)
     job.owner = ownerOf(spec)
     job.unitsLearned = sized.learned && !spec.exclusive
+    job.unitsFrom = unitsFromOf(spec, sized)
     reserve(job)
     // its quiet load's clock starts with the load as it is now
     if spec.quietLoad > 0.0 then settleSeen(job, marshal.loadAverages().headOption, now())
@@ -823,13 +891,13 @@ class Daemon(
     // a run its deadline stopped took at least as long as it ran, which the next deadline allows for
     if event == "timeout"
       val ran = job.ran(now())
-      for key in marshal.memoryKeys(job.spec.kind, job.spec.landing, job.spec.cmd, job.spec.dir)
+      for key in marshal.overrunKeys(chainOf(job.spec))
         rememberOverrun(key, ran)
     if stopping || job.attempt > job.spec.retries || !marshal.retryable(outcome, job.killed)
       conclude(job, outcome, event)
       return
     val t = now()
-    offMachine(job)
+    offMachine(job, outcome, event)
     // a pause ends with the attempt
     if job.paused
       job.pausedMs += t - job.pausedAt
@@ -852,7 +920,10 @@ class Daemon(
     job.pausedMs = 0
     job.attempt += 1
     // a learned deadline is learned again, so an attempt after a timeout is not stopped where it was
-    if !job.spec.quick && job.spec.deadlineMs.isEmpty then job.deadlineMs = learnedDeadline(job.spec).ms
+    if !job.spec.quick && job.spec.deadlineMs.isEmpty
+      val d = learnedDeadline(job.spec)
+      job.deadlineMs = d.ms
+      job.deadlineFrom = d.from
     val delay = job.spec.retryDelayMs
     eprintln(
       s"marshal: job ${job.id} failed (exit ${marshal.exitCode(outcome)}): attempt ${job.attempt} of ${job.spec.retries + 1}" + (if delay > 0 then s" in ${marshal.formatMillis(delay)}" else "")
@@ -1342,7 +1413,7 @@ class Daemon(
       job.paused = false
       job.pausedAt = 0
     // A job cancelled while queued ran for no time: it "starts" and ends as it is cancelled.
-    if job.state == "running" then offMachine(job) else job.startedMs = t
+    if job.state == "running" then offMachine(job, outcome, event) else job.startedMs = t
     job.state = "done"
     job.endedMs = t
     job.outcome = Some(outcome)
@@ -1365,10 +1436,16 @@ class Daemon(
     settled()
 
   // A running job leaves the machine: the running jobs and take-slot's files.
-  offMachine(job: Job)
+  // What it learned is learned from the run ended so (`event`, `outcome`), when it was clean.
+  offMachine(job: Job, outcome: Outcome, event: string)
     running.remove(running.indexOf(job))
+    job.live = marshal.NotOver
+    val exited = outcome match
+      Outcome.Exited(_) -> true
+      _ -> false
+    val end = marshal.RunEnd(event, job.killed, exited, job.ran(now()))
     // an external job's tree is not where its work ran, so its peaks teach nothing
-    if !job.spec.external then learnRun(job.spec, job.resident.peak, marshal.taught(job.meter.held(), job.meter.peak))
+    if !job.spec.external then learnRun(job.spec, job.resident.peak, marshal.taught(job.meter.held(), job.meter.peak), end)
     val pid = job.pid
     if pid > 0 then slots.foreach(ts -> if job.spec.landing then ts.releaseLanding(pid) else ts.unregister(pid))
 
@@ -1408,7 +1485,10 @@ class Daemon(
     for (id, bytes) in sizes
       jobs.get(id).foreach(job -> if job.state == "running" then job.resident = job.resident.measured(bytes))
     for (id, table) in cpu
-      jobs.get(id).foreach(job -> if job.state == "running" then job.meter = job.meter.sampled(table, at))
+      for job in jobs.get(id).toList
+        if job.state == "running"
+          job.meter = job.meter.sampled(table, at)
+          chargeLive(job, at)
     for (id, found) in groups
       jobs.get(id).foreach(job -> if job.state == "running" then job.groups = found)
     machineMeter = machineMeter.sampled(machine)
@@ -1634,7 +1714,7 @@ class Daemon(
   startsIn(t: long, outside: Outside, whys: Vector[(long, int, Why)]) -> Map[long, long]
     val runningNow = running.map(j ->
       marshal.EtaRunning(
-        j.spec.units,
+        chargeOf(j),
         holds(j),
         j.spec.landing,
         j.spec.quick,
@@ -1655,7 +1735,7 @@ class Daemon(
     val b = budgetNow()
     val used = running.filter(
       j -> marshal.isPolite(b) || (!j.spec.landing && !j.spec.quick)
-    ).map(j -> j.spec.units).sum + outside.units
+    ).map(j -> chargeOf(j)).sum + outside.units
     marshal.startEstimates(b, used, running.map(j -> holds(j)).sum, runningNow, queuedNow)
 
   // What take-slot holds and waits for, read under its mutex; None without a take-slot directory.
@@ -1716,7 +1796,7 @@ class Daemon(
   private usageWith(outside: Option[Outside]) -> Usage
     val dev = running.filter(j -> !j.spec.landing && !j.spec.quick)
     Usage(
-      dev.map(j -> j.spec.units).sum,
+      dev.map(j -> chargeOf(j)).sum,
       config.budget.units,
       running.map(j -> j.reserved).sum,
       config.budget.memory,
@@ -1950,7 +2030,10 @@ class Daemon(
       j.groups,
       j.settling,
       j.settlingSince.map(s -> wall(s)).getOrElse(0),
-      j.overdue
+      j.overdue,
+      j.unitsFrom,
+      j.deadlineFrom,
+      j.project
     )
     SavedState(
       reportedVersion(),
@@ -1989,6 +2072,9 @@ class Daemon(
       job.meter = marshal.resumedMeter(t, sj.cores, sj.peakCores, sj.cpuMs, sj.heldWindows)
       job.groups = sj.groups
       job.unitsLearned = sj.unitsLearned
+      job.unitsFrom = sj.unitsFrom
+      job.deadlineFrom = sj.deadlineFrom
+      job.project = if sj.project.nonEmpty then sj.project else projectFor(sj.spec.dir)
       job.endedMs = mono(sj.endedAt)
       job.pid = sj.pid
       job.pgid = sj.pgid
@@ -2314,7 +2400,8 @@ run(home: string, resume: Option[string] = None) -> int
   )
   val read = loaded.getOrElse(marshal.Learned(recovered.peaks, recovered.cores, false, recovered.durations))
   // a version 1 or 2 file kept no durations, and a version 1 file no cores: they come from the
-  // event log, as do the scripts' runs a file before version 4 kept under a key of their name only
+  // event log, as do the scripts' runs a file before version 4 kept under a key of their name only,
+  // and the project keys, which no file before version 5 kept
   val learned = marshal.withRecovered(read, recovered.peaks, recovered.cores, recovered.durations)
   for (key, peaks) in learned.peaks
     for p in peaks do daemon.rememberPeak(key, p)
@@ -2324,7 +2411,7 @@ run(home: string, resume: Option[string] = None) -> int
     for ms in runs do daemon.rememberDuration(key, ms)
   // what a run its deadline stopped says of its command is the event log's alone
   for (key, ms) in recovered.overruns do daemon.rememberOverrun(key, ms)
-  if loaded.isErr || read.fromVersion1 || read.withoutDurations || read.staleScripts then daemon.saveMemory()
+  if loaded.isErr || read.fromVersion1 || read.withoutDurations || read.staleScripts || read.staleProjects then daemon.saveMemory()
   // the free disk is known before the first job can start
   daemon.diskFree = marshal.diskFree(daemon.diskDirs()).getOrElse(-1)
   for s in saved.toList

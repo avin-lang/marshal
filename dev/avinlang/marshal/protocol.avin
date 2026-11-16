@@ -205,7 +205,8 @@ retryable(_, _) = false
 // (memory.avin).
 // `label` is the text its submitter gave it, "" for none; `quietMs` its quiet timeout, 0 for none.
 // `reservedFrom` says where the reservation came from (`reservationSource`: `given`, `cmd+dir`,
-// `cmd` or `none`; `kind+dir` and `kind` from daemons that learned per kind), "" from a daemon that
+// `cmd`, `norm+project`, `kind+project` or `none`; `kind+dir` and `kind` from daemons that learned
+// per kind), "" from a daemon that
 // does not say.
 // `external` says its work runs outside its process tree (`JobSpec`); `quick` says it is in the
 // quick lane. `expectedMs` is how long it is expected to run (0 where not said), `durationLearned`
@@ -227,7 +228,12 @@ retryable(_, _) = false
 // `settlingMs` is how long an exclusive job in the state `settling` has waited for the load alone
 // (the machine its own, nothing of marshal's running), which is not run time: it counts toward no
 // deadline, duration or ETA; 0 otherwise. `loadOverdue` says that wait has passed config.json's
-// `load_wait`: the job still waits, and `top` draws its row in red.
+// `load_wait`: the job still waits, and `top` draws its row in red. `unitsFrom` says where its units
+// came from (`unitsSource`: `given`, `default`, `exclusive`, `quick`, `live`, or the key they were
+// learned from, learning.avin's `cmd+dir`, `cmd`, `norm+project` or `kind+project`), and
+// `deadlineFrom` where its deadline did (`LearnedDeadline.from`, or `given`), "" from a daemon that
+// does not say. `project` is the project its directory is in (learning.avin's `projectOf`), which
+// its runs are learned under.
 data JobInfo(
     id: long,
     kind: string,
@@ -275,7 +281,10 @@ data JobInfo(
     heldCores: long = -1,
     unitsAsked: int = 0,
     settlingMs: long = 0,
-    loadOverdue: bool = false
+    loadOverdue: bool = false,
+    unitsFrom: string = "",
+    deadlineFrom: string = "",
+    project: string = ""
 )
 
 // Whether a job is settling: an exclusive job with the machine to itself that waits only for the
@@ -843,8 +852,16 @@ encodeJob(i: JobInfo) -> Json = Json.Obj(
   ) ++ externalMember(i.external) ++ quickMember(i.quick) ++ expectedMembers(i) ++ exclusiveMembers(
     i.exclusive,
     i.quietLoad
-  ) ++ coresMembers(i) ++ ownerMember(i.owner) ++ etaMembers(i) ++ settlingMembers(i)
+  ) ++ coresMembers(i) ++ ownerMember(i.owner) ++ etaMembers(i) ++ settlingMembers(i) ++ learnedFromMembers(i)
 )
+
+// `units_from`, `deadline_from` and `project` are left out where the daemon did not say.
+private learnedFromMembers(i: JobInfo) -> Vector[(string, Json)]
+  val out = Buffer[(string, Json)]()
+  if i.unitsFrom.nonEmpty then out += ("units_from", Json.str(i.unitsFrom))
+  if i.deadlineFrom.nonEmpty then out += ("deadline_from", Json.str(i.deadlineFrom))
+  if i.project.nonEmpty then out += ("project", Json.str(i.project))
+  out.toVector
 
 // `settling_ms` and `load_overdue` are there only on a settling job.
 private settlingMembers(i: JobInfo) -> Vector[(string, Json)] = if i.state == "settling" then [
@@ -963,7 +980,11 @@ decodeJob(j: Json) -> Result[JobInfo, string]
       askedOf(j)?,
       // absent on every job but a settling one
       optional(j, "settling_ms", wholeNumber, "a whole number", 0)?,
-      optional(j, "load_overdue", v -> v.asBool, "a bool", false)?))
+      optional(j, "load_overdue", v -> v.asBool, "a bool", false)?,
+      // absent from what marshal wrote before it said where units and deadlines were learned
+      optional(j, "units_from", v -> v.asString, "a string", "")?,
+      optional(j, "deadline_from", v -> v.asString, "a string", "")?,
+      optional(j, "project", v -> v.asString, "a string", "")?))
 
 encodeTakeSlot(t: TakeSlotUse) -> Json = Json.obj(
   ("dir", Json.str(t.dir)),

@@ -114,6 +114,8 @@ pauseAtStartHolds()
   val ids = (1 .. 12).toVector.map(
     i -> submitted(
       home,
+      "--units",
+      "1",
       "--",
       "sh",
       "-c",

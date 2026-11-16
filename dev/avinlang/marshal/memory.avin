@@ -69,8 +69,9 @@ impl Resident
 // Reservations learned from the peaks earlier runs of the same work reached. A job that gives no
 // memory reserves the learned peak of what it runs (`memoryHistory`): the most of the last `window`
 // peaks, plus `marginPercent`, rounded up to a whole mebibyte, once there are at least `minRuns`
-// peaks; nothing before that. Every job that ran and was measured is history, whatever its outcome:
-// a failed build holds the memory it holds.
+// peaks; nothing before that. Which runs are the same work is learning.avin's key chain, and only
+// clean runs are history (`cleanRun`): a failed build that ran its course holds the memory it
+// holds, but a run killed, stopped or ended abnormally soon says nothing of it.
 //
 // The short window is what lets a reservation follow the work as it changes. A run that peaks
 // higher raises the next reservation at once, since the newest peak is always in the window. Once
@@ -80,7 +81,7 @@ impl Resident
 // and moves only when that top leaves the window.
 data MemoryLearning(window: int, minRuns: int, marginPercent: long)
 
-val defaultMemoryLearning: MemoryLearning = MemoryLearning(3, 1, 0)
+val defaultMemoryLearning: MemoryLearning = MemoryLearning(3, 3, 0)
 
 private val Mebi: long = 1024 * 1024
 
@@ -291,21 +292,25 @@ memoryKeys(kind: string, landing: bool, cmd: Vector[string], dir: string) -> Vec
   val own = [memoryKey(kind, landing, sig)]
   if dir.isEmpty then own else own ++ [memoryDirKey(kind, landing, sig, dir)]
 
-// The peaks a job learns its reservation from, and which key they are: its command's in its
-// directory (`cmd+dir`) once that has `minRuns` peaks, and its command's anywhere (`cmd`) until
-// then. There is no wider fallback: work never run before reserves nothing, and admission counts it
-// at what it is measured holding while it runs (`holding`).
+// The peaks a job learns its reservation from, and which key they are (learning.avin): the first of
+// `chain` (each key's peaks, oldest first, and its source, most particular first) with at least
+// `learning.minRuns` peaks above 0, a key below `cmd+dir` only while its peaks are alike
+// (`consistent`, each counted at least `MemorySpreadFloor`); none (`from` "") before. Work nothing
+// has been learned of reserves nothing, and admission counts every running job at what it is
+// measured holding where that is more (`holding`).
 data MemoryHistory(peaks: Vector[long], from: string)
 
-memoryHistory(learning: MemoryLearning, dirPeaks: Vector[long], cmdPeaks: Vector[long]) -> MemoryHistory =
-  if dirPeaks.filter(p -> p > 0).length >= learning.minRuns then MemoryHistory(
-    dirPeaks,
-    "cmd+dir"
-  ) else MemoryHistory(cmdPeaks, "cmd")
+// The least peak `consistent` tells apart from another: a gibibyte, so small builds a few hundred
+// mebibytes apart are alike.
+val MemorySpreadFloor: long = 1024 * 1024 * 1024
+
+memoryHistory(learning: MemoryLearning, chain: Vector[(Vector[long], string)]) -> MemoryHistory
+  val c = choose(chain, learning.minRuns, p -> p > 0, runs -> consistent(runs, MemorySpreadFloor))
+  MemoryHistory(c.values, c.from)
 
 // Where a job's reservation came from, as `status --json` shows it in `resv_from`: `given` for a
-// memory it gave (`--mem`, `0` among them), the key its learned peak came from (`cmd+dir` or
-// `cmd`), or `none` while nothing has been learned.
+// memory it gave (`--mem`, `0` among them), the key its learned peak came from (`cmd+dir`, `cmd`,
+// `norm+project` or `kind+project`), or `none` while nothing has been learned.
 reservationSource(memory: long, given: bool, r: Reservation, from: string) -> string =
   if given || memory > 0 then "given" elif r.learned then from else "none"
 
@@ -318,32 +323,37 @@ holding(reserved: long, rss: long) -> long = if rss > reserved then rss else res
 // restart, an upgrade and `marshal clean` trimming the event log: the memory peaks, the peak cores
 // (cores.avin) and the durations of the runs that succeeded (eta.avin), each by key:
 //
-//   {"version": 4, "peaks": {"<key>": [bytes, ...], ...}, "cores": {"<key>": [1.25, ...], ...},
+//   {"version": 5, "peaks": {"<key>": [bytes, ...], ...}, "cores": {"<key>": [1.25, ...], ...},
 //    "durations": {"<key>": [milliseconds, ...], ...}}
 //
-// Each key is a `memoryKey` or `memoryDirKey` and holds its last `MemoryKept` values, oldest first.
-// A file of version 2 has no `durations`, and one of version 1 neither those nor `cores`: what it
-// has is used, and what it lacks is learned again from the event log (`fromVersion1`,
-// `withoutDurations`). Before version 4 a script's signature was only its name, so one key could
-// hold the runs of several scripts of that name: a file of version 1, 2 or 3 keeps every key but
-// those (`isScriptKey`), and the scripts' history is learned again, under its new keys, from what
-// the event log still has (`staleScripts`). A file of another version, or one that does not read,
-// is not used: the daemon learns everything again from the event log.
-val MemoryFileVersion: long = 4
+// Each key is one of learning.avin's (`chainKeys`: a `memoryKey`, a `memoryDirKey`, a `normKey` or a
+// `kindProjectKey`), and holds its last `MemoryKept` values, oldest first. A file of version 2 has
+// no `durations`, and one of version 1 neither those nor `cores`: what it has is used, and what it
+// lacks is learned again from the event log (`fromVersion1`, `withoutDurations`). Before version 4
+// a script's signature was only its name, so one key could hold the runs of several scripts of
+// that name: a file of version 1, 2 or 3 keeps every key but those (`isScriptKey`), and the
+// scripts' history is learned again, under its new keys, from what the event log still has
+// (`staleScripts`). Before version 5 there were no project keys, so a file before version 5 takes
+// every project key's peaks, cores and durations from the event log (`staleProjects`). A file of
+// another version, or one that does not read, is not used: the daemon learns everything again from
+// the event log.
+val MemoryFileVersion: long = 5
 
 val MemoryKept: int = 20
 
 // `peaks` in bytes, `cores` in hundredths of a core and `durations` in milliseconds, by key, oldest
 // first. `fromVersion1` says they were read from a version 1 file, which kept no cores,
-// `withoutDurations` from a file of version 1 or 2, which kept no durations, and `staleScripts`
-// from a file before version 4, whose scripts' keys were left out.
+// `withoutDurations` from a file of version 1 or 2, which kept no durations, `staleScripts` from a
+// file before version 4, whose scripts' keys were left out, and `staleProjects` from a file before
+// version 5, which kept no project keys.
 data Learned(
     peaks: Map[string, Vector[long]],
     cores: Map[string, Vector[long]],
     fromVersion1: bool = false,
     durations: Map[string, Vector[long]] = Map(),
     withoutDurations: bool = false,
-    staleScripts: bool = false
+    staleScripts: bool = false,
+    staleProjects: bool = false
 )
 
 // Whether `key` is learned under a script's signature (a shell, an interpreter or a program that
@@ -365,9 +375,18 @@ private entriesWhere(table: Map[string, Vector[long]], keep: (string) -> bool) -
   out.toVector.toMap
 
 // What a file of `version` holds, as this version learns it: before version 4, without the keys
-// of scripts.
+// of scripts; before version 5, with its project keys still to be learned.
 private upgraded(learned: Learned, version: long) -> Learned
   if version >= MemoryFileVersion then return learned
+  if version >= 4 then return Learned(
+    learned.peaks,
+    learned.cores,
+    learned.fromVersion1,
+    learned.durations,
+    learned.withoutDurations,
+    learned.staleScripts,
+    true
+  )
   val keep = (k: string) -> !isScriptKey(k)
   Learned(
     entriesWhere(learned.peaks, keep),
@@ -375,12 +394,14 @@ private upgraded(learned: Learned, version: long) -> Learned
     learned.fromVersion1,
     entriesWhere(learned.durations, keep),
     learned.withoutDurations,
+    true,
     true
   )
 
-// `learned` from a file before version 4 completed by what the event log teaches (`recovered`) of
-// the scripts it left out; where a table is learned whole from the event log (a version 1 file's
-// cores, a version 1 or 2 file's durations) it is taken whole. A current file is used as it is.
+// `learned` from a file before version 5 completed by what the event log teaches (`recovered`):
+// of the scripts a file before version 4 left out, and of every project key; where a table is
+// learned whole from the event log (a version 1 file's cores, a version 1 or 2 file's durations) it
+// is taken whole. A current file is used as it is.
 withRecovered(learned: Learned, peaks: Map[string, Vector[long]], cores: Map[string, Vector[long]], durations: Map[string, Vector[long]]) -> Learned
   val scripts = (k: string) -> isScriptKey(k)
   val c = if learned.fromVersion1 then cores elif learned.staleScripts then learned.cores ++ entriesWhere(
@@ -392,7 +413,17 @@ withRecovered(learned: Learned, peaks: Map[string, Vector[long]], cores: Map[str
     scripts
   ) else learned.durations
   val p = if learned.staleScripts then learned.peaks ++ entriesWhere(peaks, scripts) else learned.peaks
-  Learned(p, c, false, d, false, false)
+  if !learned.staleProjects then return Learned(p, c, false, d, false, false)
+  val commands = (k: string) -> !isProjectKey(k)
+  val projects = (k: string) -> isProjectKey(k)
+  Learned(
+    entriesWhere(p, commands) ++ entriesWhere(peaks, projects),
+    entriesWhere(c, commands) ++ entriesWhere(cores, projects),
+    false,
+    entriesWhere(d, commands) ++ entriesWhere(durations, projects),
+    false,
+    false
+  )
 
 encodeMemory(learned: Learned) -> string
   val peakKeys = learned.peaks.keys.toVector.sorted

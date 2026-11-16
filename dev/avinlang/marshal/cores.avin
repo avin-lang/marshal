@@ -261,18 +261,21 @@ taught(held: long, peak: long) -> long = if held >= 0 then held else peak
 // time.
 coresOver(cpuMs: long, wallMs: long) -> long = if wallMs <= 0 then 0 else (cpuMs * Centi + wallMs / 2) / wallMs
 
-// How units are learned from the cores earlier runs used: the most of the last `window` levels
-// those runs held (`taught`), rounded up to a quarter, at least a quarter, and no more than the
-// budget.
-val CoresWindow: int = 5
+// How units are learned from the cores earlier runs used: the `UnitsPercentile`th percentile of the
+// last `CoresWindow` levels those runs held (`taught`), rounded up to a quarter, at least a quarter,
+// and no more than the budget. The percentile rather than the most keeps one run that was busier
+// than the rest (a cold cache, a rebuild of everything) from setting the units of every run after
+// it; live charging (`charged`) covers a run that needs more than it weighs.
+val CoresWindow: int = 10
+val UnitsPercentile: int = 80
 
 // The units, in quarters, that the levels `peaks` earlier runs held (hundredths of a core, oldest
 // first; `taught`) teach, held to `budget` quarters; None while there are none.
 learnedUnits(peaks: Vector[long], budget: int) -> Option[int]
   val runs = peaks.filter(p -> p >= 0).takeRight(CoresWindow)
   if runs.isEmpty then return None
-  val most = runs.max
-  val q = (most * long(QuartersPerUnit) + Centi - 1) / Centi
+  val level = percentile(runs, UnitsPercentile)
+  val q = (level * long(QuartersPerUnit) + Centi - 1) / Centi
   val atLeast = if q < 1 then long(1) else q
   Some(if atLeast > long(budget) then budget else int(atLeast))
 
@@ -282,10 +285,97 @@ recentCores(peaks: Vector[long]) -> Option[long]
   val runs = peaks.filter(p -> p >= 0).takeRight(CoresWindow)
   if runs.isEmpty then None else Some(runs.max)
 
-// The levels a job learns its units from: those of its command in its directory once there are any,
-// and of its command anywhere until then.
-coresHistory(dirPeaks: Vector[long], cmdPeaks: Vector[long]) -> Vector[long] =
-  if dirPeaks.exists(p -> p >= 0) then dirPeaks else cmdPeaks
+// The least level `consistent` tells apart from another, in hundredths: a core, so runs that keep
+// a fraction of a core busy are alike however their fractions differ.
+val UnitsSpreadFloor: long = 100
+
+// The levels a job learns its units from, and which key they are (learning.avin): the first of
+// `chain` (each key's levels, oldest first, and its source, most particular first) with at least
+// `minRuns` measured levels, a key below `cmd+dir` only while its levels are alike (`consistent`);
+// none (`from` "") before.
+data UnitsHistory(levels: Vector[long], from: string)
+
+unitsHistory(chain: Vector[(Vector[long], string)], minRuns: int) -> UnitsHistory
+  val c = choose(chain, minRuns, p -> p >= 0, runs -> consistent(runs, UnitsSpreadFloor))
+  UnitsHistory(c.values, c.from)
+
+// Where a job's units came from, as `status --json` shows it in `units_from` and `ls` in FROM:
+// `exclusive` for an exclusive job, which weighs the budget; `quick` for a quick one; `live` for
+// units raised while it ran (`liveStep`); the key of the runs that hold given units under what they
+// gave (`ceilingFrom`); the key of the runs that taught learned units (`learnedFrom`); `given` for
+// units it gave and weighs; `default` for its class's default (`unknownUnits`).
+unitsSource(sizing: Sizing, given: bool, exclusive: bool, learnedFrom: string, ceilingFrom: string) -> string =
+  if exclusive then "exclusive"
+  elif sizing.asked > 0 then ceilingFrom
+  elif sizing.learned then learnedFrom
+  elif given then "given"
+  else "default"
+
+// The units a job of `kind` weighs, in quarters, when it gives none and no key is trusted, against a
+// budget of `budget` quarters: a quarter of the budget for a gate, a train, a release or a landing
+// job (its kind, or a dash- or underscore-separated word of it, is `gate`, `train`, `release` or
+// `landing`, or it runs in the landing lane), a sixth for a test, a ninth for a build, and a unit for
+// anything else; never less than a unit, nor more than the budget. A job too new to have taught
+// anything is assumed big rather than small, since one that is small frees what it weighs soon, and
+// live charging raises one that is bigger still.
+unknownUnits(kind: string, landing: bool, budget: int) -> int
+  val share = classShare(kind, landing, budget)
+  val atLeast = if share < wholeUnits(1) then wholeUnits(1) else share
+  if atLeast > budget then budget else atLeast
+
+private classShare(kind: string, landing: bool, budget: int) -> int
+  val words = kind.replace("_", "-").split("-").toVector
+  val has = (w: string) -> words.contains(w)
+  if landing || has("gate") || has("train") || has("release") || has("landing") then return budget / 4
+  if has("test") then return budget / 6
+  if has("build") then return budget / 9
+  wholeUnits(1)
+
+// The quarters `centi` hundredths of a core round up to, held to `budget`; 0 before any is measured.
+usedQuarters(centi: long, budget: int) -> int
+  if centi <= 0 then return 0
+  val q = (centi * long(QuartersPerUnit) + Centi - 1) / Centi
+  if q > long(budget) then budget else int(q)
+
+// What admission charges a running job of `quarters` units it weighs while it keeps `centi`
+// hundredths of a core busy (-1 before it is measured): the more of the two, the cores rounded up
+// to a quarter and held to `budget` quarters. A job using more than it weighs holds back the next
+// start rather than taking the machine past its budget; one using less keeps what it weighs, for the
+// level it has not reached yet. It is never stopped for it, and what it weighs is never less than
+// the units it gave.
+charged(quarters: int, centi: long, budget: int) -> int
+  val held = usedQuarters(centi, budget)
+  if held > quarters then held else quarters
+
+// Whether a job is charged what it is measured using (`charged`, `liveStep`): a running one, unless
+// its work runs outside its process tree (`external`, so its tree's use is not its work's), or it
+// is exclusive (it weighs the whole budget already) or quick (the quick lane weighs no units). A job
+// that is not running has no use to charge, and once it ends admission no longer counts it at all.
+chargedLive(external: bool, exclusive: bool, quick: bool, running: bool) -> bool =
+  running && !external && !exclusive && !quick
+
+// How long a running job must use more than it weighs, without a break, before its units are raised
+// to the least it used in that time: 90 seconds, long past a burst of linking or a test's parallel
+// moment, short beside the runs that matter (a gate, a train).
+val RaiseAfterMs: long = 90000
+
+// A running job's use beyond what it weighs: since when it has used more without a break (-1 while
+// it does not), and the least it used, in quarters, since then.
+data LiveCharge(overSince: long, lowest: int)
+
+val NotOver: LiveCharge = LiveCharge(-1, 0)
+
+// After a sample at `t` that found a job weighing `quarters` using `used` quarters (`usedQuarters`):
+// what it then weighs, and its use beyond that. A job that has used more than it weighs for
+// `RaiseAfterMs` weighs the least it used in that time from then on; one that drops back to what it
+// weighs starts the clock again.
+// `after` is config.json's `raise_after` in place of `RaiseAfterMs`.
+liveStep(c: LiveCharge, quarters: int, used: int, t: long, after: long = RaiseAfterMs) -> (LiveCharge, int)
+  if used <= quarters then return (NotOver, quarters)
+  if c.overSince < 0 then return (LiveCharge(t, used), quarters)
+  val low = if used < c.lowest then used else c.lowest
+  if t - c.overSince >= after then return (NotOver, low)
+  (LiveCharge(c.overSince, low), quarters)
 
 // The units a job weighs, in quarters, whether they were learned, and the units it gave where it
 // weighs fewer (`asked`, 0 otherwise). An exclusive or quick job keeps what it has, since neither
