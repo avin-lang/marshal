@@ -712,7 +712,9 @@ the units it weighs and the cores it was last measured keeping busy, so a job th
 uses 12 holds back the next start rather than taking the machine past its budget; `status` counts
 the charge too. When it has used more than it weighs for `raise_after` (90 seconds) without a break,
 it weighs the least it used in that time from then on: its `units_from` becomes `live`, a `raised`
-event is logged, and the daemon's log says so. It is never stopped, paused or killed for it, and
+event is logged, and the daemon's log says so. Where take-slot's directory is shared, the job's
+registration there is rewritten to what it weighs now, so take-slot's runs see the raise too (a
+restart registers every running job again, at what it weighs). It is never stopped, paused or killed for it, and
 what it weighs is never lowered below what it gave or was given. An exclusive job (which weighs the
 whole budget), a quick job and an external one (whose tree is not where its work runs) are charged
 what they weigh. A job that has ended is charged nothing. An exclusive job still weighs the whole

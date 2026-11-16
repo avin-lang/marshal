@@ -2236,6 +2236,14 @@ each of them:
   parallel link raise too readily) and 120 s (a 20-minute train spends a tenth of its run
   under-weighed). Charging itself is immediate: admission counts the more of the weighed units and
   the last measured level from the first sample.
+- **A raise is registered with take-slot; a charge is not.** When a job is raised, its file in
+  take-slot's `slot-units` is rewritten (under the mutex) to the units it weighs now, and a restarted
+  daemon rewrites every running job's, mending one an image before this rule left at its submitted
+  weight. A landing job (which holds `land.lock`) and a quick one (which holds none of take-slot's
+  units) are left as they are. The unraised live charge is not written: it moves sample by sample,
+  and take-slot would then see the budget flicker; the raise is the level the job has sustained.
+  Weighed: registering the charge every sample (more exact, many writes under take-slot's mutex,
+  and a figure that falls back as soon as a burst ends).
 - **Commands are made alike by digits and opaque ids.** In each path component and word, a run of
   digits, with the `.` or `_` between digits of a version, becomes `#` (`0.11.5`, `0115`, `314`); a
   component of at least 8 hex digits and dashes with a decimal digit and a letter among them (a

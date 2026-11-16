@@ -1,0 +1,146 @@
+module tests
+
+// End to end, the commands as an unattended caller runs them: from a shell with no terminal and
+// standard input closed, as a background job of an agent's harness is. `run` waits for a job that is
+// still queued, across a restart while it waits and across a daemon that died, and exits only when
+// the job has ended, with the job's own status; `ls` and `status`, polled in a shell loop, answer as
+// they do at a terminal and exit 0, so the loop ends when the job does and not before. The helpers
+// are e2e.avin's and reserve_e2e.avin's.
+import avin.fs
+import avin.process
+import avin.process.{Command, ExitStatus}
+import avin.threads
+import avin.threads.{Atomic, spawn}
+import avin.time.millis
+
+// `m` with standard input read from /dev/null, as a background job's is.
+private mClosed(home: string, args: string*) -> Ran
+  val out = s"$home/cli.${outputs.add(1)}.out"
+  val status = homed(Command(bin(), args*), home).fromFile("/dev/null").toFile(out).errorsToOutput().run().ok.get
+  val code = status match
+    ExitStatus.Exited(c) -> c
+    ExitStatus.Signalled(s) -> 128 + s
+    ExitStatus.TimedOut -> 124
+  Ran(code, fs.readText(out).getOrElse(""))
+
+// A shell loop, started with no terminal and standard input closed, that polls `poll` (a marshal
+// command and a grep of its output, `$0` naming marshal) every 0.2 s while it succeeds, then prints
+// `ended`. `done` becomes 1 when the loop's shell has exited.
+private pollLoop(home: string, poll: string, done: Atomic[int])
+  val script = s"while $poll; do sleep 0.2; done; echo ended"
+  val command = homed(Command("sh", "-c", script, bin()), home).fromFile("/dev/null").toFile(
+    s"$home/loop.${outputs.add(1)}.out"
+  ).errorsToOutput()
+  val _ = spawn(() ->
+    val _ = command.run()
+    done.store(1))
+
+// The state `status --json` gives job `id`.
+private stateOf(home: string, id: long) -> Option[string] = statusJob(home, id)("state").asString
+
+@test("run waits for a job still queued, across a restart while it waits, and exits with the job's own status")
+runWaitsQueuedAcrossRestart()
+  val home = newHome("{\"units\": 1}")
+  val a = submitted(home, "--units", "1", "--", "sleep", "3")
+  assert(within(2000, () -> started(home, a)))
+  val finished = Atomic(0)
+  val runner = spawn(() ->
+    val r = mClosed(home, "run", "--units", "1", "--", "sh", "-c", "exit 5")
+    finished.store(1)
+    r)
+  val b = a + 1
+  assert(within(5000, () -> eventsOf(home, b).contains("submitted")))
+  assertEq(stateOf(home, b), Some("queued"))
+  threads.sleep(millis(300))
+  assertEq(finished.load(), 0)
+  restarted(home)
+  assert(daemonLog(home).contains("taking over 1 running and 1 queued jobs"), daemonLog(home))
+  threads.sleep(millis(500))
+  // the restart closed run's connection; run asked again and goes on waiting
+  assertEq(finished.load(), 0)
+  assertEq(stateOf(home, b), Some("queued"))
+  val r = runner.join()
+  assertEq(r.code, 5)
+  assert(r.out.contains(s"job $b: log "), r.out)
+  assert(r.out.contains(s"job $b exited 5"), r.out)
+  assert(at(home, b, "started") > at(home, a, "finished"))
+  cleanUp(home)
+
+@test("run of a job queued when its daemon dies ends once a new daemon has started, saying the job was lost")
+runQueuedDaemonDies()
+  val home = newHome("{\"units\": 1}")
+  val a = submitted(home, "--units", "1", "--", "sleep", "30")
+  assert(within(2000, () -> started(home, a)))
+  val pgid = pgidOf(home, a)
+  val runner = spawn(() -> mClosed(home, "run", "--units", "1", "--", "true"))
+  val b = a + 1
+  assert(within(5000, () -> eventsOf(home, b).contains("submitted")))
+  threads.sleep(millis(300))
+  val dead = daemonPid(home)
+  assert(process.signal(dead, 9).isOk)
+  val r = runner.join()
+  // a lost job is not one that ran: run says so and exits 125, never 0
+  assertEq(r.code, 125)
+  assert(r.out.contains(s"job $b"), r.out)
+  assert(r.out.contains("lost"), r.out)
+  assert(daemonPid(home) != dead)
+  assertEq(eventsOf(home, b), ["submitted", "lost"])
+  val _ = process.signal(-pgid, 9)
+  cleanUp(home)
+
+@test(
+  "wait on a queued job with --timeout times out with 124 and leaves the job queued; wait on an unknown job fails at once"
+)
+waitQueuedTimeout()
+  val home = newHome("{\"units\": 1}")
+  val a = submitted(home, "--units", "1", "--", "sleep", "30")
+  assert(within(2000, () -> started(home, a)))
+  val b = submitted(home, "--units", "1", "--", "true")
+  val w = mClosed(home, "wait", b.toString(), "--timeout", "1s")
+  assertEq(w.code, 124)
+  assert(w.out.contains(s"timed out after 1.0s waiting for job $b"), w.out)
+  assertEq(stateOf(home, b), Some("queued"))
+  val unknown = mClosed(home, "wait", "99")
+  assert(unknown.code != 0, unknown.out)
+  assert(unknown.out.contains("no job 99"), unknown.out)
+  cleanUp(home)
+
+@test("ls, status and status --json with no terminal and standard input closed answer and exit 0")
+commandsWithoutTerminal()
+  val home = newHome("{\"units\": 1}")
+  val a = submitted(home, "--units", "1", "--", "sleep", "30")
+  assert(within(2000, () -> started(home, a)))
+  val b = submitted(home, "--units", "1", "--", "true")
+  val ls = mClosed(home, "ls")
+  assertEq(ls.code, 0)
+  assert(ls.out.startsWith("ID "), ls.out)
+  assert(ls.out.contains(s"\n$a ") && ls.out.contains(s"\n$b "), ls.out)
+  assertEq(m(home, "ls").out.lines.toVector.length, ls.out.lines.toVector.length)
+  val status = mClosed(home, "status")
+  assertEq(status.code, 0)
+  assert(status.out.contains("1 running, 1 queued"), status.out)
+  val js = mClosed(home, "status", "--json")
+  assertEq(js.code, 0)
+  assert(js.out.contains(s"\"id\":$b"), js.out)
+  cleanUp(home)
+
+@test("a shell loop polling ls or status in the background ends when the job ends, not before")
+pollingLoops()
+  val home = newHome("{\"units\": 1}")
+  val a = submitted(home, "--units", "1", "--", "sleep", "3")
+  assert(within(2000, () -> started(home, a)))
+  val b = submitted(home, "--units", "1", "--", "true")
+  val lsDone = Atomic(0)
+  val statusDone = Atomic(0)
+  val jsonDone = Atomic(0)
+  val marshalCmd = "\"$0\""
+  pollLoop(home, marshalCmd + " ls | grep -qE '^" + b.toString() + " +(queued|running)'", lsDone)
+  pollLoop(home, marshalCmd + " status | grep -q ', 1 queued'", statusDone)
+  pollLoop(home, marshalCmd + " status --json | grep -q '\"id\":" + b.toString() + ",'", jsonDone)
+  threads.sleep(millis(1500))
+  // job b still waits behind a, so every loop still polls
+  assertEq(stateOf(home, b), Some("queued"))
+  assertEq((lsDone.load(), statusDone.load(), jsonDone.load()), (0, 0, 0))
+  assert(within(15000, () -> lsDone.load() == 1 && statusDone.load() == 1 && jsonDone.load() == 1))
+  assert(ended(home, b), s"${eventsOf(home, b)}")
+  cleanUp(home)

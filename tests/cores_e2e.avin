@@ -394,6 +394,72 @@ liveRaiseE2e()
   assertEq(m(home, "stop", "--force").code, 0)
   cleanUp(home)
 
+// The whole units take-slot's registration of the process `pid` names, or None when it has none.
+private registered(home: string, pid: long) -> Option[int] =
+  fs.readText(slots(home) + s"/slot-units/$pid").ok.flatMap(t -> t.trim.toIntOption())
+
+@test("a raised job's take-slot registration follows the raise, and goes when the job ends")
+raiseRegistersE2e()
+  val home = newHome("{\"units\": 8, \"raise_after\": \"2s\"}")
+  val busy = fakeSubmitted(home, (["--units", "1"] ++ fakeWork(home, "w", "60", "3"))*)
+  assert(within(2000, () -> started(home, busy)))
+  val pid = pidOf(home, busy)
+  assertEq(registered(home, pid), Some(1))
+  // raised step by step as the job's use is measured, until it weighs the 3 cores it keeps busy
+  assert(within(15000, () -> unitsOf(home, busy).0.exists(u -> u >= 2.75)), s"${statusJob(home, busy)}")
+  assert(eventsOf(home, busy).contains("raised"), s"${eventsOf(home, busy)}")
+  val units = unitsOf(home, busy).0.get
+  // take-slot counts whole units, rounding a part up, as at the start
+  val whole = marshal.ceilUnits(int(units * 4.0))
+  assert(within(2000, () -> registered(home, pid) == Some(whole)), s"${registered(home, pid)} for $units")
+  assert(!fs.exists(slots(home) + "/slot-units.mutex"), "the mutex was left held")
+  assertEq(m(home, "kill", busy.toString()).code, 0)
+  m(home, "wait", busy.toString())
+  assertEq(registered(home, pid), None)
+  cleanUp(home)
+
+@test("a job charged more than it weighs but never raised keeps the registration it started with")
+chargedNotRaisedRegistersE2e()
+  val home = newHome("{\"units\": 4, \"raise_after\": \"never\"}")
+  val busy = fakeSubmitted(home, (["--units", "1"] ++ fakeWork(home, "w", "60", "3"))*)
+  assert(within(10000, () -> coresNow(home, busy) >= 2.5), s"${statusJob(home, busy)}")
+  threads.sleep(millis(1500))
+  assertEq(registered(home, pidOf(home, busy)), Some(1))
+  assertEq(m(home, "stop", "--force").code, 0)
+  cleanUp(home)
+
+@test("a landing job raised live is not registered as units: it holds the landing lock alone")
+landingRaiseRegistersE2e()
+  val home = newHome("{\"units\": 8, \"raise_after\": \"1s\"}")
+  val land = fakeSubmitted(home, (["--landing", "--units", "1"] ++ fakeWork(home, "l", "60", "3"))*)
+  assert(within(2000, () -> started(home, land)))
+  val pid = pidOf(home, land)
+  // given time to be raised, if it is
+  threads.sleep(millis(5000))
+  assertEq(registered(home, pid), None)
+  assertEq(fs.readText(slots(home) + "/land.lock/pid").ok.map(t -> t.trim), Some(pid.toString()))
+  assertEq(m(home, "stop", "--force").code, 0)
+  cleanUp(home)
+
+@test("a restart registers a running job at what it weighs, mending a registration an older image left behind its raise")
+restartRegistersE2e()
+  val home = newHome("{\"units\": 8, \"raise_after\": \"2s\"}")
+  val busy = fakeSubmitted(home, (["--units", "1"] ++ fakeWork(home, "w", "60", "3"))*)
+  assert(within(2000, () -> started(home, busy)))
+  val pid = pidOf(home, busy)
+  // raised as far as it goes: the 3 cores it keeps busy, so no later raise rewrites the registration
+  assert(within(15000, () -> unitsOf(home, busy).0.exists(u -> u >= 2.75)), s"${statusJob(home, busy)}")
+  val whole = marshal.ceilUnits(int(unitsOf(home, busy).0.get * 4.0))
+  assert(within(2000, () -> registered(home, pid) == Some(whole)))
+  // as an image without this rule left it: the raise not registered
+  fs.writeText(slots(home) + s"/slot-units/$pid", "1\n").ok.get
+  val r = fm(home, "restart")
+  assertEq(r.code, 0)
+  assertEq(registered(home, pid), Some(whole))
+  assert(!fs.exists(slots(home) + "/slot-units.mutex"), "the mutex was left held")
+  assertEq(m(home, "stop", "--force").code, 0)
+  cleanUp(home)
+
 @test("an external job is charged what it reserves, never what its tree uses, and never raised")
 liveExternalE2e()
   val home = newHome("{\"units\": 4, \"raise_after\": \"1s\"}")

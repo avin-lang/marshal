@@ -596,7 +596,18 @@ class Daemon(
       eprintln(s"marshal: job ${j.id} used ${marshal.formatUnits(quarters)} units or more for ${marshal.formatMillis(after)}; it weighs ${marshal.formatUnits(quarters)} now (was ${marshal.formatUnits(j.spec.units)})")
       j.spec = marshal.withSizing(j.spec, quarters, j.spec.unitsAsked)
       j.unitsFrom = "live"
+      registerUnits(j)
       record("raised", j)
+
+  // Tells take-slot what a running job weighs now, under its mutex, so take-slot's runs see a raise
+  // as marshal's scheduler does. A landing job holds the landing lock rather than units, and a quick
+  // one holds none of the units take-slot shares, so neither is registered again.
+  registerUnits(j: Job)
+    if j.spec.landing || j.spec.quick || j.pid <= 0 then return
+    for ts in slots.toList
+      ts.lock()
+      ts.register(j.pid, j.spec.units)
+      ts.unlock()
 
   // How long a drain counts a job as running: its learned duration, or its deadline when nothing is
   // learned of its kind.
@@ -2122,6 +2133,8 @@ class Daemon(
       val job = rebuilt(sj)
       running += job
       watch(job)
+      // take-slot sees what it weighs as this image does, a raise an older image left unregistered included
+      if !job.killed && !job.timedOut then registerUnits(job)
       if job.killed || job.timedOut then terminate(home, job.id, job.pgid, job.groups, None)
       // the old image's stopping again went with it: a job paused just before the restart
       // may have a process the STOP missed
