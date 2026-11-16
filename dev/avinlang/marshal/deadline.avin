@@ -18,8 +18,14 @@ private val Minute: long = 60000
 
 // How deadlines are learned. `window` runs are remembered per key; a key with fewer than `minRuns`
 // is not learned from; otherwise the deadline is `factor` times the median or `marginPct` percent of
-// the longest, whichever is greater, and never below `floorMs`.
-data Learning(window: int, minRuns: int, factor: long, floorMs: long, marginPct: long = 150)
+// the longest, whichever is greater, and never below `floorMs`. A learned deadline is enforced at
+// `enforcePct` percent of itself (config.json's `deadline_margin`, 1.5 by default), room for a run
+// slower than any so far; a kind's default and a given `--deadline` are enforced as they are.
+data Learning(window: int, minRuns: int, factor: long, floorMs: long, marginPct: long = 150, enforcePct: long = 150)
+
+// The factor learned deadlines are enforced at, unless config.json's `deadline_margin` says, in
+// percent: half again.
+val DefaultDeadlineMarginPct: long = 150
 
 val defaultLearning: Learning = Learning(20, 3, 2, 5 * Minute)
 
@@ -90,6 +96,23 @@ jobDeadline(
     None -> (defaultDeadlineMs(kind, landing), "none")
   val past = percentOf(overrunMs, learning.marginPct)
   if overrunMs > 0 && past > ms then LearnedDeadline(past, "overrun") else LearnedDeadline(ms, from)
+
+// A learned deadline as it is enforced: `enforcePct` percent of it, saturating. The ETA and the
+// expected duration are not widened by it; only the point at which the job is stopped is.
+enforcedMs(learning: Learning, learnedMs: long) -> long = percentOf(learnedMs, learning.enforcePct)
+
+// The deadline a job that names none is given and stopped at: `jobDeadline`, widened by
+// `enforcedMs` where it was learned (from a key of the chain, or from an overrun), and the kind's
+// default as it is where nothing was learned.
+enforcedDeadline(
+    learning: Learning,
+    kind: string,
+    landing: bool,
+    chain: Vector[(Vector[long], string)],
+    overrunMs: long
+) -> LearnedDeadline
+  val d = jobDeadline(learning, kind, landing, chain, overrunMs)
+  if d.from == "none" then d else LearnedDeadline(enforcedMs(learning, d.ms), d.from)
 
 // How long a job of this kind is expected to run: the median of its history, or half its default
 // deadline while too little is known. The scheduler's backfill reads it.

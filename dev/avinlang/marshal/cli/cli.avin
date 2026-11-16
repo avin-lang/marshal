@@ -131,7 +131,9 @@ Options of submit and run:
   --deadline <t>    stop it after t: minutes, or 90s, 30m, 2h (default: learned from the runs of
                     the same work, learned as --units is, never its kind alone: twice their
                     median or 1.5x the longest, whichever is later, at least 5m; and at least
-                    1.5x a run of it the deadline stopped, until it next succeeds)
+                    1.5x a run of it the deadline stopped, until it next succeeds; a learned
+                    deadline is then enforced at 1.5x itself, config.json's deadline_margin.
+                    With nothing learned: build 20m, test 45m, landing 120m, else 30m)
   --quiet-timeout <t>
                     stop it, with a stack sample, once its log has had no new output for t, written
                     as --deadline writes one; time paused does not count (default: none; run-type

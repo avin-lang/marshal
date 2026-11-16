@@ -2330,3 +2330,31 @@ beside its 31-core bursts.
   submit (a job cancelled while queued would leave a log of one line), and a header on every attempt
   (repeats what the first says). There is no `show` command; `status --json` already carries
   `project`, and `ls` keeps its columns.
+
+## A learned deadline is enforced with a margin (branch `deadline-margin`)
+
+**Settled on the user's delegation 2026-11-16.** The user asked for "say 50%" added to the learned
+running time. Bench job 4991 ran with no `--deadline` and was stopped at a learned 26m28s when the
+bench had grown to need about 90 minutes; the margin is for ordinary run-to-run variance, not for
+that case, which still wants a `--deadline`.
+
+- **A learned deadline is enforced at `deadline_margin` times itself** (`config.json`, default
+  `1.5`). Learning itself is unchanged (twice the median or 1.5 times the longest, at least the
+  floor); the margin is applied after it, to the deadline the job is stopped at. `status --json`'s
+  `deadline_ms`, `top`'s DEADLINE, the event log's `deadline_ms` and the timeout line give the
+  enforced deadline, and `stats`' DEADLINE does the same for a key with enough runs.
+- **What it does not touch**: a given `--deadline` (enforced exactly as given), a `--quick` job's
+  cap, a kind's default when nothing is learned (20m build, 45m test, 30m else, 120m landing:
+  already chosen to be generous), and the expected duration and ETA, which estimate the run and
+  not the stop.
+- **A deadline learned from an overrun is widened too.** It is learned from history as the others
+  are (1.5 times how long the stopped run ran), so it gets the same margin; a repeat of a stopped
+  run therefore grows by 2.25 times per stop rather than 1.5, which reaches a run that has really
+  outgrown its history in fewer kills. Weighed: leaving the overrun bound unwidened (but then a run
+  stopped at an enforced deadline would be given less room next time than the one that stopped it).
+- **The setting is a number from 1 to 100**, read to the nearest hundredth; `1` enforces the
+  learned deadline itself. Anything else (below 1, above 100, a string such as `"1.5"`, `true`,
+  `null`) keeps the daemon from starting with `` config.json: `deadline_margin` is a number from 1
+  to 100, such as 1.5 ``. The upper bound only keeps the arithmetic in range. Weighed: a percentage
+  (`50`, "add 50%"), which reads as the request did but is ambiguous beside the other factors; a
+  margin added in minutes, which a 30-second job and a 2-hour one cannot share.

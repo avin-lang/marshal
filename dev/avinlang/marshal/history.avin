@@ -146,7 +146,8 @@ private someIfAny(
 
 // The statistics of each history key among the jobs that match, in the order keys first ended. The
 // learned deadline is the one the daemon would give the next job of the key whose command has too
-// few runs of its own: learned from every successful run of the key in the log, whatever the filter.
+// few runs of its own: learned from every successful run of the key in the log, whatever the filter,
+// and widened by the deadline margin as the daemon enforces it.
 kindStats(ledger: Ledger, f: HistoryFilter, learning: Learning = defaultLearning) -> Vector[KindStats]
   val order = Buffer[string]()
   val groups = MutableMap[string, Buffer[EndedJob]]()
@@ -167,7 +168,8 @@ kindStats(ledger: Ledger, f: HistoryFilter, learning: Learning = defaultLearning
     val past = ledger.ends.toVector.filter(e -> e.how == "ok" && historyKey(e.kind, e.landing) == key).map(e -> e.runMs)
     KindStats(key, es.length, es.filter(e -> e.how == "ok").length, es.filter(e -> e.how == "timeout").length,
       someIfAny(timed, xs -> percentile(xs, 50)), someIfAny(timed, xs -> percentile(xs, 90)), someIfAny(timed, xs -> xs.max),
-      deadlineMs(learning, first.kind, first.landing, past),
+      if durationLearned(learning, past) then enforcedMs(learning, deadlineMs(learning, first.kind, first.landing, past))
+      else deadlineMs(learning, first.kind, first.landing, past),
       someIfAny(peaks, xs -> percentile(xs, 50)), someIfAny(peaks, xs -> xs.max)))
 
 // Time.

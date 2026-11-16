@@ -440,7 +440,8 @@ class Daemon(
 
   // The deadline a job of `s` is given when it names none: learned from the first key of its chain
   // with enough successful runs (deadline.avin), and at least half again what a run its deadline
-  // stopped since its work last succeeded ran, by the most particular key that remembers one.
+  // stopped since its work last succeeded ran, by the most particular key that remembers one; a
+  // learned one is enforced with config.json's `deadline_margin` (`enforcedDeadline`).
   learnedDeadline(s: JobSpec) -> marshal.LearnedDeadline
     var overrun: long = 0
     for k in marshal.overrunKeys(chainOf(s))
@@ -449,7 +450,7 @@ class Daemon(
           overrun = ms
           break
         None -> ()
-    marshal.jobDeadline(config.learning, s.kind, s.landing, chainIn(durations, s), overrun)
+    marshal.enforcedDeadline(config.learning, s.kind, s.landing, chainIn(durations, s), overrun)
 
   // Remembers that a job of `key` ran `ms` before its deadline stopped it.
   rememberOverrun(key: string, ms: long)

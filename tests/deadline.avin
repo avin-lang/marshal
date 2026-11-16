@@ -203,3 +203,88 @@ deadlineChain()
     marshal.LearnedDeadline(60 * minute, "overrun")
   )
   assertEq(marshal.jobDeadline(learning, "build", false, [], 0), marshal.LearnedDeadline(20 * minute, "none"))
+
+// The deadline a job of `chain` is enforced at, by `learning`.
+private enforced(
+    learning: Learning,
+    kind: string,
+    landing: bool,
+    chain: Vector[(Vector[long], string)],
+    overrunMs: long
+) -> marshal.LearnedDeadline = marshal.enforcedDeadline(learning, kind, landing, chain, overrunMs)
+
+private four(dir: Vector[long], cmd: Vector[long], norm: Vector[long], kp: Vector[long]) -> Vector[(Vector[long], string)] = [
+  (dir, "cmd+dir"),
+  (cmd, "cmd"),
+  (norm, "norm+project"),
+  (kp, "kind+project")
+]
+
+private threeOf(m: long) -> Vector[long] = Vector.fill(3, m * minute)
+
+@test("a learned deadline is enforced at half again itself, at every key of the chain")
+marginEveryKey()
+  assertEq(learning.enforcePct, 150)
+  // twice the median of 10-minute runs is 20 minutes, enforced at 30
+  assertEq(
+    enforced(learning, "build", false, four(threeOf(10), threeOf(11), threeOf(12), threeOf(13)), 0),
+    marshal.LearnedDeadline(30 * minute, "cmd+dir")
+  )
+  assertEq(
+    enforced(learning, "build", false, four([], threeOf(11), threeOf(12), threeOf(13)), 0),
+    marshal.LearnedDeadline(33 * minute, "cmd")
+  )
+  assertEq(
+    enforced(learning, "build", true, four([], [], threeOf(30), threeOf(1)), 0),
+    marshal.LearnedDeadline(90 * minute, "norm+project")
+  )
+  assertEq(
+    enforced(learning, "build", false, four([], [], [minute], threeOf(13)), 0),
+    marshal.LearnedDeadline(39 * minute, "kind+project")
+  )
+  // what is learned is unchanged: only what is enforced is widened
+  assertEq(
+    marshal.jobDeadline(learning, "build", false, four([], [], [minute], threeOf(13)), 0),
+    marshal.LearnedDeadline(26 * minute, "kind+project")
+  )
+
+@test("a deadline learned from a run its deadline stopped is widened too")
+marginOverrun()
+  // half again a 40-minute overrun is 60 minutes, enforced at 90
+  assertEq(
+    enforced(learning, "build", false, four([], [], threeOf(10), []), 40 * minute),
+    marshal.LearnedDeadline(90 * minute, "overrun")
+  )
+  assertEq(enforced(learning, "x", false, four([], [], [], []), long.MaxValue).ms, long.MaxValue)
+
+@test("a kind's default is enforced as it is, with or without a margin")
+marginNotOnDefault()
+  assertEq(enforced(learning, "build", false, [], 0), marshal.LearnedDeadline(20 * minute, "none"))
+  assertEq(enforced(learning, "test", false, four([], [], [], []), 0), marshal.LearnedDeadline(45 * minute, "none"))
+  assertEq(enforced(learning, "test", true, four([], [], [], []), 0), marshal.LearnedDeadline(120 * minute, "none"))
+  assertEq(enforced(learning, "docs", false, four(threeOf(1).take(2), [], [], []), 0), marshal.LearnedDeadline(30 * minute, "none"))
+  val wide = Learning(20, 3, 2, 5 * minute, 150, 300)
+  assertEq(enforced(wide, "build", false, [], 0), marshal.LearnedDeadline(20 * minute, "none"))
+
+@test("the margin is the configured factor: 1.0 enforces the learned deadline itself, 2.0 twice it")
+marginConfigured()
+  val exact = Learning(20, 3, 2, 5 * minute, 150, 100)
+  assertEq(
+    enforced(exact, "build", false, four(threeOf(10), [], [], []), 0),
+    marshal.jobDeadline(exact, "build", false, four(threeOf(10), [], [], []), 0)
+  )
+  assertEq(enforced(exact, "build", false, four(threeOf(10), [], [], []), 0).ms, 20 * minute)
+  val double = Learning(20, 3, 2, 5 * minute, 150, 200)
+  assertEq(enforced(double, "build", false, four(threeOf(10), [], [], []), 0).ms, 40 * minute)
+  // a floor-held deadline is widened from the floor
+  assertEq(enforced(learning, "build", false, four([1000, 1000, 1000], [], [], []), 0).ms, 15 * minute / 2)
+  // a huge one saturates
+  assertEq(enforced(learning, "x", false, four([1, 1, long.MaxValue], [], [], []), 0).ms, long.MaxValue)
+  assertEq(marshal.enforcedMs(learning, long.MaxValue / 2), long.MaxValue)
+
+@test("the expected duration is not widened by the margin")
+marginNotOnEta()
+  val runs = [10 * minute, 12 * minute, 14 * minute]
+  assertEq(marshal.expectedMs(learning, "test", false, runs), 12 * minute)
+  val e = marshal.expectationFor(learning, "test", false, runs, None, enforced(learning, "test", false, four(runs, [], [], []), 0).ms)
+  assertEq(e.ms, 12 * minute)

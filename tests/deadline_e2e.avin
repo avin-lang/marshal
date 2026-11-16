@@ -1,0 +1,62 @@
+module tests
+
+// End to end, the deadline margin: a job that names no deadline is enforced at `deadline_margin`
+// times what its command's runs teach, and `status --json` gives that enforced deadline; a given
+// `--deadline` and a kind's default are enforced as they are. The helpers are e2e.avin's and
+// reserve_e2e.avin's.
+import avin.fs
+
+// The deadline a queued job is enforced at, and where it came from, as `status --json` gives them.
+private enforcedOf(home: string, id: long) -> (Option[long], Option[string])
+  val j = statusJob(home, id)
+  (j.get("deadline_ms").flatMap(v -> v.asLong), j.get("deadline_from").flatMap(v -> v.asString))
+
+// In a home whose config.json is `config` (one unit, a 10-second floor, one run enough to learn
+// from), a command run once and then queued again behind a job holding the only unit: what the
+// queued one is enforced at. Another job given `--deadline 7m` and one of a command never run are
+// queued beside it, and must keep their 7 minutes and their kind's 30.
+private queuedDeadlines(config: string) -> Vector[(Option[long], Option[string])]
+  val home = newHome(config)
+  assertEq(m(home, "run", "--kind", "dm", "--units", "1", "--", "sleep", "0").code, 0)
+  val blocker = submitted(home, "--units", "1", "--deadline", "2m", "--", "sleep", "30")
+  assert(within(10000, () -> started(home, blocker)), "the blocker starts")
+  val learned = submitted(home, "--kind", "dm", "--units", "1", "--", "sleep", "0")
+  val given = submitted(home, "--kind", "dm", "--units", "1", "--deadline", "7m", "--", "sleep", "0")
+  // `sleep 3` would be the same command as `sleep 0`, and kind `dm` in this project has run
+  val unseen = submitted(home, "--kind", "fresh", "--units", "1", "--", "true")
+  val out = [enforcedOf(home, learned), enforcedOf(home, given), enforcedOf(home, unseen), enforcedOf(home, blocker)]
+  assertEq(m(home, "stop", "--force").code, 0)
+  cleanUp(home)
+  out
+
+private val Base: string = "\"units\": 1, \"deadline_floor\": \"10s\", \"learn_min_runs\": 1"
+
+@test("a learned deadline is enforced at half again itself by default; a given one and a kind's default are not")
+marginDefaultE2e()
+  val d = queuedDeadlines(s"{$Base}")
+  // a run of no time teaches the 10-second floor, enforced at 15
+  assertEq(d(0), (Some(long(15000)), Some("cmd+dir")))
+  assertEq(d(1), (Some(long(7 * 60000)), Some("given")))
+  assertEq(d(2), (Some(long(30 * 60000)), Some("none")))
+  assertEq(d(3), (Some(long(2 * 60000)), Some("given")))
+
+@test("deadline_margin 1 enforces the learned deadline itself, and 2 twice it")
+marginConfiguredE2e()
+  val one = queuedDeadlines(s"{$Base, \"deadline_margin\": 1}")
+  assertEq(one(0), (Some(long(10000)), Some("cmd+dir")))
+  assertEq(one(1), (Some(long(7 * 60000)), Some("given")))
+  assertEq(one(2), (Some(long(30 * 60000)), Some("none")))
+  val two = queuedDeadlines(s"{$Base, \"deadline_margin\": 2}")
+  assertEq(two(0), (Some(long(20000)), Some("cmd+dir")))
+  assertEq(two(1), (Some(long(7 * 60000)), Some("given")))
+  assertEq(two(2), (Some(long(30 * 60000)), Some("none")))
+
+@test("a daemon whose deadline_margin is below 1 or not a number does not start, and says why")
+marginRefusedE2e()
+  for config in ["{\"deadline_margin\": 0.5}", "{\"deadline_margin\": \"1.5\"}"]
+    val home = newHome(config)
+    val r = m(home, "status")
+    assertEq(r.code, 2)
+    assert(r.out.contains("did not start"), s"$config: ${r.out}")
+    assert(r.out.contains("`deadline_margin` is a number from 1 to 100"), s"$config: ${r.out}")
+    val _ = fs.removeDirAll(home)

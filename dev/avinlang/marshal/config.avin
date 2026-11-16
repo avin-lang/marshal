@@ -8,6 +8,8 @@ module dev.avinlang.marshal
 //                   machine's memory less `reserve`
 //   reserve         what the default memory budget leaves the rest of the machine ("8G")
 //   deadline_floor  the shortest deadline learning may give, as `--deadline` writes one ("5m")
+//   deadline_margin the factor a learned deadline is enforced at, a number at least 1 (1.5); a
+//                   given `--deadline` and a kind's default are enforced as they are (deadline.avin)
 //   learn_window    how many recent runs of a kind learning reads (20)
 //   learn_min_runs  how many runs a key needs before its units, memory or deadline are learned (3;
 //                   learning.avin)
@@ -90,7 +92,7 @@ readConfigOn(text: string, machineMemory: long, processors: Option[int]) -> Resu
   if j.asMembers.isEmpty then return Err("config.json holds an object")
   for key in j.keys
     if ![
-      "units", "memory", "reserve", "deadline_floor", "learn_window", "learn_min_runs", "take_slot", "keep_logs",
+      "units", "memory", "reserve", "deadline_floor", "deadline_margin", "learn_window", "learn_min_runs", "take_slot", "keep_logs",
       "keep_jobs", "keep_events", "keep_steps", "drain_after", "load_wait", "disk_min", "projects", "nofile",
       "polite_schedule", "raise_after"
     ].contains(key)
@@ -106,6 +108,7 @@ readConfigOn(text: string, machineMemory: long, processors: Option[int]) -> Resu
     Some(v) -> v.asString.flatMap(parseDeadline) match
       Some(ms) -> ms
       None -> return Err("config.json: `deadline_floor` is a deadline such as \"5m\" or \"90s\"")
+  val margin = deadlineMargin(j)?
   val window = whole(j, "learn_window", defaultLearning.window)?
   val minRuns = whole(j, "learn_min_runs", defaultLearning.minRuns)?
   if window < 1 || minRuns < 1 then return Err("config.json: `learn_window` and `learn_min_runs` are at least 1")
@@ -140,7 +143,7 @@ readConfigOn(text: string, machineMemory: long, processors: Option[int]) -> Resu
   Ok(
     Config(
       Budget(wholeUnits(units), memory),
-      Learning(window, minRuns, defaultLearning.factor, floor),
+      Learning(window, minRuns, defaultLearning.factor, floor, defaultLearning.marginPct, margin),
       takeSlot,
       retention,
       drainAfter,
@@ -152,6 +155,13 @@ readConfigOn(text: string, machineMemory: long, processors: Option[int]) -> Resu
       raiseAfter
     )
   )
+
+// `deadline_margin`, a number from 1 to 100, in percent to the nearest; 150 where it says none.
+private deadlineMargin(j: Json) -> Result[long, string] = j.get("deadline_margin") match
+  None -> Ok(DefaultDeadlineMarginPct)
+  Some(v) -> v.asReal.filter(x -> 1.0 <= x <= 100.0) match
+    Some(x) -> Ok(long(x * 100.0 + 0.5))
+    None -> Err("config.json: `deadline_margin` is a number from 1 to 100, such as 1.5")
 
 // A wait such as "10m" or "90s" at `key`, `absent` where it says none, and None for "never".
 private waitSetting(j: Json, key: string, absent: long) -> Result[Option[long], string]

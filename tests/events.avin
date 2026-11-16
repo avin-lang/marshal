@@ -326,6 +326,30 @@ configErrors()
       Err(e) -> assert(e.contains(why), s"$text: $e")
       Ok(c) -> fail(s"$text read as $c")
 
+@test("deadline_margin sets the factor learned deadlines are enforced at: 1.5 by default, 1 for none")
+configDeadlineMargin()
+  assertEq(marshal.readConfig("", 64 * G).ok.get.learning.enforcePct, 150)
+  assertEq(marshal.readConfig("{\"deadline_margin\": 1.5}", 64 * G).ok.get.learning.enforcePct, 150)
+  assertEq(marshal.readConfig("{\"deadline_margin\": 1}", 64 * G).ok.get.learning.enforcePct, 100)
+  assertEq(marshal.readConfig("{\"deadline_margin\": 1.0}", 64 * G).ok.get.learning.enforcePct, 100)
+  assertEq(marshal.readConfig("{\"deadline_margin\": 2}", 64 * G).ok.get.learning.enforcePct, 200)
+  assertEq(marshal.readConfig("{\"deadline_margin\": 1.25}", 64 * G).ok.get.learning.enforcePct, 125)
+  assertEq(marshal.readConfig("{\"deadline_margin\": 100}", 64 * G).ok.get.learning.enforcePct, 10000)
+  // the other learning settings are kept beside it
+  val c = marshal.readConfig("{\"deadline_margin\": 3, \"learn_window\": 5, \"deadline_floor\": \"7s\"}", 64 * G).ok.get
+  assertEq(c.learning, Learning(5, 3, 2, 7000, 150, 300))
+
+@test("a deadline_margin below 1, above 100, or not a number is refused")
+configDeadlineMarginErrors()
+  for text in [
+    "{\"deadline_margin\": 0.99}", "{\"deadline_margin\": 0}", "{\"deadline_margin\": -1.5}",
+    "{\"deadline_margin\": 100.5}", "{\"deadline_margin\": \"1.5\"}", "{\"deadline_margin\": \"50%\"}",
+    "{\"deadline_margin\": true}", "{\"deadline_margin\": null}", "{\"deadline_margin\": [1.5]}"
+  ]
+    marshal.readConfig(text, 64 * G) match
+      Err(e) -> assert(e == "config.json: `deadline_margin` is a number from 1 to 100, such as 1.5", s"$text: $e")
+      Ok(c) -> fail(s"$text read as $c")
+
 @test("the result line says how each job ended")
 resultLines()
   val done = (o: Outcome) -> marshal.resultLine(info(7, state = "done", outcome = Some(o), elapsed = 4200))

@@ -100,7 +100,8 @@ already knows: a learned reservation follows the work up and down, while a given
 once the work changes.
 
 **Deadlines, in short.** After 3 successful runs a command's deadline is learned (twice the median,
-or 1.5 times the longest, at least 5 minutes). Before that it is 20 minutes for a build, 45 for a
+or 1.5 times the longest, at least 5 minutes), and enforced at 1.5 times that (`deadline_margin`), so
+a run somewhat slower than any so far still finishes. Before that it is 20 minutes for a build, 45 for a
 test, 30 for anything else and 120 for a landing job — so a new command known to take longer needs
 `--deadline`. Time queued never counts against it.
 
@@ -775,7 +776,12 @@ is later, never under 5 minutes. A kind alone is never learned from. Until a key
 minutes for a build, 45 for a test, 30 for anything else and 120 for a landing job. A run its
 deadline stopped took at least that long, so until its work next exits 0, the deadline of the same
 work (its command, in its directory or anywhere, or made alike in its project) is at least 1.5
-times how long that run ran: a repeat is not stopped where it was. `--deadline` overrides all of it. A job
+times how long that run ran: a repeat is not stopped where it was. A deadline learned either way is
+then **enforced at `deadline_margin` times itself** (`config.json`, 1.5 by default): room for
+ordinary run-to-run variance beyond any run seen so far. `status --json`'s `deadline_ms`, `top`'s
+DEADLINE and the timeout line all give the deadline enforced; the expected duration and the ETA are
+not widened by it. A kind's default is enforced as it is. `--deadline` overrides all of it, and is
+enforced exactly as given. A job
 past its deadline has its busiest process sampled (where the system has `sample`, 5 seconds, to
 `jobs/<id>.sample.txt`, which the result line names), then its group gets TERM and, 5 seconds later,
 KILL. A job with `--quiet-timeout` is stopped the same way once its log's size has not changed for
@@ -830,6 +836,7 @@ starting, saying which. A change takes effect when the daemon next starts (`mars
 | `memory` | the machine's memory less `reserve` | the memory budget: a size such as `"56G"`, or bytes |
 | `reserve` | `"8G"` | what the default memory budget leaves the rest of the machine |
 | `deadline_floor` | `"5m"` | the shortest deadline learning may give |
+| `deadline_margin` | `1.5` | the factor a learned deadline is enforced at: a number from 1 (the learned deadline itself) to 100; a given `--deadline` and a kind's default are enforced as they are |
 | `learn_window` | `20` | how many recent successful runs deadline learning reads |
 | `learn_min_runs` | `3` | how many clean runs a key needs before units, memory or a deadline are learned from it, and before a given `--units` becomes a ceiling |
 | `raise_after` | `"90s"` | how long a running job must use more cores than it weighs before it weighs what it used; `"never"` only charges it what it uses |
