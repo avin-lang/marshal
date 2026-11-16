@@ -167,7 +167,8 @@ idleQuarter()
 
 @test("--units wins over what is learned, and run and submit say so when it is far off")
 givenWins()
-  val home = newHome(oneRun)
+  // three runs a ceiling, as by default: two runs advise but do not lower what was given
+  val home = newHome()
   fs.writeText(home + "/memory.json", sleepCores("k", "1.2, 0.4")).ok.get
   val far = m(home, "submit", "--kind", "k", "--units", "4", "--", "sleep", "30")
   assertEq(far.code, 0)

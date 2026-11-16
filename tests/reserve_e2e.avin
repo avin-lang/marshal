@@ -164,11 +164,12 @@ learnedPerDir()
   assertEq(resv(none), (long(0), false, "given"))
   // another kind in a directory that taught `test` learns nothing from it
   assertEq(resv(other), (long(0), false, "none"))
-  // a shell's -c is the command it runs; another command of the same kind learns nothing from it
+  // a shell's -c is the command it runs; another command of the same kind is not that command, and
+  // learns from the kind's runs in its project
   val viaShell = submitted(home, "--kind", "test", "--dir", home + "/big", "--", "sh", "-c", "sleep 30")
   assertEq(resv(viaShell), (600 * Mi, true, "cmd+dir"))
   val script = submitted(home, "--kind", "test", "--dir", home + "/big", "--", "true", "30")
-  assertEq(resv(script), (long(0), false, "none"))
+  assertEq(resv(script), (600 * Mi, true, "kind+project"))
   assert(lsRow(home, small).contains(" ~100M "), lsRow(home, small))
   // the source survives a restart
   restarted(home)
@@ -283,7 +284,7 @@ learnedPersists()
   val again = statusJob(home, submitted(home, "--kind", "live", "--", "sleep", "30"))
   assertEq(
     (again("resv").asLong, again("resv_from").asString),
-    (marshal.learnedPeak(marshal.defaultMemoryLearning, kept(dirKey)), Some("cmd+dir"))
+    (marshal.learnedPeak(marshal.MemoryLearning(3, 1, 0), kept(dirKey)), Some("cmd+dir"))
   )
   assertEq(m(home, "stop", "--force").code, 0)
   cleanUp(home)
