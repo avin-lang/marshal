@@ -441,6 +441,47 @@ landingRaiseRegistersE2e()
   assertEq(m(home, "stop", "--force").code, 0)
   cleanUp(home)
 
+@test("a running landing job is charged what it uses, so a development job that fits beside what it weighs waits")
+landingChargedE2e()
+  val home = newHome("{\"units\": 8, \"raise_after\": \"never\"}")
+  // weighs the 1 unit it gave, keeps 3 cores busy
+  val land = fakeSubmitted(home, (["--landing", "--units", "1"] ++ fakeWork(home, "l", "60", "3"))*)
+  assert(within(10000, () -> coresNow(home, land) >= 2.5), s"${statusJob(home, land)}")
+  // 1 + 6 fits a budget of 8 by what they weigh, but 3 + 6 does not by what the landing job uses
+  val next = submitted(home, "--kind", "n", "--units", "6", "--", "sleep", "30")
+  threads.sleep(millis(1500))
+  assertEq(statusJob(home, next)("state").asString, Some("queued"))
+  assert(statusJob(home, next).get("why").flatMap(v -> v.asString).getOrElse("").contains("units"), s"${statusJob(home, next)}")
+  // status counts it among the units in use
+  assert(statusOf(home)("units").asReal.exists(u -> u >= 2.5), statusOf(home).render)
+  // never raised with `raise_after` "never"
+  assertEq(unitsOf(home, land), (Some(1.0), Some(false)))
+  // the landing job ends: what it was charged is free, and the next starts
+  assertEq(m(home, "kill", land.toString()).code, 0)
+  assert(within(10000, () -> started(home, next)), s"${statusJob(home, next)}")
+  assertEq(m(home, "stop", "--force").code, 0)
+  cleanUp(home)
+
+@test("a landing job that uses more than it weighs for raise_after is raised, said in its event, status and ls, and holds what it weighs")
+landingRaisedE2e()
+  val home = newHome("{\"units\": 8, \"raise_after\": \"2s\"}")
+  val land = fakeSubmitted(home, (["--landing", "--units", "1"] ++ fakeWork(home, "l", "60", "3"))*)
+  assert(within(15000, () -> unitsOf(home, land).0.exists(u -> u >= 2.75)), s"${statusJob(home, land)}")
+  assertEq(statusJob(home, land)("units_from").asString, Some("live"))
+  assert(eventsOf(home, land).contains("raised"), s"${eventsOf(home, land)}")
+  // ls's UNITS shows what it weighs now, and FROM that it was raised
+  val row = lsRow(home, land)
+  assert(row.contains(" live/"), row)
+  val units = row.split(" ").toVector.filter(w -> w.nonEmpty)(3).split("→").toVector.last
+  assert(units.toRealOption().exists(u -> u >= 2.75), row)
+  assert(daemonLog(home).contains(s"job $land used"), daemonLog(home))
+  // what it weighs now (about 3) and a 6 do not fit 8
+  val next = submitted(home, "--kind", "n", "--units", "6", "--", "sleep", "30")
+  threads.sleep(millis(1500))
+  assertEq(statusJob(home, next)("state").asString, Some("queued"))
+  assertEq(m(home, "stop", "--force").code, 0)
+  cleanUp(home)
+
 @test("a restart registers a running job at what it weighs, mending a registration an older image left behind its raise")
 restartRegistersE2e()
   val home = newHome("{\"units\": 8, \"raise_after\": \"2s\"}")

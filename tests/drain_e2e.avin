@@ -67,7 +67,7 @@ drainBackfillE2e()
   val ev = events(home).find(e -> e("id").asLong == Some(brief) && e("event").asString == Some("started")).get
   assertEq(ev("backfilled_ahead_of").asLong, Some(big))
   assertEq(m(home, "wait", brief.toString()).code, 0)
-  val log = fs.readText(s"$home/jobs/$brief.log").getOrElse("")
+  val log = logOf(home, brief)
   assert(log.startsWith(s"marshal: backfilled ahead of $big\n"), log)
   // the running job ends: the drained job starts, then the one it held
   m(home, "kill", a.toString())

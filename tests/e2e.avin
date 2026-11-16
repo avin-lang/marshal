@@ -180,8 +180,66 @@ submitAndWait()
   val r = m(home, "wait", id.toString())
   assertEq(r.code, 0)
   assert(r.out.contains("job 1 exited 0"), r.out)
-  assertEq(fs.readText(s"$home/jobs/1.log").ok.get, "hello\n")
+  assertEq(logOf(home, 1), "hello\n")
   assertEq(eventsOf(home, 1), ["submitted", "started", "finished"])
+  cleanUp(home)
+
+// Job `id`'s log after the line it begins with (`marshal.logHeader`), "" where it has none.
+logOf(home: string, id: long) -> string
+  val text = fs.readText(s"$home/jobs/$id.log").getOrElse("")
+  if !text.startsWith(marshal.LogHeaderMark) then return text
+  val end = text.indexOf("\n")
+  if end < 0 then "" else text.drop(end + 1)
+
+// The line job `id`'s log begins with.
+headerOf(home: string, id: long) -> string =
+  fs.readText(s"$home/jobs/$id.log").getOrElse("").lines.toVector.headOption.getOrElse("")
+
+@test("a job's log begins with its id, its project and its directory: a repository, a worktree's main repository, a directory outside git")
+logHeaderProject()
+  val home = newHome()
+  fs.createDir(home + "/proj").ok.get
+  g(home + "/proj", "init", "-q")
+  // the temporary directory as git names it, links resolved (`/private/var/…`), since a worktree's
+  // .git file names its repository so
+  val base = g(home + "/proj", "rev-parse", "--show-toplevel").dropRight("/proj".charCount)
+  val repo = base + "/proj"
+  g(repo, "commit", "-q", "--allow-empty", "-m", "first")
+  g(repo, "worktree", "add", "-q", base + "/proj-fix")
+  fs.createDir(repo + "/sub").ok.get
+  fs.createDir(base + "/proj-fix/sub").ok.get
+  fs.createDir(base + "/plain").ok.get
+  val cases = [
+    (repo, repo),
+    (repo + "/sub", repo),
+    (base + "/proj-fix", repo),
+    (base + "/proj-fix/sub", repo),
+    (base + "/plain", base + "/plain")
+  ]
+  for (dir, project) in cases
+    val id = submitted(home, "--dir", dir, "--", "sh", "-c", "echo out")
+    assertEq(m(home, "wait", id.toString()).code, 0)
+    assertEq(headerOf(home, id), s"marshal: job $id, project $project, dir $dir")
+    // the job's own output follows it
+    assertEq(logOf(home, id), "out\n")
+    // and its events name the same project
+    val ev = events(home).find(e -> e("id").asLong == Some(id) && e("event").asString == Some("started")).get
+    assertEq(ev("project").asString, Some(project))
+  cleanUp(home)
+
+@test("a retried job's log has its header once, at the top, and a job that cannot start has one too")
+logHeaderOnce()
+  val home = newHome()
+  val r = m(home, "run", "--retries", "1", "--", "sh", "-c", "echo run; exit 1")
+  assertEq(r.code, 1)
+  val text = fs.readText(s"$home/jobs/1.log").ok.get
+  assert(text.startsWith(marshal.LogHeaderMark + "1, "), text)
+  assertEq(text.lines.filter(l -> l.startsWith(marshal.LogHeaderMark)).toVector.length, 1)
+  assertEq(logOf(home, 1), "run\nmarshal: attempt 2 of 2\nrun\n")
+  // a landing job is not niced, so marshal itself cannot start it
+  assertEq(m(home, "run", "--landing", "--", "no-such-program-marshal").code, 127)
+  assert(headerOf(home, 2).startsWith(marshal.LogHeaderMark + "2, "), headerOf(home, 2))
+  assert(logOf(home, 2).startsWith("marshal: could not start"), logOf(home, 2))
   cleanUp(home)
 
 @test("run exits with the job's own status and prints where its log is")
@@ -191,7 +249,7 @@ runExitStatus()
   assertEq(r.code, 3)
   assert(r.out.contains("job 1: log "), r.out)
   assert(r.out.contains("job 1 exited 3"), r.out)
-  assertEq(fs.readText(s"$home/jobs/1.log").ok.get, "out\nerr\n")
+  assertEq(logOf(home, 1), "out\nerr\n")
   cleanUp(home)
 
 @test("a job ended by a signal exits 128 plus the signal")
@@ -217,7 +275,7 @@ dirAndEnv()
   fs.createDir(home + "/work").ok.get
   val r = m(home, "run", "--dir", home + "/work", "--", "sh", "-c", "pwd; echo $MARSHAL_HOME")
   assertEq(r.code, 0)
-  val log = fs.readText(s"$home/jobs/1.log").ok.get.lines.toVector
+  val log = logOf(home, 1).lines.toVector
   assert(log(0).endsWith("/work"), log(0))
   assertEq(log(1), home)
   cleanUp(home)
@@ -294,7 +352,7 @@ memoryHoldsBack()
   assert(refused.out.contains("of memory"), refused.out)
   cleanUp(home)
 
-@test("a landing job jumps the queue and runs outside the unit budget")
+@test("a landing job jumps the queue and starts whatever units the others hold")
 landingJumps()
   val home = newHome("{\"units\": 1}")
   val busy = submitted(home, "--", "sleep", "1")
@@ -364,9 +422,11 @@ tailFollow()
   val id = submitted(home, "--", "sh", "-c", "for i in 1 2 3 4; do echo line $i; sleep 0.2; done; printf partial")
   val r = m(home, "tail", "-f", id.toString())
   assertEq(r.code, 0)
+  // the log from its first line, the header that names the job
   val lines = r.out.lines.toVector
-  assertEq(lines.take(5), ["line 1", "line 2", "line 3", "line 4", "partial"])
-  assert(lines(5).contains("exited 0"), r.out)
+  assert(lines(0).startsWith(marshal.LogHeaderMark + s"$id, "), r.out)
+  assertEq(lines.drop(1).take(5), ["line 1", "line 2", "line 3", "line 4", "partial"])
+  assert(lines(6).contains("exited 0"), r.out)
   val last = m(home, "tail", "-n", "2", id.toString())
   assertEq(last.out.lines.toVector, ["line 4", "partial"])
   assertEq(m(home, "tail", "99").code, 2)
@@ -969,7 +1029,7 @@ helpAfterDashDash()
   val home = newHome()
   val id = submitted(home, "--", "echo", "--help")
   assertEq(m(home, "wait", id.toString()).code, 0)
-  assertEq(fs.readText(s"$home/jobs/$id.log").ok.get.trim, "--help")
+  assertEq(logOf(home, id).trim, "--help")
   val run = split(home, "run", "--", "echo", "-h")
   assertEq(run.code, 0)
   assert(run.out.contains("exited 0"), run.out)
@@ -1128,7 +1188,7 @@ registration()
   assertEq(m(home, "kill", id.toString()).code, 0)
   m(home, "wait", id.toString())
   assertEq(held(home), [])
-  // a landing job holds land.lock instead, and counts no units
+  // a landing job holds land.lock instead, and registers no units with take-slot
   val land = submitted(home, "--landing", "--", "sleep", "60")
   assert(within(2000, () -> started(home, land)))
   assertEq(fs.readText(slots(home) + "/land.lock/pid").ok.get.trim, pidOf(home, land).toString())

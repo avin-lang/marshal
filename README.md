@@ -127,8 +127,8 @@ While it waits it moves through these states in `ls`:
 - `settling (…, overdue)`, red in `top`: it has waited past `load_wait` (15 minutes). Its log names
   the busiest processes outside marshal; it still waits. Quiet the machine, or kill it.
 
-Its log begins with `marshal exclusive: load 1.52 1.4 1.31; busiest outside marshal: WindowServer
-412 12.3%, …`, and gets another such line every 30 s, so a result can say whether anything disturbed
+After its header line, its log begins with `marshal exclusive: load 1.52 1.4 1.31; busiest outside
+marshal: WindowServer 412 12.3%, …`, and gets another such line every 30 s, so a result can say whether anything disturbed
 it. A landing job queued before the benchmark starts still goes first.
 
 ## Common mistakes
@@ -284,9 +284,9 @@ same usage to standard error and exits 2. After `--` nothing is an option, so `m
 | `--units-exact` | With `--units`: weigh exactly the units given, even where the command's runs used fewer. Refused without `--units`. |
 | `--mem <size>` | Memory it needs: `29G`, `512M` (powers of 1024). Default: the learned peak of the same command in its directory, or anywhere while it has not run in that directory; 0 until the command has run once. `--mem 0` reserves nothing and learns nothing. |
 | `--external` | Its work runs outside its own processes: `docker run`, a VM, or a command run as another account through `sudo` (see [Work outside the job's processes](#work-outside-the-jobs-processes)). It needs `--mem`, and is refused without it; it reserves exactly that and holds it whatever its process tree measures; its measured peak is never learned from, so its command's later jobs are not taught a near-zero peak. `ls` and `top` show its RESV with `@` before it (`@29G`), `status --json` gives `"external": true`, and `rerun` keeps it. A command whose first word (or the first after `sudo`) is `docker` with `run`, `compose`, `build` or `buildx`, or `docker-compose`, submitted without it gets a warning on stderr and is submitted all the same. |
-| `--landing` | The landing lane: starts before every development job, outside the unit budget, at normal priority, once its memory fits beside what runs; until then nothing else starts, so the running jobs drain for it. One landing job runs at a time. One whose memory alone exceeds the budget starts when nothing else runs. |
+| `--landing` | The landing lane: starts before every development job, whatever units the others hold, at normal priority, once its memory fits beside what runs; until then nothing else starts, so the running jobs drain for it. Once it runs, it is charged against the unit budget as any job is (what it weighs, or what it is measured using where that is more, and raised after `raise_after`), so the development jobs after it wait for the units it leaves. One landing job runs at a time. One whose memory alone exceeds the budget starts when nothing else runs. |
 | `--quick` | The quick lane, for a short job such as the tests of a small package: it starts at once, outside the unit budget, rather than queue for units behind long builds. At most 2 quick jobs run at a time; a third waits in the quick lane, ahead of development jobs, and `ls` shows it `queued (quick lane full)`. Its memory still counts: it starts only when its reservation (`--mem`, or its command's learned peak) fits in the budget's free memory, and holds it while it runs, so a development job may wait for it; until then it waits `queued (no memory)` and development jobs leave that memory to it. It is niced like a development job, never passes a landing job (one that drains the machine holds the quick lane too) nor an exclusive one, and its deadline is at most 2 minutes: 2m by default, a shorter `--deadline` kept, a longer one refused. Past it, it is stopped as any job past its deadline (`timeout`). `ls` and `top` mark its kind with `^`, `top` says `quick` for it running and `quick: 1/2` in the header; `status` names the lane while a quick job runs, and `status --json` has `quick` (running) and `quick_slots`, and `"quick":true` on the job. `rerun` keeps it; `run-type` and `train` take `--quick` too (a type's own deadline over the cap gives way to the cap). Not with `--landing`. When a job submitted without `--quick` is of a kind whose recent successful runs took under 2 minutes at p90 (at least 3 runs learned), `submit`, `run` and `run-type` print a one-line hint on stderr suggesting `--quick`; nothing moves the job into the lane but the option. |
-| `--exclusive` | The job owns the machine, for a benchmark. It starts only when no other marshal job runs, in any lane (development, quick, landing) and take-slot holds nothing; while it runs, nothing else starts, a landing job included. It never pauses or kills a running job: it waits for them, `queued (emptying)`, behind any job queued ahead of it that still waits (`queued (behind N)`). Every job queued after it waits for it, `queued (exclusive N)`, so no stream of short jobs can keep the machine from emptying — except a landing job: one queued before the exclusive job starts goes first, so a benchmark never holds up a release train. It weighs the whole unit budget (`--units` is ignored), is not niced, and keeps its `--deadline`. Its log begins with a line `marshal exclusive: load 1.52 1.4 1.31; busiest outside marshal: WindowServer 412 12.3%, mds 88 5%` (the load averages, and the 5 busiest processes that are not marshal's or the job's own), and gets another every 30 s, so a result can tell whether anything disturbed it. `ls` and `top` mark its kind with `#`, `top` says `exclusive` for it running, `status` says `exclusive job N owns the machine`, and `status --json` has `exclusive` (the running one's id) and `"exclusive":true` on the job. Two exclusive jobs run one after the other; `rerun` keeps it. Not with `--landing` or `--quick`. |
+| `--exclusive` | The job owns the machine, for a benchmark. It starts only when no other marshal job runs, in any lane (development, quick, landing) and take-slot holds nothing; while it runs, nothing else starts, a landing job included. It never pauses or kills a running job: it waits for them, `queued (emptying)`, behind any job queued ahead of it that still waits (`queued (behind N)`). Every job queued after it waits for it, `queued (exclusive N)`, so no stream of short jobs can keep the machine from emptying — except a landing job: one queued before the exclusive job starts goes first, so a benchmark never holds up a release train. It weighs the whole unit budget (`--units` is ignored), is not niced, and keeps its `--deadline`. After its header line, its log begins with a line `marshal exclusive: load 1.52 1.4 1.31; busiest outside marshal: WindowServer 412 12.3%, mds 88 5%` (the load averages, and the 5 busiest processes that are not marshal's or the job's own), and gets another every 30 s, so a result can tell whether anything disturbed it. `ls` and `top` mark its kind with `#`, `top` says `exclusive` for it running, `status` says `exclusive job N owns the machine`, and `status --json` has `exclusive` (the running one's id) and `"exclusive":true` on the job. Two exclusive jobs run one after the other; `rerun` keeps it. Not with `--landing` or `--quick`. |
 | `--quiet-load <n>` | With `--exclusive`: also wait, before starting, until the 1-minute load average has stayed below `n` for a whole minute — work outside marshal it cannot stop but can wait out. The load is read every second; a reading at or above `n` starts the minute again. Where the load cannot be read, it does not hold the job. `--quiet-load auto` is a quarter of the processors (`sysctl hw.ncpu`), at least 1: 4.5 on an 18-core Mac, whose desktop alone keeps the load near 2–3. While marshal's own jobs run it reserves the machine as any exclusive job does, whatever the load: it is `queued (emptying)` and nothing queued after it starts, so marshal's own load cannot keep it waiting. Once nothing of marshal's runs and the load still holds it, it is `settling`: it keeps the machine, `ls` shows `settling (load 7.9 ≥ 4)` while the load is at or above `n` and `settling (load 3.5 < 4 for 20.0s)` while the minute runs, with the wait for the load in ELAPSED, `status --json` lists it under `settling` with `"state": "settling"`, `settling_ms` and `load_overdue`, and `status` counts it apart (`0 running, 2 queued, 1 settling`). A settling job is neither running nor queued: no deadline, ETA or learned duration counts its wait. It never starts before the load settles. Past `load_wait` (`config.json`, 15 minutes, counted from when it began settling) it is overdue: `load_overdue` is true, `ls` adds `overdue`, `top` draws its row red, and its log gets one line, `marshal exclusive: overdue: waited 15m00s for the load to fall below 2; the load is 2.13; still waiting`, then the busiest processes outside marshal. It still waits; quiet the machine or kill it. A settling job keeps all of this across `marshal restart`. |
 | `--urgent` | Queues it in its lane's urgent band: ahead of every job not urgent, behind the urgent jobs already queued. It runs un-niced, as a landing job does, backfilled or not; it still weighs its learned units, or its kind's default without `--units`. `ls` and `top` mark its kind with `!` (`test!`), after the lane's mark when it has one (`test^!` quick, `test*!` landing); the mark stays while it runs and after it ends, and `priority <id> --urgent` adds it too. |
 | `--dir <d>` | Where it runs, relative to the current directory. Default: the current directory. |
@@ -322,6 +322,19 @@ parameters are wrong. marshal's own failures (a bad command line, an unknown job
 `wait --until` exits 1 when no daemon can be reached.
 
 ### Reading a log: tail and grep
+
+Every job's log, `~/.marshal/jobs/<id>.log`, begins with one line naming the job, its project and
+the directory it runs in:
+
+```
+marshal: job 4697, project /Users/me/dev/sysl, dir /Users/me/dev/sysl-train315
+```
+
+The project is the main repository of the job's directory: a worktree's is the repository it was
+made from, and a directory outside git is its own (the same project `status --json` gives as
+`project`). It is written as the first attempt starts; a retry's output follows the earlier
+attempts' under it (`marshal: attempt 2 of 3`), and the job's own output comes after it, so its
+first line is the log's second (`grep -n` counts it).
 
 `marshal tail <id>` prints the end of the job's log (`-n <lines>`), and `-f` follows it until the
 job ends. `marshal grep <id> <pattern>` searches a job's log without reading all of it into your
@@ -466,8 +479,9 @@ ends: nothing polls.
   its units and memory fit beside what runs. The queue is first come, first served; a later job
   may start ahead of a head that does not fit only when it fits now and is expected to end before
   the head could start, so it never delays the head.
-- **Lanes.** Each lane has its own queue. The **landing** lane always goes first, outside the unit
-  budget, one job at a time; the **quick** lane runs up to 2 short jobs outside the unit budget; the
+- **Lanes.** Each lane has its own queue. The **landing** lane always goes first, whatever units
+  the others hold, one job at a time, and while its job runs that job's units count against the
+  budget as any running job's do; the **quick** lane runs up to 2 short jobs outside the unit budget; the
   **development** lane is everything else. An **exclusive** job stands apart from all three and owns
   the machine while it runs.
 - **Bounded waiting.** The urgent band and priorities let later jobs start ahead of earlier ones, so
@@ -538,8 +552,8 @@ ends: nothing polls.
   2/3` for another part; a fraction above 0 and at most 1), so the machine never jams under you;
   `marshal polite off` gives the whole budget back at once. Each prints the state it leaves, such as
   `polite ¾: 9 of 12 units, 42G of 56G memory`. The units are rounded down to a quarter and the
-  memory to a mebibyte. Every lane counts against the polite budget: a landing job's units and a
-  quick job's are counted beside the development jobs' while they run, and a landing job waits for
+  memory to a mebibyte. Every lane counts against the polite budget: a quick job's units are counted
+  beside the development and landing jobs' while it runs, and a landing job waits for
   its units to fit as it waits for its memory, draining the machine meanwhile. **A job bigger than
   the polite budget runs alone**, single file: it is neither refused nor starved; it waits until
   nothing else of marshal's runs (`ls`: `queued (polite: runs alone)`), holds back the jobs queued

@@ -77,7 +77,7 @@ exclE2eHoldsEveryLane()
   assertEq(m(home, "wait", q.toString()).code, 0)
   assert(allStartedAfter(home, [d, q, l], x), events(home).map(e -> e.render).mkString("\n"))
   // not niced, as a landing job is not
-  val niceOf = (id: long) -> fs.readText(s"$home/jobs/$id.log").ok.get.lines.filter(
+  val niceOf = (id: long) -> logOf(home, id).lines.filter(
     t -> !t.startsWith(marshal.ExclusiveMark)
   ).toVector(0).trim.toInt()
   assertEq(niceOf(x), niceOf(l))
@@ -269,7 +269,9 @@ exclE2eOverdueStillWaits()
   assertEq(m(home, "wait", d.toString()).code, 0)
   assert(at(home, x, "finished") < at(home, d, "started"))
   assert(!m(home, "ls").out.contains("overdue"), m(home, "ls").out)
-  val log = fs.readText(home + s"/jobs/$x.log").getOrElse("")
+  // the header goes in ahead of what it was told while it waited
+  assert(headerOf(home, x).startsWith(marshal.LogHeaderMark + s"$x, "), headerOf(home, x))
+  val log = logOf(home, x)
   assert(log.startsWith(waited), log)
   assert(!log.contains("started after waiting"), log)
   cleanUp(home)
@@ -364,8 +366,8 @@ exclE2eSamplesFromTable()
     line,
     "marshal exclusive: load 1.5 1.25 1; busiest outside marshal: outsider 4242 55.5%, launchd 1 0.5%"
   )
-  // the first is written before the job's own output
-  val log = fs.readText(s"$home/jobs/$x.log").ok.get.lines.toVector
+  // the first is written after the header and before the job's own output
+  val log = logOf(home, x).lines.toVector
   assert(log(0).startsWith(marshal.ExclusiveMark) && log.contains("out"), log.mkString("\n"))
   // a job that is not exclusive gets none
   val plain = submitted(home, "--", "sleep", "0.8")

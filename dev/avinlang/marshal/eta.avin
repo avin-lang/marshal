@@ -149,7 +149,7 @@ startEstimates(
   val polite = isPolite(budget)
   for r in running
     if r.quick && !polite then continue
-    changes += (if r.leftMs < 0 then Never else r.leftMs, if r.landing && !polite then 0 else r.units, r.memory)
+    changes += (if r.leftMs < 0 then Never else r.leftMs, r.units, r.memory)
   val freeUnits = budget.units - used
   val freeMemory = budget.memory - memory
   var floor: long = 0

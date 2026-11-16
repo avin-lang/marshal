@@ -49,6 +49,15 @@ projects()
   assertEq(projectIn(t, "/u/dev"), "/u/dev")
   assertEq(projectIn(t, ""), "")
 
+@test("a job's log header names the job, its project and its directory; a job with no project said is its directory's")
+logHeaderText()
+  assertEq(
+    marshal.logHeader(12, "/u/dev/avin-lang/avin", "/u/dev/avin-lang/avin-train-al"),
+    "marshal: job 12, project /u/dev/avin-lang/avin, dir /u/dev/avin-lang/avin-train-al\n"
+  )
+  assertEq(marshal.logHeader(3, "", "/u/scratch/s1"), "marshal: job 3, project /u/scratch/s1, dir /u/scratch/s1\n")
+  assert(marshal.logHeader(1, "/p", "/d").startsWith(marshal.LogHeaderMark))
+
 @test("a worktree torn down since its job ran is the repository beside it its name begins with")
 goneWorktrees()
   val t = gitTree()

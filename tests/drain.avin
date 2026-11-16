@@ -269,7 +269,7 @@ liveRunning(deadlines: bool) -> Vector[Started]
   val gate = dlr(1800, 4, 5 * minute, 13 * minute, d(120 * minute), memory = 6 * Gib)
   // backfilled ahead of the drain at 14m45s: a test learned at 25 seconds, given 45 minutes
   val test = dlr(1814, 4, 14 * minute + 45 * 1000, 25 * 1000, d(45 * minute), memory = 19 * Gib)
-  // a landing job, outside the unit budget
+  // a landing job, whose 1 unit counts beside the others'
   val landing = dlr(1820, 1, 19 * minute, 20 * minute, d(120 * minute), memory = 10 * Gib, landing = true)
   [gate, test, landing]
 
@@ -279,10 +279,11 @@ liveQueue() -> Vector[Waiting]
     dw(1815, 1, 14 * minute, 20 * 1000, 40 * minute, 12 * Gib),
     dw(1816, 4, 14 * minute, 25 * 1000, 45 * minute, 28 * Gib),
     dw(1817, 4, 14 * minute, 25 * 1000, 45 * minute, 28 * Gib),
-    dw(1819, 4, 16 * minute, 25 * 1000, 30 * minute, 1)
+    dw(1819, 3, 16 * minute, 25 * 1000, 30 * minute, 1)
   ]
+  // 1802 asks every unit the running landing job leaves
   val rest = [
-    dw(1802, 12, 0, 150 * 1000, 5 * minute, 6 * Gib, learned = false),
+    dw(1802, 11, 0, 150 * 1000, 5 * minute, 6 * Gib, learned = false),
     dw(1811, 4, 4 * minute, 13 * minute, 120 * minute, 6 * Gib),
     dw(1818, 4, 8 * minute, 90 * minute, 180 * minute, 4 * Gib, learned = false)
   ]
@@ -305,7 +306,8 @@ backfillPastEstimateBeforeTheDrain()
     marshal.drainStart(liveBudget, liveRunning(true), liveQueue(), now, liveIdleTakeSlot, fair),
     Some((long(1802), 125 * minute))
   )
-  // 1819 fits the 4 free units but not beside 1815; the rest do not fit now
+  // 1819 fits the 3 free units (the landing job holds 1 of the 12) but not beside 1815; the rest do
+  // not fit now
   val whys = marshal.waits(liveBudget, liveRunning(true), liveQueue(), now, liveIdleTakeSlot, fair).map(w -> (w.0, w.2))
   assertEq(
     whys,
@@ -319,7 +321,7 @@ backfillPastEstimateBeforeTheDrain()
       (long(1818), DrainingFor(1802))
     ]
   )
-  // without 1815, 1816 and 1817 fit the units but not the memory, and 1819 takes the 4 free units
+  // without 1815, 1816 and 1817 fit the units but not the memory, and 1819 takes the 3 free units
   val without = liveQueue().filter(w -> w.id != 1815)
   assertEq(marshal.schedule(liveBudget, liveRunning(true), without, now, liveIdleTakeSlot, fair), [long(1819)])
   // no take-slot directory at all decides the same
@@ -399,7 +401,7 @@ noBackfillBehindTakeSlot()
   assertEq(startsAt([], q, waitBound, o), [])
   assertEq(whysAt([], q, waitBound, o), [(long(1), ForTakeSlot), (long(2), DrainingFor(1))])
 
-@test("a landing job keeps its lane while a development job drains: it holds no development units")
+@test("a landing job keeps its lane while a development job drains")
 landingGoesOnWhileDraining()
   val r = [dr(10, 4)]
   val q = [dl(30, 11 * minute), dj(20, 1, 5 * minute, expected = 2 * minute), dj(1, 12, 0)]

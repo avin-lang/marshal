@@ -105,20 +105,41 @@ startedEarlier()
   assertEq(marshal.schedule(budget, r, [dev(2, 4), dev(3, 1, expected = hour / 3)], hour / 2), ids(3))
   assertEq(marshal.schedule(budget, r, [dev(2, 4), dev(3, 1, expected = 2 * hour / 3)], hour / 2), [])
 
-@test("a landing job starts at once, outside the unit budget, ahead of the queue")
+@test("a landing job starts at once, whatever units the others hold, ahead of the queue")
 landingJumpsTheQueue()
   val r = [running(1, 12)]
   assertEq(marshal.schedule(budget, r, [dev(2, 1), land(3)], 0), ids(3))
   assertEq(marshal.schedule(budget, [], [dev(2, 1), land(3)], 0), ids(3, 2))
+  // over the budget already, by what a running job is charged
+  assertEq(marshal.schedule(budget, [running(1, 20)], [land(3)], 0), ids(3))
 
 @test("the landing lane holds one landing job at a time, in arrival order")
 oneLandingAtATime()
   assertEq(marshal.schedule(budget, [], [land(1), land(2)], 0), ids(1))
   assertEq(marshal.schedule(budget, [landing(1)], [land(2), dev(3, 4)], 0), ids(3))
 
-@test("a running landing job takes no units from development jobs")
-landingTakesNoUnits()
-  assertEq(marshal.schedule(budget, [landing(1)], [dev(2, 12)], 0), ids(2))
+@test("a running landing job's units count against the development jobs after it")
+landingTakesUnits()
+  // it weighs 4 of the 12
+  assertEq(marshal.schedule(budget, [landing(1)], [dev(2, 8)], 0), ids(2))
+  assertEq(marshal.schedule(budget, [landing(1)], [dev(2, 9)], 0), [])
+  assertEq(marshal.schedule(budget, [landing(1)], [dev(2, 12)], 0), [])
+
+@test("a running landing job charged more than it weighs holds back what it uses")
+landingChargedLive()
+  // what the daemon passes for it is what it is charged: 10 measured, though it weighs 4
+  val charged = Started(1, 10, 0, true, 0, hour)
+  assertEq(marshal.schedule(budget, [charged], [dev(2, 2)], 0), ids(2))
+  assertEq(marshal.schedule(budget, [charged], [dev(2, 3)], 0), [])
+  // and over the budget, nothing of the development lane starts
+  assertEq(marshal.schedule(budget, [Started(1, 16, 0, true, 0, hour)], [dev(2, 1)], 0), [])
+
+@test("a landing job starting takes its units from the development jobs decided after it")
+landingStartingTakesUnits()
+  assertEq(marshal.schedule(budget, [], [land(1), dev(2, 8)], 0), ids(1, 2))
+  assertEq(marshal.schedule(budget, [], [land(1), dev(2, 9)], 0), ids(1))
+  // a development job ahead of it in arrival is still decided after the landing lane
+  assertEq(marshal.schedule(budget, [], [dev(2, 9), land(3)], 0), ids(3))
 
 @test("a landing job starts only when its memory fits beside what runs, and its memory then counts")
 landingMemory()

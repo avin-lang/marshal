@@ -90,8 +90,14 @@ ticksRead()
   val ncpu = marshal.logicalCpus()
   assert(ncpu.exists(n -> n >= 1), s"$ncpu")
   val a = marshal.machineTicks().get
-  threads.sleep(millis(200))
-  val b = marshal.machineTicks().get
+  // the kernel's counters can stand still for a moment (busyCores is then -1, nothing to say), so
+  // read again until they have moved, for up to 2 s
+  var b = a
+  var waited = 0
+  while b == a && waited < 2000
+    threads.sleep(millis(200))
+    waited += 200
+    b = marshal.machineTicks().get
   val busy = marshal.busyCores(a, b, ncpu.get)
   assert(0 <= busy <= long(ncpu.get) * 100, s"$a $b $busy")
 

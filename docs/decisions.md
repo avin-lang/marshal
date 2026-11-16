@@ -19,7 +19,8 @@ budgets, and a job's leftover processes being sent TERM when its main process en
   fewer than `learn_min_runs` runs are known, and never more than the job's deadline. Why: the
   deadline is meant as a bound, the median as the typical run.
 - **The landing lane holds one job, outside the unit budget, and its memory counts against
-  development jobs.** Why: take-slot's `land.lock` is one reserved slot that nothing slows; counting
+  development jobs.** (Since `project-header` a running landing job's units count too; see that
+  entry.) Why: take-slot's `land.lock` is one reserved slot that nothing slows; counting
   its memory makes development jobs wait for it rather than risk swapping it. (It was first outside
   the memory budget too; see the next entry.)
 - **A landing job starts only when its memory fits beside what runs, and while it waits for memory
@@ -2297,3 +2298,35 @@ each of them:
   `kind+project`, which covers other work.
 - **memory.json is version 5**; a file before it takes every project key from the event log and
   keeps its command keys.
+
+## A running landing job's units count; every log names its project (branch `project-header`)
+
+**The finding (sysl's train315, job 4697, 2026-11-15).** A landing job of kind `sysl-train` weighed
+the class default of 4.5 units and was seen at 31.2 cores, yet `ls` showed UNITS 4.5 throughout.
+Neither live charging nor the raise exempts a landing job: it was measured and charged like any
+other. It was never raised because it never sustained more than 4.5 cores for the 90 s window: its
+peak was 31.2 but it averaged 2.31 cores (3308 s of processor time in 1430 s) and held 1.01, so its
+bursts ended before the window did. `ls` shows what a job weighs now (raised: FROM says `live`), and
+USED beside it showed the bursts. What did exempt it was admission: the landing lane sat outside
+the unit budget, so whatever it was charged held back nothing, and development jobs were admitted
+beside its 31-core bursts.
+
+- **A running landing job's units count against the budget, as every running job's do**: its
+  charge (`charged`: what it weighs, or what it was last measured using where that is more, raised
+  after `raise_after`) is in the development jobs' sum, in `status`'s units and in the start
+  estimates. Its own start is unchanged: it starts whatever units the others hold, once its memory
+  fits, so a release train is never queued behind development work; a landing job starting takes its
+  units from the development jobs decided after it in the same pass. Take-slot registration stays
+  as 0.3.23 decided: a landing job holds `land.lock`, never units in `slot-units`. A quick job still
+  counts only against a polite budget. **REVISIT with the user**: this reverses the first entry of
+  this file ("outside the unit budget"); weighed: counting only what it uses beyond what it weighs
+  (keeps the lane's reserved slot free of development jobs' arithmetic, but a train that idles at
+  1 core would still cost nothing and one that bursts would cost its whole burst), and leaving the
+  lane outside (the finding).
+- **Every job's log begins with `marshal: job <id>, project <project>, dir <dir>`**, the project
+  being the one 0.3.22 works out (a worktree's main repository; a directory outside git is its own).
+  Written as the first attempt starts, ahead of a line an overdue exclusive job was told while it
+  waited; a retry's `marshal: attempt` line and the job's output follow it. Weighed: writing it at
+  submit (a job cancelled while queued would leave a log of one line), and a header on every attempt
+  (repeats what the first says). There is no `show` command; `status --json` already carries
+  `project`, and `ls` keeps its columns.

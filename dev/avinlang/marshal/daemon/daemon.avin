@@ -1235,29 +1235,27 @@ class Daemon(
       "nice",
       (["-n", level.toString()] ++ spec.cmd)*
     )
-    // A retry's output follows the earlier attempts' in the job's log.
+    // The first attempt's log begins with the job, its project and its directory (`logHeader`),
+    // ahead of the line an overdue exclusive job's log already holds; a retry's output follows the
+    // earlier attempts'. Everything else is added after it.
     // (a note a log cannot take is lost; the job itself is not affected)
-    if job.attempt > 1 then val _ = fs.appendText(job.log, s"marshal: attempt ${job.attempt} of ${spec.retries + 1}\n")
-    val first = job.attempt == 1
+    if job.attempt > 1
+      val _ = fs.appendText(job.log, s"marshal: attempt ${job.attempt} of ${spec.retries + 1}\n")
+    else
+      val before = if job.overdue then fs.readText(job.log).getOrElse("") else ""
+      val _ = fs.writeText(job.log, marshal.logHeader(job.id, job.project, spec.dir) + before)
     for id in ahead.toList
-      val line = s"marshal: backfilled ahead of $id\n"
-      val _ = if first then fs.writeText(job.log, line) else fs.appendText(job.log, line)
-    // An exclusive job's log begins with what else the machine is doing as it starts; the job's
-    // own processes are not started yet, so none of them is in it.
-    // a job that settled gives the machine's claim up as it starts, and a retry settles afresh; an
-    // overdue one's log already holds the line that said so, and keeps it
-    val told = job.overdue
+      val _ = fs.appendText(job.log, s"marshal: backfilled ahead of $id\n")
+    // An exclusive job's log then says what else the machine is doing as it starts; the job's own
+    // processes are not started yet, so none of them is in it.
+    // a job that settled gives the machine's claim up as it starts, and a retry settles afresh
     job.settling = false
     job.settlingSince = None
     job.overdue = false
     if spec.exclusive
-      val line = sampleNow(job) + "\n"
-      val _ = if first && !told then fs.writeText(job.log, line) else fs.appendText(job.log, line)
+      val _ = fs.appendText(job.log, sampleNow(job) + "\n")
       job.sampledMs = now()
-    val placed = program.inDir(spec.dir)
-    var command = (
-      if job.attempt > 1 || ahead.isDefined || spec.exclusive then placed.appendTo(job.log) else placed.toFile(job.log)
-    ).errorsToOutput().inNewGroup
+    var command = program.inDir(spec.dir).appendTo(job.log).errorsToOutput().inNewGroup
     for (name, value) in spec.env do command = command.withEnv(name, value)
     // every job knows its id and marshal's home: a type's run keeps its files under both
     command = command.withEnv("MARSHAL_JOB", job.id.toString()).withEnv("MARSHAL_HOME", home)
@@ -1284,7 +1282,7 @@ class Daemon(
       Err(e) ->
         if spec.landing then slots.foreach(ts -> ts.releaseLanding(0))
         val why = s"marshal: could not start `${spec.cmd(0)}` in ${spec.dir}: ${e.message}\n"
-        val _ = if job.attempt > 1 then fs.appendText(job.log, why) else fs.writeText(job.log, why)
+        val _ = fs.appendText(job.log, why)
         record("started", job, [("pgid", Json.num(0))])
         attemptEnded(job, Outcome.Exited(127), "finished")
 
@@ -1744,9 +1742,7 @@ class Daemon(
         if marshal.commandLearned(j.durationFrom) then j.expectedMs else -1
       ))
     val b = budgetNow()
-    val used = running.filter(
-      j -> marshal.isPolite(b) || (!j.spec.landing && !j.spec.quick)
-    ).map(j -> chargeOf(j)).sum + outside.units
+    val used = running.filter(j -> marshal.isPolite(b) || !j.spec.quick).map(j -> chargeOf(j)).sum + outside.units
     marshal.startEstimates(b, used, running.map(j -> holds(j)).sum, runningNow, queuedNow)
 
   // What take-slot holds and waits for, read under its mutex; None without a take-slot directory.
@@ -1805,7 +1801,8 @@ class Daemon(
     )
 
   private usageWith(outside: Option[Outside]) -> Usage
-    val dev = running.filter(j -> !j.spec.landing && !j.spec.quick)
+    // the units admission counts against the budget: every running job's but a quick one's
+    val dev = running.filter(j -> !j.spec.quick)
     Usage(
       dev.map(j -> chargeOf(j)).sum,
       config.budget.units,

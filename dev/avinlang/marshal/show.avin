@@ -4,6 +4,15 @@ import avin.time
 
 // What the command line prints: a job's one-line result, a listing, the budget's use.
 
+// What every job's log begins with: a line `marshal: job 12, project /u/dev/sysl, dir /u/dev/sysl-fix`
+// naming the job, its project (the main repository its directory is in, learning.avin's
+// `projectOf`; a directory outside git is its own) and the directory it runs in. Written once, as its
+// first attempt starts; a retry's output follows it.
+val LogHeaderMark: string = "marshal: job "
+
+logHeader(id: long, project: string, dir: string) -> string =
+  s"$LogHeaderMark$id, project ${if project.isEmpty then dir else project}, dir $dir\n"
+
 // The line `wait` and `run` end with.
 resultLine(j: JobInfo) -> string
   val took = formatMillis(j.elapsedMs)

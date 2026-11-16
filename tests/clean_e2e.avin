@@ -165,7 +165,7 @@ cleanThenRerun()
   assertEq(r.code, 0)
   assertEq(r.out.trim, "3")
   assertEq(m(home, "wait", "3").code, 0)
-  assertEq(fs.readText(s"$home/jobs/3.log").ok.get, "job 1\n")
+  assertEq(logOf(home, 3), "job 1\n")
   assertEq(m(home, "clean").out.contains("removed job 3's log"), true)
   cleanUp(home)
 

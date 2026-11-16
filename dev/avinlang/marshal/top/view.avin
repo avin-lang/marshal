@@ -950,7 +950,7 @@ memoryText(u: Usage) -> string =
     if u.machineMemory > 0 then s"   machine ${marshal.roundSize(u.machineMemory)}" else ""
   )
 
-// The units of the landing job that runs, which the landing lane holds outside the unit budget, after
+// The units of the landing job that runs, the part of the units line that is the landing lane's, after
 // the units line from column `x` of row `y`: `   landing 1`, in the landing job's colour. Nothing while
 // no landing job runs, and nothing where the whole of it does not fit on the screen.
 landingUnits(g: Grid, x: int, y: int, o: Overview)

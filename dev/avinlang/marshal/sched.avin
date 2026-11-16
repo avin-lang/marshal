@@ -8,9 +8,11 @@ module dev.avinlang.marshal
 // - The queue is first come, first served: the job at its head is never overtaken by one that would
 //   delay it. A later job may start ahead of a head that does not fit only if it fits now AND it is
 //   expected to end before the head could start (backfill), so the head starts no later for it.
-// - The landing lane holds one landing job at a time, outside the unit budget: a landing job starts
-//   when the lane is free and its memory fits beside what is running, whatever units development
-//   jobs hold. When its memory does not fit, it drains the machine: nothing else starts, neither a
+// - The landing lane holds one landing job at a time: a landing job starts when the lane is free and
+//   its memory fits beside what is running, whatever units development jobs hold. Once it runs, its
+//   units count against the budget as a development job's do (what it weighs, or what it is measured
+//   using where that is more, raised as any job is), so the development jobs after it wait for what
+//   it leaves. When its memory does not fit, it drains the machine: nothing else starts, neither a
 //   development job (not even as backfill) nor a take-slot waiter, until running jobs have freed
 //   enough memory, so the landing job goes next. One whose memory alone exceeds the budget starts
 //   when nothing else runs. Its memory is counted, so development jobs make room for it rather than
@@ -125,9 +127,11 @@ data Started(
     alone: bool = false
 )
 
-// Whether a job of a lane counts its units against `budget`: a development job always, a landing
-// or quick job against a polite budget.
-private counts(budget: Budget, landing: bool, quick: bool) -> bool = isPolite(budget) || (!landing && !quick)
+// Whether a job of a lane counts its units against `budget` while it runs: a development or landing
+// job always, a quick job against a polite budget. A landing job starts whatever units the others
+// hold, but once it runs what it is charged (`charged`: what it weighs, or what it is measured using
+// where that is more) holds back the development jobs after it, as any running job's does.
+private counts(budget: Budget, quick: bool) -> bool = isPolite(budget) || !quick
 
 // How long a drain counts a job of `expectedMs` and `drainMs` as running.
 private drainEstimate(expectedMs: long, drainMs: long) -> long = if drainMs > 0 then drainMs else expectedMs
@@ -318,7 +322,7 @@ private decide(
   for r in running
     if r.landing then laneBusy = true
     elif r.quick then quicks += 1
-    val frees = if counts(budget, r.landing, r.quick) then r.units else 0
+    val frees = if counts(budget, r.quick) then r.units else 0
     units += frees
     memory += r.memory
     ends += (expectedEnd(r.startedMs, r.expectedMs, now), frees, r.memory)
@@ -334,7 +338,8 @@ private decide(
       out += Decision(w.id, None)
       laneBusy = true
       memory += w.memory
-      val taken = if polite then w.units else 0
+      // what it weighs holds back the development jobs decided after it
+      val taken = w.units
       units += taken
       ends += (now + w.expectedMs, taken, w.memory)
       sure += (now + drainEstimate(w.expectedMs, w.drainMs), taken, w.memory)
@@ -463,7 +468,7 @@ private quickLane(
       out += Decision(w.id, None)
       free -= 1
       used += w.memory
-      val taken = if counts(budget, false, true) then w.units else 0
+      val taken = if counts(budget, true) then w.units else 0
       units += taken
       ends += (now + w.expectedMs, taken, w.memory)
       sure += (now + drainEstimate(w.expectedMs, w.drainMs), taken, w.memory)
