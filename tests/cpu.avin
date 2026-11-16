@@ -188,7 +188,10 @@ rusageMatchesPs()
   assert(within(5000, () -> marshal.processCpu(shell.pid()).exists(c -> c.1 >= 55)), "the shell's reaped time")
   val (sOwn, sReaped) = marshal.processCpu(shell.pid()).get
   assert(sOwn < 20, s"the shell's own $sOwn")
-  assert(55 <= sReaped <= 80, s"the shell's reaped $sReaped")
+  // each burner stops on its user time, but every `times` it calls is a system call, and the kernel
+  // time those cost is counted too, by an amount that varies with the machine; a count that took a
+  // child twice, or the shell's own time with them, would pass 120
+  assert(55 <= sReaped <= 120, s"the shell's reaped $sReaped")
   shell.kill()
   val _ = shell.waitFor()
 
