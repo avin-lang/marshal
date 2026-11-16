@@ -92,14 +92,18 @@ val Options: string = """
 Options of submit and run:
   --kind <k>        what the job is, for learning its deadline (default: test when a word of the command is `test`, else build)
   --units <n>       its weight in units, in steps of 0.25 such as 0.5 or 2 (default: the
-                    cores recent runs of what it runs used, rounded up to a quarter, ~ in UNITS;
-                    4 for a test and 1 otherwise until it has run once). A given n is a
-                    ceiling: once what it runs has run 3 times, it weighs the fewer of n and
-                    what those runs used (8→~1.5 in UNITS)
+                    cores 3 or more recent runs of the same work used, rounded up to a quarter,
+                    ~ in UNITS: its command in its --dir, its command anywhere, its command with
+                    its numbers made alike in its project, or its kind in its project; until
+                    then a share of the budget: a quarter for a gate, train, release or landing
+                    job, a sixth for a test, a ninth for a build, 1 otherwise). While it runs it
+                    is charged the cores it uses where that is more, and weighs them after 90s
+                    of it (live in FROM). A given n is a ceiling: once what it runs has run 3
+                    times, it weighs the fewer of n and what those runs used (8→~1.5 in UNITS)
   --units-exact     with --units: weigh exactly n, even where its runs used fewer
   --mem <size>      the memory it needs, such as 29G or 512M (default: the learned peak of
-                    what it runs, such as `sysl test compiler` or `zsh gate.zsh`, in its --dir
-                    or anywhere, ~ in RESV; 0 until it has run once; --mem 0 reserves none)
+                    the same work, such as `sysl test compiler` or `zsh gate.zsh`, learned as
+                    --units is, ~ in RESV; 0 until it has run 3 times; --mem 0 reserves none)
   --external       its work runs outside its own processes (docker run, a VM, sudo to another
                     account's daemon): it reserves exactly --mem, which it must give, and its
                     measured peak is never learned (@ in RESV)
@@ -124,7 +128,7 @@ Options of submit and run:
                     config.json's load_wait (15m) it is overdue (red in top), and still waits
   --dir <d>         the directory to run it in, relative to this one (default: this one)
   --deadline <t>    stop it after t: minutes, or 90s, 30m, 2h (default: learned from the runs of
-                    what it runs, or of its kind while those are fewer than 3: twice their
+                    the same work, learned as --units is, never its kind alone: twice their
                     median or 1.5x the longest, whichever is later, at least 5m; and at least
                     1.5x a run of it the deadline stopped, until it next succeeds)
   --quiet-timeout <t>
