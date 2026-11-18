@@ -41,7 +41,7 @@ import dev.avinlang.marshal.{
 }
 
 import dev.avinlang.marshal.{Submit, Wait, Kill, Status, Stop, Rerun, Clean, Cleaned}
-import dev.avinlang.marshal.{Submitted, Ended, Jobs, Using, Viewed, Hi, Done, Failed, Amended, Over}
+import dev.avinlang.marshal.{Submitted, Ended, Jobs, Using, Viewed, Hi, Done, Failed, Amended, Over, KilledJobs}
 import dev.avinlang.marshal.{Overview, QueuedJob, SavedJob, SavedState}
 import dev.avinlang.marshal.{Cancelled, DependencyFailed, TimedOut}
 import dev.avinlang.marshal.Resident
@@ -737,6 +737,7 @@ class Daemon(
         Some(job) -> job.waiters += reply
         None -> give(reply, endedEarlier(id))
       Kill(id) -> give(reply, kill(id))
+      Request.KillMany(sel) -> give(reply, killMany(sel))
       Request.List -> give(reply, Jobs(listing()))
       Status -> give(reply, Using(usage()))
       Request.Snapshot -> give(reply, Viewed(overview()))
@@ -1020,6 +1021,32 @@ class Daemon(
         if !job.killed && !job.timedOut then halt(job)
         Done
       _ -> Failed(s"job $id has already ended")
+
+  // Stops or cancels every job `sel` names, in this one step, so a job that starts meanwhile is
+  // classified as it was when the request was read. The jobs that have not started go first, the
+  // newest first, so a selected job that waits for another selected one is killed itself rather than
+  // cancelled for the other's failure; each ends with the `killed` event a `kill` of it gives. A
+  // running job is stopped as `kill` stops it (a paused one is continued first). A landing job it
+  // names is left alone unless `sel` includes landing jobs, and counted. With `dryRun` nothing is
+  // stopped: the reply lists what would be.
+  killMany(sel: marshal.KillSelector) -> Reply
+    if stopping then return Failed("the daemon is stopping")
+    var skipped = 0
+    val named = Buffer[Job]()
+    for job in jobs.values.toVector.sortBy(j -> j.id)
+      if !marshal.killNames(sel, job.state, job.owner, job.spec.label) then continue
+      if marshal.killsLanding(sel, job.spec.landing) then named += job else skipped += 1
+    val runs = named.toVector.map(j -> (j.id, j.state == "running")).toMap
+    if !sel.dryRun
+      for job in named.toVector.filter(j -> !runs(j.id)).reverse
+        if job.state != "done"
+          val _ = kill(job.id)
+      for job in named.toVector.filter(j -> runs(j.id))
+        val _ = kill(job.id)
+    val stopped = named.toVector.map(
+      j -> marshal.StoppedJob(j.id, marshal.stoppedWord(runs(j.id), sel.dryRun), j.spec.label, j.spec.landing, j.spec.exclusive)
+    )
+    KilledJobs(stopped, skipped)
 
   // Kills a running job's group. A paused one is continued first, so it can act on the TERM: its
   // pause ends here.

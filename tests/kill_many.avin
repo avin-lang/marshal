@@ -1,0 +1,166 @@
+module tests
+
+// `kill` with a selector, its pure parts: which selectors are refused, which jobs a selector names,
+// the landing rule, the words for a job stopped, the request and its reply on the wire, and the
+// usage.
+import dev.avinlang.json.Json
+import dev.avinlang.marshal
+import dev.avinlang.marshal.cli
+import dev.avinlang.marshal.{KillSelector, StoppedJob}
+
+// Why the selector `s` is refused.
+killRefusedWith(s: KillSelector, why: string) = marshal.killSelectorRefusal(s) match
+  Some(e) -> assert(e.contains(why), e)
+  None -> fail(s"$s was not refused")
+
+// Whether `s` names a job in `state` of owner `o` labelled `l`.
+killsNames(s: KillSelector, state: string, o: string = "sysl", l: string = "train 12") -> bool = marshal.killNames(s, state, o, l)
+
+@test("a selector needs an owner, a label or --all, and --all takes neither of the others")
+killSelectorRefusals()
+  assertEq(marshal.killSelectorRefusal(KillSelector(owner = Some("sysl"))), None)
+  assertEq(marshal.killSelectorRefusal(KillSelector(label = Some("train"))), None)
+  assertEq(marshal.killSelectorRefusal(KillSelector(owner = Some("sysl"), label = Some("train"))), None)
+  assertEq(marshal.killSelectorRefusal(KillSelector(all = true)), None)
+  assertEq(marshal.killSelectorRefusal(KillSelector(all = true, queued = true, includeLanding = true)), None)
+  killRefusedWith(KillSelector(), "give --owner, --label or --all")
+  killRefusedWith(KillSelector(queued = true, running = true), "give --owner, --label or --all")
+  killRefusedWith(KillSelector(includeLanding = true), "give --owner, --label or --all")
+  killRefusedWith(KillSelector(all = true, owner = Some("sysl")), "--all stops every job")
+  killRefusedWith(KillSelector(all = true, label = Some("x")), "--all stops every job")
+  killRefusedWith(KillSelector(label = Some("")), "needs the text a label contains")
+  killRefusedWith(KillSelector(owner = Some("")), "`--owner` needs an owner")
+
+@test("an owner selects the jobs of that owner, exactly, and a label the jobs whose label contains it, case ignored")
+killNamesOwnerAndLabel()
+  val sysl = KillSelector(owner = Some("sysl"))
+  assert(killsNames(sysl, "running"))
+  assert(killsNames(sysl, "queued"))
+  assert(!killsNames(sysl, "running", o = "avin"))
+  assert(!killsNames(sysl, "running", o = "sysl-lang"))
+  assert(!killsNames(sysl, "running", o = "Sysl"))
+  assert(!killsNames(sysl, "running", o = ""))
+  val train = KillSelector(label = Some("train"))
+  assert(killsNames(train, "running"))
+  assert(killsNames(train, "running", l = "a train"))
+  assert(killsNames(train, "running", l = "train"))
+  assert(killsNames(train, "running", l = "Train 12"))
+  assert(killsNames(train, "running", l = "A TRAIN"))
+  assert(killsNames(train, "running", l = "tRaIn"))
+  assert(killsNames(KillSelector(label = Some("TRAIN")), "running", l = "a train"))
+  assert(killsNames(KillSelector(label = Some("Train")), "running", l = "bench TRAIN 3"))
+  assert(!killsNames(train, "running", l = "trai n"))
+  assert(!killsNames(train, "running", l = "TRAI"))
+  assert(!killsNames(train, "running", l = ""))
+  assert(killsNames(KillSelector(label = Some("é")), "running", l = "café"))
+  assert(killsNames(KillSelector(label = Some("É")), "running", l = "café"))
+  assert(killsNames(KillSelector(label = Some("école")), "running", l = "ÉCOLE run"))
+  assert(killsNames(KillSelector(label = Some("жук")), "running", l = "ЖУК 1"))
+  assert(!killsNames(KillSelector(label = Some("e")), "running", l = "É"))
+  killsBoth(sysl, train)
+
+// Owner and label together select the jobs that match both.
+killsBoth(sysl: KillSelector, train: KillSelector)
+  val s = KillSelector(owner = sysl.owner, label = train.label)
+  assert(killsNames(s, "running", o = "sysl", l = "train 1"))
+  assert(!killsNames(s, "running", o = "avin", l = "train 1"))
+  assert(!killsNames(s, "running", o = "sysl", l = "build 1"))
+  assert(!killsNames(s, "running", o = "avin", l = "build 1"))
+
+@test("queued is every state before a start, running is running whether paused or not, neither is both, and an ended job is never named")
+killNamesStates()
+  val every = KillSelector(all = true)
+  for state in ["queued", "waiting", "retrying", "running"] do assert(killsNames(every, state), state)
+  assert(!killsNames(every, "done"))
+  assert(!killsNames(every, ""))
+  assert(!killsNames(every, "settling"))
+  val queued = KillSelector(all = true, queued = true)
+  for state in ["queued", "waiting", "retrying"] do assert(killsNames(queued, state), state)
+  assert(!killsNames(queued, "running"))
+  assert(!killsNames(queued, "done"))
+  val running = KillSelector(all = true, running = true)
+  assert(killsNames(running, "running"))
+  for state in ["queued", "waiting", "retrying", "done"] do assert(!killsNames(running, state), state)
+  val either = KillSelector(all = true, queued = true, running = true)
+  for state in ["queued", "waiting", "retrying", "running"] do assert(killsNames(either, state), state)
+  // a lane flag narrows an owner too
+  val own = KillSelector(owner = Some("sysl"), running = true)
+  assert(killsNames(own, "running"))
+  assert(!killsNames(own, "queued"))
+  assert(!killsNames(own, "running", o = "avin"))
+
+@test("a landing job is stopped only when the selector includes landing jobs")
+killLandingRule()
+  assert(marshal.killsLanding(KillSelector(all = true), false))
+  assert(!marshal.killsLanding(KillSelector(all = true), true))
+  assert(marshal.killsLanding(KillSelector(all = true, includeLanding = true), true))
+  assert(marshal.killsLanding(KillSelector(all = true, includeLanding = true), false))
+
+@test("a job stopped is `killed` if it ran and `cancelled` if it had not started, with `would` for a dry run")
+killStoppedWords()
+  assertEq(marshal.stoppedWord(true, false), "killed")
+  assertEq(marshal.stoppedWord(false, false), "cancelled")
+  assertEq(marshal.stoppedWord(true, true), "would kill")
+  assertEq(marshal.stoppedWord(false, true), "would cancel")
+
+// The selector `s` goes over the wire and back as itself.
+killTrip(s: KillSelector) = assertEq(marshal.decodeRequest(marshal.encodeRequest(marshal.KillMany(s)).render), Ok(marshal.KillMany(s)))
+
+@test("a kill request carries only what its selector sets, and every selector reads back as itself")
+killRequestRoundTrip()
+  killTrip(KillSelector(owner = Some("sysl")))
+  killTrip(KillSelector(label = Some("bench é 1")))
+  killTrip(KillSelector(owner = Some("sysl"), label = Some("train"), queued = true))
+  killTrip(KillSelector(owner = Some("sysl"), running = true))
+  killTrip(KillSelector(owner = Some("a.b-c_d"), queued = true, running = true, includeLanding = true))
+  killTrip(KillSelector(all = true))
+  killTrip(KillSelector(all = true, includeLanding = true, dryRun = true))
+  val bare = marshal.encodeRequest(marshal.KillMany(KillSelector(owner = Some("x")))).render
+  assert(bare.contains("\"op\":\"kill_many\""), bare)
+  assert(!bare.contains("queued") && !bare.contains("all") && !bare.contains("dry_run"), bare)
+
+@test("a kill request that selects nothing, or too much, or is not typed, is refused as a command line would be")
+killRequestRefused()
+  for text in [
+    "{\"op\":\"kill_many\"}",
+    "{\"op\":\"kill_many\",\"queued\":true}",
+    "{\"op\":\"kill_many\",\"all\":true,\"owner\":\"x\"}",
+    "{\"op\":\"kill_many\",\"all\":true,\"label\":\"x\"}",
+    "{\"op\":\"kill_many\",\"label\":\"\"}",
+    "{\"op\":\"kill_many\",\"owner\":3}",
+    "{\"op\":\"kill_many\",\"owner\":\"x\",\"queued\":\"yes\"}",
+    "{\"op\":\"kill_many\",\"all\":1}"
+  ]
+    assert(marshal.decodeRequest(text).isErr, text)
+  // null reads as not given
+  assertEq(
+    marshal.decodeRequest("{\"op\":\"kill_many\",\"owner\":\"x\",\"label\":null}"),
+    Ok(marshal.KillMany(KillSelector(owner = Some("x"))))
+  )
+
+@test("the jobs a kill stopped, and how many landing jobs it left, go over the wire and back")
+killReplyRoundTrip()
+  for reply in [
+    marshal.KilledJobs([], 0),
+    marshal.KilledJobs([], 3),
+    marshal.KilledJobs([StoppedJob(6512, "killed", "train 12")], 0),
+    marshal.KilledJobs(
+      [
+        StoppedJob(1, "cancelled"),
+        StoppedJob(2, "killed", "é", landing = true),
+        StoppedJob(3, "would kill", "bench", exclusive = true)
+      ],
+      2
+    )
+  ]
+    assertEq(marshal.decodeReply(marshal.encodeReply(reply).render), Ok(reply))
+
+@test("kill's usage names every selector, and only kill prints them")
+killUsage()
+  val help = cli.commandHelp("kill").get
+  for word in ["--owner", "--label", "--queued", "--running", "--all", "--yes", "--include-landing", "no jobs match", "exit 1"]
+    assert(help.contains(word), word)
+  assert(help.startsWith("usage: marshal kill <id> | <selector>"), help)
+  assert(!cli.commandHelp("ls").get.contains("--include-landing"))
+  assert(!cli.commandHelp("amend").get.contains("--include-landing"))
+  assert(cli.asksHelp("kill", ["--owner", "x", "--help"]))

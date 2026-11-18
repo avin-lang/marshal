@@ -259,7 +259,7 @@ marshal train [parameters] <branch...>     run-type train: merges the branches, 
 marshal wait <id> | --until <cond> [--timeout <t>] [--since <t>]  waits for the job (--timeout also with an id), prints one result line, exits with its status; or waits for an event (--since only here), prints it, exits 0; 124 on timeout
 marshal events [--follow] [--since <t>] [<filter>]  the logged events as JSON lines; --follow goes on streaming them until killed
 marshal ls [--compact | -c]                jobs queued, running and recently ended; a queued job's state says why it waits: queued (draining); --compact: one line a job, no wider than the terminal ($COLUMNS, else 80, where output is not one): COMMAND is cut with …, then LABEL, then columns go (FROM, RESV, USED, OWNER, ETA, UNITS, STARTED, ELAPSED, KIND)
-marshal kill <id>                          stops the job's whole process tree (a queued or waiting job is cancelled)
+marshal kill <id> | <selector>             stops the job's whole process tree (a queued or waiting job is cancelled); --owner <name>, --label <text> or --all stops every job selected (marshal kill --help)
 marshal rerun <id>                         submits an ended job again: its command, directory, environment, kind, label and resources; prints the new id
 marshal clean [--older-than <t>] [--keep <n>] [--dry-run]  removes the logs of ended jobs (never a job that is not over), stale run directories and unused compiled steps; prints what went and the bytes freed; --dry-run only lists them
 marshal hold <id>                          keeps a queued job from starting; it keeps its place
@@ -464,6 +464,38 @@ true` and gives `retries`. `history` says `ok (amended)`. A run whose deadline w
 `amend` for its deadline in FROM and teaches no deadline: neither its duration nor, if it is stopped,
 an overrun; its memory and cores are still learned when it ran clean. A `marshal restart` keeps
 every amended value, of queued and running jobs alike.
+
+### Stopping many jobs at once
+
+`marshal kill <id>` stops one job. A session cleaning up after its agents stops its own jobs in one
+step, by owner or label, without touching another session's:
+
+```
+$ marshal kill --owner sysl
+6512 killed  sysl fix-parser: tests
+6520 cancelled  sysl fix-lexer: tests
+marshal: 2 jobs stopped (1 landing skipped: --include-landing stops them too)
+$ marshal kill --owner sysl --label "fix-parser" --queued
+```
+
+| Option | Selects |
+| --- | --- |
+| `--owner <name>` | the jobs whose OWNER (as `ls` shows it) is `name`, exactly |
+| `--label <text>` | the jobs whose label contains `text`, upper and lower case alike (unlike `history --label`) |
+| `--queued`, `--running` | narrow either to the jobs that have not started (queued, held, waiting for others, waiting to retry) or to the running ones (a paused job runs); neither means both |
+| `--all` | every job: it lists them and asks `y/N` on a terminal; without a terminal it is refused (exit 2) unless `--yes` is given |
+| `--include-landing` | also the landing jobs, which are skipped otherwise (the count skipped is printed) |
+
+`--owner` and `--label` together select the jobs that match both. `--all` takes neither, and a bare
+`--queued` selects nothing, so a selector is `--owner`, `--label` or `--all`. An id beside a selector
+is refused (exit 2). `--yes` is accepted with the scoped forms, which never ask. An exclusive
+(benchmark) job is not skipped; `--all` lists it first. Nothing matched prints `marshal: no jobs
+match` and exits 1.
+
+The daemon makes the selection and stops the jobs in one step, so a job that starts while the
+command runs is classified once. Each job gets its usual `killed` event; a job waiting for one of
+them (`--after-ok`) is cancelled as a single `kill` cancels it, unless it is selected itself, when
+it is killed.
 
 ## Waking on events
 

@@ -112,6 +112,8 @@ data Request
   Submit(spec: JobSpec)
   Wait(id: long)
   Kill(id: long)
+  // Stops or cancels every job a selector names, in one step (`KillSelector`).
+  KillMany(selector: KillSelector)
   List
   Status
   // Everything a live view shows: the budget, the running, queued and recent jobs, and why each
@@ -180,6 +182,25 @@ emptyAmendment(a: Amendment) -> bool =
 // Whether an amendment changes what only a job that has not started may change: what it was
 // admitted on (its units and memory), and what it waits for.
 startsOnly(a: Amendment) -> bool = a.units.isDefined || a.memory.isDefined || a.after.isDefined
+
+// Which jobs `kill` stops at once: those whose owner is `owner` and whose label contains `label`
+// (case ignored), only the queued (`queued`: queued, held, waiting
+// or waiting to retry) or only the running (`running`: running or paused), neither meaning both;
+// or, with `all`, every job. A landing job is left alone unless `includeLanding`. With `dryRun` the
+// daemon only says which jobs it would stop (killmany.avin).
+data KillSelector(
+    owner: Option[string] = None,
+    label: Option[string] = None,
+    queued: bool = false,
+    running: bool = false,
+    all: bool = false,
+    includeLanding: bool = false,
+    dryRun: bool = false
+)
+
+// A job a `KillMany` stopped (`how` `killed`: it was running; `cancelled`: it had not started), or
+// with `dryRun` would stop (`would kill`, `would cancel`).
+data StoppedJob(id: long, how: string, label: string = "", landing: bool = false, exclusive: bool = false)
 
 // How a job ended. `DependencyFailed` cancels a job waiting for job `after`, which did not succeed.
 // `Quiet` is a job stopped because its log had no new output for `afterMs` (its quiet timeout).
@@ -524,6 +545,8 @@ data Reply
   // What an amend changed, one `name old → new` line a setting, and advice for the amender as
   // `Submitted` gives it.
   Amended(changes: string, hint: string = "")
+  // The jobs a `KillMany` stopped, by id, and how many matching landing jobs it left alone.
+  KilledJobs(jobs: Vector[StoppedJob], skippedLanding: int = 0)
   Done
   Failed(message: string)
   // A request about a job that has ended, which only a job that has not may be asked: refused, as
@@ -575,6 +598,9 @@ encodeRequest(Prioritize(id, Urgent)) = Json.obj(
   ("id", Json.num(id)),
   ("priority", Json.str("urgent"))
 )
+encodeRequest(KillMany(s)) = Json.Obj(
+  [("op", Json.str("kill_many"))] ++ killSelectorMembers(s)
+)
 encodeRequest(Amend(id, a)) = Json.Obj(
   [("op", Json.str("amend")), ("id", Json.num(id))] ++ amendmentMembers(a)
 )
@@ -585,6 +611,34 @@ encodeRequest(Watch(source, _, mode, since, sinceId)) = Json.obj(
   ("since", since.map(n -> Json.num(n)).getOrElse(Json.Null)),
   ("since_id", sinceId.map(n -> Json.num(n)).getOrElse(Json.Null))
 )
+
+// A selector's members of a `kill_many` request: only what it sets.
+private killSelectorMembers(s: KillSelector) -> Vector[(string, Json)]
+  val out = Buffer[(string, Json)]()
+  for o in s.owner.toList do out += ("owner", Json.str(o))
+  for l in s.label.toList do out += ("label", Json.str(l))
+  if s.queued then out += ("queued", Json.Bool(true))
+  if s.running then out += ("running", Json.Bool(true))
+  if s.all then out += ("all", Json.Bool(true))
+  if s.includeLanding then out += ("include_landing", Json.Bool(true))
+  if s.dryRun then out += ("dry_run", Json.Bool(true))
+  out.toVector
+
+// A `kill_many` request's selector.
+private decodeKillSelector(j: Json) -> Result[KillSelector, string]
+  val owner = if j.has("owner") && j("owner") != Json.Null then Some(field(j, "owner", v -> v.asString, "a string")?) else None
+  val label = if j.has("label") && j("label") != Json.Null then Some(field(j, "label", v -> v.asString, "a string")?) else None
+  val s = KillSelector(
+    owner,
+    label,
+    optional(j, "queued", v -> v.asBool, "a bool", false)?,
+    optional(j, "running", v -> v.asBool, "a bool", false)?,
+    optional(j, "all", v -> v.asBool, "a bool", false)?,
+    optional(j, "include_landing", v -> v.asBool, "a bool", false)?,
+    optional(j, "dry_run", v -> v.asBool, "a bool", false)?
+  )
+  for why in killSelectorRefusal(s).toList do return Err(why)
+  Ok(s)
 
 // An amendment's members of an `amend` request: only the settings it changes.
 private amendmentMembers(a: Amendment) -> Vector[(string, Json)]
@@ -882,6 +936,7 @@ decodeRequest(text: string) -> Result[Request, string]
         field(j, "priority", priorityOf, "a whole number or \"urgent\"")?
       )
     )
+    "kill_many" -> Ok(KillMany(decodeKillSelector(j)?))
     "amend" -> Ok(Amend(field(j, "id", v -> v.asLong, "a whole number")?, decodeAmendment(j)?))
     "clean" ->
       val older = optional(j, "older_ms", someLong, "a whole number", None)?
@@ -1171,12 +1226,35 @@ encodeReply(Cleaned(report)) = Json.obj(("ok", Json.Bool(true)), ("cleaned", enc
 encodeReply(Amended(changes, hint)) = Json.Obj(
   [("ok", Json.Bool(true)), ("amended", Json.str(changes))] ++ (if hint.isEmpty then [] else [("hint", Json.str(hint))])
 )
+encodeReply(KilledJobs(jobs, skipped)) = Json.obj(
+  ("ok", Json.Bool(true)),
+  ("stopped", Json.Arr(jobs.map(stoppedMembers))),
+  ("skipped_landing", Json.num(skipped))
+)
 encodeReply(Done) = Json.obj(("ok", Json.Bool(true)))
 encodeReply(Failed(message)) = Json.obj(("ok", Json.Bool(false)), ("error", Json.str(message)))
 encodeReply(Over(message)) = Json.obj(
   ("ok", Json.Bool(false)),
   ("error", Json.str(message)),
   ("ended", Json.Bool(true))
+)
+
+private stoppedMembers(s: StoppedJob) -> Json = Json.obj(
+  ("id", Json.num(s.id)),
+  ("how", Json.str(s.how)),
+  ("label", Json.str(s.label)),
+  ("landing", Json.Bool(s.landing)),
+  ("exclusive", Json.Bool(s.exclusive))
+)
+
+private decodeStopped(j: Json) -> Result[StoppedJob, string] = Ok(
+  StoppedJob(
+    field(j, "id", v -> v.asLong, "a whole number")?,
+    field(j, "how", v -> v.asString, "a string")?,
+    optional(j, "label", v -> v.asString, "a string", "")?,
+    optional(j, "landing", v -> v.asBool, "a bool", false)?,
+    optional(j, "exclusive", v -> v.asBool, "a bool", false)?
+  )
 )
 
 // The members of a `status` reply.
@@ -1235,6 +1313,11 @@ decodeReply(text: string) -> Result[Reply, string]
   if j.has("amended") then return Ok(
     Amended(field(j, "amended", v -> v.asString, "a string")?, optional(j, "hint", v -> v.asString, "a string", "")?)
   )
+  if j.has("stopped")
+    val items = field(j, "stopped", v -> v.asVector, "an array")?
+    val jobs = Buffer[StoppedJob]()
+    for item in items do jobs += decodeStopped(item)?
+    return Ok(KilledJobs(jobs.toVector, optional(j, "skipped_landing", v -> v.asInt, "an int", 0)?))
   if j.has("event") then return Ok(Streamed(j("event")))
   if j.has("events") then return Ok(Replayed(field(j, "events", v -> v.asVector, "an array")?))
   if j.has("cleaned") then return Ok(Cleaned(decodeReport(j("cleaned"))?))
