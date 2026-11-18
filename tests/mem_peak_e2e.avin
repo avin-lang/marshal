@@ -143,7 +143,7 @@ pressureSwapE2e()
   assert(lsRowOf(home, held).contains("queued (memory pressure: swapping)"), lsRowOf(home, held))
   // a held job keeps its own reason, as under a low disk
   assertEq(m(home, "hold", held.toString()).code, 0)
-  assert(lsRowOf(home, held).contains("queued (held)"), lsRowOf(home, held))
+  assert(lsRowOf(home, held).contains(" held ") && !lsRowOf(home, held).contains("pressure"), lsRowOf(home, held))
   assertEq(m(home, "stop", "--force").code, 0)
   cleanUp(home)
 
