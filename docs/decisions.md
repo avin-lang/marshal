@@ -2443,10 +2443,11 @@ work, so the selectors say whose jobs, and landing jobs are left alone unless as
   `--all` takes no `--owner` or `--label`, and nothing but `--all`, `--owner` or `--label` selects
   (`kill --queued` alone is refused, exit 2). Output is a line a job (`6512 killed  label`,
   `6520 cancelled  label`) and a count; no match prints `marshal: no jobs match` and exits 1.
-- **Label matching is case as written, as `history --label` matches.** The brief said "ignoring
-  case, as `history --label` does", but `history --label` is case-sensitive (README: "case as
-  written"), so the two cannot both hold; consistency with `history` was kept. **Review with the
-  user:** whether both should ignore case.
+- **Label matching ignores case**, as the design says: each character of the label and of the text is
+  mapped to its lower case, one for one, before the contains test (`--label train` stops `Train 2`
+  and `bench the TRAIN`). `history --label` and `events` `label=` still match case as written, so
+  the two differ. **Review with the user:** whether `history --label` and `events label=` should
+  ignore case too.
 - **`--all` asks on a terminal.** It lists the jobs (an exclusive job first, marked `exclusive`) and
   asks `[y/N]`; only `y` or `yes` goes on. Without a terminal on standard input and output it is
   refused (exit 2) unless `--yes` is given; `--yes` is also accepted, and not needed, on the scoped

@@ -184,7 +184,7 @@ emptyAmendment(a: Amendment) -> bool =
 startsOnly(a: Amendment) -> bool = a.units.isDefined || a.memory.isDefined || a.after.isDefined
 
 // Which jobs `kill` stops at once: those whose owner is `owner` and whose label contains `label`
-// (case as written, as `history --label` matches), only the queued (`queued`: queued, held, waiting
+// (case ignored), only the queued (`queued`: queued, held, waiting
 // or waiting to retry) or only the running (`running`: running or paused), neither meaning both;
 // or, with `all`, every job. A landing job is left alone unless `includeLanding`. With `dryRun` the
 // daemon only says which jobs it would stop (killmany.avin).

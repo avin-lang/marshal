@@ -19,13 +19,14 @@ killSelectorRefusal(s: KillSelector) -> Option[string]
 // Whether a job in `state` (the daemon's: queued, waiting, retrying, running, done), of `owner`,
 // labelled `label`, is among the jobs `s` names, its landing lane aside (`killsLanding`). A job that
 // has ended is never named. `queued` is every state in which a job has not started, held and
-// waiting included; `running` is a running job, paused or not.
+// waiting included; `running` is a running job, paused or not. An owner matches exactly; a label
+// matches when it contains the text with case ignored, each character mapped to its lower case.
 killNames(s: KillSelector, state: string, owner: string, label: string) -> bool
   val running = state == "running"
   val waits = state == "queued" || state == "waiting" || state == "retrying"
   if !running && !waits then return false
   val lane = (!s.queued && !s.running) || (s.queued && waits) || (s.running && running)
-  lane && s.owner.forall(o -> o == owner) && s.label.forall(l -> label.contains(l))
+  lane && s.owner.forall(o -> o == owner) && s.label.forall(l -> label.toLower.contains(l.toLower))
 
 // Whether a landing job the selector names is stopped: only when it asked to include them.
 killsLanding(s: KillSelector, landing: bool) -> bool = !landing || s.includeLanding

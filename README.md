@@ -480,7 +480,7 @@ $ marshal kill --owner sysl --label "fix-parser" --queued
 | Option | Selects |
 | --- | --- |
 | `--owner <name>` | the jobs whose OWNER (as `ls` shows it) is `name`, exactly |
-| `--label <text>` | the jobs whose label contains `text`, upper and lower case counting as written (as `history --label`) |
+| `--label <text>` | the jobs whose label contains `text`, upper and lower case alike (unlike `history --label`) |
 | `--queued`, `--running` | narrow either to the jobs that have not started (queued, held, waiting for others, waiting to retry) or to the running ones (a paused job runs); neither means both |
 | `--all` | every job: it lists them and asks `y/N` on a terminal; without a terminal it is refused (exit 2) unless `--yes` is given |
 | `--include-landing` | also the landing jobs, which are skipped otherwise (the count skipped is printed) |

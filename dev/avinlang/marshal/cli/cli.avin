@@ -188,7 +188,7 @@ A job that has ended is refused with exit 1. Each amend logs an `amended` event.
 val KillOptions: string = """
 kill <id> stops one job. With a selector it stops every job selected, in one step:
   --owner <name>    the jobs whose OWNER (as ls shows it) is name
-  --label <text>    the jobs whose label contains text (upper and lower case count, as in history)
+  --label <text>    the jobs whose label contains text, upper and lower case alike
   --owner and --label together select the jobs that match both.
   --queued          only jobs that have not started (queued, held, waiting for others, waiting to retry)
   --running         only running jobs (a paused one runs); neither flag means both
