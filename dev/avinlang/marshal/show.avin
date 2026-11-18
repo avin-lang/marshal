@@ -120,10 +120,19 @@ stateWithWhy(j: JobInfo, whys: Vector[(long, Why)]) -> string
 // queued one's expected start (`etaColumn`), and OWNER who the job is for (`ownerText`). `whys`
 // gives the queued jobs' reasons to wait; with none, a queued job shows plain `queued`.
 listing(jobs: Vector[JobInfo], whys: Vector[(long, Why)] = []) -> string
+  val rows = listingRows(jobs, whys)
+  val last = rows(0).length - 1
+  val widths = (0 ..< last).map(c -> rows.map(r -> r(c).charCount).max)
+  rows.map(r -> (0 ..< last).map(c -> r(c).padEnd(widths(c), ' ')).mkString("  ") + "  " + r(last)).mkString("\n")
+
+// The cells of a listing, the header first: `ListingColumns` names them in order.
+val ListingColumns: Vector[string] = [
+  "ID", "STATE", "KIND", "UNITS", "USED", "RESV", "STARTED", "ELAPSED", "ETA", "OWNER", "FROM", "LABEL", "COMMAND"
+]
+
+listingRows(jobs: Vector[JobInfo], whys: Vector[(long, Why)]) -> Vector[Vector[string]]
   val zone = time.localZone()
-  val rows = [
-    ["ID", "STATE", "KIND", "UNITS", "USED", "RESV", "STARTED", "ELAPSED", "ETA", "OWNER", "FROM", "LABEL", "COMMAND"]
-  ] ++ jobs.map(
+  [ListingColumns] ++ jobs.map(
     j -> [
       j.id.toString(),
       stateWithWhy(j, whys),
@@ -140,9 +149,6 @@ listing(jobs: Vector[JobInfo], whys: Vector[(long, Why)] = []) -> string
       j.cmd.mkString(" ")
     ]
   )
-  val last = rows(0).length - 1
-  val widths = (0 ..< last).map(c -> rows.map(r -> r(c).charCount).max)
-  rows.map(r -> (0 ..< last).map(c -> r(c).padEnd(widths(c), ' ')).mkString("  ") + "  " + r(last)).mkString("\n")
 
 // Where a job's units, memory and deadline came from, as `ls` shows them in FROM, in that order:
 // `units/memory/deadline`, each a short word for its source (`sourceWord`), such as

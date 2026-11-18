@@ -201,6 +201,14 @@ STATE, KIND, UNITS, USED, RESV, STARTED, ELAPSED, ETA, OWNER, FROM, LABEL and CO
 A queued job's STATE says why it waits, as `queued (<reason>)`; `top` shows the same reason after
 the job's place in its lane (`#2 no units`), in a few words shortened as noted.
 
+`marshal ls --compact` (or `-c`) prints the same columns with every job on one line, no wider than
+the terminal: its width where output is a terminal, else `$COLUMNS`, else 80. A long COMMAND is cut
+at the right with `…` (a newline or tab in a command or label shows as a space). Where COMMAND would
+be under 10 cells, LABEL is cut next (to 8 cells), and only then do columns go, one at a time: FROM,
+RESV, USED, OWNER, ETA, UNITS, STARTED, ELAPSED, KIND. ID, STATE, LABEL and COMMAND stay; below
+about 30 cells the line itself is cut with `…`. Without `--compact` the output is unchanged, for
+scripts.
+
 | State | Meaning | What to do |
 | --- | --- | --- |
 | `queued (no units)` / `queued (no memory)` | the budget is full | wait; ask for fewer `--units` or a smaller `--mem` only if the job truly needs less |
@@ -249,7 +257,7 @@ marshal run-type <type> [parameters]       runs a job type's steps as one job an
 marshal train [parameters] <branch...>     run-type train: merges the branches, builds and tests them, lands them when green
 marshal wait <id> | --until <cond> [--timeout <t>] [--since <t>]  waits for the job (--timeout also with an id), prints one result line, exits with its status; or waits for an event (--since only here), prints it, exits 0; 124 on timeout
 marshal events [--follow] [--since <t>] [<filter>]  the logged events as JSON lines; --follow goes on streaming them until killed
-marshal ls                                 jobs queued, running and recently ended; a queued job's state says why it waits: queued (draining)
+marshal ls [--compact | -c]                jobs queued, running and recently ended; a queued job's state says why it waits: queued (draining); --compact: one line a job, no wider than the terminal ($COLUMNS, else 80, where output is not one): COMMAND is cut with …, then LABEL, then columns go (FROM, RESV, USED, OWNER, ETA, UNITS, STARTED, ELAPSED, KIND)
 marshal kill <id>                          stops the job's whole process tree (a queued or waiting job is cancelled)
 marshal rerun <id>                         submits an ended job again: its command, directory, environment, kind, label and resources; prints the new id
 marshal clean [--older-than <t>] [--keep <n>] [--dry-run]  removes the logs of ended jobs (never a job that is not over), stale run directories and unused compiled steps; prints what went and the bytes freed; --dry-run only lists them

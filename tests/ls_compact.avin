@@ -1,0 +1,184 @@
+module tests
+
+// `marshal ls --compact`: one line a job, no wider than the terminal, COMMAND cut first, then LABEL,
+// then the low-value columns; and the width it works to.
+import dev.avinlang.marshal
+import dev.avinlang.marshal.cli
+import dev.avinlang.marshal.{JobInfo, Why}
+import dev.avinlang.tui.textWidth
+
+job(id: long, cmd: Vector[string], label: string = "", state: string = "running", owner: string = "") -> JobInfo =
+  JobInfo(
+    id,
+    "build",
+    1,
+    0,
+    false,
+    "/w",
+    cmd,
+    state,
+    None,
+    false,
+    0,
+    60000,
+    1200000,
+    s"/h/jobs/$id.log",
+    None,
+    0,
+    0,
+    0,
+    false,
+    0,
+    false,
+    false,
+    [],
+    1,
+    0,
+    false,
+    label,
+    owner = owner
+  )
+
+val longCommand: Vector[string] = [
+  "env", "SCRATCH=/Users/ed/.claude/tmp/claude-501/-Users-ed-dev-avin-lang/4bd111a0/scratchpad/ls-compact",
+  "sysl", "test", "compiler", "--file", "tests/a.sysl", "--file", "tests/b.sysl", "--file", "tests/c.sysl"
+]
+
+compact(jobs: Vector[JobInfo], width: int) -> Vector[string] = marshal.compactListing(jobs, [], width).lines.toVector
+
+fits(rows: Vector[string], width: int)
+  for r in rows do assert(textWidth(r) <= width, s"$width: ${textWidth(r)} cells: $r")
+
+@test("a long command is cut at the right with an ellipsis, and every job is one line")
+longCommandCut()
+  val rows = compact([job(1, longCommand), job(22, longCommand)], 100)
+  assertEq(rows.length, 3)
+  fits(rows, 100)
+  assert(rows(1).endsWith("…"), rows(1))
+  assert(rows(2).endsWith("…"), rows(2))
+  assert(rows(1).contains("env SCRATC"), rows(1))
+  assert(rows(1).startsWith("1 "), rows(1))
+  assert(rows(2).startsWith("22 "), rows(2))
+
+@test("a command that fits is untouched, and the listing equals the full one at a wide width")
+shortCommandUntouched()
+  val jobs = [job(1, ["make", "it"]), job(12, ["sleep", "30"], "train 209", "queued")]
+  assertEq(marshal.compactListing(jobs, [], 200), marshal.listing(jobs))
+  assertEq(marshal.compactListing([], [], 200), marshal.listing([]))
+  assert(!compact(jobs, 200).exists(r -> r.contains("…")))
+
+@test("at 80, 120 and 200 cells every row fits and the command shows as much as the width allows")
+widths()
+  val jobs = [job(1, longCommand, "train 209", owner = "avin"), job(2, ["make"])]
+  var previous = 0
+  for w in [80, 120, 200]
+    val rows = compact(jobs, w)
+    assertEq(rows.length, 3)
+    fits(rows, w)
+    val shown = rows(1).charCount
+    assert(shown >= previous, s"$w: $shown < $previous")
+    previous = shown
+  assert(!compact([job(1, ["make", "it"])], 200)(1).contains("…"))
+  assert(!compact(jobs, 500)(1).contains("…"))
+  assert(compact(jobs, 80)(1).endsWith("…"))
+  assert(compact(jobs, 120)(1).endsWith("…"))
+
+@test("columns line up: each cell starts where its heading does")
+columnsAlign()
+  val rows = compact([job(1, longCommand, "x"), job(300, longCommand, "a longer label")], 140)
+  val at = rows(0).indexOf("LABEL")
+  assert(at > 0)
+  assertEq(rows(1).slice(at, at + 1), "x")
+  assertEq(rows(2).slice(at, at + 5), "a lon")
+  assertEq(rows(0).indexOf("COMMAND"), rows(1).indexOf("env"))
+  assertEq(rows(0).indexOf("COMMAND"), rows(2).indexOf("env"))
+
+@test("a newline, a tab or a carriage return in a command or a label shows as a space, on one line")
+controlCharactersAreSpaces()
+  val rows = compact([job(1, ["sh", "-c", "a\nb\tc\rd"], "one\ntwo")], 200)
+  assertEq(rows.length, 2)
+  assert(rows(1).contains("sh -c a b c d"), rows(1))
+  assert(rows(1).contains("one two"), rows(1))
+  assert(!rows(1).contains("\t"))
+
+@test("a label longer than its share is cut with an ellipsis, and COMMAND keeps its minimum")
+longLabelCut()
+  val label = "a label that goes on and on for a good while indeed"
+  val rows = compact([job(1, longCommand, label)], 80)
+  fits(rows, 80)
+  assertEq(rows.length, 2)
+  assert(!rows(1).contains(label), rows(1))
+  assert(rows(1).contains("a label"), rows(1))
+  assert(rows(1).contains("…  env"), rows(1))
+  assert(rows(1).endsWith("…"), rows(1))
+  val whole = compact([job(1, ["make"], label)], 200)
+  assert(whole(1).contains(label), whole(1))
+
+@test("a narrow width drops the low-value columns in order and keeps every job on one line")
+narrowDropsColumns()
+  val jobs = [job(1, longCommand, "train 209", owner = "avin")]
+  val order = ["FROM", "RESV", "USED", "OWNER", "ETA", "UNITS", "STARTED", "ELAPSED", "KIND"]
+  var last = 100
+  for w in [200, 100, 80, 60, 50, 40, 30, 20, 10, 5, 1]
+    val rows = compact(jobs, w)
+    assertEq(rows.length, 2)
+    fits(rows, w)
+    val present = order.filter(h -> rows(0).contains(h)).length
+    assert(present <= last, s"$w: columns came back")
+    last = present
+  assert(compact(jobs, 200)(0).contains("FROM"))
+  val narrow = compact(jobs, 60)(0)
+  assert(narrow.contains("ID") && narrow.contains("STATE"), narrow)
+  assert(!narrow.contains("FROM") && !narrow.contains("RESV"), narrow)
+  val tight = compact(jobs, 40)
+  assert(tight(0).startsWith("ID  STATE"), tight(0))
+  assert(tight(0).contains("KIND") && !tight(0).contains("UNITS"), tight(0))
+
+@test("ID, STATE, LABEL and COMMAND stay while any column can go")
+keptColumns()
+  for w in [60, 45, 35]
+    val head = compact([job(1, longCommand, "train 209")], w)(0)
+    for h in ["ID", "STATE"] do assert(head.contains(h), s"$w: $head")
+  assert(compact([job(1, longCommand, "train 209")], 60)(0).contains("LABEL"))
+  assert(compact([job(1, longCommand, "train 209")], 60)(0).contains("COMMAND"))
+
+@test("a wide character counts as two cells")
+wideCharacters()
+  val rows = compact([job(1, ["echo", "日本語日本語日本語日本語日本語日本語日本語日本語日本語日本語"])], 60)
+  assertEq(rows.length, 2)
+  fits(rows, 60)
+  assert(rows(1).endsWith("…"), rows(1))
+
+@test("a queued job's reason to wait stays in STATE")
+whyKept()
+  val rows = marshal.compactListing([job(5, longCommand, state = "queued")], [(5, Why.NoUnits)], 90).lines.toVector
+  assertEq(rows.length, 2)
+  fits(rows, 90)
+  assert(rows(1).contains("queued (no units)"), rows(1))
+
+@test("without --compact the listing is what it was: the full command, however wide")
+fullListingUnchanged()
+  val rows = marshal.listing([job(1, longCommand)]).lines.toVector
+  assertEq(rows.length, 2)
+  assert(rows(1).endsWith("--file tests/c.sysl"), rows(1))
+  assert(!rows(1).contains("…"))
+
+@test("the width is the terminal's, else $COLUMNS, else 80")
+widthSource()
+  assertEq(marshal.compactWidth(Some(132), Some("90")), 132)
+  assertEq(marshal.compactWidth(Some(132), None), 132)
+  assertEq(marshal.compactWidth(None, Some("90")), 90)
+  assertEq(marshal.compactWidth(None, Some(" 90 ")), 90)
+  assertEq(marshal.compactWidth(None, None), 80)
+  assertEq(marshal.compactWidth(None, Some("wide")), 80)
+  assertEq(marshal.compactWidth(None, Some("0")), 80)
+  assertEq(marshal.compactWidth(None, Some("-5")), 80)
+  assertEq(marshal.compactWidth(None, Some("")), 80)
+  assertEq(marshal.compactWidth(Some(0), Some("100")), 100)
+
+@test("the usage text and the command's help name --compact and its short form")
+usageNamesTheFlag()
+  assert(cli.usage.contains("marshal ls [--compact | -c]"), cli.usage)
+  val help = cli.commandHelp("ls").get
+  assert(help.contains("--compact"), help)
+  assert(help.contains("COLUMNS"), help)

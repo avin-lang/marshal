@@ -1,0 +1,45 @@
+module tests
+
+// End to end, `marshal ls --compact`: standard output here is a file, so the width is $COLUMNS, else
+// 80. The helpers are e2e.avin's.
+import dev.avinlang.tui.textWidth
+
+@test("ls --compact cuts the command to $COLUMNS, and -c is the same")
+compactToColumns()
+  val home = newHome()
+  val id = submitted(home, "--", "sleep", "30", "--padding-argument-one", "--padding-argument-two", "--padding-argument-three")
+  assert(within(2000, () -> started(home, id)))
+  val narrow = mWith(home, [("COLUMNS", "60")], "ls", "--compact")
+  assertEq(narrow.code, 0)
+  val rows = narrow.out.lines.toVector
+  assertEq(rows.length, 2)
+  for r in rows do assert(textWidth(r) <= 60, r)
+  assert(rows(1).endsWith("…"), rows(1))
+  assertEq(mWith(home, [("COLUMNS", "60")], "ls", "-c").out, narrow.out)
+  val wide = mWith(home, [("COLUMNS", "300")], "ls", "-c")
+  assert(wide.out.contains("--padding-argument-three"), wide.out)
+  assert(!wide.out.contains("…"), wide.out)
+  m(home, "stop", "--force")
+  cleanUp(home)
+
+@test("ls --compact without $COLUMNS is 80 wide, and plain ls is unchanged by the flag existing")
+compactDefaultWidth()
+  val home = newHome()
+  val id = submitted(home, "--", "sleep", "30", "--padding-argument-one", "--padding-argument-two", "--padding-argument-three", "--padding-argument-four")
+  assert(within(2000, () -> started(home, id)))
+  val rows = mWith(home, [("COLUMNS", "")], "ls", "-c").out.lines.toVector
+  assertEq(rows.length, 2)
+  for r in rows do assert(textWidth(r) <= 80, r)
+  val plain = m(home, "ls").out
+  assert(plain.contains("--padding-argument-four"), plain)
+  assert(plain.startsWith("ID  STATE"), plain)
+  m(home, "stop", "--force")
+  cleanUp(home)
+
+@test("ls refuses an option it does not know")
+lsRefusesUnknownOption()
+  val home = newHome()
+  val r = m(home, "ls", "--wide")
+  assertEq(r.code, 2)
+  assert(r.out.contains("ls takes --compact"), r.out)
+  cleanUp(home)

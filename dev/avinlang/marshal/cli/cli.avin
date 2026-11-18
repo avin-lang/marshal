@@ -41,7 +41,10 @@ val Commands: Vector[(string, string)] = [
     "events [--follow] [--since <t>] [<filter>]",
     "the logged events as JSON lines; --follow goes on streaming them until killed"
   ),
-  ("ls", "jobs queued, running and recently ended; a queued job's state says why it waits: queued (draining)"),
+  (
+    "ls [--compact | -c]",
+    "jobs queued, running and recently ended; a queued job's state says why it waits: queued (draining); --compact: one line a job, no wider than the terminal ($COLUMNS, else 80, where output is not one): COMMAND is cut with …, then LABEL, then columns go (FROM, RESV, USED, OWNER, ETA, UNITS, STARTED, ELAPSED, KIND)"
+  ),
   ("kill <id>", "stops the job's whole process tree (a queued or waiting job is cancelled)"),
   (
     "rerun <id>",
@@ -271,7 +274,7 @@ main(args: Vector[string]) -> int
       if rest.isEmpty then simple(Request.ResumeQueue, "marshal: the queue is released")
       else withId(rest, id -> simple(Request.ResumeJob(id), s"marshal: job $id is resumed"))
     "polite" -> polite(rest)
-    "ls" -> list()
+    "ls" -> list(rest)
     "status" -> rest match
       [] -> status()
       ["--json"] -> statusJson()
@@ -764,10 +767,34 @@ queuedWhys(jobs: Vector[JobInfo]) -> Vector[(long, marshal.Why)]
     Ok(marshal.Viewed(o)) -> o.queued.map(q -> (q.job.id, q.why))
     _ -> []
 
-list() -> int
+@sysl("sysl.posix.tty.is_tty")
+private isTerminal(fd: int) -> bool
+
+@sysl("sysl.posix.tty.WindowSize")
+private data WindowSize(rows: int, cols: int)
+
+@sysl("sysl.posix.tty.window_size")
+private windowSize(fd: int) -> Option[WindowSize]
+
+// The terminal's width in cells where standard output is a terminal that says it.
+terminalWidth() -> Option[int] = if !isTerminal(1) then None else windowSize(1).map(s -> s.cols)
+
+// `ls` and `ls --compact` (or `-c`): the table, or one line a job no wider than the terminal.
+list(args: Vector[string]) -> int
+  val compact = args match
+    [] -> false
+    ["--compact"] | ["-c"] -> true
+    _ -> return complain("marshal: ls takes --compact (or -c), or nothing")
   askDaemon(Request.List) match
     Ok(Jobs(jobs)) ->
-      println(marshal.listing(jobs, queuedWhys(jobs)))
+      val whys = queuedWhys(jobs)
+      println(
+        if compact then marshal.compactListing(
+          jobs,
+          whys,
+          marshal.compactWidth(terminalWidth(), process.env("COLUMNS"))
+        ) else marshal.listing(jobs, whys)
+      )
       0
     Ok(Failed(e)) -> complain(s"marshal: $e")
     Ok(other) -> complain(s"marshal: unexpected reply $other")

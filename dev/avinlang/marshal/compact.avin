@@ -1,0 +1,82 @@
+module dev.avinlang.marshal
+
+import dev.avinlang.tui.{fitted, textWidth}
+
+private minOf(a: int, b: int) -> int = if a < b then a else b
+private maxOf(a: int, b: int) -> int = if a > b then a else b
+
+// `marshal ls --compact`: the listing with every job on one line no wider than the terminal. The
+// columns are `listing`'s, and the width is spent in this order:
+//   1. COMMAND, the last column, is cut at the right with `…`, down to `CompactCommandMin` cells;
+//   2. then LABEL is cut with `…`, down to `CompactLabelMin` cells (or its natural width, if less);
+//   3. then whole columns go, one at a time, in the order of `CompactDropOrder`, and after each one
+//      COMMAND and LABEL get the room again, in the same order.
+// ID, STATE, LABEL and COMMAND are never dropped. Where even those do not fit (a terminal under
+// about 30 cells wide), the line is cut at the right with `…` at the terminal's width, so a job is
+// still one line.
+
+// The columns that go first, then the next, as indexes into `ListingColumns`: FROM, RESV, USED,
+// OWNER, ETA, UNITS, STARTED, ELAPSED, KIND.
+val CompactDropOrder: Vector[int] = [10, 5, 4, 9, 8, 3, 6, 7, 2]
+
+// The fewest cells COMMAND is cut to while a column could go instead (a COMMAND already narrower is
+// kept whole), and the fewest LABEL is cut to.
+val CompactCommandMin: int = 10
+val CompactLabelMin: int = 8
+
+// The width used where the terminal's is not known: not a terminal, and no `$COLUMNS`.
+val DefaultListWidth: int = 80
+
+// The columns' indexes in a row of `listingRows`.
+private val LabelColumn: int = 11
+private val CommandColumn: int = 12
+
+// How wide a compact listing is: the terminal's width (`terminal`, `None` where standard output is
+// not a terminal or the terminal does not say) when there is one, else `$COLUMNS` (`columns`) if
+// that is a whole number above 0, else `DefaultListWidth`. A pipe or a file has no terminal, and
+// `COLUMNS` is how a script says what its reader's is.
+compactWidth(terminal: Option[int], columns: Option[string]) -> int = terminal match
+  Some(w) if w > 0 -> w
+  _ -> columns.flatMap(text -> text.trim.toLongOption()) match
+    Some(n) if n > 0 -> int(n)
+    _ -> DefaultListWidth
+
+// A cell as one line: a newline, tab or carriage return in a command or a label is a space.
+oneLine(text: string) -> string = text.replace("\n", " ").replace("\t", " ").replace("\r", " ")
+
+// `text` on the right of as many spaces as make it `width` cells wide.
+padCells(text: string, width: int) -> string =
+  val gap = width - textWidth(text)
+  if gap > 0 then text + "".padEnd(gap, ' ') else text
+
+// What `ls --compact` prints for `jobs` on a terminal `width` cells wide: `listing`'s header and one
+// row per job, each a single line of at most `width` cells.
+compactListing(jobs: Vector[JobInfo], whys: Vector[(long, Why)], width: int) -> string
+  val rows = listingRows(jobs, whys).map(r -> r.map(oneLine))
+  val widths = (0 ..< rows(0).length).map(c -> rows.map(r -> textWidth(r(c))).max).toVector
+  val labelNatural = widths(LabelColumn)
+  val commandNeed = minOf(CompactCommandMin, widths(CommandColumn))
+  var dropped = 0
+  var labelWidth = labelNatural
+  var commandWidth = 0
+  var found = false
+  while !found
+    val gone = CompactDropOrder.take(dropped)
+    val kept = (0 ..< LabelColumn).filter(c -> !gone.contains(c)).toVector
+    val room = width - kept.map(c -> widths(c) + 2).sum - 2
+    labelWidth = labelNatural
+    commandWidth = room - labelWidth
+    if commandWidth < commandNeed
+      labelWidth = minOf(labelNatural, maxOf(CompactLabelMin, room - commandNeed))
+      commandWidth = room - labelWidth
+    found = commandWidth >= commandNeed || dropped == CompactDropOrder.length
+    if !found then dropped += 1
+  val gone = CompactDropOrder.take(dropped)
+  val kept = (0 ..< LabelColumn).filter(c -> !gone.contains(c)).toVector
+  rows.map(r ->
+    val front = kept.map(c -> padCells(r(c), widths(c)) + "  ").mkString("")
+    val label = padCells(fitted(r(LabelColumn), labelWidth), labelWidth)
+    val command = if commandWidth > 0 then "  " + fitted(r(CommandColumn), commandWidth) else ""
+    val line = (front + label + command).trim
+    if textWidth(line) > width then fitted(line, width) else line
+  ).mkString("\n")
