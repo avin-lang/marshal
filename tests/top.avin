@@ -14,7 +14,7 @@ import dev.avinlang.marshal.top.{
 
 import dev.avinlang.tui.{
   BrightBlack, Char, Ctrl, Down, End, Enter, Escape, Event, Green, Grid, Home, Key, KeyPress, Magenta, PageDown, PageUp,
-  Red, Resize, Reverse, Stop, Up, Yellow, wrapChars
+  Red, Resize, Reverse, Span, Stop, Up, Yellow, wrapChars
 }
 
 val minuteMs: long = 60000
@@ -1190,3 +1190,83 @@ scrollResetWithNothingToReset()
   lost.lost("no daemon", true)
   lost.handle(press(Down), 0)
   shortDrawn(lost, 10 * IdleHideMs)
+
+// The overview of running jobs with the ids given.
+withIds(ids: Vector[int]) -> Overview =
+  Overview(Usage(4, 48, 0, long.MaxValue, ids.length, 0, None, None), 1000, ids.map(i -> snapJob(long(i))), [], [])
+
+// The column just past the end of `text`'s first occurrence in row `y` of `g`.
+endColumn(g: Grid, y: int, text: string) -> int = columnOf(g, y, text) + text.charCount
+
+@test("the ID column is as wide as the widest id drawn, never under its heading's 5 cells")
+topIdColumnWidth()
+  val w = 140
+  assertEq(top.columnsFor(w, 7)(0).width, 5)
+  assertEq(top.columnsFor(w, 7, 3)(0).width, 5)
+  assertEq(top.columnsFor(w, 7, 6)(0).width, 6)
+  assertEq(top.columnsFor(w, 7, 7)(0).width, 7)
+  assertEq(top.columnsFor(w, 7, 7)(0).align, 1)
+  assertEq(top.idWidthOf([]), 5)
+  assertEq(top.idWidthOf([[Span("6108")]]), 5)
+  assertEq(top.idWidthOf([[Span("100000")], [Span("42")]]), 6)
+  assertEq(top.idWidthOf([[Span("1234567")]]), 7)
+
+@test("top right-aligns ids under the ID heading whether they have 4, 5, 6 or 7 digits")
+topIdsAlignAtEveryWidth()
+  for ids in [[6108], [99999], [100000], [1234567], [6108, 100000, 1234567, 7]]
+    val g = drawn(viewing(withIds(ids)), 140, 20)
+    val head = rowOf(g, "ID STATE")
+    // the heading and the ids end in one column, and the one after it starts STATE
+    val idEnd = g.rowText(head).indexOf("STATE") - 1
+    for i in ids
+      val y = rowOf(g, i.toString() + " ")
+      assert(y > head, s"$i missing")
+      assertEq(endColumn(g, y, i.toString()), idEnd)
+    // every row's STATE and COMMAND sit under their headings
+    for k in 1 ..< ids.length + 1
+      assertEq(columnOf(g, head + k, "sleep 30"), columnOf(g, head, "COMMAND"))
+
+@test("top: a 4-digit id draws exactly as before, and wider ids move the columns after ID right by the extra cells")
+topIdWidthShiftsOnlyWhatFollows()
+  val before = drawn(viewing(withIds([6108])), 140, 20)
+  val same = drawn(viewing(withIds([1])), 140, 20)
+  val head = rowOf(before, "ID STATE")
+  assertEq(before.rowText(head), same.rowText(head))
+  assertEq(columnOf(before, head, "STATE"), 6)
+  val wide = drawn(viewing(withIds([1234567])), 140, 20)
+  assertEq(columnOf(wide, head, "STATE"), 8)
+  assertEq(columnOf(wide, head, "KIND") - columnOf(before, head, "KIND"), 2)
+  assert(wide.rowText(head + 1).contains("1234567 "), wide.rowText(head + 1))
+
+@test("top: the screen widths that drop CORES, PEAK and ETA do not move for a 6-digit id")
+topIdWidthKeepsThresholds()
+  for w in [89, 90, 129, 130, 139, 140]
+    val a = drawn(viewing(withIds([6108])), w, 20)
+    val b = drawn(viewing(withIds([100000])), w, 20)
+    val head = rowOf(a, "ID STATE")
+    for t in ["CORES", "PEAK", "ETA", "DEADLINE"]
+      assertEq(a.rowText(head).contains(t), b.rowText(head).contains(t))
+
+@test("top: on a narrow screen a 6-digit id leaves COMMAND its room, taking the cells from LABEL and OWNER")
+topIdNarrowKeepsCommand()
+  for w in [100, 120]
+    val g = drawn(viewing(withIds([100000, 6108])), w, 20)
+    val head = rowOf(g, "ID STATE")
+    assert(g.rowText(head).contains("COMMAND"), g.rowText(head))
+    val room = w - columnOf(g, head, "COMMAND")
+    val baseG = drawn(viewing(withIds([6108])), w, 20)
+    val baseRoom = w - columnOf(baseG, rowOf(baseG, "ID STATE"), "COMMAND")
+    // never more than the one extra cell comes out of COMMAND; where OWNER and LABEL have room it keeps 20
+    assert(baseRoom - room <= 1, s"$w: COMMAND has $room cells, was $baseRoom")
+    if w >= 120 then assert(room >= top.CommandMin, s"$w: COMMAND has $room cells")
+    val y = rowOf(g, "100000 ")
+    assert(g.rowText(y).contains("sleep 30"), g.rowText(y))
+    assertEq(endColumn(g, y, "100000"), g.rowText(head).indexOf("STATE") - 1)
+  // at 90 cells, where the table is already tight, COMMAND is as wide as a 4-digit id leaves it less the
+  // extra cell, and the ids still align
+  val tight = drawn(viewing(withIds([100000])), 90, 20)
+  val base = drawn(viewing(withIds([6108])), 90, 20)
+  val head = rowOf(tight, "ID STATE")
+  assert(tight.rowText(head).contains("COMMA"), tight.rowText(head))
+  assertEq(columnOf(tight, head, "COMMA"), columnOf(base, head, "COMMA") + 1)
+  assertEq(endColumn(tight, rowOf(tight, "100000 "), "100000"), tight.rowText(head).indexOf("STATE") - 1)

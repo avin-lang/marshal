@@ -189,8 +189,12 @@ val KindWidth: int = 8
 // they fit in it, and else what it weighs.
 val UnitsWidth: int = 5
 
+// The ID column's index and its fewest cells (its heading, and the ids up to 99999); a wider id widens it.
+val IdColumn: int = 0
+val IdMin: int = 5
+
 val columns: Vector[Column] = [
-  Column("ID", 5, 1),
+  Column("ID", IdMin, 1),
   Column("STATE", 14),
   Column("KIND", KindWidth),
   Column("UNITS", UnitsWidth, 1),
@@ -207,8 +211,9 @@ val columns: Vector[Column] = [
 
 // The columns CORES, PEAK and ETA sit at, and the narrowest screens that show them. A narrower
 // screen leaves CORES out first, then PEAK, then ETA (all are still in `ls` and the JSON), so that
-// OWNER, LABEL and COMMAND keep their room: every fixed column takes 99 cells, which leaves a
-// 140-cell screen 20 for OWNER and LABEL beside COMMAND's 20.
+// OWNER, LABEL and COMMAND keep their room: every fixed column takes 99 cells (with a 5-cell ID;
+// each cell an id needs beyond that comes out of OWNER, LABEL and COMMAND, the thresholds unmoved),
+// which leaves a 140-cell screen 20 for OWNER and LABEL beside COMMAND's 20.
 val CoresColumn: int = 4
 val PeakColumn: int = 7
 val StartedColumn: int = 8
@@ -237,11 +242,21 @@ private onScreen[T](all: Vector[T], width: int) -> Vector[T] =
 
 // The columns a screen `width` cells wide draws. Without PEAK, STARTED is 7 wide (its heading and
 // `hh:mm`), or 11 where a shown job started on another day.
-columnsFor(width: int, startedWidth: int) -> Vector[Column] =
+columnsFor(width: int, startedWidth: int, idWidth: int = IdMin) -> Vector[Column] =
   onScreen(
-    columns.map(c -> if c.title == "STARTED" && !showsPeak(width) then Column("STARTED", startedWidth) else c),
+    columns.map(
+      c -> if c.title == "STARTED" && !showsPeak(width) then Column("STARTED", startedWidth)
+        else if c.title == "ID" then Column("ID", maxInt(idWidth, IdMin), 1)
+        else c
+    ),
     width
   )
+
+// The ID column's width for the cells of `rows` (each row's first cell is its job id): the widest id
+// drawn, and at least `IdMin`. The cells it takes beyond `IdMin` come out of the flexible columns'
+// room, so the screen widths above are unchanged.
+idWidthOf(rows: Vector[Vector[Span]]) -> int =
+  rows.foldLeft(IdMin, (w, r) -> maxInt(w, r(IdColumn).text.charCount))
 
 // A measured size for the RSS and PEAK columns: `-` where nothing was measured.
 measuredText(bytes: long) -> string = if bytes <= 0 then "-" else marshal.roundSize(bytes)
@@ -611,7 +626,7 @@ class App(val sock: string)
       val full = shown.map(l -> allCells(l, since, zone, today, area.w))
       val rows = full.map(r -> onScreen(r, area.w))
       val startedWidth = if full.exists(r -> r(StartedColumn).text.charCount > 7) then 11 else 7
-      val base = columnsFor(area.w, startedWidth)
+      val base = columnsFor(area.w, startedWidth, idWidthOf(full))
       val drawing = Table(withLabelColumn(base))
       // a bar down the right edge while the lines overflow the rows, over the lines loaded
       drawing.scrollbar = Some(Scrollbar())
