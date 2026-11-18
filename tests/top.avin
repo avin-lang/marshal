@@ -1044,3 +1044,149 @@ topWithMoreNewJobsThanRows()
   val g = drawn(app, 80, 9)
   assert(rowOf(g, "run1") >= 0)
   assert(rowOf(g, " 90 ") >= 0)
+
+// A short screen, so the nine jobs of `full()` overflow the table and it can scroll.
+shortDrawn(app: App, now: long) -> Grid
+  val g = Grid(100, 12)
+  app.draw(g, 0, now)
+  g
+
+// The first screen row of the table's lines whose cells are reversed, or -1.
+litShort(g: Grid) -> int
+  for y in 6 ..< 12
+    if g(1, y).style.has(Reverse) then return y
+  -1
+
+// An app that a key at time 0 woke and that then scrolled to the last job, drawn at time 0.
+scrolled() -> App
+  val app = fresh()
+  app.handle(key('x'), 0)
+  app.handle(press(End), 0)
+  shortDrawn(app, 0)
+  assert(app.table.offset > 0, "the table is scrolled")
+  app
+
+@test("a table scrolled down goes back to the top, first job selected, when the highlight hides")
+scrollResetsWhenHighlightHides()
+  val app = scrolled()
+  assertEq(app.selected().map(j -> j.id), Some(long(3)))
+  // still shown: nothing moves
+  shortDrawn(app, IdleHideMs - 1)
+  assert(app.table.offset > 0)
+  assertEq(app.selected().map(j -> j.id), Some(long(3)))
+  val g = shortDrawn(app, IdleHideMs)
+  assertEq(app.table.offset, 0)
+  assertEq(app.selected().map(j -> j.id), Some(long(1)))
+  assertEq(litShort(g), -1)
+  assert(g.rowText(6).trim.startsWith("1 running"), g.rowText(6))
+
+@test("the row remembered while hidden is the first one after a reset, and the first key only shows it")
+scrollResetRemembersTop()
+  val app = scrolled()
+  shortDrawn(app, 2 * IdleHideMs)
+  assertEq(app.handle(press(Down), 3 * IdleHideMs), Stay)
+  assertEq(app.selected().map(j -> j.id), Some(long(1)))
+  assertEq(litShort(shortDrawn(app, 3 * IdleHideMs)), 6)
+  app.handle(press(Down), 3 * IdleHideMs + 1)
+  assertEq(app.selected().map(j -> j.id), Some(long(4)))
+
+@test("a table not scrolled keeps its selected job when the highlight hides")
+noScrollKeepsSelection()
+  val app = fresh()
+  app.handle(key('x'), 0)
+  app.handle(press(Down), 0)
+  app.handle(press(Down), 0)
+  shortDrawn(app, 0)
+  assertEq(app.table.offset, 0)
+  shortDrawn(app, IdleHideMs)
+  assertEq(app.selected().map(j -> j.id), Some(long(10)))
+  assertEq(app.handle(press(Down), 2 * IdleHideMs), Stay)
+  assertEq(app.selected().map(j -> j.id), Some(long(10)))
+
+@test("a list shorter than the screen is never scrolled, so its selection is kept at any depth")
+shortListKeepsSelection()
+  val app = fresh()
+  app.handle(key('x'), 0)
+  app.handle(press(End), 0)
+  drawn(app, 100, 40)
+  assertEq(app.table.offset, 0)
+  drawnAt(app, 10 * IdleHideMs)
+  assertEq(app.selected().map(j -> j.id), Some(long(3)))
+
+@test("a scrolled table whose selected row is still in view resets all the same")
+scrollResetWithSelectionVisible()
+  val app = scrolled()
+  app.handle(press(Up), 1)
+  shortDrawn(app, 1)
+  assert(app.table.offset > 0)
+  shortDrawn(app, 1 + IdleHideMs)
+  assertEq(app.table.offset, 0)
+  assertEq(app.selected().map(j -> j.id), Some(long(1)))
+
+@test("after the reset, new jobs arriving show above and the first row stays selected")
+scrollResetFollowsTop()
+  val app = scrolled()
+  shortDrawn(app, IdleHideMs)
+  app.update(
+    Overview(
+      Usage(20, 48, 1073741824, 4294967296, 3, 0, None, None),
+      0,
+      [snapJob(20), snapJob(1, units = 4), snapJob(4, units = 4, landing = true)],
+      [],
+      []
+    )
+  )
+  assertEq(app.selected().map(j -> j.id), Some(long(20)))
+  assertEq(app.table.offset, 0)
+
+@test("jobs arriving while the scrolled highlight shows do not reset; the hide still does")
+scrollNewJobsWhileShown()
+  val app = scrolled()
+  app.update(full())
+  shortDrawn(app, 1)
+  assertEq(app.selected().map(j -> j.id), Some(long(3)))
+  assert(app.table.offset > 0)
+  shortDrawn(app, IdleHideMs)
+  assertEq(app.table.offset, 0)
+  assertEq(app.selected().map(j -> j.id), Some(long(1)))
+
+@test("a key at the moment of the hide, before any draw, finds the list already back at the top")
+scrollResetBeforeKeyAtFade()
+  val app = scrolled()
+  assertEq(app.handle(press(Down), IdleHideMs), Stay)
+  assertEq(app.table.offset, 0)
+  assertEq(app.selected().map(j -> j.id), Some(long(1)))
+  // a key just before the hide counts as activity and nothing resets
+  val busy = scrolled()
+  busy.handle(press(Up), IdleHideMs - 1)
+  shortDrawn(busy, IdleHideMs + 1)
+  assert(busy.table.offset > 0)
+  assertEq(busy.selected().map(j -> j.id), Some(long(5)))
+
+@test("the highlight held by the log pane, the kill prompt or the help keeps the scroll")
+scrollKeptWhileHeld()
+  val later = 10 * IdleHideMs
+  val logging = scrolled()
+  logging.handle(press(Enter), 0)
+  shortDrawn(logging, later)
+  assertEq(logging.selected().map(j -> j.id), Some(long(3)))
+  val asking = scrolled()
+  asking.confirming = asking.selected()
+  shortDrawn(asking, later)
+  assert(asking.table.offset > 0)
+  assertEq(asking.selected().map(j -> j.id), Some(long(3)))
+  val helping = scrolled()
+  helping.handle(key('h'), 0)
+  shortDrawn(helping, later)
+  assert(helping.table.offset > 0)
+  assertEq(helping.selected().map(j -> j.id), Some(long(3)))
+
+@test("with no key yet, or no snapshot, a draw resets nothing and does no harm")
+scrollResetWithNothingToReset()
+  val app = fresh()
+  shortDrawn(app, 10 * IdleHideMs)
+  assertEq(app.selected().map(j -> j.id), Some(long(1)))
+  val lost = App("/h/sock")
+  lost.lost("no daemon", true)
+  lost.handle(press(Down), 0)
+  shortDrawn(lost, 10 * IdleHideMs)

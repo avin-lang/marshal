@@ -458,10 +458,21 @@ class App(val sock: string)
   // Whether the help is showing.
   helpShown() -> bool = !modals.isEmpty()
 
+  // The highlight has hidden at `now`. A list scrolled down by then goes back to the top with the
+  // first line selected and following the newest jobs, so the selection is not left on a row out of
+  // view; a list not scrolled keeps its selected job.
+  private settle(now: long)
+    if lastKeyAt.isDefined && !highlighted(now) && table.offset > 0
+      table.offset = 0
+      table.select(0, shown.length)
+      followsTop = true
+      remember()
+
   // Changes the state for `e`, which came at `now`, and says what to do next. A key that finds the
   // highlight hidden and only moves or opens something shows it again and does nothing else.
   handle(e: Event, now: long = 0) -> Action
     if e is KeyPress(k, _)
+      settle(now)
       val hidden = !highlighted(now)
       lastKeyAt = Some(now)
       message = ""
@@ -586,6 +597,7 @@ class App(val sock: string)
   // Draws the screen into `g`, `since` milliseconds after the snapshot came: the header, the table,
   // the log pane under it when open, the bottom line, and the help over everything when open.
   draw(g: Grid, since: long, now: long = 0)
+    settle(now)
     if overview is Some(o)
       // the header, the body, and the bottom line; with the log open, the table takes half the
       // body (at least two rows) and the pane the rest

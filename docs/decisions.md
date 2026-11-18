@@ -777,6 +777,22 @@ with the user: hold applying to waiting jobs, and priority staying for queued jo
   pseudo-terminal test and is not documented for users. The loop redraws at least once a second,
   so the highlight hides within a second after the delay.
 
+## `top` goes back to the top when the highlight hides over a scrolled list (branch `top-scroll-reset`)
+
+**Settled on the user's request 2026-11-17.** Review with the user: "scrolled" meaning the first visible line is not the first.
+
+- **when the highlight hides (5 s without a key) and the table's first visible line is not the
+  first, the table scrolls back to the top and the first line becomes the selection, following the
+  newest jobs as a table at the top does.** A table not scrolled keeps its selected job as before.
+  Why: a job scrolled out of sight would otherwise be the one the next key shows again, off screen.
+  Alternatives: reset only when the selected row is out of view (the request says the list is
+  scrolled, not the row), reset when any scroll happened since the highlight began (a scroll back
+  to the top would then still clear the selection).
+- **it applies whether or not the selected row is still in view; a list shorter than the screen is
+  never scrolled, so it never resets; the log pane, the kill prompt and the help keep the highlight
+  and so the scroll.** The reset is applied at the first draw or key at or after the hide, so a key
+  arriving then finds the top already shown and, the highlight hidden, only reveals it.
+
 ## Retention and `marshal clean` (branch `clean-retention`)
 
 **Settled on the user's delegation 2026-11-07.** Review with the user: the defaults (30d logs, 1000 jobs,
