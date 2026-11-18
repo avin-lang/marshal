@@ -159,8 +159,8 @@ fromText(j: JobInfo) -> string = [j.unitsFrom, j.reservedFrom, j.deadlineFrom].m
 
 // A source of learning.avin's (or `given`, `default`, ...) in a word: `dir` (cmd+dir), `cmd`,
 // `norm` (norm+project), `proj` (kind+project), `given`, `def` (a default), `live` (raised while it
-// ran), `excl`, `quick`, `over` (a deadline after an overrun), `kind` (a kind's, from an older
-// daemon), `-` for none or not said.
+// ran), `excl`, `quick`, `over` (a deadline after an overrun), `amend` (a deadline `amend` changed),
+// `kind` (a kind's, from an older daemon), `-` for none or not said.
 sourceWord(from: string) -> string = from match
   "cmd+dir" -> "dir"
   "norm+project" -> "norm"
@@ -168,6 +168,7 @@ sourceWord(from: string) -> string = from match
   "default" -> "def"
   "exclusive" -> "excl"
   "overrun" -> "over"
+  "amended" -> "amend"
   "none" | "" -> "-"
   other -> other
 

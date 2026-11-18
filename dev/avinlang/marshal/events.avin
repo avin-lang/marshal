@@ -12,7 +12,9 @@ module dev.avinlang.marshal
 // `peak_cores` is the most cores the job was measured keeping busy and `cpu_ms` the processor time
 // counted (cores.avin), both absent where it was never measured; `held_cores` the level it held
 // (`CpuMeter.held`), what its units are learned from.
-// `submitted` adds `spec`, the job's whole specification, which `rerun` submits again. A job that
+// `submitted` adds `spec`, the job's whole specification, which `rerun` submits again. `amended`
+// (a job's settings changed by `amend`) adds `changes`, each changed setting's `from` and `to`, and
+// `spec`, the specification as amended, which `rerun` then submits. A job that
 // is retried ends each attempt with an ending event that adds `"retrying": true`, and then records
 // `retry`, so its last event is an ending only once its last attempt has ended.
 import avin.collections.mutable.{Map as MutableMap}
@@ -41,7 +43,8 @@ eventLine(ts: long, event: string, job: JobInfo, extra: Vector[(string, Json)]) 
 // - `cores`: the `held_cores` of every clean run's ending event that has one, and the `peak_cores`
 //   of one written before held levels were, in hundredths of a core, oldest first, kept under the
 //   same keys as `peaks`: what units are learned from when `memory.json` cannot be used.
-// - `durations`: the run time of each job that exited 0, oldest first, kept under the same keys as
+// - `durations`: the run time of each job that exited 0 (but one whose `deadline_from` is `amended`,
+//   which teaches no deadline, as it teaches no `histories` and no `overruns`), oldest first, kept under the same keys as
 //   `peaks` (a kind's are `histories`): what expected durations and deadlines are learned from when
 //   `memory.json` cannot be used or kept none.
 // - `overruns`: the longest `run_ms` of a `timeout` event since the last job that exited 0, by the
@@ -124,11 +127,13 @@ recover(lines: Iterable[string], keep: int = 10, projectOf: (string) -> string =
       for k in chain
         if peak > 0 then appendTo(peaks, k.key, peak)
         if busiest >= 0 then appendTo(cores, k.key, busiest)
-    if kind == "timeout"
+    // a run whose deadline was amended teaches no deadline: neither an overrun nor a duration
+    val teaches = teachesDeadline(ev.get("deadline_from").flatMap(v -> v.asString).getOrElse(""))
+    if kind == "timeout" && teaches
       for ms in ran.toList
         for key in overrunKeys(chain)
           if ms > overruns.get(key).getOrElse(0) then overruns(key) = ms
-    if kind == "finished" && ev.get("exit").flatMap(v -> v.asLong) == Some(long(0)) && !end.killed
+    if kind == "finished" && ev.get("exit").flatMap(v -> v.asLong) == Some(long(0)) && !end.killed && teaches
       val key = historyKey(evKind, evLanding)
       ran match
         Some(ms) ->
@@ -229,7 +234,9 @@ asLost(j: JobInfo) -> JobInfo = JobInfo(
   peakCores = j.peakCores,
   cpuMs = j.cpuMs,
   heldCores = j.heldCores,
-  unitsAsked = j.unitsAsked
+  unitsAsked = j.unitsAsked,
+  retries = j.retries,
+  amended = j.amended
 )
 
 // Whether an event ends its job for good: an ending, and not one of an attempt that runs again.
@@ -238,18 +245,19 @@ endsJob(ev: Json) -> bool =
     ev.get("event").flatMap(v -> v.asString).getOrElse("")
   ) && ev.get("retrying").flatMap(v -> v.asBool) != Some(true)
 
-// The specification job `id` was submitted with, as its `submitted` event records it; None when the
-// log has no such event or it records none.
+// The specification of job `id`, as its `submitted` event records it, or its last `amended` event
+// where it was amended; None when the log has no such event or it records none.
 specOf(lines: Iterable[string], id: long) -> Option[JobSpec]
+  var found: Option[JobSpec] = None
   for line in lines
-    if !line.contains("\"id\":" + id.toString()) || !line.contains("\"submitted\"") then continue
+    if !line.contains("\"id\":" + id.toString()) || !(line.contains("\"submitted\"") || line.contains("\"amended\"")) then continue
     json.parse(line) match
-      Ok(ev) if ev.get("id").flatMap(v -> v.asLong) == Some(id) && ev.get("event").flatMap(
-        v -> v.asString
-      ) == Some("submitted") ->
-        return ev.get("spec").flatMap(s -> decodeSpec(s).ok)
+      Ok(ev) if ev.get("id").flatMap(v -> v.asLong) == Some(id) ->
+        val name = ev.get("event").flatMap(v -> v.asString).getOrElse("")
+        if name == "submitted" || name == "amended"
+          for s in ev.get("spec").flatMap(s -> decodeSpec(s).ok).toList do found = Some(s)
       _ -> ()
-  None
+  found
 
 // The last event that ended job `id` for good, or None while the log has none: the ending of an
 // attempt that runs again does not end it.

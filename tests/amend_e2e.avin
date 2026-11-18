@@ -1,0 +1,327 @@
+module tests
+
+// `amend <id>`, end to end through the command line: a queued, held or waiting job changes any of
+// its settings and keeps its place; a running one its deadline, label, retries and quiet timeout;
+// one that has ended is refused with 1; what may not change is refused with 2; the `amended` event,
+// `history` and `status --json` show it; an amended deadline teaches no deadline; and a restart
+// keeps it all.
+import avin.fs
+import avin.threads
+import avin.time
+import avin.time.millis
+import dev.avinlang.json.Json
+
+// Job `id` as `status --json` lists it, queued, running or settling.
+amendStatusOf(home: string, id: long) -> Json
+  val s = statusJsonOf(home)
+  val all = s("running").asVector.get ++ s("queued").asVector.get
+  all.find(j -> j("id").asLong == Some(id)).get
+
+// Fails unless `r` exited 1 saying `why`.
+amendOverWith(r: Ran, why: string)
+  assertEq(r.code, 1)
+  assert(r.out.contains(why), r.out)
+
+// The `amended` events of job `id`, oldest first.
+amendedEvents(home: string, id: long) -> Vector[Json] =
+  events(home).filter(e -> e("id").asLong == Some(id) && e("event").asString == Some("amended"))
+
+@test("a queued job's every setting is amended in place: it keeps its queue position, and status, ls and the event say so")
+amendQueuedEverySetting()
+  val home = newHome("{\"units\": 1}")
+  val blocker = submitted(home, "--units", "1", "--", "sleep", "30")
+  val a = submitted(home, "--", "true")
+  val b = submitted(home, "--deadline", "26m", "--label", "first", "--", "true")
+  val c = submitted(home, "--", "true")
+  assertEq(queuedIds(home), [a, b, c])
+  val r = m(
+    home,
+    "amend",
+    b.toString(),
+    "--deadline",
+    "90m",
+    "--label",
+    "second",
+    "--retries",
+    "2",
+    "--quiet-timeout",
+    "10m",
+    "--mem",
+    "1G",
+    "--units",
+    "0.5"
+  )
+  assertEq(r.code, 0)
+  assert(r.out.contains(s"marshal: job $b amended:"), r.out)
+  for line in ["deadline 26m00s → 1h30m", "label first → second", "retries 0 → 2", "quiet-timeout none → 10m00s", "mem learned → 1G", "→ 0.5"]
+    assert(r.out.contains(line), s"$line: ${r.out}")
+  assertEq(queuedIds(home), [a, b, c])
+  val j = amendStatusOf(home, b)
+  assertEq(j("deadline_ms").asLong, Some(long(5400000)))
+  assertEq(j("deadline_from").asString, Some("amended"))
+  assertEq(j("label").asString, Some("second"))
+  assertEq(j("retries").asInt, Some(2))
+  assertEq(j("quiet_ms").asLong, Some(long(600000)))
+  assertEq(j("mem").asLong, Some(long(1024 * 1024 * 1024)))
+  assertEq(j("resv").asLong, Some(long(1024 * 1024 * 1024)))
+  assertEq(j("units").asReal, Some(0.5))
+  assertEq(j("amended").asBool, Some(true))
+  assert(!amendStatusOf(home, a).has("amended"))
+  val row = m(home, "ls").out.lines.find(l -> l.startsWith(b.toString() + " ")).get
+  assert(row.contains("second") && row.contains("/amend"), row)
+  assertEq(eventsOf(home, b), ["submitted", "amended"])
+  val ev = amendedEvents(home, b)(0)
+  assertEq(ev("changes")("deadline_ms")("from").asLong, Some(long(1560000)))
+  assertEq(ev("changes")("deadline_ms")("to").asLong, Some(long(5400000)))
+  assertEq(ev("changes")("label")("from").asString, Some("first"))
+  assertEq(ev("changes")("label")("to").asString, Some("second"))
+  assertEq(ev("changes")("retries")("to").asInt, Some(2))
+  assertEq(ev("spec")("label").asString, Some("second"))
+  assertEq(ev("spec")("deadline_ms").asLong, Some(long(5400000)))
+  // `+t` on a queued job adds to the deadline it has
+  assertEq(m(home, "amend", b.toString(), "--deadline", "+30m").code, 0)
+  assertEq(amendStatusOf(home, b)("deadline_ms").asLong, Some(long(7200000)))
+  // the queue runs in the order it had
+  m(home, "kill", blocker.toString())
+  for id in [a, b, c] do assertEq(m(home, "wait", id.toString()).code, 0)
+  assertEq(startOrder(home, [a, b, c]), [a, b, c])
+  cleanUp(home)
+
+@test("a queued job's amended values are refused as submit refuses them, and so are a cycle, an unknown id and itself")
+amendQueuedRefusals()
+  val home = newHome("{\"units\": 1}")
+  val blocker = submitted(home, "--units", "1", "--", "sleep", "30")
+  val q = submitted(home, "--", "true")
+  val quick = submitted(home, "--quick", "--after", blocker.toString(), "--", "true")
+  refusedWith(m(home, "amend", q.toString(), "--units", "99"), "the job needs 99 units and the budget is 1")
+  refusedWith(m(home, "amend", q.toString(), "--deadline", "0"), "a deadline is minutes")
+  refusedWith(m(home, "amend", q.toString(), "--label", " x"), "a label does not begin or end with a space")
+  refusedWith(m(home, "amend", quick.toString(), "--deadline", "5m"), "a quick job's deadline is at most 2m00s")
+  refusedWith(m(home, "amend", quick.toString(), "--deadline", "+1m"), "a quick job's deadline is at most 2m00s")
+  refusedWith(m(home, "amend", "99", "--label", "x"), "no job 99")
+  refusedWith(m(home, "amend", "x", "--label", "x"), "`x` is not a job id")
+  refusedWith(m(home, "amend", q.toString()), "give at least one setting")
+  refusedWith(m(home, "amend"), "amend takes a job id")
+  // x waits for the blocker, y for x: x waiting for y would never end
+  val x = submitted(home, "--after", blocker.toString(), "--", "true")
+  val y = submitted(home, "--after", x.toString(), "--", "true")
+  refusedWith(m(home, "amend", x.toString(), "--after", y.toString()), s"job $x cannot wait for job $y, which waits for job $x itself")
+  refusedWith(m(home, "amend", x.toString(), "--after", "999"), "no job 999")
+  refusedWith(m(home, "amend", x.toString(), "--after", x.toString()), s"job $x cannot wait for itself")
+  // nothing refused changed anything
+  for id in [q, quick, x, y] do assertEq(amendedEvents(home, id), [])
+  assertEq(m(home, "kill", blocker.toString()).code, 0)
+  assertEq(m(home, "wait", q.toString()).code, 0)
+  // the blocker was killed, so what waited for it with --after-ok is cancelled, and y after x
+  for id in [quick, x, y] do assertEq(m(home, "wait", id.toString()).code, 126)
+  cleanUp(home)
+
+@test("a held job amended stays held, and a queued job given a new --after waits, then rejoins the queue where it was")
+amendHeldAndAfter()
+  val home = newHome("{\"units\": 1}")
+  val blocker = submitted(home, "--units", "1", "--", "sleep", "30")
+  val a = submitted(home, "--", "true")
+  val b = submitted(home, "--", "true")
+  val c = submitted(home, "--", "true")
+  assertEq(m(home, "hold", b.toString()).code, 0)
+  // a quick job runs beside the blocker, so it can end while the queue waits
+  val dep = submitted(home, "--quick", "--", "sleep", "2")
+  assertEq(m(home, "amend", b.toString(), "--label", "held", "--after", dep.toString()).code, 0)
+  assertEq(queuedIds(home), [a, c])
+  assertEq(m(home, "wait", dep.toString()).code, 0)
+  assert(within(3000, () -> queuedIds(home) == [a, b, c]), queuedIds(home).toString())
+  val j = amendStatusOf(home, b)
+  assertEq(j("held").asBool, Some(true))
+  assertEq(j("label").asString, Some("held"))
+  assertEq(eventsOf(home, b), ["submitted", "held", "amended", "ready"])
+  m(home, "kill", blocker.toString())
+  for id in [a, c] do assertEq(m(home, "wait", id.toString()).code, 0)
+  threads.sleep(millis(300))
+  assertEq(eventsOf(home, b), ["submitted", "held", "amended", "ready"])
+  assertEq(m(home, "release", b.toString()).code, 0)
+  assertEq(m(home, "wait", b.toString()).code, 0)
+  cleanUp(home)
+
+@test("a waiting job's --after is replaced: --after-any runs it after a failed job, --after-ok cancels it")
+amendWaitingAfter()
+  val home = newHome()
+  val blocker = submitted(home, "--", "sleep", "30")
+  val failed = submitted(home, "--", "false")
+  assertEq(m(home, "wait", failed.toString()).code, 1)
+  val any = submitted(home, "--after", blocker.toString(), "--", "true")
+  val ok = submitted(home, "--after", blocker.toString(), "--", "true")
+  assertEq(m(home, "amend", any.toString(), "--after-any", failed.toString()).code, 0)
+  assertEq(m(home, "wait", any.toString()).code, 0)
+  assertEq(m(home, "amend", ok.toString(), "--after", failed.toString()).code, 0)
+  assertEq(m(home, "wait", ok.toString()).code, 126)
+  m(home, "kill", blocker.toString())
+  cleanUp(home)
+
+@test("a running job's deadline +t outlives its old deadline, and its label, retries and quiet timeout change")
+amendRunningExtends()
+  val home = newHome()
+  val id = submitted(home, "--deadline", "3s", "--", "sleep", "6")
+  startedGroup(home, id)
+  val r = m(home, "amend", id.toString(), "--deadline", "+10s", "--label", "longer", "--retries", "1", "--quiet-timeout", "1h")
+  assertEq(r.code, 0)
+  assert(r.out.contains("deadline 3.0s → 13.0s"), r.out)
+  val j = amendStatusOf(home, id)
+  assertEq(j("deadline_ms").asLong, Some(long(13000)))
+  assertEq(j("label").asString, Some("longer"))
+  assertEq(j("retries").asInt, Some(1))
+  assertEq(j("quiet_ms").asLong, Some(long(3600000)))
+  assertEq(m(home, "wait", id.toString()).code, 0)
+  assertEq(eventsOf(home, id), ["submitted", "started", "amended", "finished"])
+  cleanUp(home)
+
+@test("a running job's deadline is shortened, measured from its start, and it is stopped there as a timeout")
+amendRunningShortens()
+  val home = newHome()
+  val began = time.monotonic()
+  val id = submitted(home, "--deadline", "60s", "--", "sleep", "30")
+  startedGroup(home, id)
+  assertEq(m(home, "amend", id.toString(), "--deadline", "3s").code, 0)
+  assertEq(m(home, "wait", id.toString()).code, 124)
+  val took = (time.monotonic() - began).toMillis
+  // 3 seconds of running, then 5 of sampling before the TERM
+  assert(took < 15000, s"stopped ${took}ms after it was submitted")
+  assertEq(eventsOf(home, id), ["submitted", "started", "amended", "timeout"])
+  assert(daemonLog(home).contains(s"job $id passed its deadline of 3.0s"), daemonLog(home))
+  cleanUp(home)
+
+@test("a running job's new deadline already passed is refused and the job runs on; its units, memory, --after and lane are refused with 2")
+amendRunningRefusals()
+  val home = newHome()
+  val id = submitted(home, "--", "sleep", "30")
+  startedGroup(home, id)
+  threads.sleep(millis(1500))
+  val past = m(home, "amend", id.toString(), "--deadline", "1s")
+  refusedWith(past, "so a deadline of 1.0s has already passed")
+  refusedWith(m(home, "amend", id.toString(), "--units", "2"), s"job $id is running: its units and memory are what it was admitted on")
+  refusedWith(m(home, "amend", id.toString(), "--mem", "1G"), "kill it and submit it again to change them")
+  refusedWith(m(home, "amend", id.toString(), "--after", "1"), "it waits for no job now")
+  for lane in ["--landing", "--exclusive", "--quick", "--urgent"]
+    refusedWith(m(home, "amend", id.toString(), lane), "is the job's lane, which is not amended")
+  refusedWith(m(home, "amend", id.toString(), "--dir", "/tmp"), "`--dir` is not amended")
+  assertEq(amendedEvents(home, id), [])
+  assertEq(amendStatusOf(home, id)("state").asString, Some("running"))
+  assertEq(m(home, "kill", id.toString()).code, 0)
+  assertEq(m(home, "wait", id.toString()).code, 143)
+  cleanUp(home)
+
+@test("a paused job's deadline is amended against its stopped clock: the time paused never counts")
+amendPausedJob()
+  val home = newHome()
+  val id = submitted(home, "--deadline", "3s", "--", "sh", "-c", "sleep 60 & wait")
+  startedGroup(home, id)
+  threads.sleep(millis(1500))
+  assertEq(m(home, "pause", id.toString()).code, 0)
+  threads.sleep(millis(3000))
+  // run 1.5s, paused 3s: a deadline of 1s has passed, one of 4s has not
+  refusedWith(m(home, "amend", id.toString(), "--deadline", "1s"), "has already passed")
+  assertEq(m(home, "amend", id.toString(), "--deadline", "+1s").code, 0)
+  assertEq(amendStatusOf(home, id)("deadline_ms").asLong, Some(long(4000)))
+  threads.sleep(millis(1000))
+  assert(!daemonLog(home).contains(s"job $id passed its deadline"), daemonLog(home))
+  assertEq(amendStatusOf(home, id)("paused").asBool, Some(true))
+  assertEq(m(home, "resume", id.toString()).code, 0)
+  // 2.5 seconds are left of it after the resume
+  threads.sleep(millis(1500))
+  assert(!daemonLog(home).contains(s"job $id passed its deadline"), daemonLog(home))
+  assertEq(m(home, "wait", id.toString()).code, 124)
+  assert(daemonLog(home).contains(s"job $id passed its deadline of 4.0s"), daemonLog(home))
+  val end = events(home).find(e -> e("id").asLong == Some(id) && e("event").asString == Some("timeout")).get
+  val ran = end("run_ms").asLong.get
+  // its 4 seconds, then the sampling before the TERM
+  assert(4000 <= ran < 11000, s"ran ${ran}ms")
+  assertEq(eventsOf(home, id), ["submitted", "started", "paused", "amended", "resumed", "timeout"])
+  cleanUp(home)
+
+@test("a job that has ended, run or cancelled, is refused with 1")
+amendEnded()
+  val home = newHome("{\"units\": 1}")
+  val done = submitted(home, "--", "true")
+  assertEq(m(home, "wait", done.toString()).code, 0)
+  amendOverWith(m(home, "amend", done.toString(), "--label", "x"), s"job $done has already ended")
+  val blocker = submitted(home, "--units", "1", "--", "sleep", "30")
+  val cancelled = submitted(home, "--", "true")
+  m(home, "kill", cancelled.toString())
+  amendOverWith(m(home, "amend", cancelled.toString(), "--deadline", "+1m"), "has already ended")
+  m(home, "kill", blocker.toString())
+  m(home, "wait", blocker.toString())
+  // one an earlier daemon ended
+  m(home, "stop", "--force")
+  amendOverWith(m(home, "amend", done.toString(), "--retries", "1"), "has already ended")
+  cleanUp(home)
+
+@test("the amended event is in events and wakes a wait, history marks the job, and rerun runs it as amended")
+amendedEventSeen()
+  val home = newHome("{\"units\": 1}")
+  val blocker = submitted(home, "--units", "1", "--", "sleep", "30")
+  val id = submitted(home, "--label", "before", "--", "sh", "-c", "exit 0")
+  assertEq(m(home, "amend", id.toString(), "--label", "after").code, 0)
+  val evs = m(home, "events", "amended")
+  assertEq(evs.code, 0)
+  assertEq(evs.out.trim.lines.toVector.length, 1)
+  assert(evs.out.contains("\"event\":\"amended\"") && evs.out.contains("\"label\":\"after\""), evs.out)
+  val seen = m(home, "wait", "--until", "amended", "--since", id.toString(), "--timeout", "5s")
+  assertEq(seen.code, 0)
+  m(home, "kill", blocker.toString())
+  assertEq(m(home, "wait", id.toString()).code, 0)
+  val h = m(home, "history")
+  val row = h.out.lines.find(l -> l.startsWith(id.toString() + " ")).get
+  assert(row.contains("ok (amended)") && row.contains("after"), row)
+  val again = idIn(m(home, "rerun", id.toString()).out)
+  assertEq(m(home, "wait", again.toString()).code, 0)
+  val spec = events(home).find(e -> e("id").asLong == Some(again) && e("event").asString == Some("submitted")).get("spec")
+  assertEq(spec("label").asString, Some("after"))
+  cleanUp(home)
+
+// Runs `cmd` to the end three times, each with its deadline amended while it runs when `amend` is
+// true.
+amendRuns(home: string, amend: bool, cmd: string*)
+  for _ in 1 .. 3
+    val id = submitted(home, (["--"] ++ cmd.toVector)*)
+    if amend
+      startedGroup(home, id)
+      assertEq(m(home, "amend", id.toString(), "--deadline", "+10m").code, 0)
+    assertEq(m(home, "wait", id.toString()).code, 0)
+
+@test("runs whose deadline was amended teach their command no deadline, in the daemon and from the log; runs not amended do")
+amendedRunsTeachNoDeadline()
+  val home = newHome()
+  // two commands marshal tells apart: a shell's command is known by its script's first program
+  val script = (word: string) -> if word == "plain" then "true; sleep 0.5" else "sleep 0.5"
+  amendRuns(home, true, "sh", "-c", script("amended"))
+  amendRuns(home, false, "sh", "-c", script("plain"))
+  val probe = (word: string) ->
+    val id = submitted(home, "--", "sh", "-c", script(word))
+    val from = amendStatusOf(home, id)("deadline_from").asString.getOrElse("")
+    m(home, "wait", id.toString())
+    from
+  assertEq(probe("plain"), "cmd+dir")
+  assert(probe("amended") != "cmd+dir", "an amended run taught its deadline")
+  // a new daemon learns from the log alone
+  m(home, "stop", "--force")
+  val _ = fs.remove(home + "/memory.json")
+  assertEq(probe("plain"), "cmd+dir")
+  assert(!["cmd+dir", "cmd"].contains(probe("amended")), "an amended run in the log taught its deadline")
+  cleanUp(home)
+
+@test("a restart keeps the amended values of a queued job and of a running one, and the running one's new deadline")
+amendKeptAcrossRestart()
+  val home = newHome("{\"units\": 1}")
+  val run = submitted(home, "--units", "1", "--deadline", "3s", "--", "sleep", "6")
+  startedGroup(home, run)
+  val q = submitted(home, "--", "true")
+  assertEq(m(home, "amend", run.toString(), "--deadline", "+20s", "--label", "kept").code, 0)
+  assertEq(m(home, "amend", q.toString(), "--deadline", "7m", "--units", "0.75", "--label", "queued").code, 0)
+  restarted(home)
+  val r = amendStatusOf(home, run)
+  assertEq((r("deadline_ms").asLong, r("label").asString, r("amended").asBool, r("deadline_from").asString), (Some(long(23000)), Some("kept"), Some(true), Some("amended")))
+  val j = amendStatusOf(home, q)
+  assertEq((j("deadline_ms").asLong, j("units").asReal, j("label").asString, j("amended").asBool), (Some(long(420000)), Some(0.75), Some("queued"), Some(true)))
+  // the running job outlives its first deadline under the new image too
+  assertEq(m(home, "wait", run.toString()).code, 0)
+  assertEq(m(home, "wait", q.toString()).code, 0)
+  cleanUp(home)

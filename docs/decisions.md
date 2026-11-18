@@ -2445,3 +2445,58 @@ of test in the repository (1G to 22G), which `consistent` refuses as spread (its
   its partial work all suffer. Holding new starts is what marshal can do that the kernel cannot.
   **Review with the user**: whether, on critical, the user would rather have the newest job paused
   (or killed and requeued) than ride it out.
+
+## `marshal amend <id>`: a job's settings changed in place (branch `amend`)
+
+**The design is the user's (agreed 2026-11-18); the details below were settled by the agent that
+built it, by the design's direction.** Fixing a job's settings used to mean kill and resubmit,
+which lost its queue place or, running, its work: bench job 4991 (2026-11-16) was submitted without
+`--deadline` and stopped at 26 minutes by its learned deadline when it needed about 90.
+
+- **What may change.** Not started (queued, held, waiting for others, waiting to retry): `--deadline`,
+  `--units`, `--mem`, `--label`, `--retries`, `--quiet-timeout`, `--after`/`--after-ok`/`--after-any`
+  (not `--after` on a job waiting to retry, whose jobs have ended). Running: `--deadline`, `--label`,
+  `--retries`, `--quiet-timeout`; `--units`/`--mem`/`--after` are refused, exit 2, saying it was
+  admitted on them. Never: command, directory, environment, and the lane (`--landing`,
+  `--exclusive`, `--quick`, `--urgent`, refused at the command line, exit 2, pointing to kill and
+  resubmit or `priority --urgent`). Also refused as "not amended": `--kind`, `--owner`,
+  `--external`, `--quiet-load`, `--units-exact`, `--retry-delay`, since they change what the job is
+  or how it is weighed and run. **Review with the user:** whether `--retry-delay` should be
+  amendable (harmless, left out because the brief did not list it).
+- **Checked as submit checks.** The amended spec goes through the same sizing (`--units` is a
+  ceiling, units learned may lower it, with the same stderr hint), `neverFits`, `externalRefusal`
+  and `quickRefusal` (a quick job's deadline stays within 2m). `--units` on an exclusive job is
+  refused rather than ignored as `submit` ignores it, so an amend never reports a change that is not
+  made.
+- **Deadline arithmetic.** `t` is measured from the job's start, pauses left out (the clock
+  `ran` keeps); `+t` adds to the deadline the job has, queued or running. A running job's deadline is
+  re-armed at once; a paused one's waits for `resume`, as a pause already does.
+- **A deadline already passed is refused**, exit 2, naming how long the job has run and pointing to
+  `+t` and `kill`. Weighed: allowing it, stopping the job at once as a timeout (then retried if it
+  has retries). Refused because amend exists to keep work, and the likely cause is a slip
+  (`--deadline 30` meant as `+30`); `kill` stops a job on purpose. **Review with the user.**
+- **A quiet timeout amended on a running job counts from the amend**, as `resume` and `restart`
+  start it again. Weighed: keeping the silence already seen (a shortened timeout could then stop the
+  job at once, the same loss as above).
+- **The queue place.** Amending touches neither `arrived`, `priority` nor `urgentAt`. A queued job
+  given a new `--after` leaves the queue to wait and, once its jobs have ended, rejoins it where it
+  was (`keepsPlace`, saved across `restart`), logging `ready` as any waiting job does; a held job
+  stays held. A cycle (a new wait that comes back to the job through jobs that wait), an unknown id
+  and the job itself are refused; only waiting jobs can close a cycle, so the walk follows them.
+- **Learning.** A run whose deadline was amended (`deadline_from` = `amended`, FROM `amend`) teaches
+  no deadline: its duration is not learned (`durations`, a kind's `histories`, memory.json), a
+  timeout of it records no overrun, and the log's recovery and `stats` skip it the same way. Its
+  memory peak and cores are still learned when the run was clean (`cleanRun`): the deadline says
+  nothing about what the work uses. An amend that leaves the deadline alone changes no learning.
+  Weighed: teaching nothing from an amended run (loses good memory and units data for no reason).
+  **Review with the user:** whether an amended run's real duration should teach after all; it is
+  as true a measure as any run's, and was excluded because the design asked.
+- **Bookkeeping.** `amended` event with `changes` (`{"<setting>":{"from","to"}}`) and the amended
+  `spec`; `rerun` submits the last `amended` spec (from the log too). `status --json` and every job
+  event carry `"amended":true` and `retries` (left out at false and 0); `history` shows `ok
+  (amended)` and its JSON `"amended":true`. `amended` is an event filter of `events` and `wait
+  --until`. Restart state saves `amended` and `keeps_place`.
+- **Who.** Anyone who may `kill` may amend: the daemon asks nothing more, as for `kill`.
+- **Exit 1 for an ended job.** The daemon answers `{"ok":false,...,"ended":true}` (reply `Over`), so
+  the command line can tell it from the refusals that exit 2; an older command line reads it as a
+  refusal. Every other refusal (bad value, unknown job, running-job limits) exits 2 as `submit`'s do.

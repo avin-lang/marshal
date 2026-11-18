@@ -265,6 +265,7 @@ marshal clean [--older-than <t>] [--keep <n>] [--dry-run]  removes the logs of e
 marshal hold <id>                          keeps a queued job from starting; it keeps its place
 marshal release <id>                       lets a held job start again
 marshal priority <id> <n> | --urgent       places a queued job in its lane: higher first; --urgent: the back of the urgent band
+marshal amend <id> [options]               changes a job's settings in place: queued, it keeps its place; running, only --deadline, --label, --retries, --quiet-timeout
 marshal pause [<id>]                       stops a running job's processes, keeping its units, its deadline's clock stopped; with no id, holds the queue
 marshal resume [<id>]                      continues a paused job; with no id, releases the queue
 marshal polite [<fraction> | off]          while you work: admit jobs against only a fraction of the budget (default 0.75, or 3/4 and the like); a job bigger than that runs alone; off: the whole budget again. Running jobs go on; config.json's polite_schedule switches it on by the clock
@@ -423,6 +424,47 @@ $ marshal wait $b
 $ marshal rerun $b
 ```
 
+### Amending a job
+
+`marshal amend <id> [options]` changes a job's settings in place, so a slip costs neither its place
+in the queue nor, for a running job, the work it has done:
+
+```
+$ marshal amend 4991 --deadline +60m
+marshal: job 4991 amended:
+  deadline 26m28s → 1h26m
+$ marshal amend 5003 --units 2 --label "train 210" --after 5001
+```
+
+| Option | Queued, held or waiting | Running |
+| --- | --- | --- |
+| `--deadline <t>` | yes | yes |
+| `--label <text>`, `--retries <n>`, `--quiet-timeout <t>` | yes | yes |
+| `--units <n>`, `--mem <size>` | yes | refused (exit 2): it was admitted on them |
+| `--after`, `--after-ok`, `--after-any <ids>` | yes | refused (exit 2) |
+
+Each value is written and checked as `submit` takes it, and refused as `submit` would refuse it
+(exit 2). `--deadline t` is measured from the job's start, its pauses left out; `--deadline +t`
+adds `t` to the deadline it has. A running job's new deadline must still be ahead of it: one that
+has already passed is refused, so a slip never stops the work (`kill` stops a job on purpose). A
+paused job's stopped clock is respected. A quiet timeout amended on a running job starts its clock
+again then. `--units` is a ceiling as `submit`'s is; `--after` replaces the jobs it waits for, and
+is refused for an unknown id, the job itself, or a wait that would come back to it. A queued job
+given a new `--after` waits again and rejoins the queue where it was; a held job stays held.
+
+Never amended (exit 2): the command, directory, environment, kind, owner and lane (`--landing`,
+`--exclusive`, `--quick`, `--urgent`): kill the job and submit it again, or, for urgency, use
+`marshal priority <id> --urgent`. A job that has ended is refused with exit 1. Anyone who may `kill`
+a job may amend it.
+
+Each amend logs an `amended` event (`marshal events amended`, `wait --until amended`) with
+`changes`, each setting's `from` and `to`, and `spec`, the job as amended, which `rerun` submits.
+`ls`, `top` and `status --json` show the new values; `status --json` marks the job `"amended":
+true` and gives `retries`. `history` says `ok (amended)`. A run whose deadline was amended shows
+`amend` for its deadline in FROM and teaches no deadline: neither its duration nor, if it is stopped,
+an overrun; its memory and cores are still learned when it ran clean. A `marshal restart` keeps
+every amended value, of queued and running jobs alike.
+
 ## Waking on events
 
 A program that wants to resume when something happens runs one blocking command, in the
@@ -449,6 +491,7 @@ $ marshal events --follow failed
 | `held`, `released` | a job was held, or released, by hand |
 | `paused`, `resumed` | a running job was paused, or resumed |
 | `prioritized` | a queued job was given a priority |
+| `amended` | a job's settings were changed (`amend`) |
 | `any` | any event (`events` only) |
 
 Every condition but `idle` and `job=` takes filters after a colon, joined by commas: `kind=<k>`, and
@@ -604,7 +647,7 @@ ends: nothing polls.
   it while it lasts. A schedule config.json cannot read keeps the daemon from starting, saying what
   is wrong.
 - **Events.** `events.jsonl` records every job's `submitted`, `ready` (a job that waited for others
-  joining the queue), `held`, `released`, `prioritized`, `started`, `paused`, `resumed`, `retry` and
+  joining the queue), `held`, `released`, `prioritized`, `amended`, `started`, `paused`, `resumed`, `retry` and
   ending (`finished`, `timeout`, `quiet`, `killed`, `cancelled`, `lost`), each with the time, the job, and its
   durations and exit status; an ending event also carries what was measured (`peak_rss`,
   `peak_cores`, `held_cores`, `cpu_ms`). Deadlines are learned from it, and a daemon that starts

@@ -17,6 +17,8 @@ import dev.avinlang.json.Json
 // - `endedAt`: when it ended, wall clock milliseconds since 1970.
 // - `peakRss`: the most memory its process tree held, in bytes; 0 where the event does not say.
 // - `label`: the text its submitter gave it; "" for none.
+// - `amended`: `amend` changed its settings; `deadlineAmended`: its deadline among them, so its run
+//   teaches no deadline (`stats` leaves it out of the one it learns).
 data EndedJob(
     id: long,
     kind: string,
@@ -30,7 +32,9 @@ data EndedJob(
     label: string = "",
     quick: bool = false,
     urgent: bool = false,
-    exclusive: bool = false
+    exclusive: bool = false,
+    amended: bool = false,
+    deadlineAmended: bool = false
 )
 
 // The word an outcome is listed under.
@@ -90,7 +94,9 @@ class Ledger()
       job.label,
       job.quick,
       job.urgent,
-      job.exclusive
+      job.exclusive,
+      job.amended,
+      !teachesDeadline(job.deadlineFrom)
     )
     position.get(job.id) match
       Some(p) -> ends(p) = e
@@ -165,7 +171,9 @@ kindStats(ledger: Ledger, f: HistoryFilter, learning: Learning = defaultLearning
     val timed = es.filter(e -> e.how != "cancelled").map(e -> e.runMs)
     val peaks = es.filter(e -> e.peakRss > 0).map(e -> e.peakRss)
     val first = es(0)
-    val past = ledger.ends.toVector.filter(e -> e.how == "ok" && historyKey(e.kind, e.landing) == key).map(e -> e.runMs)
+    val past = ledger.ends.toVector.filter(
+      e -> e.how == "ok" && !e.deadlineAmended && historyKey(e.kind, e.landing) == key
+    ).map(e -> e.runMs)
     KindStats(key, es.length, es.filter(e -> e.how == "ok").length, es.filter(e -> e.how == "timeout").length,
       someIfAny(timed, xs -> percentile(xs, 50)), someIfAny(timed, xs -> percentile(xs, 90)), someIfAny(timed, xs -> xs.max),
       if durationLearned(learning, past) then enforcedMs(learning, deadlineMs(learning, first.kind, first.landing, past))
@@ -279,7 +287,8 @@ historyListing(jobs: Vector[EndedJob], zone: time.Zone) -> string
       e -> [
         e.id.toString(),
         kindMarked(e.kind, e.landing, e.quick, e.urgent, e.exclusive),
-        e.how,
+        // a job `amend` changed says so beside how it ended
+        if e.amended then e.how + " (amended)" else e.how,
         e.exit.toString(),
         formatMillis(e.runMs),
         formatWhen(e.endedAt, zone),
@@ -326,7 +335,9 @@ historyJson(jobs: Vector[EndedJob], unreadable: int) -> Json = Json.obj(
             ("duration_ms", Json.num(e.runMs)),
             ("ended_at", Json.num(e.endedAt)),
             ("peak_rss", optNum(if e.peakRss > 0 then Some(e.peakRss) else None))
-          ).asMembers.get ++ (if e.label.isEmpty then [] else [("label", Json.str(e.label))])
+          ).asMembers.get ++ (if e.label.isEmpty then [] else [("label", Json.str(e.label))]) ++ (
+            if e.amended then [("amended", Json.Bool(true))] else Vector[(string, Json)]()
+          )
         )
       )
     )

@@ -1,0 +1,317 @@
+module tests
+
+// `amend`, its pure parts: the request and its replies on the wire, the deadline arithmetic, the
+// cycle check of a new `--after`, the amended spec and the changes it reports, the command line's
+// options, and what an amended run teaches (the event log, `history`, `stats`, the restart state).
+import dev.avinlang.json
+import dev.avinlang.json.Json
+import dev.avinlang.marshal
+import dev.avinlang.marshal.cli
+import dev.avinlang.marshal.{Amendment, JobInfo, JobSpec, Outcome}
+
+val G1: long = 1024 * 1024 * 1024
+
+val amendBase: JobSpec = JobSpec("test", 8, 0, false, "/w", None, ["make", "test"], [("A", "1")], label = "first")
+
+// The request `a` for job 7 goes over the wire and back as itself.
+amendTrip(a: Amendment)
+  val text = marshal.encodeRequest(marshal.Amend(7, a)).render
+  assertEq(marshal.decodeRequest(text), Ok(marshal.Amend(7, a)))
+
+// Why the daemon refuses the request `text`.
+amendDecodeRefused(text: string, why: string) = marshal.decodeRequest(text) match
+  Err(e) -> assert(e.contains(why), s"$text: $e")
+  Ok(r) -> fail(s"$text was read as $r")
+
+@test("an amend request carries only what it changes, and every setting reads back as itself")
+amendRequestRoundTrip()
+  amendTrip(Amendment(deadlineMs = Some(5400000)))
+  amendTrip(Amendment(deadlineMs = Some(1800000), extend = true))
+  amendTrip(Amendment(units = Some(1)))
+  amendTrip(Amendment(units = Some(33), memory = Some(0)))
+  amendTrip(Amendment(memory = Some(29 * G1)))
+  amendTrip(Amendment(label = Some("bench é 1")))
+  amendTrip(Amendment(retries = Some(0)))
+  amendTrip(Amendment(retries = Some(2147483647)))
+  amendTrip(Amendment(quietMs = Some(1)))
+  amendTrip(Amendment(after = Some([3, 4])))
+  amendTrip(Amendment(after = Some([3]), afterAny = true))
+  amendTrip(
+    Amendment(Some(60000), true, Some(4), Some(G1), Some("x"), Some(3), Some(90000), Some([1, 2]), true)
+  )
+  val j = json.parse(marshal.encodeRequest(marshal.Amend(7, Amendment(label = Some("x")))).render).ok.get
+  assertEq(j.keys, ["op", "id", "label"])
+  // an `after` with a repeated id is read with each id once
+  assertEq(
+    marshal.decodeRequest("{\"op\":\"amend\",\"id\":7,\"after\":[3,3,4]}"),
+    Ok(marshal.Amend(7, Amendment(after = Some([3, 4]))))
+  )
+
+@test("an amend request that changes nothing, or a value submit would refuse, is refused")
+amendRequestRefused()
+  amendDecodeRefused("{\"op\":\"amend\",\"id\":7}", "changes at least one setting")
+  amendDecodeRefused("{\"op\":\"amend\",\"id\":7,\"label\":null}", "changes at least one setting")
+  amendDecodeRefused("{\"op\":\"amend\",\"label\":\"x\"}", "`id` is missing")
+  amendDecodeRefused("{\"op\":\"amend\",\"id\":7,\"deadline_ms\":0}", "`deadline_ms` is above 0")
+  amendDecodeRefused("{\"op\":\"amend\",\"id\":7,\"deadline_ms\":-5}", "`deadline_ms` is above 0")
+  amendDecodeRefused("{\"op\":\"amend\",\"id\":7,\"deadline_ms\":\"1h\"}", "`deadline_ms` is not a whole number")
+  amendDecodeRefused("{\"op\":\"amend\",\"id\":7,\"units\":0}", "`units` is above 0")
+  amendDecodeRefused("{\"op\":\"amend\",\"id\":7,\"units\":0.3}", "`units` is not a number of units")
+  amendDecodeRefused("{\"op\":\"amend\",\"id\":7,\"mem\":-1}", "`mem` is 0 or more")
+  amendDecodeRefused("{\"op\":\"amend\",\"id\":7,\"retries\":-1}", "retries are 0 or more")
+  amendDecodeRefused("{\"op\":\"amend\",\"id\":7,\"quiet_ms\":0}", "`quiet_ms` is not a whole number above 0")
+  amendDecodeRefused("{\"op\":\"amend\",\"id\":7,\"label\":\" x\"}", "a label does not begin or end with a space")
+  amendDecodeRefused("{\"op\":\"amend\",\"id\":7,\"label\":\"a\\nb\"}", "one line of printable text")
+  amendDecodeRefused("{\"op\":\"amend\",\"id\":7,\"label\":\"\"}", "a label is text, not empty")
+  amendDecodeRefused("{\"op\":\"amend\",\"id\":7,\"after\":[]}", "`after` names at least one job")
+  amendDecodeRefused("{\"op\":\"amend\",\"id\":7,\"after\":[\"3\"]}", "`after` is not an array of job ids")
+
+@test("an amend's replies: the changes and a hint, a refusal, and the refusal of a job that has ended")
+amendReplies()
+  for r in [
+    marshal.Amended("  label none → x"),
+    marshal.Amended("  units 8 → 2", "a hint"),
+    marshal.Failed("no job 9"),
+    marshal.Over("job 9 has already ended")
+  ]
+    assertEq(marshal.decodeReply(marshal.encodeReply(r).render), Ok(r))
+  // an older command line reads the refusal of an ended job as a refusal
+  val over = json.parse(marshal.encodeReply(marshal.Over("gone")).render).ok.get
+  assertEq(over("ok").asBool, Some(false))
+  assertEq(over("error").asString, Some("gone"))
+
+@test("+t adds to the deadline a job has; a plain t replaces it; no deadline leaves it")
+amendDeadlineArithmetic()
+  assertEq(marshal.amendedDeadline(1560000, Amendment(deadlineMs = Some(3600000), extend = true)), Some(5160000))
+  assertEq(marshal.amendedDeadline(1560000, Amendment(deadlineMs = Some(5400000))), Some(5400000))
+  assertEq(marshal.amendedDeadline(1560000, Amendment(deadlineMs = Some(60000))), Some(60000))
+  assertEq(marshal.amendedDeadline(1560000, Amendment(label = Some("x"))), None)
+
+@test("a running job's deadline that has already passed is refused, one a moment ahead is not")
+amendPastDeadline()
+  assertEq(marshal.pastDeadline(4, 60001, 60000), None)
+  val at = marshal.pastDeadline(4, 60000, 60000)
+  assert(at.exists(w -> w.contains("job 4 has run 1m00s, so a deadline of 1m00s has already passed")), at.toString())
+  val before = marshal.pastDeadline(4, 1000, 60000)
+  assert(before.exists(w -> w.contains("`+t`") && w.contains("`marshal kill 4`")), before.toString())
+
+@test("a new --after that would come back to the job through jobs that wait is a cycle; one that does not is not")
+amendAfterCycles()
+  // 5 waits for 6, 6 for 7; 8 waits for nothing
+  val waits = (j: long) -> j match
+    5 -> [long(6)]
+    6 -> [long(7)]
+    9 -> [long(9)]
+    _ -> Vector[long]()
+  // 7 waiting for 5 would close 7 → 5 → 6 → 7
+  assertEq(marshal.afterCycle(7, [5], waits), Some(long(5)))
+  assertEq(marshal.afterCycle(7, [8, 6], waits), Some(long(6)))
+  assertEq(marshal.afterCycle(7, [8], waits), None)
+  assertEq(marshal.afterCycle(5, [7], waits), None)
+  // a job that waits for itself elsewhere does not hang the walk
+  assertEq(marshal.afterCycle(4, [9], waits), None)
+  assertEq(marshal.afterCycle(4, [], waits), None)
+
+@test("an amended spec changes what was amended, as submit would have had it given, and keeps the rest")
+amendedSpecFields()
+  val s = marshal.withSizing(amendBase, 6, 8)
+  val units = marshal.amendedSpec(s, Amendment(units = Some(2)), None)
+  assertEq((units.units, units.unitsGiven, units.unitsAsked), (2, true, 0))
+  val learned = JobSpec("test", 8, 0, false, "/w", None, ["t"], [], unitsGiven = false)
+  assertEq(marshal.amendedSpec(learned, Amendment(units = Some(3)), None).unitsGiven, true)
+  assertEq(marshal.amendedSpec(learned, Amendment(label = Some("x")), None).unitsGiven, false)
+  val mem = marshal.amendedSpec(s, Amendment(memory = Some(0)), None)
+  assertEq((mem.memory, mem.memoryGiven), (long(0), true))
+  val after = marshal.amendedSpec(s, Amendment(after = Some([3]), afterAny = true), None)
+  assertEq((after.after, after.afterAny), ([long(3)], true))
+  val dl = marshal.amendedSpec(s, Amendment(deadlineMs = Some(1), extend = true), Some(90000))
+  assertEq(dl.deadlineMs, Some(long(90000)))
+  val rest = marshal.amendedSpec(s, Amendment(retries = Some(2), quietMs = Some(5000), label = Some("b")), None)
+  assertEq((rest.retries, rest.quietMs, rest.label), (2, long(5000), "b"))
+  // what makes the job what it is never changes
+  for t in [units, mem, after, dl, rest]
+    assertEq((t.kind, t.cmd, t.dir, t.env, t.landing, t.urgent, t.quick, t.exclusive), (s.kind, s.cmd, s.dir, s.env, s.landing, s.urgent, s.quick, s.exclusive))
+  assertEq(rest.unitsAsked, 8)
+  assertEq(rest.deadlineMs, None)
+
+@test("the changes an amend reports name each setting that changed, old and new, and nothing else")
+amendChangesReported()
+  val after = marshal.amendedSpec(
+    amendBase,
+    Amendment(units = Some(2), memory = Some(G1), label = Some("second"), retries = Some(1), quietMs = Some(60000), after = Some([3, 4])),
+    Some(5400000)
+  )
+  val changes = marshal.changesOf(amendBase, after, 1560000, 5400000)
+  assertEq(changes.map(c -> c.name), ["deadline_ms", "units", "mem", "label", "retries", "quiet_ms", "after"])
+  val j = marshal.changesJson(changes)
+  assertEq(j("deadline_ms")("from").asLong, Some(long(1560000)))
+  assertEq(j("deadline_ms")("to").asLong, Some(long(5400000)))
+  assertEq(j("units")("to").asReal, Some(0.5))
+  assertEq(j("label")("from").asString, Some("first"))
+  assertEq(j("label")("to").asString, Some("second"))
+  assertEq(j("after")("to")("ids").asVector.get.length, 2)
+  val text = marshal.changesText(changes)
+  assertEq(
+    text.lines.toVector,
+    [
+      "  deadline 26m00s → 1h30m",
+      "  units 2 → 0.5",
+      "  mem learned → 1G",
+      "  label first → second",
+      "  retries 0 → 1",
+      "  quiet-timeout none → 1m00s",
+      "  after none → --after-ok 3,4"
+    ]
+  )
+  // the same value given again changes nothing
+  assertEq(marshal.changesOf(amendBase, marshal.amendedSpec(amendBase, Amendment(label = Some("first")), None), 60000, 60000), [])
+
+@test("the command line reads amend's options as submit reads them, and +t extends")
+amendOptionsParsed()
+  assertEq(cli.parseAmendment(["--deadline", "+30m"]), Ok(Amendment(deadlineMs = Some(1800000), extend = true)))
+  assertEq(cli.parseAmendment(["--deadline", "90"]), Ok(Amendment(deadlineMs = Some(5400000))))
+  assertEq(cli.parseAmendment(["--deadline", "45s"]), Ok(Amendment(deadlineMs = Some(45000))))
+  assertEq(cli.parseAmendment(["--units", "0.25"]), Ok(Amendment(units = Some(1))))
+  assertEq(cli.parseAmendment(["--mem", "0"]), Ok(Amendment(memory = Some(0))))
+  assertEq(cli.parseAmendment(["--label", "train 209", "--retries", "2"]), Ok(Amendment(label = Some("train 209"), retries = Some(2))))
+  assertEq(cli.parseAmendment(["--quiet-timeout", "10m"]), Ok(Amendment(quietMs = Some(600000))))
+  assertEq(cli.parseAmendment(["--after", "3,4", "--after-ok", "4,5"]), Ok(Amendment(after = Some([3, 4, 5]))))
+  assertEq(cli.parseAmendment(["--after-any", "3"]), Ok(Amendment(after = Some([3]), afterAny = true)))
+
+// Why the command line refuses amend's options `args`.
+amendOptionRefused(args: Vector[string], why: string) = cli.parseAmendment(args) match
+  Err(e) -> assert(e.contains(why), s"$args: $e")
+  Ok(a) -> fail(s"$args was read as $a")
+
+@test("the command line refuses a bad value, nothing to change, and every option amend does not take")
+amendOptionsRefused()
+  amendOptionRefused([], "give at least one setting")
+  amendOptionRefused(["--deadline", "+"], "a deadline is minutes")
+  amendOptionRefused(["--deadline", "++5"], "a deadline is minutes")
+  amendOptionRefused(["--deadline", "-5"], "a deadline is minutes")
+  amendOptionRefused(["--deadline", "0"], "a deadline is minutes")
+  amendOptionRefused(["--deadline"], "`--deadline` needs a value")
+  amendOptionRefused(["--units", "0"], "units are a number above 0")
+  amendOptionRefused(["--units", "1.1"], "units are a number above 0")
+  amendOptionRefused(["--mem", "lots"], "a size is a whole number")
+  amendOptionRefused(["--label", ""], "a label is text, not empty")
+  amendOptionRefused(["--retries", "-1"], "retries are a whole number, 0 or more")
+  amendOptionRefused(["--quiet-timeout", "x"], "a quiet timeout is minutes")
+  amendOptionRefused(["--after", "3", "--after-any", "4"], "not both")
+  amendOptionRefused(["--after", "x"], "`x` is not a job id")
+  amendOptionRefused(["7"], "`7` is not an option")
+  amendOptionRefused(["--colour", "red"], "no option `--colour`")
+  for lane in ["--landing", "--exclusive", "--quick", "--urgent"]
+    amendOptionRefused([lane], s"`$lane` is the job's lane, which is not amended")
+    amendOptionRefused(["--label", "x", lane], "marshal priority <id> --urgent")
+  for other in ["--dir", "--kind", "--owner", "--external", "--quiet-load", "--units-exact", "--retry-delay", "--"]
+    amendOptionRefused([other, "v"], s"`$other` is not amended")
+
+@test("amend is in the usage, and amend --help lists its options")
+amendHelp()
+  assert(cli.usage.contains("marshal amend <id> [options]"), cli.usage)
+  val help = cli.commandHelp("amend").get
+  assert(help.startsWith("usage: marshal amend <id> [options]"), help)
+  for option in ["--deadline", "+t", "--label", "--retries", "--quiet-timeout", "--units", "--mem", "--after-any"]
+    assert(help.contains(option), option)
+  assert(cli.asksHelp("amend", ["4", "--help"]))
+
+// A job of `cmd` that ended so, its deadline from `from`, as its ending event records it.
+amendedEnd(id: long, event: string, exit: int, run: long, from: string, peak: long = 0) -> string =
+  val j = JobInfo(
+    id,
+    "bench",
+    4,
+    0,
+    false,
+    "/w",
+    ["./bench"],
+    "done",
+    Some(if event == "timeout" then Outcome.TimedOut else Outcome.Exited(exit)),
+    false,
+    5,
+    run,
+    60000,
+    s"/h/jobs/$id.log",
+    None,
+    peakRss = peak,
+    deadlineFrom = from,
+    amended = from == marshal.AmendedFrom
+  )
+  marshal.eventLine(1000 + id, event, j, [("run_ms", Json.num(run)), ("exit", Json.num(if event == "timeout" then 124 else exit))])
+
+@test("a run whose deadline was amended teaches no duration, history or overrun from the log, but its memory still teaches")
+amendedRunLearnsNoDeadline()
+  val project = (d: string) -> "p"
+  val amended = marshal.recover([amendedEnd(1, "finished", 0, 5400000, marshal.AmendedFrom, 2 * G1)], 10, project)
+  assert(amended.durations.isEmpty, amended.durations.toString())
+  assert(amended.histories.isEmpty, amended.histories.toString())
+  assert(amended.peaks.nonEmpty, "a clean amended run teaches its memory")
+  assert(amended.peaks.values.forall(p -> p == [2 * G1]), amended.peaks.toString())
+  val stopped = marshal.recover([amendedEnd(1, "timeout", 0, 300000, marshal.AmendedFrom)], 10, project)
+  assert(stopped.overruns.isEmpty, stopped.overruns.toString())
+  // the same runs not amended teach as they always have
+  val plain = marshal.recover([amendedEnd(1, "finished", 0, 5400000, "given", 2 * G1)], 10, project)
+  assert(plain.durations.nonEmpty && plain.histories.nonEmpty)
+  assert(marshal.recover([amendedEnd(1, "timeout", 0, 300000, "cmd")], 10, project).overruns.nonEmpty)
+  // an amend that left the deadline alone teaches its deadline
+  assert(marshal.recover([amendedEnd(1, "finished", 0, 1000, "given")], 10, project).durations.nonEmpty)
+  assert(marshal.teachesDeadline("cmd+dir") && marshal.teachesDeadline("") && !marshal.teachesDeadline("amended"))
+
+@test("history marks an amended job, and stats learns no deadline from a run whose deadline was amended")
+amendedInHistory()
+  val lines = [
+    endLine(100, 1, run = 60000),
+    endLine(200, 2, run = 60000, extra = [("amended", Json.Bool(true)), ("label", Json.str("b"))]),
+    endLine(300, 3, run = 99 * Minute, extra = [("amended", Json.Bool(true)), ("deadline_from", Json.str("amended"))])
+  ]
+  val l = ledgerOf(lines)
+  val ended = marshal.selectEnded(l, Everything, 20)
+  assertEq(ended.map(e -> (e.id, e.amended, e.deadlineAmended)), [(long(3), true, true), (long(2), true, false), (long(1), false, false)])
+  val rows = marshal.historyListing(ended, zoneNamed("UTC")).lines.toVector
+  assert(rows(1).contains("ok (amended)"), rows(1))
+  assert(rows(2).contains("ok (amended)"), rows(2))
+  assert(!rows(3).contains("amended"), rows(3))
+  val js = marshal.historyJson(ended, 0)("jobs").asVector.get
+  assertEq(js.map(j -> j.get("amended").flatMap(v -> v.asBool)), [Some(true), Some(true), None])
+  // the deadline stats learn is the one the two runs not amended teach
+  val without = marshal.kindStats(ledgerOf(lines.take(2)), Everything)(0).deadlineMs
+  assertEq(marshal.kindStats(l, Everything)(0).deadlineMs, without)
+
+@test("a job's retries and amended mark go into its events and status, and read back; absent, they are 0 and false")
+amendedJobInfo()
+  val j = JobInfo(3, "test", 4, 0, false, "/d", ["t"], "queued", None, false, 0, 0, 60000, "/l", None, retries = 2, amended = true, deadlineFrom = "amended")
+  val e = marshal.encodeJob(j)
+  assertEq(e("retries").asInt, Some(2))
+  assertEq(e("amended").asBool, Some(true))
+  assertEq(e("deadline_from").asString, Some("amended"))
+  assertEq(marshal.decodeJob(e), Ok(j))
+  val plain = JobInfo(3, "test", 4, 0, false, "/d", ["t"], "queued", None, false, 0, 0, 60000, "/l", None)
+  val p = marshal.encodeJob(plain)
+  assert(!p.has("retries") && !p.has("amended"), p.render)
+  assertEq(marshal.decodeJob(p), Ok(plain))
+  assertEq(marshal.sourceWord("amended"), "amend")
+
+@test("rerun reads the spec of an amended job from its last amended event")
+amendedSpecOf()
+  val first = marshal.eventLine(1, "submitted", JobInfo(5, "test", 4, 0, false, "/w", ["t"], "queued", None, false, 0, 0, 60000, "/l", None), [("spec", marshal.encodeSpec(amendBase))])
+  val second = marshal.amendedSpec(amendBase, Amendment(label = Some("second")), Some(90000))
+  val third = marshal.amendedSpec(second, Amendment(retries = Some(3)), None)
+  val amendedLine = (s: JobSpec) -> marshal.eventLine(2, "amended", JobInfo(5, "test", 4, 0, false, "/w", ["t"], "queued", None, false, 0, 0, 60000, "/l", None), [("spec", marshal.encodeSpec(s))])
+  assertEq(marshal.specOf([first], 5), Some(amendBase))
+  assertEq(marshal.specOf([first, amendedLine(second)], 5), Some(second))
+  assertEq(marshal.specOf([first, amendedLine(second), amendedLine(third)], 5), Some(third))
+  assertEq(marshal.specOf([first, amendedLine(second)], 6), None)
+
+@test("a restart keeps a job's amended mark and a queued job's claim to its place; a state without them reads as false")
+amendedSaved()
+  val j = marshal.SavedJob(
+    9, amendBase, "waiting", 1, 2, 0, 0, 5400000, 0, "/l", 0, 0, None, false, false, None, 0, 0,
+    deadlineFrom = "amended", amended = true, keepsPlace = true
+  )
+  stateRoundTrip(stateOf([], [], [], None))
+  val s = marshal.SavedState("0.1.0", 501, 1, 1, 10, [], [], [], None, false, [j])
+  assertEq(marshal.decodeState(marshal.encodeState(s).render), Ok(s))
+  val text = marshal.encodeState(s).render.replace(",\"amended\":true,\"keeps_place\":true", "")
+  val old = marshal.decodeState(text).ok.get.waiting(0)
+  assertEq((old.amended, old.keepsPlace), (false, false))

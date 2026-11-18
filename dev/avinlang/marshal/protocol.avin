@@ -6,7 +6,7 @@ import dev.avinlang.json
 import dev.avinlang.json.Json
 
 // marshal's version, as `avin.hocon` gives it: what `marshal version` and `marshal restart` print.
-val Version: string = "0.3.26"
+val Version: string = "0.3.27"
 
 // What a job is to run and how much of the machine it takes. `urgent` queues it in its lane's urgent
 // band, behind the urgent jobs already queued and ahead of every other. `after` names the jobs it
@@ -142,6 +142,8 @@ data Request
   // Places a queued job: by a priority number among the jobs not urgent, or at the back of its
   // lane's urgent band.
   Prioritize(id: long, priority: Priority)
+  // Changes the settings of a job that has not ended, in place (`Amendment`).
+  Amend(id: long, amendment: Amendment)
   // Removes the files of ended jobs, stale run directories and unused compiled steps (see clean.avin).
   Clean(rule: CleanRule)
   // Follows events: `source` is the condition as written, `cond` what it parses to. The daemon
@@ -154,6 +156,30 @@ data Request
 data Priority
   Level(n: int)
   Urgent
+
+// What `amend` changes; None leaves a setting as it is. `deadlineMs` is a deadline measured from the
+// job's start, or, with `extend`, what is added to the deadline it has. `units` is in quarters and
+// `memory` in bytes, both as `submit` gives them. `after` replaces the jobs it waits for, `afterAny`
+// saying how (as `JobSpec`'s).
+data Amendment(
+    deadlineMs: Option[long] = None,
+    extend: bool = false,
+    units: Option[int] = None,
+    memory: Option[long] = None,
+    label: Option[string] = None,
+    retries: Option[int] = None,
+    quietMs: Option[long] = None,
+    after: Option[Vector[long]] = None,
+    afterAny: bool = false
+)
+
+// Whether an amendment changes nothing.
+emptyAmendment(a: Amendment) -> bool =
+  a.deadlineMs.isEmpty && a.units.isEmpty && a.memory.isEmpty && a.label.isEmpty && a.retries.isEmpty && a.quietMs.isEmpty && a.after.isEmpty
+
+// Whether an amendment changes what only a job that has not started may change: what it was
+// admitted on (its units and memory), and what it waits for.
+startsOnly(a: Amendment) -> bool = a.units.isDefined || a.memory.isDefined || a.after.isDefined
 
 // How a job ended. `DependencyFailed` cancels a job waiting for job `after`, which did not succeed.
 // `Quiet` is a job stopped because its log had no new output for `afterMs` (its quiet timeout).
@@ -233,7 +259,9 @@ retryable(_, _) = false
 // learned from, learning.avin's `cmd+dir`, `cmd`, `norm+project` or `kind+project`), and
 // `deadlineFrom` where its deadline did (`LearnedDeadline.from`, or `given`), "" from a daemon that
 // does not say. `project` is the project its directory is in (learning.avin's `projectOf`), which
-// its runs are learned under.
+// its runs are learned under. `retries` is how many times more it runs after failing (`JobSpec`),
+// and `amended` says `amend` changed its settings after it was submitted (a `deadlineFrom` of
+// `amended` says its deadline was among them).
 data JobInfo(
     id: long,
     kind: string,
@@ -284,7 +312,9 @@ data JobInfo(
     loadOverdue: bool = false,
     unitsFrom: string = "",
     deadlineFrom: string = "",
-    project: string = ""
+    project: string = "",
+    retries: int = 0,
+    amended: bool = false
 )
 
 // Whether a job is settling: an exclusive job with the machine to itself that waits only for the
@@ -491,8 +521,14 @@ data Reply
   Replayed(events: Vector[Json])
   // What a clean removed.
   Cleaned(report: CleanReport)
+  // What an amend changed, one `name old → new` line a setting, and advice for the amender as
+  // `Submitted` gives it.
+  Amended(changes: string, hint: string = "")
   Done
   Failed(message: string)
+  // A request about a job that has ended, which only a job that has not may be asked: refused, as
+  // `Failed` refuses, but the command line exits 1 rather than 2.
+  Over(message: string)
 
 // Requests.
 
@@ -539,6 +575,9 @@ encodeRequest(Prioritize(id, Urgent)) = Json.obj(
   ("id", Json.num(id)),
   ("priority", Json.str("urgent"))
 )
+encodeRequest(Amend(id, a)) = Json.Obj(
+  [("op", Json.str("amend")), ("id", Json.num(id))] ++ amendmentMembers(a)
+)
 encodeRequest(Watch(source, _, mode, since, sinceId)) = Json.obj(
   ("op", Json.str("watch")),
   ("cond", Json.str(source)),
@@ -546,6 +585,50 @@ encodeRequest(Watch(source, _, mode, since, sinceId)) = Json.obj(
   ("since", since.map(n -> Json.num(n)).getOrElse(Json.Null)),
   ("since_id", sinceId.map(n -> Json.num(n)).getOrElse(Json.Null))
 )
+
+// An amendment's members of an `amend` request: only the settings it changes.
+private amendmentMembers(a: Amendment) -> Vector[(string, Json)]
+  val out = Buffer[(string, Json)]()
+  for ms in a.deadlineMs.toList
+    out += ("deadline_ms", Json.num(ms))
+    if a.extend then out += ("extend", Json.Bool(true))
+  for q in a.units.toList do out += ("units", unitsJson(q))
+  for b in a.memory.toList do out += ("mem", Json.num(b))
+  for l in a.label.toList do out += ("label", Json.str(l))
+  for n in a.retries.toList do out += ("retries", Json.num(n))
+  for ms in a.quietMs.toList do out += ("quiet_ms", Json.num(ms))
+  for ids in a.after.toList
+    out += ("after", longs(ids))
+    out += ("after_any", Json.Bool(a.afterAny))
+  out.toVector
+
+// An `amend` request's amendment, each setting checked as `submit` checks it.
+private decodeAmendment(j: Json) -> Result[Amendment, string]
+  val deadline = optional(j, "deadline_ms", someLong, "a whole number", None)?
+  if deadline.exists(ms -> ms < 1) then return Err("`deadline_ms` is above 0")
+  val units = optional(j, "units", v -> quartersOf(v).map(q -> Some(q)), unitsWanted, None)?
+  if units.exists(q -> q < 1) then return Err("`units` is above 0")
+  val memory = optional(j, "mem", someLong, "a whole number", None)?
+  if memory.exists(b -> b < 0) then return Err("`mem` is 0 or more")
+  val label = if j.has("label") && j("label") != Json.Null then Some(labelOf(j)?) else None
+  val retries = optional(j, "retries", v -> v.asInt.map(n -> Some(n)), "an int", None)?
+  if retries.exists(n -> n < 0) then return Err(s"retries are 0 or more, not ${retries.get}")
+  val quiet = if j.has("quiet_ms") && j("quiet_ms") != Json.Null then Some(quietOf(j)?) else None
+  val after = optional(j, "after", v -> longVector(v).map(ids -> Some(ids)), "an array of job ids", None)?
+  if after.exists(ids -> ids.isEmpty) then return Err("`after` names at least one job")
+  val a = Amendment(
+    deadline,
+    optional(j, "extend", v -> v.asBool, "a bool", false)?,
+    units,
+    memory,
+    label,
+    retries,
+    quiet,
+    after.map(ids -> ids.distinct),
+    optional(j, "after_any", v -> v.asBool, "a bool", false)?
+  )
+  if emptyAmendment(a) then return Err("an amend changes at least one setting")
+  Ok(a)
 
 private modeWord(m: Mode) -> string
 modeWord(Once) = "once"
@@ -799,6 +882,7 @@ decodeRequest(text: string) -> Result[Request, string]
         field(j, "priority", priorityOf, "a whole number or \"urgent\"")?
       )
     )
+    "amend" -> Ok(Amend(field(j, "id", v -> v.asLong, "a whole number")?, decodeAmendment(j)?))
     "clean" ->
       val older = optional(j, "older_ms", someLong, "a whole number", None)?
       val keep = optional(j, "keep", v -> v.asInt.map(n -> Some(n)), "a whole number", None)?
@@ -874,11 +958,16 @@ encodeJob(i: JobInfo) -> Json = Json.Obj(
 )
 
 // `units_from`, `deadline_from` and `project` are left out where the daemon did not say.
+// `deadline_from` is `amended` for a job whose deadline `amend` changed: its run teaches no
+// deadline (events.avin's `recover`).
 private learnedFromMembers(i: JobInfo) -> Vector[(string, Json)]
   val out = Buffer[(string, Json)]()
   if i.unitsFrom.nonEmpty then out += ("units_from", Json.str(i.unitsFrom))
   if i.deadlineFrom.nonEmpty then out += ("deadline_from", Json.str(i.deadlineFrom))
   if i.project.nonEmpty then out += ("project", Json.str(i.project))
+  // `retries` only for a job that has some, `amended` only for an amended one
+  if i.retries > 0 then out += ("retries", Json.num(i.retries))
+  if i.amended then out += ("amended", Json.Bool(true))
   out.toVector
 
 // `settling_ms` and `load_overdue` are there only on a settling job.
@@ -1002,7 +1091,10 @@ decodeJob(j: Json) -> Result[JobInfo, string]
       // absent from what marshal wrote before it said where units and deadlines were learned
       optional(j, "units_from", v -> v.asString, "a string", "")?,
       optional(j, "deadline_from", v -> v.asString, "a string", "")?,
-      optional(j, "project", v -> v.asString, "a string", "")?))
+      optional(j, "project", v -> v.asString, "a string", "")?,
+      // absent from what marshal wrote before amend, and for a job without retries or amends
+      optional(j, "retries", v -> v.asInt, "an int", 0)?,
+      optional(j, "amended", v -> v.asBool, "a bool", false)?))
 
 encodeTakeSlot(t: TakeSlotUse) -> Json = Json.obj(
   ("dir", Json.str(t.dir)),
@@ -1076,8 +1168,16 @@ encodeReply(Hi(version, pid)) = Json.obj(
 encodeReply(Streamed(event)) = Json.obj(("ok", Json.Bool(true)), ("event", event))
 encodeReply(Replayed(events)) = Json.obj(("ok", Json.Bool(true)), ("events", Json.Arr(events)))
 encodeReply(Cleaned(report)) = Json.obj(("ok", Json.Bool(true)), ("cleaned", encodeReport(report)))
+encodeReply(Amended(changes, hint)) = Json.Obj(
+  [("ok", Json.Bool(true)), ("amended", Json.str(changes))] ++ (if hint.isEmpty then [] else [("hint", Json.str(hint))])
+)
 encodeReply(Done) = Json.obj(("ok", Json.Bool(true)))
 encodeReply(Failed(message)) = Json.obj(("ok", Json.Bool(false)), ("error", Json.str(message)))
+encodeReply(Over(message)) = Json.obj(
+  ("ok", Json.Bool(false)),
+  ("error", Json.str(message)),
+  ("ended", Json.Bool(true))
+)
 
 // The members of a `status` reply.
 private usageMembers(u: Usage) -> Vector[(string, Json)] = Json.obj(
@@ -1130,7 +1230,11 @@ decodeReply(text: string) -> Result[Reply, string]
     Ok(v) -> v
     Err(e) -> return Err(s"not JSON: $e")
   if !field(j, "ok", v -> v.asBool, "a bool")?
-    return Ok(Failed(field(j, "error", v -> v.asString, "a string")?))
+    val message = field(j, "error", v -> v.asString, "a string")?
+    return Ok(if optional(j, "ended", v -> v.asBool, "a bool", false)? then Over(message) else Failed(message))
+  if j.has("amended") then return Ok(
+    Amended(field(j, "amended", v -> v.asString, "a string")?, optional(j, "hint", v -> v.asString, "a string", "")?)
+  )
   if j.has("event") then return Ok(Streamed(j("event")))
   if j.has("events") then return Ok(Replayed(field(j, "events", v -> v.asVector, "an array")?))
   if j.has("cleaned") then return Ok(Cleaned(decodeReport(j("cleaned"))?))
