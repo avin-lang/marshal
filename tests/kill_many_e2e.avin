@@ -80,7 +80,7 @@ killOwnerExact()
 
 @test("kill --label stops the jobs whose label contains the text, upper and lower case alike")
 killLabel()
-  val home = newHome("{\"units\": 4}")
+  val home = newHome("{\"units\": 6}")
   val one = kmRunning(home, "alpha", "--label", "train 1")
   val upper = kmRunning(home, "alpha", "--label", "Train 2")
   val inside = kmRunning(home, "beta", "--label", "bench the TRAIN")

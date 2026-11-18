@@ -199,7 +199,7 @@ kill <id> stops one job. With a selector it stops every job selected, in one ste
 
 An id and a selector together are refused (exit 2). Each job stopped prints one line (6512 killed
 LABEL for a running job, 6520 cancelled LABEL for one that had not started), then a count. A
-job nothing selects prints `marshal: no jobs match` and exits 1. Each job gets its usual killed or
+selector matching no job prints `marshal: no jobs match` (exit 1). Each job gets its usual killed or
 cancelled event, and a job that waits for one of them (--after-ok) is cancelled as it is for a single
 kill. An exclusive (benchmark) job is stopped like any other, and listed first when --all asks.\
 """
