@@ -2429,3 +2429,51 @@ which lost its queue place or, running, its work: bench job 4991 (2026-11-16) wa
 - **Exit 1 for an ended job.** The daemon answers `{"ok":false,...,"ended":true}` (reply `Over`), so
   the command line can tell it from the refusals that exit 2; an older command line reads it as a
   refusal. Every other refusal (bad value, unknown job, running-job limits) exits 2 as `submit`'s do.
+
+## `marshal kill --owner/--label/--all`: many jobs stopped in one step, scoped (branch `kill-many`)
+
+**The design is the user's (agreed 2026-11-18); the details below were settled by the agent that
+built it, by the design's direction.** A session cleaning up after its agents (sysl, with 20 agents'
+jobs) had to kill them one at a time, and a bare "kill everything" would destroy other sessions'
+work, so the selectors say whose jobs, and landing jobs are left alone unless asked for.
+
+- **Selectors.** `--owner <name>` (the OWNER column, exactly), `--label <text>` (the label contains
+  it), both together (AND), `--queued` or `--running` to narrow (neither: both; `queued` is queued,
+  held, waiting for others and waiting to retry, `running` includes a paused job), and `--all`.
+  `--all` takes no `--owner` or `--label`, and nothing but `--all`, `--owner` or `--label` selects
+  (`kill --queued` alone is refused, exit 2). Output is a line a job (`6512 killed  label`,
+  `6520 cancelled  label`) and a count; no match prints `marshal: no jobs match` and exits 1.
+- **Label matching is case as written, as `history --label` matches.** The brief said "ignoring
+  case, as `history --label` does", but `history --label` is case-sensitive (README: "case as
+  written"), so the two cannot both hold; consistency with `history` was kept. **Review with the
+  user:** whether both should ignore case.
+- **`--all` asks on a terminal.** It lists the jobs (an exclusive job first, marked `exclusive`) and
+  asks `[y/N]`; only `y` or `yes` goes on. Without a terminal on standard input and output it is
+  refused (exit 2) unless `--yes` is given; `--yes` is also accepted, and not needed, on the scoped
+  forms. The listing is the daemon's own dry run (`dry_run`), so it is the selection the daemon
+  would make; a job that starts between the listing and the answer is still killed by the `--all`
+  that follows, as the question was about every job. Weighed: asking on every selector (the scoped
+  forms are what a session runs unattended, so they must not ask).
+- **Landing jobs are skipped unless `--include-landing`**, and how many were skipped is printed (in
+  the count line, or after `no jobs match`). An exclusive job is not skipped. **Review with the
+  user:** whether `--all --yes` from a script should also need `--include-landing` to stop a train
+  mid-landing (it does, as designed).
+- **Atomic selection.** One `kill_many` request: the daemon makes the whole selection, and stops the
+  jobs, in one step of its single request loop, so a job starting while the command runs is
+  classified once, as it was then. Weighed: the command line listing jobs and sending one `kill`
+  each (a job can start between the two, and be missed or be cancelled instead of killed).
+- **Order, and dependants.** The jobs that have not started go first, newest first, then the running
+  ones. A selected job waiting for another selected one is therefore killed itself (event `killed`,
+  line `cancelled`) rather than cancelled for the other's failure; one not selected is cancelled
+  as a single `kill` cancels its dependants (`dep N failed`, exit 126). Each job gets its usual
+  `killed` event, its process group stopped as `kill` stops it (a paused job is continued first).
+- **A job already being stopped** is named again and not stopped twice, as `kill <id>` answers it;
+  a job that has ended is never named.
+- **`kill <id> <id>…` is not added.** The selectors cover cleaning up; an id list would need its own
+  answer for an id that is unknown or ended, which `kill <id>` gives as an error and a list would
+  have to report per id. An id beside a selector is refused (exit 2).
+- **Wire.** Request `kill_many` (`owner`, `label`, `queued`, `running`, `all`, `include_landing`,
+  `dry_run`; a selector that selects nothing, or `all` with `owner` or `label`, is refused by the
+  daemon as by the command line), reply `{"ok":true,"stopped":[{"id","how","label","landing",
+  "exclusive"}...],"skipped_landing":N}`. An older daemon answers `no such request`, which the
+  command line shows as it shows any refusal.

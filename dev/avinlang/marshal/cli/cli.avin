@@ -3,6 +3,7 @@ module dev.avinlang.marshal.cli
 // The command line: each command is one request to the daemon, which it starts when none is
 // listening.
 import avin.fs
+import avin.io
 import avin.io.ErrorKind
 import avin.io.IoError
 import avin.net.UnixStream
@@ -45,7 +46,10 @@ val Commands: Vector[(string, string)] = [
     "ls [--compact | -c]",
     "jobs queued, running and recently ended; a queued job's state says why it waits: queued (draining); --compact: one line a job, no wider than the terminal ($COLUMNS, else 80, where output is not one): COMMAND is cut with …, then LABEL, then columns go (FROM, RESV, USED, OWNER, ETA, UNITS, STARTED, ELAPSED, KIND)"
   ),
-  ("kill <id>", "stops the job's whole process tree (a queued or waiting job is cancelled)"),
+  (
+    "kill <id> | <selector>",
+    "stops the job's whole process tree (a queued or waiting job is cancelled); --owner <name>, --label <text> or --all stops every job selected (marshal kill --help)"
+  ),
   (
     "rerun <id>",
     "submits an ended job again: its command, directory, environment, kind, label and resources; prints the new id"
@@ -180,6 +184,26 @@ A queued, held or waiting job keeps its place. A running job's --units and --mem
 A job that has ended is refused with exit 1. Each amend logs an `amended` event.\
 """
 
+// The options of `kill`.
+val KillOptions: string = """
+kill <id> stops one job. With a selector it stops every job selected, in one step:
+  --owner <name>    the jobs whose OWNER (as ls shows it) is name
+  --label <text>    the jobs whose label contains text (upper and lower case count, as in history)
+  --owner and --label together select the jobs that match both.
+  --queued          only jobs that have not started (queued, held, waiting for others, waiting to retry)
+  --running         only running jobs (a paused one runs); neither flag means both
+  --all             every job; lists them and asks y/N on a terminal; takes no --owner or --label.
+                    Without a terminal it is refused unless --yes is given
+  --yes             go ahead without asking (--all); the other selectors never ask
+  --include-landing a landing job is skipped unless this is given (the count skipped is said)
+
+An id and a selector together are refused (exit 2). Each job stopped prints one line (6512 killed
+LABEL for a running job, 6520 cancelled LABEL for one that had not started), then a count. A
+job nothing selects prints `marshal: no jobs match` and exits 1. Each job gets its usual killed or
+cancelled event, and a job that waits for one of them (--after-ok) is cancelled as it is for a single
+kill. An exclusive (benchmark) job is stopped like any other, and listed first when --all asks.\
+"""
+
 // The options of `grep`.
 val GrepOptions: string = """
 Options of grep (the log is read directly, as tail reads it: a running job and an ended one are
@@ -234,6 +258,7 @@ commandHelp(name: string) -> Option[string]
     elif name == "history" || name == "stats" then head + "\n\n" + Queries
     elif name == "grep" then head + "\n\n" + GrepOptions
     elif name == "amend" then head + "\n\n" + AmendOptions
+    elif name == "kill" then head + "\n" + KillOptions
     elif name == "wait" || name == "events" then head + "\n" + marshal.Grammar
     else head)
 
@@ -287,7 +312,9 @@ main(args: Vector[string]) -> int
     "events" -> events(rest)
     "rerun" -> withId(rest, id -> rerun(id))
     "clean" -> clean(rest)
-    "kill" -> withId(rest, id -> simple(Request.Kill(id), s"marshal: job $id is being stopped"))
+    "kill" ->
+      if rest.exists(a -> a.startsWith("--")) then killMany(rest)
+      else withId(rest, id -> simple(Request.Kill(id), s"marshal: job $id is being stopped"))
     "hold" -> withId(rest, id -> simple(Request.Hold(id), s"marshal: job $id is held"))
     "release" -> withId(rest, id -> simple(Request.Release(id), s"marshal: job $id is released"))
     "priority" -> priority(rest)
@@ -361,6 +388,82 @@ priority(args: Vector[string]) -> int
 parsePriority(word: string) -> Option[marshal.Priority]
 parsePriority("--urgent") = Some(marshal.Urgent)
 parsePriority(word) = word.toIntOption().map(n -> marshal.Level(n))
+
+// `kill --owner/--label/--all [--queued | --running] [--include-landing] [--yes]`. An id beside a
+// selector, or an option `kill` does not take, is refused (2). `--all` shows the jobs it would stop
+// and asks on a terminal; where standard input or output is not one it is refused without `--yes`.
+// Exits 0 with a line a job stopped and a count, 1 where no job is selected.
+killMany(args: Vector[string]) -> int
+  var owner: Option[string] = None
+  var label: Option[string] = None
+  var queued = false
+  var running = false
+  var all = false
+  var landing = false
+  var yes = false
+  var i = 0
+  while i < args.length
+    val word = args(i)
+    word match
+      "--queued" -> queued = true
+      "--running" -> running = true
+      "--all" -> all = true
+      "--include-landing" -> landing = true
+      "--yes" -> yes = true
+      "--owner" | "--label" ->
+        if i + 1 >= args.length then return complain(s"marshal: kill: `$word` needs a value")
+        val value = args(i + 1)
+        if word == "--owner" then owner = Some(value) else label = Some(value)
+        i += 1
+      _ ->
+        if word.startsWith("--") then return complain(s"marshal: kill: no option `$word`")
+        return complain(s"marshal: kill: `$word` beside a selector: a job id and --owner, --label or --all are not given together")
+    i += 1
+  val selector = marshal.KillSelector(owner, label, queued, running, all, landing)
+  for why in marshal.killSelectorRefusal(selector).toList do return complain(s"marshal: kill: $why")
+  if all && !yes && !confirmAll(selector) then return Trouble
+  askDaemon(Request.KillMany(selector)) match
+    Ok(marshal.KilledJobs(jobs, skipped)) ->
+      val note = if skipped > 0 then s" ($skipped landing skipped: --include-landing stops them too)" else ""
+      if jobs.isEmpty
+        eprintln(s"marshal: no jobs match$note")
+        return 1
+      for j in jobs do println(stoppedLine(j))
+      println(s"marshal: ${jobs.length} ${if jobs.length == 1 then "job" else "jobs"} stopped$note")
+      0
+    Ok(Failed(e)) -> complain(s"marshal: $e")
+    Ok(other) -> complain(s"marshal: unexpected reply $other")
+    Err(e) -> complain(e)
+
+// One line of a stopped job: its id, what became of it and its label.
+stoppedLine(j: marshal.StoppedJob) -> string = (s"${j.id} ${j.how}  ${j.label}").trim
+
+// Lists every job `--all` would stop, an exclusive one first, and asks. False, having said why,
+// without a terminal on standard input and output, or on any answer but y.
+confirmAll(selector: marshal.KillSelector) -> bool
+  if !isTerminal(0) || !isTerminal(1)
+    eprintln("marshal: kill --all needs a terminal to ask on: give --yes to stop every job without asking")
+    return false
+  val dry = askDaemon(Request.KillMany(marshal.KillSelector(all = true, includeLanding = selector.includeLanding, dryRun = true)))
+  dry match
+    Ok(marshal.KilledJobs(jobs, skipped)) ->
+      if jobs.isEmpty
+        eprintln("marshal: no jobs match")
+        return false
+      for j in jobs.filter(j -> j.exclusive) ++ jobs.filter(j -> !j.exclusive)
+        println(s"${j.id} ${if j.exclusive then "exclusive " else ""}${j.how}  ${j.label}".trim)
+      if skipped > 0 then println(s"($skipped landing skipped)")
+      print(s"Stop these ${jobs.length} jobs? [y/N] ")
+      val answer = io.readLine().getOrElse("").trim.toLower
+      if answer == "y" || answer == "yes" then return true
+      eprintln("marshal: nothing stopped")
+      false
+    Ok(Failed(e)) ->
+      eprintln(s"marshal: $e")
+      false
+    _ ->
+      eprintln("marshal: kill --all: the daemon did not list the jobs")
+      false
 
 // `amend <id> [options]`: prints what changed, a line a setting. A refusal exits 2, as `submit`'s
 // does, but a job that has ended is refused with 1.

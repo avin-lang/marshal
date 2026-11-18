@@ -1,0 +1,37 @@
+module dev.avinlang.marshal
+
+// `marshal kill` with a selector instead of an id: every job of an owner, or whose label contains a
+// text, or every job at all. The daemon makes the whole selection in one step, so a job that starts
+// while the command runs is classified once, as it was then (daemon.avin's `killMany`); what is
+// decided here is pure.
+
+// Why a selector is not one, or None where it is. `--all` names every job, so it takes no other
+// selection; anything else needs an owner or a label to say whose jobs.
+killSelectorRefusal(s: KillSelector) -> Option[string]
+  if s.all && (s.owner.isDefined || s.label.isDefined)
+    return Some("--all stops every job: it takes no --owner or --label (they select, --all does not)")
+  if !s.all && s.owner.isEmpty && s.label.isEmpty
+    return Some("give --owner, --label or --all to say which jobs to stop")
+  if s.label.exists(l -> l.isEmpty) then return Some("`--label` needs the text a label contains")
+  if s.owner.exists(o -> o.isEmpty) then return Some("`--owner` needs an owner")
+  None
+
+// Whether a job in `state` (the daemon's: queued, waiting, retrying, running, done), of `owner`,
+// labelled `label`, is among the jobs `s` names, its landing lane aside (`killsLanding`). A job that
+// has ended is never named. `queued` is every state in which a job has not started, held and
+// waiting included; `running` is a running job, paused or not.
+killNames(s: KillSelector, state: string, owner: string, label: string) -> bool
+  val running = state == "running"
+  val waits = state == "queued" || state == "waiting" || state == "retrying"
+  if !running && !waits then return false
+  val lane = (!s.queued && !s.running) || (s.queued && waits) || (s.running && running)
+  lane && s.owner.forall(o -> o == owner) && s.label.forall(l -> label.contains(l))
+
+// Whether a landing job the selector names is stopped: only when it asked to include them.
+killsLanding(s: KillSelector, landing: bool) -> bool = !landing || s.includeLanding
+
+// The word for a job stopped: it was running (`killed`) or it had not started (`cancelled`), as its
+// event is; the same two with `would` for a dry run.
+stoppedWord(running: bool, dryRun: bool) -> string
+  if dryRun then return if running then "would kill" else "would cancel"
+  if running then "killed" else "cancelled"
