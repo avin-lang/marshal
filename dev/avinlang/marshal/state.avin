@@ -34,7 +34,9 @@ import dev.avinlang.json.Json
 // wait for the load alone (wall clock, milliseconds; 0 for never), and `overdue` that it has
 // waited past `load_wait`; false, 0 and false when absent. `unitsFrom`, `deadlineFrom` and
 // `project` are where its units and deadline came from and its project (protocol.avin's `JobInfo`);
-// "" when absent, and the new image works the project out again.
+// "" when absent, and the new image works the project out again. `amended` says `amend` changed the
+// job's settings (its spec is the amended one), and `keepsPlace` that a queued job an amended
+// `--after` sent back to wait rejoins the queue where it was; false when absent.
 data SavedJob(
     id: long,
     spec: JobSpec,
@@ -78,7 +80,9 @@ data SavedJob(
     overdue: bool = false,
     unitsFrom: string = "",
     deadlineFrom: string = "",
-    project: string = ""
+    project: string = "",
+    amended: bool = false,
+    keepsPlace: bool = false
 )
 
 // The whole daemon: the version and process that saved it, when, when the daemon first began, the
@@ -168,7 +172,9 @@ encodeSavedJob(j: SavedJob) -> Json = Json.obj(
   ("overdue", Json.Bool(j.overdue)),
   ("units_from", Json.str(j.unitsFrom)),
   ("deadline_from", Json.str(j.deadlineFrom)),
-  ("project", Json.str(j.project))
+  ("project", Json.str(j.project)),
+  ("amended", Json.Bool(j.amended)),
+  ("keeps_place", Json.Bool(j.keepsPlace))
 )
 
 // The level and count pairs of `cpu_levels`; none where a state saved before them lacks it.
@@ -290,7 +296,9 @@ decodeSavedJob(j: Json) -> Result[SavedJob, string]
       truthOr(j, "overdue", false)?,
       maybeText(j, "units_from")?.getOrElse(""),
       maybeText(j, "deadline_from")?.getOrElse(""),
-      maybeText(j, "project")?.getOrElse("")
+      maybeText(j, "project")?.getOrElse(""),
+      truthOr(j, "amended", false)?,
+      truthOr(j, "keeps_place", false)?
     )
   )
 

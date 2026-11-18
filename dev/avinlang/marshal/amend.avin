@@ -1,0 +1,177 @@
+module dev.avinlang.marshal
+
+// `marshal amend <id>`: a job's settings changed in place, so fixing one costs neither its place in
+// the queue nor, for a running job, its work. What may change depends on the job's state: a job that
+// has not started (queued, held, waiting for others, waiting to retry) may change its deadline,
+// units, memory, label, retries, quiet timeout and the jobs it waits for; a running one only its
+// deadline, label, retries and quiet timeout, since it was admitted on its units and memory. Its
+// command, directory, environment and lane are never amended: they make a different job. The
+// daemon applies an amendment (daemon.avin's `amend`); what is decided here is pure.
+import dev.avinlang.json.Json
+
+// The `deadlineFrom` of a job whose deadline was amended. Its run teaches no deadline: neither the
+// durations deadlines are learned from nor an overrun (`teachesDeadline`).
+val AmendedFrom: string = "amended"
+
+// Whether a run whose deadline came from `from` may teach deadlines.
+teachesDeadline(from: string) -> bool = from != AmendedFrom
+
+// The deadline an amendment gives a job whose deadline is `current`: `+t` adds to it, a plain `t`
+// replaces it (both measured from the job's start, its pauses left out); None where the amendment
+// leaves the deadline alone.
+amendedDeadline(current: long, a: Amendment) -> Option[long] =
+  a.deadlineMs.map(ms -> if a.extend then current + ms else ms)
+
+// Why a running job that has run `ranMs` cannot have the deadline `deadlineMs`, or None where it
+// can. A deadline already passed would stop it at once, as a timeout does; that is refused, so that
+// a slip (`--deadline 30` meant as `+30`) never costs the work `amend` exists to keep. `kill` stops a
+// job on purpose.
+pastDeadline(id: long, deadlineMs: long, ranMs: long) -> Option[string] =
+  if deadlineMs > ranMs then None else Some(
+    s"job $id has run ${formatMillis(ranMs)}, so a deadline of ${formatMillis(deadlineMs)} has already passed: give a later one, or `+t` to add to the deadline it has (`marshal kill $id` stops it)"
+  )
+
+// The spec of a job amended so, its deadline being `deadline` where the amendment gives one: what
+// was given changes as `submit` would have had it given (`--units` is given units, `--mem` given
+// memory), and what it asked for is weighed again by the daemon (`sizeFor`).
+amendedSpec(s: JobSpec, a: Amendment, deadline: Option[long]) -> JobSpec =
+  JobSpec(
+    s.kind,
+    a.units.getOrElse(s.units),
+    a.memory.getOrElse(s.memory),
+    s.landing,
+    s.dir,
+    if deadline.isDefined then deadline else s.deadlineMs,
+    s.cmd,
+    s.env,
+    s.urgent,
+    a.after.getOrElse(s.after),
+    if a.after.isDefined then a.afterAny else s.afterAny,
+    a.retries.getOrElse(s.retries),
+    s.retryDelayMs,
+    s.memoryGiven || a.memory.isDefined,
+    a.label.getOrElse(s.label),
+    a.quietMs.getOrElse(s.quietMs),
+    s.external,
+    s.quick,
+    s.exclusive,
+    s.quietLoad,
+    s.unitsGiven || a.units.isDefined,
+    s.owner,
+    s.unitsExact,
+    if a.units.isDefined then 0 else s.unitsAsked
+  )
+
+// The job among `deps` through which a wait for them would come back to job `id`, or None: `waits`
+// gives the jobs a job still waits for (none for a job that is not waiting). Only a job that waits
+// can close a cycle, so the walk follows waits alone.
+afterCycle(id: long, deps: Vector[long], waits: (long) -> Vector[long]) -> Option[long]
+  for dep in deps
+    val seen = Buffer[long]()
+    val todo = Buffer[long]()
+    todo += dep
+    while todo.nonEmpty
+      val next = todo.remove(todo.length - 1)
+      if next == id then return Some(dep)
+      if seen.contains(next) then continue
+      seen += next
+      todo ++= waits(next)
+  None
+
+// One changed setting: its name in the `amended` event and the line `amend` prints, and its value
+// before and after, as JSON and as text.
+data Change(name: string, before: Json, after: Json, beforeText: string, afterText: string)
+
+// The settings `before` and `after` differ in, with their deadlines (`beforeMs`, `afterMs`).
+changesOf(before: JobSpec, after: JobSpec, beforeMs: long, afterMs: long) -> Vector[Change]
+  val out = Buffer[Change]()
+  if beforeMs != afterMs then out += Change(
+    "deadline_ms",
+    Json.num(beforeMs),
+    Json.num(afterMs),
+    formatMillis(beforeMs),
+    formatMillis(afterMs)
+  )
+  if before.units != after.units || before.unitsAsked != after.unitsAsked then out += Change(
+    "units",
+    unitsJson(before.units),
+    unitsJson(after.units),
+    formatUnits(before.units),
+    formatUnits(after.units)
+  )
+  if before.memory != after.memory || before.memoryGiven != after.memoryGiven then out += Change(
+    "mem",
+    Json.num(before.memory),
+    Json.num(after.memory),
+    memoryText(before),
+    memoryText(after)
+  )
+  if before.label != after.label then out += Change(
+    "label",
+    Json.str(before.label),
+    Json.str(after.label),
+    textOrNone(before.label),
+    textOrNone(after.label)
+  )
+  if before.retries != after.retries then out += Change(
+    "retries",
+    Json.num(before.retries),
+    Json.num(after.retries),
+    before.retries.toString(),
+    after.retries.toString()
+  )
+  if before.quietMs != after.quietMs then out += Change(
+    "quiet_ms",
+    Json.num(before.quietMs),
+    Json.num(after.quietMs),
+    if before.quietMs > 0 then formatMillis(before.quietMs) else "none",
+    formatMillis(after.quietMs)
+  )
+  if before.after != after.after || before.afterAny != after.afterAny then out += Change(
+    "after",
+    afterJson(before),
+    afterJson(after),
+    afterText(before),
+    afterText(after)
+  )
+  out.toVector
+
+private memoryText(s: JobSpec) -> string = if s.memoryGiven || s.memory > 0 then formatSize(s.memory) else "learned"
+
+private textOrNone(t: string) -> string = if t.isEmpty then "none" else t
+
+private afterJson(s: JobSpec) -> Json = Json.obj(
+  ("ids", Json.Arr(s.after.map(id -> Json.num(id)))),
+  ("any", Json.Bool(s.afterAny))
+)
+
+private afterText(s: JobSpec) -> string =
+  if s.after.isEmpty then "none" else (if s.afterAny then "--after-any " else "--after-ok ") + s.after.map(
+    id -> id.toString()
+  ).mkString(",")
+
+// The `changes` member of an `amended` event: each setting's `from` and `to`.
+changesJson(changes: Vector[Change]) -> Json = Json.Obj(
+  changes.map(c -> (c.name, Json.obj(("from", c.before), ("to", c.after))))
+)
+
+// What `amend` prints of the changes: one `name before → after` a setting, the names as the
+// command line writes them.
+changesText(changes: Vector[Change]) -> string =
+  changes.map(c -> s"  ${optionName(c.name)} ${c.beforeText} → ${c.afterText}").mkString("\n")
+
+private optionName(name: string) -> string = name match
+  "deadline_ms" -> "deadline"
+  "mem" -> "mem"
+  "quiet_ms" -> "quiet-timeout"
+  other -> other
+
+// The options of `submit` that `amend` does not take, and why: a lane, or what makes a different job.
+amendRefusal(option: string) -> Option[string] = option match
+  "--landing" | "--exclusive" | "--quick" | "--urgent" -> Some(
+    s"`$option` is the job's lane, which is not amended: kill the job and submit it again (for urgency, `marshal priority <id> --urgent` moves a queued job ahead)"
+  )
+  "--dir" | "--kind" | "--owner" | "--external" | "--quiet-load" | "--units-exact" | "--retry-delay" | "--" -> Some(
+    s"`$option` is not amended: what the job is and how it runs make a different job; kill it and submit it again"
+  )
+  _ -> None

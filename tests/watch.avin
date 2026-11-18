@@ -44,14 +44,17 @@ eventNames()
   assertEq(filterOf("started"), Filter(["started"], None, None, false, false))
   assertEq(filterOf("submitted"), Filter(["submitted"], None, None, false, false))
   assertEq(filterOf("any"), Filter([], None, None, false, false))
-  for name in ["ready", "retry", "held", "released", "paused", "resumed", "prioritized"]
+  for name in ["ready", "retry", "held", "released", "paused", "resumed", "prioritized", "amended"]
     assertEq(filterOf(name), Filter([name], None, None, false, false))
     assertEq(filterOf(name + ":kind=gate"), Filter([name], Some("gate"), None, false, false))
     assert(refused(name + ":outcome=ok").contains("has no outcome"), refused(name + ":outcome=ok"))
     assert(marshal.parseFilter(name).isOk, name)
     assert(marshal.admits(filterOf(name), event(name)), name)
     assert(!marshal.admits(filterOf(name), event("started")), name)
-  assert(refused("dance").contains("ready, retry, held, released, paused, resumed, prioritized"), refused("dance"))
+  assert(
+    refused("dance").contains("ready, retry, held, released, paused, resumed, prioritized, amended"),
+    refused("dance")
+  )
   assert(refused("RETRY").contains("is not a condition"), refused("RETRY"))
 
 @test("cancelled is an ending and an outcome, and the ending of an attempt that is retried does not end its job")

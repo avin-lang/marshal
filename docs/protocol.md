@@ -32,6 +32,7 @@ thread of its own, so a client blocked in `wait` holds up nobody else.
 | `release` | `id` | `{"ok":true}`; the held job may start again. Refused for a job that is not held |
 | `polite` | `fraction` (a number above 0 and at most 1), or `off` (`true`) | the `status` reply, after the change: the daemon admits jobs against `fraction` of its units (rounded down to a quarter) and of its memory (to a mebibyte), or with `off` against all of it again, until it is told otherwise; said inside a window of `polite_schedule`, until that window ends. Running jobs are untouched. A fraction outside (0, 1] is refused. The setting survives `restart` |
 | `priority` | `id`, `priority` (an int, or `"urgent"`) | `{"ok":true}`; the queued job is placed in its lane. A number takes it out of the urgent band and places it among the jobs not urgent: higher first, equal ones by arrival. `"urgent"` moves it to the back of the lane's urgent band, which goes ahead of every job not urgent and keeps its jobs in the order they joined it. Refused for a job that runs or has ended |
+| `amend` | `id`, and at least one of `deadline_ms` (number above 0) with `extend` (bool, absent for false: add it to the deadline the job has rather than replace it), `units` (as `submit`'s), `mem` (bytes, 0 or more), `label`, `retries` (0 or more), `quiet_ms` (above 0), `after` (array of job ids, not empty) with `after_any` (bool) | `{"ok":true,"amended":"<the changes, a line a setting: name old → new>"}`, with `"hint"` as `submit`'s; the job's settings are changed in place and it keeps its queue place. Refused (`{"ok":false,"error":...}`) for a value `submit` would refuse, an `after` id that is no job, the job itself or a wait that comes back to it, `units`, `mem` or `after` on a running job, `after` on a job waiting to retry, `units` on an exclusive job, a running job's deadline already passed, or a job being stopped; a job that has ended is refused with `{"ok":false,"error":...,"ended":true}`, on which the command line exits 1 |
 | `restart` | optional `program`: the path of the executable the command line was run from; an older client sends none | no reply when the daemon restarts (into `$MARSHAL_RESTART_PROGRAM`, else `program`, else its own program): the connection closes as it replaces its program, and the client connects again and asks `version`, whose `pid` is the same; `{"ok":false,"error":...}` when it could not, including a `program` that is not an executable file, and it goes on as it was |
 | `watch` | `cond` (string, the grammar below), `mode` (`once`, `past` or `follow`), `since` (milliseconds since 1970 or null), `since_id` (job id or null) | a stream: see below |
 
@@ -183,7 +184,10 @@ refuses it with `no such request: `snapshot``.
 1970) and `event`: `submitted` (adds `spec`, the fields of the `submit` request but `op`, and for a
 `rerun` `rerun_of`, the job run again), `ready` (a job that waited for others joins the queue),
 `held`, `released` and `prioritized` (a hold by hand begins or ends, a queued job is given a
-priority), `paused` and `resumed` (a running job's), `raised` (a running job that used more than
+priority), `amended` (the job's settings were changed by `amend`; adds `changes`, an object with a
+member per changed setting, `deadline_ms`, `units`, `mem`, `label`, `retries`, `quiet_ms` or `after`
+(`{"ids":[...],"any":bool}`), each `{"from":OLD,"to":NEW}`, and `spec`, the job's spec as amended,
+which `rerun` submits), `paused` and `resumed` (a running job's), `raised` (a running job that used more than
 it weighed for `raise_after` weighs what it used, in its `units`), `started` (adds `pgid` and `pid`, the job's
 main process, and `backfilled_ahead_of`, the id of the draining job it started ahead of, when it
 backfilled during a drain), and one ending, `finished`, `timeout` (its deadline), `quiet` (its quiet timeout),
@@ -196,7 +200,8 @@ so its last event is an ending only once the job has ended. An ending event may 
 where present.
 
 `marshal history --json` prints `{"jobs":[{"id","kind","landing","outcome","exit","duration_ms",
-"ended_at","peak_rss"}...],"unreadable":N}`, newest first (`ended_at` is `ts` of the ending event,
+"ended_at","peak_rss"}...],"unreadable":N}` (with `label` for a job that has one and `"amended":true`
+for one `amend` changed), newest first (`ended_at` is `ts` of the ending event,
 an instant in milliseconds whatever the caller's time zone; the table `history` prints shows it in
 local time; `peak_rss` null where unknown, `outcome` one of `ok`, `failed`, `signal`, `killed`,
 `timeout`, `quiet`, `cancelled`, `lost`). `marshal stats --json` prints `{"kinds":[{"kind","count","ok","success_pct",
@@ -232,7 +237,7 @@ job=<id>[,<id>...]
 where `<name>` is `ended` (any ending event: `finished`, `timeout`, `quiet`, `killed`, `cancelled`,
 `lost`), `failed` (an ending whose outcome is not `ok`), `landing-done` (an ending of a landing
 job), `started`, `submitted`, `ready`, `retry`, `held`, `released`, `paused`, `resumed`,
-`prioritized` (each the event of that name) or `any`, and a `<filter>` is `kind=<k>`,
+`prioritized`, `amended` (each the event of that name) or `any`, and a `<filter>` is `kind=<k>`,
 `outcome=<o>` (for `ended`, `failed`, `landing-done` and `any`) or `label=<text>` (the job's label
 contains `text`; it takes the rest of the filter, commas included, so it is written last), each at
 most once. An event's

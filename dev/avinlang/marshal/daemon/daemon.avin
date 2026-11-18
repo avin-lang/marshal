@@ -41,7 +41,7 @@ import dev.avinlang.marshal.{
 }
 
 import dev.avinlang.marshal.{Submit, Wait, Kill, Status, Stop, Rerun, Clean, Cleaned}
-import dev.avinlang.marshal.{Submitted, Ended, Jobs, Using, Viewed, Hi, Done, Failed}
+import dev.avinlang.marshal.{Submitted, Ended, Jobs, Using, Viewed, Hi, Done, Failed, Amended, Over}
 import dev.avinlang.marshal.{Overview, QueuedJob, SavedJob, SavedState}
 import dev.avinlang.marshal.{Cancelled, DependencyFailed, TimedOut}
 import dev.avinlang.marshal.Resident
@@ -166,6 +166,10 @@ class Job(
   var priority = 0
   // when it joined the urgent band (wall-clock microseconds), or 0 outside it
   var urgentAt: long = 0
+  // whether `amend` changed its settings; and whether a queued job an amended `--after` sent back to
+  // wait rejoins the queue in the place it had (its `arrived` and `urgentAt`) rather than at the back
+  var amended = false
+  var keepsPlace = false
   // a running job stopped by `pause`: since `pausedAt` (the daemon's clock), after `pausedMs` of
   // earlier pauses; paused time is not run time, and its deadline does not count it
   var paused = false
@@ -278,7 +282,9 @@ class Job(
       settles && overdue,
       unitsFrom,
       deadlineFrom,
-      project
+      project,
+      spec.retries,
+      amended
     )
 
 // The daemon's state, owned by its own thread.
@@ -738,6 +744,7 @@ class Daemon(
       Request.Hold(id) -> give(reply, hold(id, true))
       Request.Release(id) -> give(reply, hold(id, false))
       Request.Prioritize(id, p) -> give(reply, prioritize(id, p))
+      Request.Amend(id, a) -> give(reply, amend(id, a))
       Watch(_, _, _, _, _) -> watch(request, reply)
 
   // Queues a job, or keeps it waiting while the jobs it runs after have not all ended. `extra` goes into
@@ -883,9 +890,15 @@ class Daemon(
 
   // Puts a job in the queue, arriving now: behind the jobs of its priority, or, for an urgent
   // job, at the back of the urgent band. A first attempt is urgent when it was submitted with
-  // `--urgent`; a retry keeps the band its last attempt had, as `priority` may have changed it.
+  // `--urgent`; a retry keeps the band its last attempt had, as `priority` may have changed it. A
+  // queued job that an amended `--after` sent back to wait keeps the place it had (`keepsPlace`).
   enqueue(job: Job)
     job.state = "queued"
+    if job.keepsPlace
+      job.keepsPlace = false
+      queue += job
+      order()
+      return
     job.arrived = time.now().epochMicros
     val urgent = if job.attempt > 1 then job.urgentAt > 0 else job.spec.urgent
     job.urgentAt = if urgent then urgentMark() else 0
@@ -900,8 +913,9 @@ class Daemon(
   // A job's attempt ended so: it is retried when it failed in a way another attempt may mend and
   // has attempts left, and otherwise it ends.
   attemptEnded(job: Job, outcome: Outcome, event: string)
-    // a run its deadline stopped took at least as long as it ran, which the next deadline allows for
-    if event == "timeout"
+    // a run its deadline stopped took at least as long as it ran, which the next deadline allows
+    // for, unless its deadline was amended: such a run teaches no deadline
+    if event == "timeout" && marshal.teachesDeadline(job.deadlineFrom)
       val ran = job.ran(now())
       for key in marshal.overrunKeys(chainOf(job.spec))
         rememberOverrun(key, ran)
@@ -1137,6 +1151,91 @@ class Daemon(
     record("prioritized", job)
     schedule()
     Done
+
+  // Changes the settings of job `id` in place (amend.avin). A job that has not started keeps its
+  // place in the queue, and its new values are checked as `submit` checks them; a running job may
+  // change only its deadline, label, retries and quiet timeout. A job that has ended is refused with
+  // `Over`. Logs `amended`, with each setting's old and new values and the spec as it now is.
+  amend(id: long, a: marshal.Amendment) -> Reply
+    val job = jobs.get(id) match
+      Some(j) -> j
+      None -> return if 1 <= id < nextId then Over(s"job $id has already ended: only a job that has not ended is amended") else Failed(
+        s"no job $id"
+      )
+    if job.state == "done" then return Over(s"job $id has already ended: only a job that has not ended is amended")
+    val runs = job.state == "running"
+    if runs && (job.killed || job.timedOut) then return Failed(s"job $id is being stopped")
+    if runs && (a.units.isDefined || a.memory.isDefined) then return Failed(
+      s"job $id is running: its units and memory are what it was admitted on, so they are not amended while it runs; kill it and submit it again to change them"
+    )
+    if runs && a.after.isDefined then return Failed(s"job $id is running: it waits for no job now, so --after is not amended")
+    if job.state == "retrying" && a.after.isDefined then return Failed(
+      s"job $id is waiting to retry: the jobs it waited for have ended, so --after is not amended"
+    )
+    if a.units.isDefined && job.spec.exclusive then return Failed(
+      s"job $id is exclusive: it weighs the whole unit budget, so its units are not amended"
+    )
+    val deadline = marshal.amendedDeadline(job.deadlineMs, a)
+    if runs
+      for ms in deadline.toList
+        for why in marshal.pastDeadline(id, ms, job.ran(now())).toList do return Failed(why)
+    // the jobs it is to wait for exist, are not itself, and never wait for it in turn
+    for deps in a.after.toList
+      for dep in deps
+        if dep == id then return Failed(s"job $dep cannot wait for itself")
+        endingOf(dep) match
+          Err(e) -> return Failed(e)
+          Ok(_) -> ()
+      val waits = (j: long) -> jobs.get(j).filter(w -> w.state == "waiting").map(w -> w.after).getOrElse([])
+      for through in marshal.afterCycle(id, deps, waits).toList do return Failed(
+        s"job $id cannot wait for job $through, which waits for job $id itself"
+      )
+    // the spec as amended, sized and checked as `submit` sizes and checks a new one
+    val given = marshal.amendedSpec(job.spec, a, deadline)
+    val sized = sizing(given)
+    val spec = if given.exclusive || runs then given else marshal.withSizing(given, sized.quarters, sized.asked)
+    if !runs
+      marshal.neverFits(config.budget, spec.units, spec.memory, spec.landing || spec.exclusive) match
+        Some(why) -> return Failed(why)
+        None -> ()
+      marshal.externalRefusal(spec.external, spec.memoryGiven || spec.memory > 0) match
+        Some(why) -> return Failed(why)
+        None -> ()
+    for why in marshal.quickRefusal(spec).toList do return Failed(why)
+    val before = job.spec
+    val beforeMs = job.deadlineMs
+    job.spec = spec
+    for ms in deadline.toList
+      job.deadlineMs = ms
+      job.deadlineFrom = marshal.AmendedFrom
+      if runs then armDeadline(job) else estimate(job)
+    if a.units.isDefined
+      job.unitsLearned = sized.learned
+      job.unitsFrom = unitsFromOf(spec, sized)
+    if a.memory.isDefined then reserve(job)
+    if a.label.isDefined then job.owner = ownerOf(spec)
+    // a quiet timeout amended on a running job is counted from now, as on `resume`
+    if runs && a.quietMs.isDefined then job.quiet = marshal.quietStart(marshal.fileBytes(job.log), now())
+    val changes = marshal.changesOf(before, spec, beforeMs, job.deadlineMs)
+    job.amended = true
+    record(
+      "amended",
+      job,
+      [("changes", marshal.changesJson(changes)), ("spec", marshal.encodeSpec(spec))]
+    )
+    for deps in a.after.toList
+      if job.state == "queued"
+        // it waits again, and rejoins the queue where it was once they have ended
+        queue.remove(queue.indexOf(job))
+        job.keepsPlace = true
+        job.state = "waiting"
+        waitingJobs += job
+      job.after = deps
+      reconsider(job)
+    order()
+    schedule()
+    val text = if changes.isEmpty then "  nothing changed: each setting already had that value" else marshal.changesText(changes)
+    Amended(text, if a.units.isDefined then unitsHint(spec) else "")
 
   // The mark of a job joining the urgent band now: behind every urgent job queued.
   urgentMark() -> long = marshal.urgentMark(time.now().epochMicros, queue.map(j -> j.urgentAt).toVector)
@@ -1430,7 +1529,9 @@ class Daemon(
     ended += job
     val info = job.info(now())
     record(event, job, [("run_ms", Json.num(info.elapsedMs)), ("exit", Json.num(marshal.exitCode(outcome)))])
-    if event == "finished" && outcome == Outcome.Exited(0)
+    // a run whose deadline was amended teaches no duration, which deadlines are learned from; its
+    // memory and cores were learned as it left the machine, when it ran clean
+    if event == "finished" && outcome == Outcome.Exited(0) && marshal.teachesDeadline(job.deadlineFrom)
       val key = marshal.historyKey(job.spec.kind, job.spec.landing)
       histories.get(key) match
         Some(b) -> b += info.elapsedMs
@@ -2042,7 +2143,9 @@ class Daemon(
       j.overdue,
       j.unitsFrom,
       j.deadlineFrom,
-      j.project
+      j.project,
+      j.amended,
+      j.keepsPlace
     )
     SavedState(
       reportedVersion(),
@@ -2097,6 +2200,8 @@ class Daemon(
       job.held = sj.held
       job.priority = sj.priority
       job.urgentAt = sj.urgentAt
+      job.amended = sj.amended
+      job.keepsPlace = sj.keepsPlace
       job.pausedMs = sj.pausedMs
       // a paused job's processes stay stopped across the restart, and its clock with them
       job.paused = sj.pausedAt > 0
