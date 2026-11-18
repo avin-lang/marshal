@@ -1,0 +1,104 @@
+module dev.avinlang.marshal
+
+// The memory-pressure guard: a backstop on the machine itself, beside the memory budget. The budget
+// counts what marshal's own jobs reserve and hold; memory used outside them (a VM, an IDE, the
+// sessions themselves) it cannot see. So every few seconds the daemon reads the kernel's
+// memory-pressure level (`kern.memorystatus_vm_pressure_level`) and the swap in use
+// (`vm.swapusage`), and while the machine is short of memory, no new job starts in any lane,
+// whatever the accounting says: the queued ones wait `memory pressure (warn)`, and the running ones go
+// on. The machine is short while the kernel says `warn` or `critical`, or while the swap in use has
+// grown by `SwapGrowth` or more within the last `SwapWindowMs`. Swap that was used once stays used
+// long after the pressure has gone, so it is its growth, not its size, that says the machine is
+// swapping now. Once neither holds, the queue moves again by itself. A reading that cannot be made
+// is not pressure: the guard never holds the queue on a guess.
+import avin.fs
+import avin.process
+
+// The kernel's pressure levels (`kern.memorystatus_vm_pressure_level`).
+val PressureNormal: int = 1
+val PressureWarn: int = 2
+val PressureCritical: int = 4
+
+// How much the swap in use must grow within `SwapWindowMs` for the machine to count as swapping.
+val SwapGrowth: long = 512 * 1024 * 1024
+
+// The window the swap's growth is measured over, in milliseconds.
+val SwapWindowMs: long = 60000
+
+// One reading of the machine's memory: the kernel's pressure level and the bytes of swap in use, each
+// -1 where it could not be read.
+data MemoryReading(level: int, swapUsed: long)
+
+val Unread: MemoryReading = MemoryReading(-1, -1)
+
+// The guard as `status` and `top` show it: the last `level` read (-1: not read), the swap in use
+// (-1: not read), how much it grew within the window, and why nothing new starts: `critical`,
+// `warn`, `swapping`, or "" while the machine has room.
+data Pressure(level: int, swapUsed: long, swapGrowth: long, cause: string)
+
+val NoPressure: Pressure = Pressure(-1, -1, 0, "")
+
+// The word `status --json` gives a pressure level: `normal`, `warn`, `critical`, or `unknown` for one
+// not read or not known.
+pressureLevelName(level: int) -> string = level match
+  1 -> "normal"
+  2 -> "warn"
+  4 -> "critical"
+  _ -> "unknown"
+
+// The level a word names, -1 for any other: `pressureLevelName` read back.
+pressureLevelOf(name: string) -> int = name match
+  "normal" -> PressureNormal
+  "warn" -> PressureWarn
+  "critical" -> PressureCritical
+  _ -> -1
+
+// How much the swap in use has grown within the window ending at `now`: the newest reading's less
+// the least among `samples` (each `(at, used)`, oldest first, in milliseconds) taken since
+// `now - windowMs`; 0 with fewer than one reading or where it fell.
+swapGrowthOf(samples: Vector[(long, long)], now: long, windowMs: long) -> long
+  val recent = samples.filter(s -> s.0 >= now - windowMs && s.1 >= 0)
+  if recent.isEmpty then return 0
+  val least = recent.map(s -> s.1).min
+  val grown = recent.last.1 - least
+  if grown > 0 then grown else 0
+
+// Why the machine is short of memory, or "" where it is not: `critical` or `warn` while the kernel
+// says so, else `swapping` while the swap grew by at least `SwapGrowth`.
+pressureCause(level: int, swapGrowth: long) -> string
+  if level >= PressureCritical then return "critical"
+  if level >= PressureWarn then return "warn"
+  if swapGrowth >= SwapGrowth then "swapping" else ""
+
+// The guard after a reading at `now`, given the swap readings before it within the window.
+pressureAfter(reading: MemoryReading, samples: Vector[(long, long)], now: long) -> Pressure
+  val growth = swapGrowthOf(samples, now, SwapWindowMs)
+  Pressure(reading.level, reading.swapUsed, growth, pressureCause(reading.level, growth))
+
+// A reading written as text: the level and the swap in use in bytes, separated by white space
+// (`2 5368709120`); a word that does not read is -1.
+memoryReadingOf(text: string) -> MemoryReading
+  val words = text.trim.split(" ").filter(w -> w.nonEmpty).toVector
+  val level = words.headOption.flatMap(w -> w.toIntOption()).getOrElse(-1)
+  val swap = (if words.length > 1 then words(1).toLongOption() else None).getOrElse(long(-1))
+  MemoryReading(level, swap)
+
+@c(
+  "int sysctlbyname(const char *name, void *oldp, length(oldp) inout size_t *oldlenp, null void *newp, size_t newlen)"
+)
+private sysctlLongs(name: string, into: Array[long], newlen: long) -> (int, long)
+
+// The bytes of swap in use, `vm.swapusage`'s `xsu_used` (the third of its 64-bit fields); -1 where it
+// cannot be read.
+private swapUsed() -> long
+  val v = Array.fill(4, long(0))
+  sysctlLongs("vm.swapusage", v, 0) match
+    (0, n) if n >= 24 -> v(2)
+    _ -> -1
+
+// The machine's memory now. A test names a file that holds a reading as text instead
+// (`$MARSHAL_TEST_PRESSURE`, `memoryReadingOf`), so the guard can be tried without starving the
+// machine; a file that cannot be read is no reading.
+readMemory() -> MemoryReading = process.env("MARSHAL_TEST_PRESSURE") match
+  Some(file) if file.nonEmpty -> fs.readText(file).ok.map(t -> memoryReadingOf(t)).getOrElse(Unread)
+  _ -> MemoryReading(sysctlInt("kern.memorystatus_vm_pressure_level").getOrElse(-1), swapUsed())

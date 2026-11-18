@@ -222,6 +222,7 @@ scripts.
 | `held` | someone ran `marshal hold <id>` | `marshal release <id>`, if it is yours |
 | `queued (queue held)` | someone ran `marshal pause` with no id | `marshal resume`, if the hold is yours |
 | `queued (disk low: 14G free)` (`top`: `disk low`) | free disk is under `disk_min` | free disk space; nothing new starts in any lane until then |
+| `queued (memory pressure: warn)` (`top`: `mem pressure`) | the machine is short of memory: the kernel says `warn` or `critical`, or swap grew by 512M within a minute (`swapping`) | free memory (a VM, an IDE); nothing new starts in any lane until then |
 | `queued (emptying)` | an exclusive job waits for the running jobs to end; nothing queued after it starts meanwhile, whatever its `--quiet-load` | wait |
 | `queued (exclusive N)` | exclusive job N runs, or waits ahead of this one | wait; the job is not stuck |
 | `settling (load 7.9 ≥ 4)`, `settling (load 3.5 < 4 for 20.0s)` | an exclusive job has the machine (nothing of marshal's runs) and waits for the outside load alone | wait, or quiet the machine |
@@ -291,7 +292,7 @@ same usage to standard error and exits 2. After `--` nothing is an option, so `m
 | `--kind <k>` | What the job is, for learning its deadline. Default: `test` when a word of the command is `test`, otherwise `build`. |
 | `--units <n>` | Its weight, a number above 0 in steps of 0.25 (`0.5`, `1.25`, `4`); anything else is refused. Default: the cores recent clean runs of the same work used, rounded up to a quarter (`~` in UNITS; see [How marshal learns](#how-marshal-learns)), and until a key is trusted a share of the budget by class: a quarter for a gate, train, release or landing job, a sixth for a test, a ninth for a build, 1 unit for anything else. While it runs it is charged what it uses where that is more, and raised to it after `raise_after`. A given value is a ceiling: once the command has `learn_min_runs` (3) measured runs, the job weighs the fewer of it and what they teach (`8→~1.5` in UNITS, `units_capped` in `status --json`, and a line on stderr). A given value it keeps that is far from what recent runs used gets a one-line hint on stderr. |
 | `--units-exact` | With `--units`: weigh exactly the units given, even where the command's runs used fewer. Refused without `--units`. |
-| `--mem <size>` | Memory it needs: `29G`, `512M` (powers of 1024). Default: the learned peak of the same command in its directory, or anywhere while it has not run in that directory; 0 until the command has run once. `--mem 0` reserves nothing and learns nothing. |
+| `--mem <size>` | Memory it needs: `29G`, `512M` (powers of 1024). Default: the learned peak of the same work (see [Memory](#memory)); until that is trusted, the most any of its runs reached, else its class's share of the budget, never 0. `--mem 0` reserves nothing and learns nothing. |
 | `--external` | Its work runs outside its own processes: `docker run`, a VM, or a command run as another account through `sudo` (see [Work outside the job's processes](#work-outside-the-jobs-processes)). It needs `--mem`, and is refused without it; it reserves exactly that and holds it whatever its process tree measures; its measured peak is never learned from, so its command's later jobs are not taught a near-zero peak. `ls` and `top` show its RESV with `@` before it (`@29G`), `status --json` gives `"external": true`, and `rerun` keeps it. A command whose first word (or the first after `sudo`) is `docker` with `run`, `compose`, `build` or `buildx`, or `docker-compose`, submitted without it gets a warning on stderr and is submitted all the same. |
 | `--landing` | The landing lane: starts before every development job, whatever units the others hold, at normal priority, once its memory fits beside what runs; until then nothing else starts, so the running jobs drain for it. Once it runs, it is charged against the unit budget as any job is (what it weighs, or what it is measured using where that is more, and raised after `raise_after`), so the development jobs after it wait for the units it leaves. One landing job runs at a time. One whose memory alone exceeds the budget starts when nothing else runs. |
 | `--quick` | The quick lane, for a short job such as the tests of a small package: it starts at once, outside the unit budget, rather than queue for units behind long builds. At most 2 quick jobs run at a time; a third waits in the quick lane, ahead of development jobs, and `ls` shows it `queued (quick lane full)`. Its memory still counts: it starts only when its reservation (`--mem`, or its command's learned peak) fits in the budget's free memory, and holds it while it runs, so a development job may wait for it; until then it waits `queued (no memory)` and development jobs leave that memory to it. It is niced like a development job, never passes a landing job (one that drains the machine holds the quick lane too) nor an exclusive one, and its deadline is at most 2 minutes: 2m by default, a shorter `--deadline` kept, a longer one refused. Past it, it is stopped as any job past its deadline (`timeout`). `ls` and `top` mark its kind with `^`, `top` says `quick` for it running and `quick: 1/2` in the header; `status` names the lane while a quick job runs, and `status --json` has `quick` (running) and `quick_slots`, and `"quick":true` on the job. `rerun` keeps it; `run-type` and `train` take `--quick` too (a type's own deadline over the cap gives way to the cap). Not with `--landing`. When a job submitted without `--quick` is of a kind whose recent successful runs took under 2 minutes at p90 (at least 3 runs learned), `submit`, `run` and `run-type` print a one-line hint on stderr suggesting `--quick`; nothing moves the job into the lane but the option. |
@@ -542,6 +543,19 @@ ends: nothing polls.
   disk is under disk_min 20G: nothing new starts`; `status --json` has `disk_free`, `disk_min` and
   `disk_low`, and `top`'s header shows the free space, yellow under twice `disk_min` and red under
   it.
+- **Memory-pressure guard.** The memory budget counts what marshal's jobs reserve and hold; memory
+  used outside them (a VM, an IDE, the sessions) it cannot see. So every 3 seconds the daemon also
+  reads the kernel's memory-pressure level (`kern.memorystatus_vm_pressure_level`) and the swap in
+  use (`vm.swapusage`). While the level is `warn` or `critical`, or the swap in use has grown by 512M
+  or more within the last minute, no new job starts in any lane, whatever the accounting says: the
+  queued ones wait `queued (memory pressure: warn)` (`top`: `mem pressure`, and a red `mem pressure
+  (warn): nothing starts` in its header), and the running ones go on; none is paused or killed.
+  Swap stays used long after pressure has gone, so it is its growth, not its size, that holds the
+  queue. Once the machine has room the queue moves again by itself; the daemon's log says when the
+  guard holds and when it eases, and a reading that cannot be made holds nothing back. `status`
+  adds `memory pressure (warn): nothing new starts` while it holds; `status --json` has
+  `mem_pressure` (`normal`, `warn`, `critical`, `unknown`), `swap_used`, `swap_growth`,
+  `mem_pressure_holds` and, while it holds, `mem_pressure_cause`.
 - **Open files.** A daemon launchd starts inherits launchd's soft limit of 256 open files, far under
   a login shell's, and a job inherits the daemon's. So the daemon raises its soft limit when it
   starts, before any job: to the hard limit where that is a number, and to the kernel's
@@ -677,15 +691,21 @@ failed build holds the memory it holds.
 A job without `--mem` reserves the learned peak of what it runs: the most memory (physical
 footprint, Activity Monitor's Memory column, of its whole process tree) any of the **last 3**
 clean runs of the first trusted key held, rounded up to a mebibyte. Work no key is trusted for
-reserves 0. Because only the last 3 runs count, a reservation follows the work: a
+never reserves 0: it reserves the most any of its keys holds among their last 10 runs, trusted or
+not (`max` in FROM: a fresh script of a repository whose tests have reached 22G reserves 22G), and
+work nothing has been seen of reserves its class's share of the memory budget, as its units do: a
+quarter for a gate, train, release or landing job, a sixth for a test, a ninth for a build, 1G
+otherwise (`def`). Because only the last 3 runs count, a reservation follows the work: a
 run that peaks higher raises the next reservation at once (and the reservations of jobs still
 queued), and once a command needs less, its reservation comes down within 3 runs. `status --json`
 says where a reservation came from in `resv_from`: `cmd+dir`, `cmd`, `norm+project`,
-`kind+project`, `given` or `none`. A learned
+`kind+project`, `max`, `default` or `given`. A learned or unlearned
 reservation above the whole budget is held to the budget, so the job starts once nothing else holds
-memory and runs alone. `--mem 0` opts out. A running job counts as holding its reservation or what
-it was last measured holding, whichever is more, so a job that reserved nothing but holds 27G keeps
-a 30G one out of a 56G budget. A job submitted with `--external` holds exactly its `--mem`, and its
+memory and runs alone. `--mem 0` opts out. A running job counts as holding its reservation or the
+most it has been measured holding in this run (its PEAK), whichever is more, so a job that reserved
+nothing but has reached 27G keeps a 30G one out of a 56G budget, even while it holds 2G for the
+moment: memory a job has used once it is likely to use again before it ends. The peak survives
+`marshal restart`. `mem_held` in `status --json` is this sum. A job submitted with `--external` holds exactly its `--mem`, and its
 peak is never learned.
 
 ### Units
@@ -884,13 +904,14 @@ landing lane free; take-slot holds 0 units, 0 waiting; cpu 1 (jobs 0), disk 156G
 - the budget: `units`, `unit_budget` (numbers of units, `1.25` among them), `mem` (what the running
   jobs reserve, declared or learned), `mem_budget`, `rss` (the physical footprint of what the running
   jobs hold, in bytes), `mem_held` (what admission counts them holding: each job's reservation or its
-  `rss`, whichever is more), `machine_mem` (the machine's memory, 0 if unknown);
+  `peak_rss` in this run, whichever is more), `machine_mem` (the machine's memory, 0 if unknown);
 - the lanes: `landing` (the landing job's id or null), `quick` (quick jobs running) and
   `quick_slots`, `exclusive` (the running exclusive job's id or null), `take_slot` (`dir`, `units`,
   `waiting`, `landing`, or null when none is shared), `queue_held`, `polite` (`fraction`, `units`,
   `memory`, or null);
 - the machine: `cpu` and `job_cpu` (cores, once measured), `disk_free` (bytes, once measured),
-  `disk_min`, `disk_low`, `nofile`;
+  `disk_min`, `disk_low`, `nofile`, and the memory-pressure guard's `mem_pressure`, `swap_used`,
+  `swap_growth`, `mem_pressure_holds` and `mem_pressure_cause`;
 - the jobs: `running`, `queued` and `settling`, arrays of jobs as [the protocol](docs/protocol.md)
   writes them (with `owner`, `label`, `units_learned`, `resv_from`, `duration_from`, `eta_ms` and
   `starts_in_ms` where there are any).

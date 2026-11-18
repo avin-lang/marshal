@@ -106,7 +106,10 @@ Options of submit and run:
   --units-exact     with --units: weigh exactly n, even where its runs used fewer
   --mem <size>      the memory it needs, such as 29G or 512M (default: the learned peak of
                     the same work, such as `sysl test compiler` or `zsh gate.zsh`, learned as
-                    --units is, ~ in RESV; 0 until it has run 3 times; --mem 0 reserves none)
+                    --units is, ~ in RESV; until it has run 3 times, the most any run of its
+                    work reached (max in FROM), else the share of the budget --units takes (def);
+                    --mem 0 reserves none). While it runs it is charged the most it has held
+                    where that is more
   --external       its work runs outside its own processes (docker run, a VM, sudo to another
                     account's daemon): it reserves exactly --mem, which it must give, and its
                     measured peak is never learned (@ in RESV)

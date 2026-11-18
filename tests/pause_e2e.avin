@@ -116,6 +116,8 @@ pauseAtStartHolds()
       home,
       "--units",
       "1",
+      "--mem",
+      "0",
       "--",
       "sh",
       "-c",

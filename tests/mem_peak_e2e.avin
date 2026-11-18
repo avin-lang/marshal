@@ -1,0 +1,158 @@
+module tests
+
+// End to end, what keeps the machine out of swap: a running job is charged the peak it reached,
+// across a restart too, so a job in a trough does not let the next start take room it comes back
+// for; a job nothing is learned of reserves the most its work has been seen to hold or its class's
+// share, never nothing, and one reserving the whole budget still runs alone; and the memory-pressure
+// guard (the stand-in reading e2e.avin's `setPressure` gives) holds every new start while the machine
+// is short, says why in ls, status and status --json, and lets the queue move once it has room. The
+// helpers are e2e.avin's, reserve_e2e.avin's and ls_why_e2e.avin's.
+import avin.fs
+import avin.threads
+import avin.time.millis
+import dev.avinlang.json.Json
+
+val MiBytes: long = 1024 * 1024
+
+// A job in `home` that holds about 300M for a few seconds, then sleeps holding next to nothing.
+spikeThenSleep(home: string) -> long =
+  submitted(home, "--mem", "0", "--", "sh", "-c", "perl -e '$x = \"x\" x (300 * 1024 * 1024); sleep 4'; sleep 120")
+
+// The `peak_rss` and `rss` of running job `id`, (-1, -1) while it is not running.
+peakAndNow(home: string, id: long) -> (long, long)
+  val j = statusOf(home)("running").asVector.get.find(x -> x("id").asLong == Some(id))
+  j.map(x -> (x("peak_rss").asLong.getOrElse(-1), x("rss").asLong.getOrElse(-1))).getOrElse((long(-1), long(-1)))
+
+@test("a job in a trough after its peak is charged the peak: a job that fits beside the trough but not the peak waits, across a restart")
+peakChargedE2e()
+  val home = newHome("{\"memory\": \"4G\"}")
+  val spike = spikeThenSleep(home)
+  // its peak is measured, then it falls to its sleep
+  assert(within(20000, () -> peakAndNow(home, spike).0 >= 250 * MiBytes), s"${peakAndNow(home, spike)}")
+  assert(
+    within(20000, () ->
+      val (peak, now) = peakAndNow(home, spike)
+      now >= 0 && now < peak / 4),
+    s"${peakAndNow(home, spike)}"
+  )
+  val peak = peakAndNow(home, spike).0
+  assert(statusOf(home)("mem_held").asLong.get >= peak, statusOf(home).render)
+  // fits beside what it holds now, not beside its peak
+  val mem = (4096 * MiBytes - peak / 2) / MiBytes
+  val waiting = submitted(home, "--mem", s"${mem}M", "--", "sleep", "0")
+  threads.sleep(millis(2500))
+  assert(!started(home, waiting), "a job that fits only beside the trough started")
+  assertEq(statusJob(home, waiting)("why").asString, Some("memory"))
+  // a restarted daemon still charges the run's peak
+  restarted(home)
+  assert(statusOf(home)("mem_held").asLong.get >= peak, statusOf(home).render)
+  threads.sleep(millis(2500))
+  assert(!started(home, waiting), "after a restart the trough let the job start")
+  // once the spiking job ends, the other starts
+  assertEq(m(home, "kill", spike.toString()).code, 0)
+  assert(within(10000, () -> ended(home, waiting)), m(home, "ls").out)
+  assertEq(m(home, "stop").code, 0)
+  cleanUp(home)
+
+@test("a job nothing is learned of reserves its class's share of the budget, and status --json says default")
+unlearnedDefaultE2e()
+  val home = newHome("{\"memory\": \"6G\"}")
+  val test = submitted(home, "--kind", "test", "--", "sleep", "30")
+  val bench = submitted(home, "--kind", "bench", "--", "sleep", "30")
+  val given = submitted(home, "--kind", "test", "--mem", "0", "--", "sleep", "30")
+  assertEq(statusJob(home, test)("resv").asLong, Some(1024 * MiBytes))
+  assertEq(statusJob(home, test)("resv_from").asString, Some("default"))
+  assertEq(statusJob(home, bench)("resv").asLong, Some(1024 * MiBytes))
+  assertEq(statusJob(home, given)("resv").asLong, Some(long(0)))
+  assertEq(statusJob(home, given)("resv_from").asString, Some("given"))
+  assertEq(m(home, "stop", "--force").code, 0)
+  cleanUp(home)
+
+@test("a job whose work has too few runs to trust reserves the most of them, and status --json says max")
+unlearnedMaxE2e()
+  val home = newHome("{\"memory\": \"4G\"}")
+  fs.writeText(home + "/events.jsonl", [peakLine(1, "big", 600 * MiBytes), peakLine(2, "big", 900 * MiBytes)].mkString("\n") + "\n").ok.get
+  val id = submitted(home, "--kind", "big", "--", "sleep", "30")
+  assertEq(statusJob(home, id)("resv").asLong, Some(900 * MiBytes))
+  assertEq(statusJob(home, id)("resv_from").asString, Some("max"))
+  assert(lsRowOf(home, id).contains("/max/"), lsRowOf(home, id))
+  assertEq(m(home, "stop", "--force").code, 0)
+  cleanUp(home)
+
+@test("a job whose untrusted history peaked above the whole budget reserves the budget and still runs, alone")
+unlearnedOversizeE2e()
+  val home = newHome("{\"memory\": \"1G\"}")
+  fs.writeText(home + "/events.jsonl", peakLine(1, "huge", 3072 * MiBytes) + "\n").ok.get
+  val huge = submitted(home, "--kind", "huge", "--", "sleep", "2")
+  val small = submitted(home, "--kind", "huge", "--mem", "1M", "--", "sleep", "0")
+  assertEq(statusJob(home, huge)("resv").asLong, Some(1024 * MiBytes))
+  assert(within(10000, () -> started(home, huge)), m(home, "ls").out)
+  assert(!started(home, small) || ended(home, huge), "a job started beside one reserving the whole budget")
+  assert(within(15000, () -> ended(home, small)), m(home, "ls").out)
+  assertEq(m(home, "stop").code, 0)
+  cleanUp(home)
+
+@test("under memory pressure no new job starts and the running one goes on; ls, status and --json say why; eased, it starts")
+pressureHoldsE2e()
+  val home = newHome()
+  setPressure(home, 1, 0)
+  val running = submitted(home, "--mem", "0", "--", "sleep", "4")
+  assert(within(10000, () -> started(home, running)), "the first job starts while the machine has room")
+  assertEq(statusOf(home)("mem_pressure").asString, Some("normal"))
+  setPressure(home, 2, 0)
+  assert(within(10000, () -> statusOf(home)("mem_pressure_holds").asBool == Some(true)), m(home, "status").out)
+  val held = submitted(home, "--mem", "0", "--", "sleep", "0")
+  threads.sleep(millis(1500))
+  assert(!started(home, held), "a job submitted under memory pressure waits")
+  assert(lsRowOf(home, held).contains("queued (memory pressure: warn)"), lsRowOf(home, held))
+  val status = statusOf(home)
+  assertEq(status("mem_pressure").asString, Some("warn"))
+  assertEq(status("mem_pressure_cause").asString, Some("warn"))
+  assertEq(status("queued").asVector.get(0)("why").asString, Some("memory-pressure"))
+  assertEq(status("queued").asVector.get(0)("pressure").asString, Some("warn"))
+  assert(m(home, "status").out.contains("memory pressure (warn): nothing new starts"), m(home, "status").out)
+  // the running job is never stopped
+  assertEq(m(home, "wait", running.toString()).code, 0)
+  assert(!started(home, held), "the job still waits once the running one has ended")
+  // critical holds as warn does
+  setPressure(home, 4, 0)
+  assert(within(10000, () -> statusOf(home)("mem_pressure").asString == Some("critical")), m(home, "status").out)
+  assert(!started(home, held))
+  setPressure(home, 1, 0)
+  assert(within(10000, () -> ended(home, held)), m(home, "ls").out)
+  assertEq(statusOf(home)("mem_pressure_holds").asBool, Some(false))
+  assert(daemonLog(home).contains("memory pressure (warn): no new job starts"), daemonLog(home))
+  assert(daemonLog(home).contains("memory pressure has eased: jobs start"), daemonLog(home))
+  assertEq(m(home, "stop").code, 0)
+  cleanUp(home)
+
+@test("swap growing by 512M within a minute holds the queue at a normal level, and says swapping")
+pressureSwapE2e()
+  val home = newHome()
+  setPressure(home, 1, 1024 * MiBytes)
+  assert(within(10000, () -> statusOf(home)("swap_used").asLong == Some(1024 * MiBytes)), m(home, "status").out)
+  setPressure(home, 1, 2048 * MiBytes)
+  assert(
+    within(10000, () -> statusOf(home).get("mem_pressure_cause").flatMap(v -> v.asString) == Some("swapping")),
+    m(home, "status").out
+  )
+  assert(statusOf(home)("swap_growth").asLong.get >= 1024 * MiBytes, m(home, "status").out)
+  val held = submitted(home, "--mem", "0", "--", "sleep", "0")
+  threads.sleep(millis(1500))
+  assert(!started(home, held), "a job submitted while the swap grows waits")
+  assert(lsRowOf(home, held).contains("queued (memory pressure: swapping)"), lsRowOf(home, held))
+  // a held job keeps its own reason, as under a low disk
+  assertEq(m(home, "hold", held.toString()).code, 0)
+  assert(lsRowOf(home, held).contains("queued (held)"), lsRowOf(home, held))
+  assertEq(m(home, "stop", "--force").code, 0)
+  cleanUp(home)
+
+@test("a reading that cannot be made never holds the queue")
+pressureUnreadE2e()
+  val home = newHome()
+  fs.writeText(home + "/pressure", "not a reading").ok.get
+  assertEq(m(home, "run", "--mem", "0", "--", "sleep", "0").code, 0)
+  assertEq(statusOf(home)("mem_pressure").asString, Some("unknown"))
+  assertEq(statusOf(home)("mem_pressure_holds").asBool, Some(false))
+  assertEq(m(home, "stop").code, 0)
+  cleanUp(home)

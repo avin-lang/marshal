@@ -328,6 +328,7 @@ reservedText(j: JobInfo) -> string
 // (nofile.avin). `settling` is how many exclusive jobs are settling (`settling`): counted neither as
 // running nor in `queued`. `polite` is the polite budget jobs are admitted against while marshal is
 // polite (polite.avin), None while it is not; `unitBudget` and `memoryBudget` stay the full ones.
+// `pressure` is the memory-pressure guard as last read (pressure.avin).
 data Usage(
     units: int,
     unitBudget: int,
@@ -349,12 +350,15 @@ data Usage(
     diskMin: long = 0,
     nofile: long = 0,
     settling: int = 0,
-    polite: Option[PoliteUse] = None
+    polite: Option[PoliteUse] = None,
+    pressure: Pressure = NoPressure
 )
 
-// The members `status`, `status --json` and the snapshot add for the machine's processors and disk:
-// `cpu` and `job_cpu` in cores, `disk_free` and `disk_min` in bytes and `disk_low`, and the jobs'
-// limit on open files `nofile`; a value not measured is left out.
+// The members `status`, `status --json` and the snapshot add for the machine's processors, disk and
+// memory: `cpu` and `job_cpu` in cores, `disk_free` and `disk_min` in bytes and `disk_low`, the jobs'
+// limit on open files `nofile`, and the memory-pressure guard: `mem_pressure` (the kernel's level,
+// `normal`, `warn`, `critical` or `unknown`), `swap_used` and `swap_growth` in bytes, and
+// `mem_pressure_holds` with, while it holds, `mem_pressure_cause`; a value not measured is left out.
 private machineMembers(u: Usage) -> Vector[(string, Json)]
   val out = Buffer[(string, Json)]()
   if u.cpu >= 0 then out += ("cpu", coresJson(u.cpu))
@@ -363,22 +367,33 @@ private machineMembers(u: Usage) -> Vector[(string, Json)]
   out += ("disk_min", Json.num(u.diskMin))
   out += ("disk_low", Json.Bool(diskLow(u.diskFree, u.diskMin)))
   if u.nofile > 0 then out += ("nofile", Json.num(u.nofile))
+  out += ("mem_pressure", Json.str(pressureLevelName(u.pressure.level)))
+  if u.pressure.swapUsed >= 0 then out += ("swap_used", Json.num(u.pressure.swapUsed))
+  out += ("swap_growth", Json.num(u.pressure.swapGrowth))
+  out += ("mem_pressure_holds", Json.Bool(u.pressure.cause.nonEmpty))
+  if u.pressure.cause.nonEmpty then out += ("mem_pressure_cause", Json.str(u.pressure.cause))
   out.toVector
 
-// The five values `machineMembers` writes, read back.
-private machineOf(j: Json) -> Result[(long, long, long, long, long), string] =
+// The values `machineMembers` writes, read back.
+private machineOf(j: Json) -> Result[(long, long, long, long, long, Pressure), string] =
   Ok(
     (
       optional(j, "cpu", centiOf, "a number of cores", long(-1))?,
       optional(j, "job_cpu", centiOf, "a number of cores", long(-1))?,
       optional(j, "disk_free", wholeNumber, "a whole number", long(-1))?,
       optional(j, "disk_min", wholeNumber, "a whole number", long(0))?,
-      optional(j, "nofile", wholeNumber, "a whole number", long(0))?
+      optional(j, "nofile", wholeNumber, "a whole number", long(0))?,
+      Pressure(
+        pressureLevelOf(optional(j, "mem_pressure", v -> v.asString, "a string", "unknown")?),
+        optional(j, "swap_used", wholeNumber, "a whole number", long(-1))?,
+        optional(j, "swap_growth", wholeNumber, "a whole number", long(0))?,
+        optional(j, "mem_pressure_cause", v -> v.asString, "a string", "")?
+      )
     )
   )
 
-// `u` with the machine's processors, disk and limit on open files as `m` gives them.
-private withMachine(u: Usage, m: (long, long, long, long, long)) -> Usage =
+// `u` with the machine's processors, disk, limit on open files and memory as `m` gives them.
+private withMachine(u: Usage, m: (long, long, long, long, long, Pressure)) -> Usage =
   Usage(
     u.units,
     u.unitBudget,
@@ -400,7 +415,8 @@ private withMachine(u: Usage, m: (long, long, long, long, long)) -> Usage =
     m.3,
     m.4,
     u.settling,
-    u.polite
+    u.polite,
+    m.5
   )
 
 // What take-slot.zsh holds in the directory `dir` that marshal shares: units its runs hold, how many
@@ -419,7 +435,8 @@ data TakeSlotUse(dir: string, units: int, waiting: int, landing: bool)
 // (`load` the last read, `limit` its quiet load, `calmMs` how long it has been below); every job
 // queued behind it, and every job while one runs, waits `ForExclusive(id)`. While the disk has less
 // free than `disk_min`, every queued job not held by hand waits `DiskLow(free)`, `free` the bytes
-// free when it was last measured (disk.avin). While marshal is polite (polite.avin), a job that would
+// free when it was last measured (disk.avin); while it does not but the machine is short of memory,
+// `MemoryPressure(cause)`, `cause` `warn`, `critical` or `swapping` (pressure.avin). While marshal is polite (polite.avin), a job that would
 // fit beside what runs in the full budget but not in the polite one waits `PoliteBudget`; one bigger
 // than the polite budget waits `RunsAlone` until nothing else of marshal's runs, and every job held
 // back by it, waiting or running alone, waits `ForAlone(id)`.
@@ -439,6 +456,7 @@ data Why
   Load(load: real, limit: real, calmMs: long)
   ForExclusive(id: long)
   DiskLow(free: long)
+  MemoryPressure(cause: string)
   PoliteBudget
   RunsAlone
   ForAlone(id: long)
@@ -1180,6 +1198,7 @@ whyWord(Emptying) = "emptying"
 whyWord(Load(_, _, _)) = "load"
 whyWord(ForExclusive(_)) = "exclusive"
 whyWord(DiskLow(_)) = "disk-low"
+whyWord(MemoryPressure(_)) = "memory-pressure"
 whyWord(PoliteBudget) = "polite"
 whyWord(RunsAlone) = "alone"
 whyWord(ForAlone(_)) = "for-alone"
@@ -1193,6 +1212,7 @@ whyId(DrainingFor(id)) = [("draining_for", Json.num(id))]
 whyId(ForExclusive(id)) = [("exclusive_id", Json.num(id))]
 whyId(ForAlone(id)) = [("alone_id", Json.num(id))]
 whyId(DiskLow(free)) = [("disk_free", Json.num(free))]
+whyId(MemoryPressure(cause)) = [("pressure", Json.str(cause))]
 whyId(Load(load, limit, calmMs)) = [
   ("load", Json.num(load)),
   ("load_limit", Json.num(limit)),
@@ -1231,6 +1251,7 @@ private decodeWhy(j: Json) -> Result[Why, string]
     )
     "exclusive" -> Ok(ForExclusive(field(j, "exclusive_id", v -> v.asLong, "a whole number")?))
     "disk-low" -> Ok(DiskLow(field(j, "disk_free", v -> v.asLong, "a whole number")?))
+    "memory-pressure" -> Ok(MemoryPressure(field(j, "pressure", v -> v.asString, "a string")?))
     "polite" -> Ok(PoliteBudget)
     "alone" -> Ok(RunsAlone)
     "for-alone" -> Ok(ForAlone(field(j, "alone_id", v -> v.asLong, "a whole number")?))

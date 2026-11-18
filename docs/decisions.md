@@ -2374,3 +2374,74 @@ that case, which still wants a `--deadline`.
   to 100, such as 1.5 ``. The upper bound only keeps the arithmetic in range. Weighed: a percentage
   (`50`, "add 50%"), which reads as the request did but is ambiguous beside the other factors; a
   margin added in minutes, which a 30-second job and a 2-hour one cannot share.
+
+## Admission charges the peak, nothing reserves 0, and a memory-pressure guard (branch `mem-peak`)
+
+**Settled on the user's delegation 2026-11-18.** The user: *"Marshal should be keeping this from
+happening."* At about 16:00 the 64G machine went 5.6G into swap while marshal saw `rss` 37.5G and
+`mem_held` 49.5G against a 56G budget, and kept admitting. Seven of the eight running jobs had
+`resv 0`, `resv_from "none"`; six of them had peaked at 22.4, 18.6, 18.0, 16.3, 6.2 and 6.2G (about
+88G together) but were charged what they held at the moment, 2.0, 1.6, 3.0, 16.3, 4.4 and 4.6G. A
+job in a trough freed "room" the next admission took, and then the peaks coincided. They were
+unlearned because the sysl session runs a fresh scratch script per job (`zsh …/scratchpad/<x>/run.zsh`,
+`env FILES=… zsh …`), so neither `cmd+dir` nor `cmd` had 3 runs, and `kind+project` held every kind
+of test in the repository (1G to 22G), which `consistent` refuses as spread (its 90th percentile over
+3 times its 10th); `choose` then found nothing and `reservationFor` gave 0.
+
+- **A running job is charged the more of its reservation and the PEAK it has reached in this run**
+  (`holding(reserved, peak)`), not its last measurement. Memory a job has used once it is likely to
+  use again before it ends: a test suite's big file, a link, a second compile. The peak survives
+  `marshal restart` (state.json's `peak_rss`), so a restarted daemon charges what the old one did.
+  `mem_held` in `status --json` is this figure. **Review with the user**: a long job whose one early
+  spike never recurs holds that much until it ends. Weighed: the current footprint (the bug); a
+  decaying peak (the most of the last few minutes), which frees room sooner but brings back exactly
+  the trough-then-peak overlap the incident was, at whatever the decay is.
+- **A job with no trusted history reserves something, never 0** (`unlearnedMemory`), in this
+  order: given memory (`--mem`, 0 among them, still opts out); the learned peak of the first trusted
+  key, as before; else **the most of the last 10 peaks of every key of its chain, trusted or not**
+  (`resv_from` `max`), rounded up to a mebibyte; else, with nothing seen at all, **its class's share
+  of the memory budget** (`default`): a quarter for a gate, train, release or landing job, a sixth for
+  a test, a ninth for a build (the divisors units already use, `classDivisor`), and 1G for anything
+  else. Either is held to the budget, so it still starts once nothing else holds memory and runs
+  alone. Why the untrusted most first: the keys were refused for having too few runs or runs that
+  spread, not for being wrong; the work has been seen to reach that much, and, as the mem-admission
+  entry argues, running short costs every job on the machine while reserving too much only delays a
+  start. `kind+project` holds every run of the kind in the project, so the most is at least its most.
+  Why a class share after it rather than 0 or one fixed size: it matches how units treat unknown
+  work, and scales with the machine. **Review with the user**: on this machine (56G budget) an
+  unlearned sysl `test` job of a repository whose tests reached 22G reserves 22G, so at most two such
+  jobs run together until their scripts are learned; and a fresh `test` with no history reserves
+  9.3G. Weighed: the class default alone (ignores that a 22G suite was seen), the untrusted most of
+  `kind+project` only (misses a command's own one or two runs where the project key is empty), a
+  config option per kind (one more knob nobody sets).
+- **A job queued under an image before this rule, with `resv_from` `none`, reserves again** when
+  the new image restores it; a running one keeps what it started with (peak charging covers it).
+- **The memory-pressure guard** (pressure.avin). Every tick (3 s) the daemon reads
+  `kern.memorystatus_vm_pressure_level` and `vm.swapusage` through `sysctlbyname` (as nofile.avin
+  already does; no avin gap). While the kernel's level is `warn` or `critical`, or the swap in use
+  has grown by 512M or more within the last minute, no new job starts in any lane, whatever the
+  accounting says, exactly as the disk guard holds the queue: queued jobs show `queued (memory
+  pressure: warn)` in `ls` (`mem pressure` in `top`'s STATE, and a red `mem pressure (warn): nothing
+  starts` in its header), `why` `memory-pressure` with `pressure` in `status --json`, and `status`
+  adds `; memory pressure (warn): nothing new starts`. `status --json` always has `mem_pressure`
+  (`normal`, `warn`, `critical`, `unknown`), `swap_growth`, `mem_pressure_holds` and, where read,
+  `swap_used`, with `mem_pressure_cause` while it holds. The daemon's log says when it starts holding
+  and when it eases. A reading that cannot be made never holds (as the disk guard). Tests name a file
+  holding the reading (`$MARSHAL_TEST_PRESSURE`); the e2e homes always do, so the real machine's
+  pressure never reaches a test daemon. **Review with the user**: the swap threshold (512M a minute)
+  and holding on `warn` rather than only `critical`. Why growth and not the swap's size: macOS keeps
+  swap used long after the pressure has gone (this machine stood at 4.3G used and level `normal`
+  while this was written), so a size threshold would hold for hours after a spike. Weighed: holding
+  only at `critical` (the kernel is already killing and compressing hard by then), and
+  `kern.memorystatus_level` (the free percentage, which moves with the file cache and says little).
+- **The guard holds even with nothing of marshal's running.** It covers memory used outside marshal
+  (a VM, an IDE, the sessions), which marshal cannot free; a job started into that pressure swaps.
+  This is not a deadlock: the queue moves when the machine has room, as under a low disk. A lone job
+  bigger than the budget still starts alone once the guard is clear, as before.
+- **Critical pressure does not pause a running job.** Weighed: pausing the most recently started job
+  (SIGSTOP). A paused job keeps every page it holds (as the pause entry says), so pausing frees
+  nothing marshal can count; the kernel can already compress or swap out a stopped process's pages
+  as readily as a running one's; and a paused job's deadline and quiet clocks, its sessions' waits and
+  its partial work all suffer. Holding new starts is what marshal can do that the kernel cannot.
+  **Review with the user**: whether, on critical, the user would rather have the newest job paused
+  (or killed and requeued) than ride it out.

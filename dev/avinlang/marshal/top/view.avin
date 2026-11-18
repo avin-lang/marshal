@@ -99,6 +99,7 @@ waiting(l: Line) -> bool = l.job.outcome.isEmpty && (l.job.state == "waiting" ||
 whyText(w: Why) -> string
 whyText(Why.QuickFull) = "quick full"
 whyText(Why.DiskLow(_)) = "disk low"
+whyText(Why.MemoryPressure(_)) = "mem pressure"
 whyText(Why.PoliteBudget) = "polite"
 whyText(Why.RunsAlone) = "runs alone"
 whyText(Why.ForAlone(id)) = s"alone $id"
@@ -943,15 +944,22 @@ cpuText(u: Usage) -> string
 
 // The free disk after the processor meter, from column `x` of row `y`: `disk 120G free`, yellow
 // under twice `disk_min`, red under it, with what that means beside it; nothing before it is
-// measured, and nothing where it does not fit.
+// measured, and nothing where it does not fit. While the machine is short of memory (pressure.avin),
+// `mem pressure (warn): nothing starts` in red follows it, or stands alone before the disk is measured.
 diskText(g: Grid, x: int, y: int, u: Usage)
-  if u.diskFree < 0 then return
-  val level = marshal.diskLevel(u.diskFree, u.diskMin)
-  val text = s"disk ${marshal.roundSize(u.diskFree)} free" + (
-    if level == 2 then s" < ${marshal.formatSize(u.diskMin)}: nothing starts" else ""
-  )
-  val style = if level == 2 then Style.fg(Red).with(Bold) elif level == 1 then Style.fg(Yellow) else Style.plain()
-  if x + textWidth(text) <= g.width then g.text(x, y, text, style)
+  var at = x
+  if u.diskFree >= 0
+    val level = marshal.diskLevel(u.diskFree, u.diskMin)
+    val text = s"disk ${marshal.roundSize(u.diskFree)} free" + (
+      if level == 2 then s" < ${marshal.formatSize(u.diskMin)}: nothing starts" else ""
+    )
+    val style = if level == 2 then Style.fg(Red).with(Bold) elif level == 1 then Style.fg(Yellow) else Style.plain()
+    if at + textWidth(text) > g.width then return
+    g.text(at, y, text, style)
+    at += textWidth(text) + 2
+  if u.pressure.cause.isEmpty then return
+  val pressure = s"mem pressure (${u.pressure.cause}): nothing starts"
+  if at + textWidth(pressure) <= g.width then g.text(at, y, pressure, Style.fg(Red).with(Bold))
 
 // The processor meter, `width` cells between brackets from column `x` of row `y`, drawn in bars: the
 // cores the running jobs keep busy (`jobs`) in green and the rest of the machine's (`all` less them)

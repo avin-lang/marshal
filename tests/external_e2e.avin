@@ -55,15 +55,19 @@ externalNotLearnedE2e()
   for e in ends
     assert(e("peak_rss").asLong.getOrElse(0) > 0, e.render)
     assertEq(e("external").asBool, Some(true))
-  // a job of the kind that is not external has nothing learned to reserve
+  // a job of the kind that is not external has nothing learned to reserve: it reserves the default
   val plain = submitted(home, "--kind", "ext", "--", "sleep", "30")
   val jp = statusJob(home, plain)
-  assertEq((jp("resv").asLong, jp("resv_learned").asBool, jp.get("external")), (Some(long(0)), Some(false), None))
+  assertEq(
+    (jp("resv").asLong, jp("resv_learned").asBool, jp.get("external"), jp("resv_from").asString),
+    (Some(long(1024) * 1024 * 1024), Some(false), None, Some("default"))
+  )
   // nor after the next daemon has read the event log
   assertEq(m(home, "stop", "--force").code, 0)
   val again = submitted(home, "--kind", "ext", "--", "sleep", "30")
   assertEq(statusJob(home, again)("resv_learned").asBool, Some(false))
-  assertEq(statusJob(home, again)("resv").asLong, Some(long(0)))
+  assertEq(statusJob(home, again)("resv").asLong, Some(long(1024) * 1024 * 1024))
+  assertEq(statusJob(home, again)("resv_from").asString, Some("default"))
   // stats leave the external jobs' peaks out
   val stats = json.parse(m(home, "stats", "--json", "--kind", "ext").out).ok.get
   val kind = stats("kinds").asVector.get.find(k -> k("kind").asString == Some("ext")).get

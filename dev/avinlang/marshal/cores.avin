@@ -324,12 +324,21 @@ unknownUnits(kind: string, landing: bool, budget: int) -> int
   if atLeast > budget then budget else atLeast
 
 private classShare(kind: string, landing: bool, budget: int) -> int
+  val divisor = classDivisor(kind, landing)
+  if divisor > 0 then budget / divisor else wholeUnits(1)
+
+// The part of a budget a job of `kind` takes while nothing of its work is learned, as the number the
+// budget is divided by: 4 for a gate, a train, a release or a landing job (its kind, or a dash- or
+// underscore-separated word of it, is `gate`, `train`, `release` or `landing`, or it runs in the
+// landing lane), 6 for a test, 9 for a build; 0 for anything else, which takes a fixed amount
+// instead. Units (`unknownUnits`) and memory (`unlearnedMemory`) share it.
+classDivisor(kind: string, landing: bool) -> int
   val words = kind.replace("_", "-").split("-").toVector
   val has = (w: string) -> words.contains(w)
-  if landing || has("gate") || has("train") || has("release") || has("landing") then return budget / 4
-  if has("test") then return budget / 6
-  if has("build") then return budget / 9
-  wholeUnits(1)
+  if landing || has("gate") || has("train") || has("release") || has("landing") then return 4
+  if has("test") then return 6
+  if has("build") then return 9
+  0
 
 // The quarters `centi` hundredths of a core round up to, held to `budget`; 0 before any is measured.
 usedQuarters(centi: long, budget: int) -> int

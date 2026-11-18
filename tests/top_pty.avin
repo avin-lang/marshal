@@ -82,8 +82,8 @@ topShowsRunningJob()
 topShowsStartTime()
   if process.os() != MacOS then return
   val home = newHome("{\"units\": 1}")
-  val id = submitted(home, "--", "sleep", "60")
-  val waiting = submitted(home, "--", "sleep", "60")
+  val id = submitted(home, "--mem", "0", "--", "sleep", "60")
+  val waiting = submitted(home, "--mem", "0", "--", "sleep", "60")
   assert(runningSoon(home, id))
   val startedAt = snapshotOf(home).running(0).startedAt
   assert(startedAt > 0)

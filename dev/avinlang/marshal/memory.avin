@@ -99,14 +99,62 @@ learnedPeak(learning: MemoryLearning, peaks: Vector[long]) -> Option[long]
   Some((withMargin + Mebi - 1) / Mebi * Mebi)
 
 // The reservation of a job that declared `memory`, `given` saying it was given: a given memory, `0`
-// among them, is the reservation; otherwise the learned peak, held to the whole `budget` so a job
-// that has peaked above it still starts once nothing else holds memory, and runs alone; 0 for work
-// nothing has been learned of.
-reservationFor(learning: MemoryLearning, memory: long, given: bool, peaks: Vector[long], budget: long) -> Reservation
+// among them, is the reservation; otherwise the learned peak; otherwise, for work no key of its
+// chain is trusted for, `unlearned` (`unlearnedMemory`). A learned or unlearned reservation is held
+// to the whole `budget`, so a job that has peaked above it still starts once nothing else holds
+// memory, and runs alone.
+reservationFor(
+    learning: MemoryLearning,
+    memory: long,
+    given: bool,
+    peaks: Vector[long],
+    budget: long,
+    unlearned: Unlearned = NothingLearned
+) -> Reservation
   if given || memory > 0 then return Reservation(memory, false)
   learnedPeak(learning, peaks) match
     Some(p) -> Reservation(if p > budget then budget else p, true)
-    None -> Reservation(0, false)
+    None -> Reservation(if unlearned.bytes > budget then budget else unlearned.bytes, false)
+
+// What a job reserves when no key of its chain is trusted, and where that came from (`resv_from`).
+data Unlearned(bytes: long, from: string)
+
+// Nothing: the reservation of work nothing is learned of before a fallback is asked for.
+val NothingLearned: Unlearned = Unlearned(0, "none")
+
+// The sources of an unlearned reservation: the most its chain's keys hold though none is trusted
+// (`max`), or the share of the budget its class reserves (`default`).
+val FromMax: string = "max"
+val FromDefault: string = "default"
+
+// What a job of `kind` (in the landing lane where `landing`) reserves when no key of its `chain`
+// (each key's peaks, oldest first, and its source) is trusted, against a memory `budget`. A job
+// never reserves nothing for want of history: running short costs every job on the machine,
+// reserving too much only delays a start.
+//
+// - Where any key of the chain holds a peak, the most of the last `SpreadWindow` peaks of every key
+//   (`max`), rounded up to a mebibyte. The keys were not trusted because they had too few runs or
+//   because their runs spread widely; either way the work has been seen to reach that much, and the
+//   most of work that only looks alike is the safe side. `kind+project` holds every run of its kind
+//   in its project, so this is at least its most.
+// - Otherwise its class's share of the budget (`default`): a quarter for a gate, a train, a release
+//   or a landing job, a sixth for a test, a ninth for a build (`classDivisor`, as units are), and a
+//   gibibyte for anything else; rounded up to a whole gibibyte where it is one or more, to a
+//   mebibyte below.
+//
+// Either is held to the budget.
+unlearnedMemory(chain: Vector[(Vector[long], string)], kind: string, landing: bool, budget: long) -> Unlearned
+  val seen = chain.flatMap(c -> c.0.filter(p -> p > 0).takeRight(SpreadWindow))
+  if seen.nonEmpty
+    val most = seen.max
+    val rounded = if most > long.MaxValue - Mebi then most else (most + Mebi - 1) / Mebi * Mebi
+    return Unlearned(if rounded > budget then budget else rounded, FromMax)
+  val divisor = classDivisor(kind, landing)
+  val share = if divisor > 0 then budget / long(divisor) else MemorySpreadFloor
+  // rounded up to a gibibyte from one up (`7G` rather than `6681060238`), else to a mebibyte
+  val step = if share >= MemorySpreadFloor then MemorySpreadFloor else Mebi
+  val rounded = if share > long.MaxValue - step then share else (share + step - 1) / step * step
+  Unlearned(if rounded > budget then budget else rounded, FromDefault)
 
 // What a job runs, as its memory, cores and durations are learned under: the program's name and its
 // subcommand and target (`sysl test compiler`, `sysl test .`, `gradlew test`), or a shell and the
@@ -295,9 +343,9 @@ memoryKeys(kind: string, landing: bool, cmd: Vector[string], dir: string) -> Vec
 // The peaks a job learns its reservation from, and which key they are (learning.avin): the first of
 // `chain` (each key's peaks, oldest first, and its source, most particular first) with at least
 // `learning.minRuns` peaks above 0, a key below `cmd+dir` only while its peaks are alike
-// (`consistent`, each counted at least `MemorySpreadFloor`); none (`from` "") before. Work nothing
-// has been learned of reserves nothing, and admission counts every running job at what it is
-// measured holding where that is more (`holding`).
+// (`consistent`, each counted at least `MemorySpreadFloor`); none (`from` "") before. Work no key is
+// trusted for reserves `unlearnedMemory`, and admission counts every running job at the most it has
+// been measured holding where that is more (`holding`).
 data MemoryHistory(peaks: Vector[long], from: string)
 
 // The least peak `consistent` tells apart from another: a gibibyte, so small builds a few hundred
@@ -310,14 +358,18 @@ memoryHistory(learning: MemoryLearning, chain: Vector[(Vector[long], string)]) -
 
 // Where a job's reservation came from, as `status --json` shows it in `resv_from`: `given` for a
 // memory it gave (`--mem`, `0` among them), the key its learned peak came from (`cmd+dir`, `cmd`,
-// `norm+project` or `kind+project`), or `none` while nothing has been learned.
-reservationSource(memory: long, given: bool, r: Reservation, from: string) -> string =
-  if given || memory > 0 then "given" elif r.learned then from else "none"
+// `norm+project` or `kind+project`), or, while no key is trusted, `unlearned`'s source (`max` or
+// `default`; `none` where no fallback was asked for).
+reservationSource(memory: long, given: bool, r: Reservation, from: string, unlearned: Unlearned = NothingLearned) -> string =
+  if given || memory > 0 then "given" elif r.learned then from else unlearned.from
 
-// What admission counts a running job as holding: its reservation, or what it was last measured
-// holding where that is more. A job holding more than it reserved delays the next start; one
-// holding less keeps its reservation, for the peak it has not reached yet.
-holding(reserved: long, rss: long) -> long = if rss > reserved then rss else reserved
+// What admission counts a running job as holding: its reservation, or the most it has been measured
+// holding in this run (`peak`) where that is more. A job holding more than it reserved delays the
+// next start; one holding less keeps its reservation, for the peak it has not reached yet. A job
+// whose footprint has fallen since its peak is still charged the peak: memory a job has used once
+// it is likely to use again before it ends, and charging the trough lets the next start take room
+// the running job comes back for.
+holding(reserved: long, peak: long) -> long = if peak > reserved then peak else reserved
 
 // What is learned of earlier runs, kept in `<home>/memory.json` so that it outlives the daemon, a
 // restart, an upgrade and `marshal clean` trimming the event log: the memory peaks, the peak cores

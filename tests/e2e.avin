@@ -27,7 +27,8 @@ bin() -> string = process.env("MARSHAL_BIN").getOrElse(
 
 // A home of its own, with `config` as its config.json when it is not empty, a take-slot directory of
 // its own (`slots`), never the real one, and a stand-in for `df` (`FakeDf`), so the disk guard sees
-// the free space a test gives it (`setDiskFree`) and never the real disk's.
+// the free space a test gives it (`setDiskFree`) and never the real disk's; the memory-pressure
+// guard likewise reads only what a test gives it (`setPressure`), never the real machine's.
 newHome(config: string = "") -> string
   val home = fs.createTempDir("marshal-").ok.get
   fs.createDir(slots(home)).ok.get
@@ -78,7 +79,16 @@ homed(command: Command, home: string) -> Command =
   command.withEnv("MARSHAL_HOME", home).withEnv("MARSHAL_TAKE_SLOT_DIR", slots(home)).withEnv(
     "MARSHAL_TEST_WATCH_PID",
     process.pid().toString()
-  ).withEnv("MARSHAL_TEST_DF", home + "/df.sh").withEnv("MARSHAL_TEST_NCPU", "12")
+  ).withEnv("MARSHAL_TEST_DF", home + "/df.sh").withEnv("MARSHAL_TEST_NCPU", "12").withEnv(
+    "MARSHAL_TEST_PRESSURE",
+    home + "/pressure"
+  )
+
+// Gives the memory-pressure guard of `home` the reading `level` (the kernel's: 1 normal, 2 warn, 4
+// critical) and `swapUsed` bytes of swap. Before any is given, the guard reads nothing and never holds.
+setPressure(home: string, level: int, swapUsed: long) = fs.writeText(home + "/pressure.tmp", s"$level $swapUsed").flatMap(
+  _ -> fs.rename(home + "/pressure.tmp", home + "/pressure")
+).ok.get
 
 // Where the homes of a test run are recorded, next to the executable under test, so that a
 // teardown, or the script that ran the tests, can find the daemons a dead test left.

@@ -324,6 +324,10 @@ class Daemon(
   // and whether a measurement of it is under way.
   var diskFree: long = -1
   var measuringDisk = false
+  // The memory-pressure guard as last read (pressure.avin), and the swap readings within its window,
+  // oldest first, as (monotonic milliseconds, bytes).
+  var pressure: marshal.Pressure = marshal.NoPressure
+  val swapSamples = Buffer[(long, long)]()
   // The soft limit on open files the daemon raised at start-up and every job inherits, 0 where it
   // could not be read (nofile.avin).
   var nofile: long = 0
@@ -386,15 +390,18 @@ class Daemon(
     marshal.MemoryLearning(marshal.defaultMemoryLearning.window, config.learning.minRuns, marshal.defaultMemoryLearning.marginPercent)
 
   // Gives `job` its reservation: the memory it gave, or the peak learned from the first trusted key
-  // of its chain (learning.avin), or nothing before any is.
+  // of its chain (learning.avin), or before any is, the most its chain holds or its class's share
+  // (`unlearnedMemory`).
   reserve(job: Job)
     val s = job.spec
     val learning = memoryLearning()
-    val h = marshal.memoryHistory(learning, chainIn(peaks, s))
-    val r = marshal.reservationFor(learning, s.memory, s.memoryGiven, h.peaks, config.budget.memory)
+    val chain = chainIn(peaks, s)
+    val h = marshal.memoryHistory(learning, chain)
+    val unlearned = marshal.unlearnedMemory(chain, s.kind, s.landing, config.budget.memory)
+    val r = marshal.reservationFor(learning, s.memory, s.memoryGiven, h.peaks, config.budget.memory, unlearned)
     job.reserved = r.bytes
     job.learnedMem = r.learned
-    job.reservedFrom = marshal.reservationSource(s.memory, s.memoryGiven, r, h.from)
+    job.reservedFrom = marshal.reservationSource(s.memory, s.memoryGiven, r, h.from, unlearned)
 
   // The cores the jobs of `key` held (`taught`), oldest first.
   coresOf(key: string) -> Vector[long] = cores.get(key).map(b -> b.toVector).getOrElse([])
@@ -569,9 +576,10 @@ class Daemon(
       Ok(_) -> ()
       Err(e) -> eprintln(s"marshal: cannot write $home/memory.json: ${e.message}")
 
-  // What admission counts a running job as holding; an external job's tree is not what it uses, so
-  // it holds its reservation whatever its tree measures.
-  holds(j: Job) -> long = if j.spec.external then j.reserved else marshal.holding(j.reserved, j.resident.now)
+  // What admission counts a running job as holding: its reservation, or the peak it has reached in
+  // this run where that is more; an external job's tree is not what it uses, so it holds its
+  // reservation whatever its tree measures.
+  holds(j: Job) -> long = if j.spec.external then j.reserved else marshal.holding(j.reserved, j.resident.peak)
 
   // The units admission charges a running job (`charged`): what it weighs, or the cores it was last
   // measured keeping busy where that is more. An external job's tree is not where its work runs, and
@@ -693,6 +701,7 @@ class Daemon(
         Written -> unwritten -= 1
         Tick ->
           measureDisk()
+          measurePressure()
           if queue.nonEmpty then schedule()
         Sweep -> sweep()
         Sample ->
@@ -1534,8 +1543,29 @@ class Daemon(
       eprintln(s"marshal: the disk $why: jobs start")
       schedule()
 
-  // Whether nothing new may start: the queue is held, or the disk is low.
-  blocked() -> bool = queueHeld || diskLow()
+  // Reads the machine's memory (pressure.avin) and updates the guard. The guard holding the queue,
+  // and the queue moving again once the machine has room, are told in the daemon's log.
+  measurePressure()
+    val t = now()
+    val reading = marshal.readMemory()
+    if reading.swapUsed >= 0 then swapSamples += (t, reading.swapUsed)
+    while swapSamples.nonEmpty && swapSamples(0).0 < t - marshal.SwapWindowMs
+      swapSamples.remove(0)
+    val was = pressureHeld()
+    pressure = marshal.pressureAfter(reading, swapSamples.toVector, t)
+    val held = pressureHeld()
+    if held && !was
+      eprintln(s"marshal: memory pressure (${pressure.cause}): no new job starts")
+    if was && !held
+      eprintln("marshal: memory pressure has eased: jobs start")
+      schedule()
+
+  // Whether the memory-pressure guard holds the queue.
+  pressureHeld() -> bool = pressure.cause.nonEmpty
+
+  // Whether nothing new may start: the queue is held, the disk is low, or the machine is short of
+  // memory.
+  blocked() -> bool = queueHeld || diskLow() || pressureHeld()
 
   // A client asks to follow events. Everything is decided here, on the daemon's thread, which is
   // also the only one that appends to the log: what the log already holds is read and the watcher
@@ -1700,7 +1730,8 @@ class Daemon(
     ).map(j -> j.info(t, startsAt(drain, j.id), starts.get(j.id).getOrElse(-1)))
 
   // Why each queued job waits, with its place in its lane's queue (`queueWaits`); while the disk is
-  // low, every one not held, by hand or with the whole queue, waits for it.
+  // low, every one not held, by hand or with the whole queue, waits for it, and while it is not but
+  // the machine is short of memory, for that.
   queuedWhys(t: long, outside: Outside) -> Vector[(long, int, Why)]
     val b = budgetNow()
     val started = running.map(j -> startedOf(j, t, b)).toVector
@@ -1716,8 +1747,12 @@ class Daemon(
       outside,
       marshal.fairness(config, time.now().epochMicros)
     )
-    if !diskLow() then return whys
-    whys.map(w -> if w.2 == Why.Held || w.2 == Why.QueueHeld then w else (w.0, w.1, Why.DiskLow(diskFree)))
+    val guard = if diskLow() then Some(Why.DiskLow(diskFree)) elif pressureHeld() then Some(
+      Why.MemoryPressure(pressure.cause)
+    ) else None
+    guard match
+      None -> whys
+      Some(g) -> whys.map(w -> if w.2 == Why.Held || w.2 == Why.QueueHeld then w else (w.0, w.1, g))
 
   // How long each queued job is expected to wait before it starts, by id, where that can be
   // reckoned from the running jobs' expected ends (eta.avin).
@@ -1825,7 +1860,8 @@ class Daemon(
       config.diskMin,
       nofile,
       queue.filter(j -> j.settling).length,
-      politeUse()
+      politeUse(),
+      pressure
     )
 
   // A stop asks for the daemon to end: at once when nothing is queued or running; with `force`,
@@ -2123,6 +2159,10 @@ class Daemon(
           "kind"
         )
         job.reservedFrom = if sj.reservedFrom.nonEmpty then sj.reservedFrom else before
+        // a job yet to start that an image before unlearned reservations reserved nothing for
+        // reserves its fallback now; a running one keeps what it started with
+        val unstarted = job.state == "queued" || job.state == "waiting" || job.state == "retrying"
+        if unstarted && job.reservedFrom == "none" then reserve(job)
       jobs(job.id) = job
       job
     for sj in s.ended do ended += rebuilt(sj)
@@ -2425,6 +2465,8 @@ run(home: string, resume: Option[string] = None) -> int
   if loaded.isErr || read.fromVersion1 || read.withoutDurations || read.staleScripts || read.staleProjects then daemon.saveMemory()
   // the free disk is known before the first job can start
   daemon.diskFree = marshal.diskFree(daemon.diskDirs()).getOrElse(-1)
+  // and so is the machine's memory
+  daemon.measurePressure()
   for s in saved.toList
     daemon.restore(s)
     val upgrade = if s.version == reportedVersion() then s"version ${s.version}" else s"version ${s.version} to ${reportedVersion()}"

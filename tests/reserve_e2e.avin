@@ -83,9 +83,10 @@ learnedShown()
   assert(running.contains(a) && running.contains(none) && !running.contains(b), s"$running")
   assertEq(status("mem").asLong, Some(600 * Mi + 300 * Mi))
   assert(status("mem_held").asLong.get >= 900 * Mi, s"${status("mem_held")}")
-  // a job of a kind nothing was learned of reserves nothing, as before
+  // a job of a kind nothing was learned of reserves its class's share, here a gibibyte: the budget
   val fresh = submitted(home, "--kind", "fresh", "--", "sleep", "30")
-  assertEq(statusJob(home, fresh)("resv").asLong, Some(long(0)))
+  assertEq(statusJob(home, fresh)("resv").asLong, Some(1024 * Mi))
+  assertEq(statusJob(home, fresh)("resv_from").asString, Some("default"))
   assertEq(m(home, "stop", "--force").code, 0)
   cleanUp(home)
 
@@ -162,8 +163,8 @@ learnedPerDir()
   assertEq(resv(fresh), (550 * Mi, true, "cmd"))
   assertEq(resv(given), (300 * Mi, false, "given"))
   assertEq(resv(none), (long(0), false, "given"))
-  // another kind in a directory that taught `test` learns nothing from it
-  assertEq(resv(other), (long(0), false, "none"))
+  // another kind in a directory that taught `test` learns nothing from it: its class's share
+  assertEq(resv(other), (1024 * Mi, false, "default"))
   // a shell's -c is the command it runs; another command of the same kind is not that command, and
   // learns from the kind's runs in its project
   val viaShell = submitted(home, "--kind", "test", "--dir", home + "/big", "--", "sh", "-c", "sleep 30")

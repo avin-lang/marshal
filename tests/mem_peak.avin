@@ -1,0 +1,261 @@
+module tests
+
+// Admission charging a running job the peak it has reached, not the trough it is in; the reservation
+// of work no key is trusted for (the most its chain holds, else its class's share of the budget); and
+// the memory-pressure guard's arithmetic and how status, ls and the snapshot carry it.
+import dev.avinlang.json
+import dev.avinlang.marshal
+
+import dev.avinlang.marshal.{
+  Budget, JobInfo, MemoryHistory, MemoryLearning, MemoryReading, Overview, Pressure, QueuedJob, Reply, Reservation,
+  Resident, Started, Unlearned, Usage, Waiting, Why
+}
+
+val PkMi: long = 1024 * 1024
+val PkGi: long = 1024 * 1024 * 1024
+val peakHour: long = 3600000
+
+// A running job of one unit holding what admission charges a job that reserved `reserved` and whose
+// measurements were `samples`, in order.
+chargedJob(id: long, reserved: long, samples: Vector[long]) -> Started
+  var r = Resident(0, 0)
+  for s in samples do r = r.measured(s)
+  Started(id, 4, marshal.holding(reserved, r.peak), false, 0, peakHour)
+
+@test("a running job is charged the peak it reached, not the trough it is in now")
+peakNotTrough()
+  var r = Resident(0, 0)
+  for s in [PkGi, 22 * PkGi, 2 * PkGi] do r = r.measured(s)
+  assertEq(r.now, 2 * PkGi)
+  assertEq(r.peak, 22 * PkGi)
+  assertEq(marshal.holding(0, r.peak), 22 * PkGi)
+  // the reservation still counts while the peak is under it, and the peak where it is over
+  assertEq(marshal.holding(30 * PkGi, r.peak), 30 * PkGi)
+  assertEq(marshal.holding(10 * PkGi, r.peak), 22 * PkGi)
+  assertEq(marshal.holding(0, 0), 0)
+  // a 20G job is kept out beside a job in a trough at 2G after a 40G peak, in 56G
+  val b = Budget(72, 56 * PkGi)
+  val waiting = Waiting(2, 4, 20 * PkGi, false, peakHour, 20)
+  assertEq(marshal.schedule(b, [chargedJob(1, 0, [40 * PkGi, 2 * PkGi])], [waiting], 0), [])
+  // and admitted beside one that never went above 30G
+  assertEq(marshal.schedule(b, [chargedJob(1, 0, [30 * PkGi, 2 * PkGi])], [waiting], 0), [long(2)])
+
+@test("the incident of 2026-11-18: six jobs in their troughs whose peaks sum to 88G admit nothing more in 56G")
+incidentShape()
+  val b = Budget(72, 56 * PkGi)
+  val peaks: Vector[(long, long)] = [
+    (22400 * PkMi, 2 * PkGi),
+    (18600 * PkMi, 1600 * PkMi),
+    (18 * PkGi, 3 * PkGi),
+    (16300 * PkMi, 16300 * PkMi),
+    (6200 * PkMi, 4400 * PkMi),
+    (6200 * PkMi, 4600 * PkMi)
+  ]
+  val running = Buffer[Started]()
+  val troughs = Buffer[Started]()
+  var id: long = 0
+  for (peak, now) in peaks
+    id += 1
+    running += chargedJob(id, 0, [peak, now])
+    troughs += Started(id, 4, now, false, 0, peakHour)
+  assertEq(marshal.schedule(b, running.toVector, [Waiting(9, 4, PkGi, false, peakHour, 90)], 0), [])
+  // charged their troughs, as before, the same queue would have started
+  assertEq(marshal.schedule(b, troughs.toVector, [Waiting(9, 4, PkGi, false, peakHour, 90)], 0), [long(9)])
+
+@test("a lone job charged above the budget for its peak does not keep the queue from moving once it ends")
+loneOversize()
+  val b = Budget(72, 56 * PkGi)
+  // a job whose reservation is held to the budget starts with nothing running
+  assertEq(marshal.schedule(b, [], [Waiting(1, 4, 56 * PkGi, false, peakHour, 10)], 0), [long(1)])
+  // and one learned above it is held to it, so it still starts alone
+  val unlearned = marshal.unlearnedMemory([([80 * PkGi], "kind+project")], "test", false, 56 * PkGi)
+  assertEq(unlearned, Unlearned(56 * PkGi, "max"))
+  assertEq(marshal.schedule(b, [], [Waiting(1, 4, unlearned.bytes, false, peakHour, 10)], 0), [long(1)])
+  // while one runs that has peaked above the budget, nothing else starts beside it
+  assertEq(marshal.schedule(b, [chargedJob(1, 0, [70 * PkGi, PkGi])], [Waiting(2, 4, PkMi, false, peakHour, 20)], 0), [])
+
+@test("work no key is trusted for reserves the most its chain's keys hold, though none is trusted")
+unlearnedFromChain()
+  // kind+project spread widely (1G to 22G): not trusted, and its most is the reservation
+  val spread: Vector[long] = [PkGi, 22 * PkGi, 2 * PkGi, 18 * PkGi]
+  val chain = [(Vector[long](), "cmd+dir"), (Vector[long](), "cmd"), (Vector[long](), "norm+project"), (spread, "kind+project")]
+  val learning = marshal.defaultMemoryLearning
+  val h = marshal.memoryHistory(learning, chain)
+  assertEq(h, MemoryHistory([], ""))
+  val u = marshal.unlearnedMemory(chain, "test", false, 56 * PkGi)
+  assertEq(u, Unlearned(22 * PkGi, "max"))
+  val r = marshal.reservationFor(learning, 0, false, h.peaks, 56 * PkGi, u)
+  assertEq(r, Reservation(22 * PkGi, false))
+  assertEq(marshal.reservationSource(0, false, r, h.from, u), "max")
+  // a key with too few runs teaches its most as well, rounded up to a mebibyte
+  assertEq(marshal.unlearnedMemory([([3 * PkGi + 1], "cmd")], "build", false, 56 * PkGi), Unlearned(3 * PkGi + PkMi, "max"))
+  // the most across the keys, peaks of 0 not counted
+  assertEq(
+    marshal.unlearnedMemory([([0, 2 * PkGi], "cmd"), ([5 * PkGi, 0], "kind+project")], "build", false, 56 * PkGi),
+    Unlearned(5 * PkGi, "max")
+  )
+  // only each key's last 10 peaks: an old 30G run beyond them is forgotten
+  val old: Vector[long] = [30 * PkGi] ++ Vector.fill(10, PkGi)
+  assertEq(marshal.unlearnedMemory([(old, "kind+project")], "test", false, 56 * PkGi), Unlearned(PkGi, "max"))
+
+@test("a trusted key wins over the fallback, and a given memory, 0 among them, over both")
+unlearnedOrder()
+  val learning = marshal.defaultMemoryLearning
+  val alike: Vector[long] = [4 * PkGi, 5 * PkGi, 4 * PkGi]
+  val chain = [(alike, "cmd"), ([30 * PkGi, PkGi, 2 * PkGi], "kind+project")]
+  val h = marshal.memoryHistory(learning, chain)
+  val u = marshal.unlearnedMemory(chain, "test", false, 56 * PkGi)
+  val r = marshal.reservationFor(learning, 0, false, h.peaks, 56 * PkGi, u)
+  assertEq(r, Reservation(5 * PkGi, true))
+  assertEq(marshal.reservationSource(0, false, r, h.from, u), "cmd")
+  // given
+  assertEq(marshal.reservationFor(learning, 0, true, h.peaks, 56 * PkGi, u), Reservation(0, false))
+  assertEq(marshal.reservationSource(0, true, Reservation(0, false), h.from, u), "given")
+  assertEq(marshal.reservationFor(learning, 2 * PkGi, false, [], 56 * PkGi, u), Reservation(2 * PkGi, false))
+  assertEq(marshal.reservationSource(2 * PkGi, false, Reservation(2 * PkGi, false), "", u), "given")
+  // with no fallback asked for, nothing, as before
+  assertEq(marshal.reservationFor(learning, 0, false, [], 56 * PkGi), Reservation(0, false))
+  assertEq(marshal.reservationSource(0, false, Reservation(0, false), ""), "none")
+
+@test("work nothing has been seen of reserves its class's share of the budget, as its units do")
+unlearnedDefault()
+  val none = [(Vector[long](), "cmd+dir"), (Vector[long](), "kind+project")]
+  val b = 72 * PkGi
+  assertEq(marshal.unlearnedMemory(none, "gate", false, b), Unlearned(18 * PkGi, "default"))
+  assertEq(marshal.unlearnedMemory(none, "release-build", false, b), Unlearned(18 * PkGi, "default"))
+  assertEq(marshal.unlearnedMemory(none, "avin_train", false, b), Unlearned(18 * PkGi, "default"))
+  assertEq(marshal.unlearnedMemory(none, "build", true, b), Unlearned(18 * PkGi, "default"))
+  assertEq(marshal.unlearnedMemory(none, "test", false, b), Unlearned(12 * PkGi, "default"))
+  assertEq(marshal.unlearnedMemory(none, "avin-test", false, b), Unlearned(12 * PkGi, "default"))
+  assertEq(marshal.unlearnedMemory(none, "build", false, b), Unlearned(8 * PkGi, "default"))
+  assertEq(marshal.unlearnedMemory(none, "bench", false, b), Unlearned(PkGi, "default"))
+  // a share of a gibibyte or more is rounded up to a whole one, a smaller one to a mebibyte
+  assertEq(marshal.unlearnedMemory(none, "build", false, 56 * PkGi), Unlearned(7 * PkGi, "default"))
+  assertEq(marshal.unlearnedMemory(none, "test", false, 56 * PkGi), Unlearned(10 * PkGi, "default"))
+  assertEq(marshal.unlearnedMemory(none, "build", false, 2 * PkGi), Unlearned(228 * PkMi, "default"))
+  assertEq(marshal.unlearnedMemory(none, "gate", false, 4 * PkGi + 4), Unlearned(2 * PkGi, "default"))
+  // a word that only contains a class's is not it
+  assertEq(marshal.unlearnedMemory(none, "testing", false, b), Unlearned(PkGi, "default"))
+  // an empty chain is nothing seen too, and a budget under a gibibyte holds the default to it
+  assertEq(marshal.unlearnedMemory([], "bench", false, 512 * PkMi), Unlearned(512 * PkMi, "default"))
+  assertEq(marshal.unlearnedMemory([], "test", false, 0), Unlearned(0, "default"))
+  val u = marshal.unlearnedMemory(none, "test", false, b)
+  val r = marshal.reservationFor(marshal.defaultMemoryLearning, 0, false, [], b, u)
+  assertEq(r, Reservation(12 * PkGi, false))
+  assertEq(marshal.reservationSource(0, false, r, "", u), "default")
+  // units keep the same shares
+  assertEq(marshal.classDivisor("gate", false), 4)
+  assertEq(marshal.classDivisor("test", false), 6)
+  assertEq(marshal.classDivisor("build", false), 9)
+  assertEq(marshal.classDivisor("bench", false), 0)
+  assertEq(marshal.unknownUnits("gate", false, 72), 18)
+  assertEq(marshal.unknownUnits("test", false, 72), 12)
+  assertEq(marshal.unknownUnits("build", false, 72), 8)
+  assertEq(marshal.unknownUnits("bench", false, 72), 4)
+
+@test("the swap's growth is the newest reading less the least within the window")
+swapGrowth()
+  val w = marshal.SwapWindowMs
+  assertEq(marshal.swapGrowthOf([], 0, w), 0)
+  assertEq(marshal.swapGrowthOf([(0, PkGi)], 0, w), 0)
+  assertEq(marshal.swapGrowthOf([(0, PkGi), (3000, 2 * PkGi)], 3000, w), PkGi)
+  // the least within the window, not the first
+  assertEq(marshal.swapGrowthOf([(0, 2 * PkGi), (3000, PkGi), (6000, 3 * PkGi)], 6000, w), 2 * PkGi)
+  // a reading older than the window does not count
+  assertEq(marshal.swapGrowthOf([(0, 0), (w + 1, 4 * PkGi)], w + 1, w), 0)
+  assertEq(marshal.swapGrowthOf([(0, 0), (w, 4 * PkGi)], w, w), 4 * PkGi)
+  // swap that fell is no growth
+  assertEq(marshal.swapGrowthOf([(0, 4 * PkGi), (3000, PkGi)], 3000, w), 0)
+  // unread readings are left out
+  assertEq(marshal.swapGrowthOf([(0, -1), (3000, PkGi)], 3000, w), 0)
+
+@test("the machine is short of memory at warn or critical, or while the swap grows by 512M in the window")
+pressureCauses()
+  assertEq(marshal.pressureCause(1, 0), "")
+  assertEq(marshal.pressureCause(-1, 0), "")
+  assertEq(marshal.pressureCause(2, 0), "warn")
+  assertEq(marshal.pressureCause(4, 0), "critical")
+  assertEq(marshal.pressureCause(4, 8 * PkGi), "critical")
+  assertEq(marshal.pressureCause(1, 512 * PkMi), "swapping")
+  assertEq(marshal.pressureCause(1, 512 * PkMi - 1), "")
+  assertEq(marshal.pressureCause(-1, PkGi), "swapping")
+  // a lot of swap in use that is not growing is no pressure: it stays used long after
+  val steady = marshal.pressureAfter(MemoryReading(1, 6 * PkGi), [(0, 6 * PkGi), (3000, 6 * PkGi)], 3000)
+  assertEq(steady, Pressure(1, 6 * PkGi, 0, ""))
+  val growing = marshal.pressureAfter(MemoryReading(1, 6 * PkGi), [(0, 5 * PkGi), (3000, 6 * PkGi)], 3000)
+  assertEq(growing, Pressure(1, 6 * PkGi, PkGi, "swapping"))
+  // nothing read is never pressure
+  assertEq(marshal.pressureAfter(marshal.Unread, [], 0), Pressure(-1, -1, 0, ""))
+
+@test("a reading is read from text, and what does not read is -1")
+readingText()
+  assertEq(marshal.memoryReadingOf("2 5368709120"), MemoryReading(2, 5 * PkGi))
+  assertEq(marshal.memoryReadingOf("  4\t \n"), MemoryReading(4, -1))
+  assertEq(marshal.memoryReadingOf("1 0\n"), MemoryReading(1, 0))
+  assertEq(marshal.memoryReadingOf(""), MemoryReading(-1, -1))
+  assertEq(marshal.memoryReadingOf("warn lots"), MemoryReading(-1, -1))
+  assertEq(marshal.memoryReadingOf("1 lots"), MemoryReading(1, -1))
+  for level in [1, 2, 4, -1, 3]
+    val name = marshal.pressureLevelName(level)
+    assertEq(marshal.pressureLevelOf(name), if level == 3 then -1 else level)
+  assertEq(marshal.pressureLevelName(3), "unknown")
+
+@test("the real machine's reading is a kernel level and a swap figure")
+realReading()
+  val r = marshal.readMemory()
+  assert(r.level == 1 || r.level == 2 || r.level == 4, r.toString())
+  assert(r.swapUsed >= 0, r.toString())
+
+// A usage with the guard `p`.
+pressureUsage(p: Pressure) -> Usage = Usage(4, 48, 0, 56 * PkGi, 1, 1, None, None, pressure = p)
+
+@test("status --json says the pressure level, the swap and whether the guard holds, and the client reads it back")
+pressureJson()
+  val held = Pressure(2, 5 * PkGi, 600 * PkMi, "warn")
+  val s = marshal.statusJson(pressureUsage(held), [], [])
+  assertEq(s("mem_pressure").asString, Some("warn"))
+  assertEq(s("swap_used").asLong, Some(5 * PkGi))
+  assertEq(s("swap_growth").asLong, Some(600 * PkMi))
+  assertEq(s("mem_pressure_holds").asBool, Some(true))
+  assertEq(s("mem_pressure_cause").asString, Some("warn"))
+  val calm = marshal.statusJson(pressureUsage(Pressure(1, 0, 0, "")), [], [])
+  assertEq(calm("mem_pressure").asString, Some("normal"))
+  assertEq(calm("mem_pressure_holds").asBool, Some(false))
+  assert(!calm.has("mem_pressure_cause"), calm.render)
+  val unread = marshal.statusJson(pressureUsage(marshal.NoPressure), [], [])
+  assertEq(unread("mem_pressure").asString, Some("unknown"))
+  assert(!unread.has("swap_used"), unread.render)
+  // the reply carries it to the client whole
+  for p in [held, Pressure(1, 0, 0, ""), marshal.NoPressure, Pressure(4, PkGi, 0, "critical")]
+    val text = marshal.encodeReply(Reply.Using(pressureUsage(p))).render
+    marshal.decodeReply(text) match
+      Ok(Reply.Using(u)) -> assertEq(u.pressure, p)
+      other -> fail(s"not a usage: $other")
+
+@test("a job waiting for memory pressure says so in ls, status --json, top and the snapshot")
+pressureWhy()
+  val why = Why.MemoryPressure("swapping")
+  assertEq(marshal.whyText(why), "memory pressure: swapping")
+  assert(marshal.listing([whyJob(7)], [(7, why)]).contains("queued (memory pressure: swapping)"))
+  val queued = marshal.statusJson(whyUsage(), [whyJob(7)], [(7, why)])("queued").asVector.get
+  assertEq(queued(0)("why").asString, Some("memory-pressure"))
+  assertEq(queued(0)("pressure").asString, Some("swapping"))
+  val o = Overview(pressureUsage(Pressure(1, 2 * PkGi, PkGi, "swapping")), 1000, [], [QueuedJob(whyJob(7), 1, why)], [], [])
+  marshal.decodeReply(marshal.encodeReply(Reply.Viewed(o)).render) match
+    Ok(Reply.Viewed(back)) ->
+      assertEq(back.queued(0).why, why)
+      assertEq(back.usage.pressure, Pressure(1, 2 * PkGi, PkGi, "swapping"))
+    other -> fail(s"not a snapshot: $other")
+
+@test("status says the guard holds, with the swap's growth, and says nothing while the machine has room")
+pressureLine()
+  assertEq(marshal.pressureText(marshal.NoPressure), "")
+  assertEq(marshal.pressureText(Pressure(1, 0, 0, "")), "")
+  assertEq(marshal.pressureText(Pressure(2, 0, 0, "warn")), "; memory pressure (warn): nothing new starts")
+  assert(
+    marshal.usageLine(pressureUsage(Pressure(1, 3 * PkGi, PkGi, "swapping"))).endsWith(
+      "; memory pressure (swapping, swap +1.0G in 1m00s): nothing new starts"
+    ),
+    marshal.usageLine(pressureUsage(Pressure(1, 3 * PkGi, PkGi, "swapping")))
+  )
+  assert(!marshal.usageLine(pressureUsage(Pressure(1, 3 * PkGi, 0, ""))).contains("pressure"))
