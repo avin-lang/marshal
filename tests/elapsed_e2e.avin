@@ -1,8 +1,9 @@
 module tests
 
 // ELAPSED counts from the start, end to end: a job that has not started (queued, held, waiting for
-// another job) shows `-`, a job that waited counts from when it started and not from its
-// submission, and an ended job keeps its run time.
+// another job, waiting to retry) shows its wait marked `w`, a retry's counted from its re-queue; a
+// job that waited counts its run from when it started and not from its submission, and an ended job
+// keeps its run time.
 import avin.threads
 import avin.time.millis
 import dev.avinlang.json
@@ -22,7 +23,7 @@ jobJson(home: string, id: long) -> Json
   val s = json.parse(r.out.trim).ok.get
   (s("running").asVector.get ++ s("queued").asVector.get).find(j -> j("id").asLong == Some(id)).get
 
-@test("a queued, a held and an --after job show - for ELAPSED, and a job that waited counts from its start")
+@test("a queued, a held and an --after job show their wait, marked w, in ELAPSED, and a job that waited counts its run from its start")
 elapsedFromStart()
   val home = newHome("{\"units\": 1}")
   val blocker = submitted(home, "--", "sleep", "30")
@@ -31,9 +32,10 @@ elapsedFromStart()
   val after = submitted(home, "--after", held.toString(), "--", "true")
   assertEq(m(home, "hold", held.toString()).code, 0)
   threads.sleep(millis(1500))
-  assertEq(elapsedCell(home, queued), "-")
-  assertEq(elapsedCell(home, held), "-")
-  assertEq(elapsedCell(home, after), "-")
+  // each shows its wait, marked w so it is not read as run time: 1.5 seconds or more
+  for id in [queued, held, after]
+    val cell = elapsedCell(home, id)
+    assert(cell.startsWith("w") && !cell.startsWith("w0.") && !cell.endsWith("ms"), cell)
   // the wait is in queued_ms, and elapsed_ms is 0
   assertEq(jobJson(home, queued)("elapsed_ms").asLong, Some(long(0)))
   assert(jobJson(home, queued)("queued_ms").asLong.get >= 1400, jobJson(home, queued).render)
@@ -55,3 +57,20 @@ elapsedFromStart()
   assertEq(m(home, "wait", after.toString()).code, 0)
   assert(elapsedCell(home, held) != "-")
   cleanUp(home)
+
+@test("a job waiting to retry counts its wait from the end of the attempt before, not from its submission")
+waitCountsFromRequeue()
+  val home = newHome()
+  val id = submitted(home, "--retries", "1", "--retry-delay", "4s", "--", "sh", "-c", "sleep 2; exit 1")
+  assert(within(6000, () -> jobJson2(home, id).exists(j -> j("state").asString == Some("retrying"))))
+  threads.sleep(millis(500))
+  val j = jobJson2(home, id).get
+  // 2 seconds or more since it was submitted, under 2 since the attempt ended
+  assert(j("queued_ms").asLong.exists(ms -> 0 <= ms < 2000), j.render)
+  val st = m(home, "status", id.toString()).out
+  assert(st.contains("is retrying, waited "), st)
+  m(home, "kill", id.toString())
+  cleanUp(home)
+
+// Job `id` as `status <id> --json` gives it, whatever its state.
+jobJson2(home: string, id: long) -> Option[Json] = json.parse(m(home, "status", id.toString(), "--json").out.trim).ok

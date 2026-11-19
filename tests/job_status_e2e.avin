@@ -21,7 +21,8 @@ statusOfLiveJobs()
   val q = m(home, "status", b.toString())
   assertEq(q.code, 0)
   assert(q.out.contains(s"marshal: job $b is queued (needs 1 unit, 0 free; waits for $a"), q.out)
-  assert(q.out.contains("); log "), q.out)
+  // and how long it has waited
+  assert(q.out.contains("), waited ") && q.out.contains("; log "), q.out)
   val j = json.parse(m(home, "status", "--json", b.toString()).out).ok.get
   assertEq(j("id").asLong, Some(b))
   assertEq(j("state").asString, Some("queued"))

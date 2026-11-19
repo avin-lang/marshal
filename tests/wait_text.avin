@@ -107,7 +107,7 @@ fullStates()
   assertEq(marshal.fullState(wtJob(1, "running")), "running")
   assertEq(marshal.fullState(wtJob(1)), "queued, waited 12m00s")
   // waiting for other jobs, and to retry, count too
-  assertEq(marshal.fullState(wtJob(1, "waiting", queuedMs = 5000)), "waiting, waited 5.0s")
+  assertEq(marshal.fullState(wtJob(1, "retrying", queuedMs = 5000)), "retry 1, waited 5.0s")
 
 @test("a job not running yet shows how long it has waited, marked w in ELAPSED and said in status <id>")
 waitedShown()

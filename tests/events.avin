@@ -401,18 +401,20 @@ listings()
   assertEq(rows.length, 3)
   assertEq(rows(0), "ID  STATE    KIND    UNITS  USED  RESV  STARTED  ELAPSED  ETA  OWNER  FROM   LABEL  COMMAND")
   assertEq(rows(1), "1   running  test    4      -     -     -        0ms      -    -      -/-/-         make it")
-  assertEq(rows(2), "12  queued   build*  4      -     -     -        -        -    -      -/-/-         make it")
+  assertEq(rows(2), "12  queued   build*  4      -     -     -        w5ms     -    -      -/-/-         make it")
   assertEq(
     marshal.listing([]),
     "ID  STATE  KIND  UNITS  USED  RESV  STARTED  ELAPSED  ETA  OWNER  FROM  LABEL  COMMAND"
   )
 
-@test("ELAPSED is - for a job that has not started, whatever its wait, and the run time for the rest")
+@test("ELAPSED is a job's wait, marked w, until it starts, and the run time for the rest")
 elapsedColumn()
   val cell = (j: JobInfo) ->
     val rows = marshal.listing([j]).lines.toVector
     rows(1).slice(rows(0).indexOf("ELAPSED"), rows(0).indexOf("ETA")).trim
-  for state in ["queued", "waiting", "retrying"] do assertEq(cell(info(1, state = state, elapsed = 90000)), "-")
+  for state in ["queued", "waiting", "retrying"]
+    val j = info(1, state = state, elapsed = 90000)
+    assertEq(cell(j), "w" + marshal.formatMillis(j.queuedMs))
   assertEq(cell(info(1, state = "running", elapsed = 90000)), marshal.formatMillis(90000))
   assertEq(
     cell(info(1, state = "done", outcome = Some(Outcome.Cancelled), elapsed = 90000)),
@@ -452,13 +454,13 @@ startedOnAnotherDay()
   assertEq(marshal.startedColumn(info(1, started = at), zoneNamed("America/New_York")), "12-31 18:59")
   assertEq(marshal.startedColumn(info(1, started = at), zoneNamed("Asia/Kolkata")), "01-01 05:29")
 
-@test("a listing shows each job's start in the host's zone, and - for a queued one")
+@test("a listing shows each job's start in the host's zone, and - for a queued one, whose ELAPSED is its wait")
 listingStarted()
   val rows = marshal.listing([info(1, state = "running", started = 1794058290000), info(2)]).lines.toVector
   val expected = time.epochMillis(1794058290000).atZone(time.localZone()).format("MM-DD hh:mm")
   assertEq(rows(0), "ID  STATE    KIND  UNITS  USED  RESV  STARTED      ELAPSED  ETA  OWNER  FROM   LABEL  COMMAND")
   assertEq(rows(1), s"1   running  test  4      -     -     $expected  0ms      -    -      -/-/-         make it")
-  assertEq(rows(2), "2   queued   test  4      -     -     -            -        -    -      -/-/-         make it")
+  assertEq(rows(2), "2   queued   test  4      -     -     -            w5ms     -    -      -/-/-         make it")
 
 @test("the status line shows units, memory, counts and the landing lane")
 usageLines()
