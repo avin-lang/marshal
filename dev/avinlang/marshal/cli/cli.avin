@@ -15,7 +15,7 @@ import avin.time
 import avin.time.millis
 import dev.avinlang.marshal
 import dev.avinlang.marshal.{JobInfo, JobSpec, Reply, Request}
-import dev.avinlang.marshal.{Submitted, Ended, Jobs, Using, Hi, Done, Failed, Amended, Over}
+import dev.avinlang.marshal.{Submitted, Ended, Found, Jobs, Using, Hi, Done, Failed, Amended, Over}
 import dev.avinlang.marshal.{Condition, Once, Past, Follow, Streamed, Replayed}
 import dev.avinlang.marshal.{GrepSpec, grepMatcher, grepLines}
 import dev.avinlang.marshal.daemon
@@ -36,7 +36,7 @@ val Commands: Vector[(string, string)] = [
   ),
   (
     "wait <id> | --until <cond> [--timeout <t>] [--since <t>]",
-    "waits for the job (--timeout also with an id), prints one result line, exits with its status; or waits for an event (--since only here), prints it, exits 0; 124 on timeout"
+    "waits for the job (--timeout also with an id), prints one result line, exits with its status (at once for a job that has already ended); or waits for an event (--since only here), prints it, exits 0; 124 on timeout"
   ),
   (
     "events [--follow] [--since <t>] [<filter>]",
@@ -82,7 +82,10 @@ val Commands: Vector[(string, string)] = [
     "grep <id> <pattern> [-i] [-v] [-n] [-c] [-F] [-m <n>] [-A|-B|-C <n>] [--last <n>]",
     "the lines of the job's log that match the pattern (a regular expression; -F: literal text), as grep prints them; exits 0 when a line matched, 1 when none did, 2 on an error"
   ),
-  ("status [--json]", "the budget in use; --json: one JSON object with the running and queued jobs"),
+  (
+    "status [<id>] [--json]",
+    "the budget in use; --json: one JSON object with the running and queued jobs; <id>: that job's state, running, queued (and why), waiting or ended, with its exit status once ended, for any job the daemon or the event log knows; exits 0 whatever the job's outcome"
+  ),
   (
     "history [options]",
     "ended jobs from the event log, newest first: id, kind, outcome, exit code, duration, when, label"
@@ -336,7 +339,10 @@ main(args: Vector[string]) -> int
     "status" -> rest match
       [] -> status()
       ["--json"] -> statusJson()
-      _ -> complain("marshal: status takes --json or nothing")
+      [word] -> jobStatus(word, false)
+      [word, "--json"] -> jobStatus(word, true)
+      ["--json", word] -> jobStatus(word, true)
+      _ -> complain(StatusUsage)
     "history" -> history(rest)
     "stats" -> stats(rest)
     "tail" -> tail(rest)
@@ -1041,6 +1047,24 @@ status() -> int
   askDaemon(Request.Status) match
     Ok(Using(u)) ->
       println(marshal.usageLine(u))
+      0
+    Ok(Failed(e)) -> complain(s"marshal: $e")
+    Ok(other) -> complain(s"marshal: unexpected reply $other")
+    Err(e) -> complain(e)
+
+val StatusUsage: string = "marshal: status takes a job id, --json, both, or nothing"
+
+// `status <id> [--json]`: the job's state, running, queued (and why), waiting or ended, and for an
+// ended one its exit status, as one line, or as one JSON object with `--json`. Exits 0 for any job
+// the daemon knows, whatever its outcome, and 2 for an id no job has had.
+jobStatus(word: string, asJson: bool) -> int
+  if word.startsWith("-") then return complain(StatusUsage)
+  val id = word.toLongOption() match
+    Some(n) -> n
+    None -> return complain(s"marshal: `$word` is not a job id")
+  askDaemon(Request.Lookup(id)) match
+    Ok(Found(job, why)) ->
+      println(if asJson then marshal.jobStatusJson(job, why).render else marshal.statusLine(job, why))
       0
     Ok(Failed(e)) -> complain(s"marshal: $e")
     Ok(other) -> complain(s"marshal: unexpected reply $other")

@@ -1,0 +1,194 @@
+module tests
+
+// The urgent band goes ahead of the drain: once a job has waited past the bound, an urgent
+// development job that fits starts at once, and one that does not takes the drain over, the job past
+// the bound waiting `draining for` it among the jobs not in the band; two urgent jobs drain in the
+// band's order; a landing job keeps its lane and its own drain ahead of them; an exclusive job holds
+// them as it holds every job; and once no urgent job waits, the drain is the job past the bound's
+// again. `drainBudget`, `waitBound`, `fairAt`, `dj`, `dl` and `dr` are drain.avin's, `minute`
+// deadline.avin's and `hour` sched.avin's.
+import dev.avinlang.marshal
+import dev.avinlang.marshal.{Budget, Outside, Started, Waiting, Why}
+import dev.avinlang.marshal.{NoUnits, Draining, DrainingFor, Behind, Starting, Emptying, ForExclusive}
+
+// An urgent development job of `units` that arrived at `arrivedMs` (wall clock, milliseconds).
+ug(id: long, units: int, arrivedMs: long, expected: long = minute, memory: long = 0) -> Waiting =
+  Waiting(id, units, memory, false, expected, arrivedMs * 1000, urgent = true)
+
+// Why each job of `queue` waits at `nowMs` on the wall clock, against `budget`.
+ugWhys(
+    running: Vector[Started],
+    queue: Vector[Waiting],
+    nowMs: long,
+    budget: Budget = drainBudget
+) -> Vector[(long, Why)] =
+  marshal.waits(budget, running, queue, 0, marshal.NoOutside, fairAt(nowMs)).map(w -> (w.0, w.2))
+
+ugStarts(running: Vector[Started], queue: Vector[Waiting], nowMs: long, budget: Budget = drainBudget) -> Vector[long] =
+  marshal.schedule(budget, running, queue, 0, marshal.NoOutside, fairAt(nowMs))
+
+@test("past the bound an urgent job that fits starts at once, where a job of higher priority waits for the drain")
+urgentThatFitsStartsDuringADrain()
+  val r = [dr(10, 4)]
+  // it runs past the drain's expected start, so it would not backfill
+  val q = [ug(30, 1, 11 * minute, expected = 2 * minute), dj(1, 12, 0)]
+  assertEq(ugStarts(r, q, 11 * minute), [long(30)])
+  assertEq(ugWhys(r, q, 11 * minute), [(long(30), Starting), (long(1), Draining)])
+  // the same job not in the band waits for the drain, as it always did
+  val plain = [dj(30, 1, 11 * minute, expected = 2 * minute), dj(1, 12, 0)]
+  assertEq(ugStarts(r, plain, 11 * minute), [])
+  assertEq(ugWhys(r, plain, 11 * minute), [(long(30), DrainingFor(1)), (long(1), Draining)])
+
+@test("past the bound an urgent job that does not fit takes the drain over: the job past the bound waits draining for it")
+urgentTakesTheDrainOver()
+  val r = [dr(10, 4)]
+  val q = [ug(30, 12, 11 * minute), dj(1, 12, 0), dj(2, 1, minute, expected = 2 * minute)]
+  assertEq(ugStarts(r, q, 11 * minute), [])
+  assertEq(
+    ugWhys(r, q, 11 * minute),
+    [(long(30), Draining), (long(1), DrainingFor(30)), (long(2), DrainingFor(30))]
+  )
+  // it is expected to start when the running job ends, at its learned minute
+  assertEq(
+    marshal.drainStart(drainBudget, r, q, 0, marshal.NoOutside, fairAt(11 * minute)),
+    Some((long(30), minute))
+  )
+  // the daemon's take-slot ticket is the urgent job's, at its own arrival
+  assertEq(
+    marshal.ticketFor(drainBudget, r, q, 0, marshal.NoOutside, fairAt(11 * minute)),
+    Some((11 * minute * 1000, 12))
+  )
+  assertEq(marshal.drainTarget(q, fairAt(11 * minute)).map(w -> w.id), Some(long(30)))
+
+@test("a short job backfills ahead of an urgent drain as it does ahead of any other")
+backfillAheadOfAnUrgentDrain()
+  val r = [dr(10, 4)]
+  val q = [ug(30, 12, 11 * minute), dj(1, 12, 0), dj(2, 1, minute, expected = 1)]
+  assertEq(marshal.starts(drainBudget, r, q, 0, marshal.NoOutside, fairAt(11 * minute)), [(long(2), Some(long(30)))])
+  assertEq(
+    ugWhys(r, q, 11 * minute),
+    [(long(30), Draining), (long(1), DrainingFor(30)), (long(2), Starting)]
+  )
+
+@test("two urgent jobs: first come, first served, ahead of the job past the bound")
+twoUrgentJobs()
+  val r = [dr(10, 4)]
+  val both = [ug(30, 12, 11 * minute), ug(31, 12, 11 * minute + 1), dj(1, 12, 0)]
+  assertEq(
+    ugWhys(r, both, 11 * minute),
+    [(long(30), Draining), (long(31), DrainingFor(30)), (long(1), DrainingFor(30))]
+  )
+  // the first fits and starts; the second does not and drains, the job past the bound behind it
+  val firstFits = [ug(30, 1, 11 * minute, expected = 2 * minute), ug(31, 12, 11 * minute + 1), dj(1, 12, 0)]
+  assertEq(ugStarts(r, firstFits, 11 * minute), [long(30)])
+  assertEq(
+    ugWhys(r, firstFits, 11 * minute),
+    [(long(30), Starting), (long(31), Draining), (long(1), DrainingFor(31))]
+  )
+
+@test("an urgent job past the bound itself drains in its band's place")
+urgentPastTheBound()
+  val q = [ug(30, 12, 0), ug(31, 12, minute)]
+  assertEq(ugWhys([dr(10, 4)], q, 11 * minute), [(long(30), Draining), (long(31), DrainingFor(30))])
+  // the later one past the bound still waits for the earlier one of the band
+  val late = [ug(30, 12, 5 * minute), ug(31, 12, 0)]
+  assertEq(ugWhys([dr(10, 4)], late, 11 * minute), [(long(30), Draining), (long(31), DrainingFor(30))])
+
+@test("before the bound an urgent job that does not fit drains nothing: a job that ends first backfills")
+urgentBeforeTheBound()
+  val r = [dr(10, 4)]
+  val q = [ug(30, 12, 5 * minute), dj(2, 1, minute, expected = 1)]
+  assertEq(ugWhys(r, q, 5 * minute), [(long(30), NoUnits), (long(2), Starting)])
+  // and one that would delay it waits behind it, not draining for it
+  val long2 = [ug(30, 12, 5 * minute), dj(2, 1, 5 * minute, expected = 2 * minute)]
+  assertEq(ugWhys(r, long2, 5 * minute), [(long(30), NoUnits), (long(2), Behind(30))])
+
+@test("a landing job goes ahead of an urgent drain: it starts beside it, and its own drain holds the urgent job")
+landingAgainstUrgent()
+  val r = [dr(10, 4)]
+  val fits = [dl(50, 11 * minute), ug(30, 12, 11 * minute), dj(1, 12, 0)]
+  assertEq(ugStarts(r, fits, 11 * minute), [long(50)])
+  assertEq(
+    ugWhys(r, fits, 11 * minute),
+    [(long(50), Starting), (long(30), Draining), (long(1), DrainingFor(30))]
+  )
+  // a landing job short of memory drains the machine for itself, ahead of the urgent band
+  val b = Budget(12, 100)
+  val short = [dl(50, 11 * minute, memory = 95), ug(30, 1, 11 * minute), dj(1, 12, 0)]
+  assertEq(ugStarts([dr(10, 1, memory = 60)], short, 11 * minute, b), [])
+  assertEq(
+    ugWhys([dr(10, 1, memory = 60)], short, 11 * minute, b),
+    [(long(50), Draining), (long(30), Behind(50)), (long(1), Behind(50))]
+  )
+
+// An exclusive job that arrived at `arrivedMs`.
+ugExcl(id: long, arrivedMs: long) -> Waiting = Waiting(id, 12, 0, false, hour, arrivedMs * 1000, exclusive = true)
+
+@test("an exclusive job: running, it holds an urgent job; waiting to empty the machine, an urgent job ahead of it starts first")
+exclusiveAgainstUrgent()
+  val x = Started(70, 12, 0, false, 0, hour, exclusive = true)
+  val q = [ug(30, 1, 11 * minute), dj(1, 12, 0)]
+  assertEq(ugWhys([x], q, 11 * minute), [(long(30), ForExclusive(70)), (long(1), ForExclusive(70))])
+  // the urgent band is queued ahead of the exclusive job, which holds back only what is behind it
+  val r = [dr(10, 4)]
+  val emptying = [ug(30, 1, 11 * minute), ugExcl(60, 5 * minute), dj(1, 12, 0)]
+  assertEq(ugStarts(r, emptying, 11 * minute), [long(30)])
+  assertEq(
+    ugWhys(r, emptying, 11 * minute),
+    [(long(30), Starting), (long(60), Emptying), (long(1), ForExclusive(60))]
+  )
+  // one that does not fit waits for units, and the exclusive job behind it
+  val big = [ug(30, 12, 11 * minute), ugExcl(60, 5 * minute), dj(1, 12, 0)]
+  assertEq(ugWhys(r, big, 11 * minute), [(long(30), NoUnits), (long(60), Behind(30)), (long(1), ForExclusive(60))])
+
+@test("the job past the bound held or killed: the urgent job is decided as if no drain had begun")
+drainerHeldOrKilled()
+  val r = [dr(10, 4)]
+  // a held job is not weighed at all, as a killed one has left the queue
+  val q = [ug(30, 12, 11 * minute), dj(2, 1, 5 * minute, expected = 2 * minute)]
+  assertEq(ugWhys(r, q, 11 * minute), [(long(30), NoUnits), (long(2), Behind(30))])
+  assertEq(marshal.drainStart(drainBudget, r, q, 0, marshal.NoOutside, fairAt(11 * minute)), None)
+
+@test("the urgent job starting hands the drain back to the job past the bound, in the same look")
+drainHandedBack()
+  // the urgent job fits once the machine is empty; the job past the bound drains at once behind it
+  val q = [ug(30, 8, 11 * minute), dj(1, 12, 0), dj(2, 4, 5 * minute, expected = hour)]
+  assertEq(ugStarts([], q, 11 * minute), [long(30)])
+  assertEq(
+    ugWhys([], q, 11 * minute),
+    [(long(30), Starting), (long(1), Draining), (long(2), DrainingFor(1))]
+  )
+  // and the drain counts the urgent job it has just started: it expects to start when that one ends
+  assertEq(
+    marshal.drainStart(drainBudget, [], q, 0, marshal.NoOutside, fairAt(11 * minute)),
+    Some((long(1), minute))
+  )
+  // the urgent job running: the job past the bound drains, as it did before the urgent job came
+  val running = [dr(10, 4), dr(30, 8)]
+  val rest = [dj(1, 12, 0), dj(2, 4, 5 * minute, expected = hour)]
+  assertEq(ugWhys(running, rest, 12 * minute), [(long(1), Draining), (long(2), DrainingFor(1))])
+  // the urgent job finished: still draining while job 10 runs, then it starts
+  assertEq(ugWhys([dr(10, 4)], rest, 13 * minute), [(long(1), Draining), (long(2), DrainingFor(1))])
+  assertEq(ugStarts([], rest, 14 * minute), [long(1)])
+
+@test("an urgent quick job keeps to the quick lane and takes no drain over")
+urgentQuickTakesNoDrain()
+  val r = [dr(10, 4)]
+  val quick = Waiting(40, 1, 0, false, minute, 11 * minute * 1000, true, urgent = true)
+  val q = [quick, dj(20, 1, 5 * minute, expected = 2 * minute), dj(1, 12, 0)]
+  assertEq(ugStarts(r, q, 11 * minute), [long(40)])
+  assertEq(
+    ugWhys(r, q, 11 * minute),
+    [(long(40), Starting), (long(20), DrainingFor(1)), (long(1), Draining)]
+  )
+  assertEq(marshal.drainTarget(q, fairAt(11 * minute)).map(w -> w.id), Some(long(1)))
+
+@test("drainOrder: nothing before the bound; the band, then the job past it; the band alone when it is urgent")
+drainOrderCases()
+  val u = ug(30, 1, 0)
+  val v = ug(31, 1, 0)
+  val p = dj(1, 12, 0)
+  assertEq(marshal.drainOrder([u, p], None), [])
+  assertEq(marshal.drainOrder([u, v, p], Some(p)).map(w -> w.id), [long(30), long(31), long(1)])
+  assertEq(marshal.drainOrder([u, v, p], Some(v)).map(w -> w.id), [long(30), long(31)])
+  assertEq(marshal.drainOrder([p], Some(p)).map(w -> w.id), [long(1)])

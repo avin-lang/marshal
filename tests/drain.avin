@@ -1,8 +1,10 @@
 module tests
 
 // The bound on waiting: once a development job has waited past it, it goes ahead of every other
-// development job and, while it does not fit, the machine drains for it. Before the bound the urgent
-// band and priorities jump it as they always did; the landing and quick lanes go on beside it.
+// development job not in the urgent band and, while it does not fit, the machine drains for it.
+// Before the bound priorities jump it as they always did; the landing and quick lanes go on beside
+// it. The jobs ahead of it in these queues are of a higher priority, not urgent (`Waiting.urgent`
+// false): the urgent band, which goes ahead of the drain, is urgent_drain.avin's.
 import dev.avinlang.marshal
 import dev.avinlang.marshal.{Budget, Fairness, Outside, Started, Ticket, Waiting, Why}
 import dev.avinlang.marshal.{NoUnits, NoMemory, Draining, DrainingFor, ForTakeSlot, Starting}
@@ -43,23 +45,23 @@ whysAt(
 ) -> Vector[(long, Why)] =
   marshal.waits(drainBudget, running, queue, 0, o, fairAt(nowMs)).map(w -> (w.0, w.2))
 
-@test("before the bound an urgent job jumps a big job that does not fit; past it the big job drains the machine")
-urgentJumpsUntilTheBound()
+@test("before the bound a job of higher priority jumps a big job that does not fit; past it the big job drains the machine")
+priorityJumpsUntilTheBound()
   val r = [dr(10, 4)]
-  // queue order: the urgent band first, then the big job that arrived at 0; the urgent job runs
+  // queue order: the higher priority first, then the big job that arrived at 0; the first job runs
   // past the drain's expected start, so it does not backfill
   val q = [dj(20, 1, 5 * minute, expected = 2 * minute), dj(1, 12, 0)]
   assertEq(startsAt(r, q, 5 * minute), [long(20)])
   assertEq(whysAt(r, q, 5 * minute), [(long(20), Starting), (long(1), NoUnits)])
   // one millisecond short of the bound nothing has changed
   assertEq(startsAt(r, q, waitBound - 1), [long(20)])
-  // at the bound the urgent job waits for the big one, which says it is draining
+  // at the bound the first job waits for the big one, which says it is draining
   assertEq(startsAt(r, q, waitBound), [])
   assertEq(whysAt(r, q, waitBound), [(long(20), DrainingFor(1)), (long(1), Draining)])
 
-@test("a stream of small urgent jobs: the big job starts as soon as the units it waits for free after the bound")
-streamOfUrgentJobs()
-  // every minute an urgent 1-unit job arrives and would start beside what runs
+@test("a stream of small jobs of higher priority: the big job starts as soon as the units it waits for free after the bound")
+streamOfPriorityJobs()
+  // every minute a 1-unit job of higher priority arrives and would start beside what runs
   var running: Vector[Started] = [dr(100, 4), dr(101, 4)]
   var t: long = 0
   var bigStarted: Option[long] = None
@@ -74,7 +76,7 @@ streamOfUrgentJobs()
   assert(bigStarted.isDefined, "the big job never started")
   // at most 12 jobs run at the bound, and one ends each minute after it
   assert(bigStarted.get <= waitBound + 12 * minute, s"started at ${bigStarted.get}")
-  // and not before the bound: before it the urgent jobs kept units busy
+  // and not before the bound: before it the jobs of higher priority kept units busy
   assert(bigStarted.get >= waitBound)
 
 @test("past the bound a short job that ends before the big one can start backfills; a long one waits")
@@ -274,7 +276,7 @@ liveRunning(deadlines: bool) -> Vector[Started]
   [gate, test, landing]
 
 liveQueue() -> Vector[Waiting]
-  // the urgent band first, then the rest in arrival order; 1802 has waited past the bound
+  // a higher priority first, then the rest in arrival order; 1802 has waited past the bound
   val urgent = [
     dw(1815, 1, 14 * minute, 20 * 1000, 40 * minute, 12 * Gib),
     dw(1816, 4, 14 * minute, 25 * 1000, 45 * minute, 28 * Gib),
@@ -427,7 +429,7 @@ twoBigJobs()
   val q = [dj(20, 1, 15 * minute, expected = 2 * minute), dj(1, 12, 0), dj(2, 12, minute)]
   assertEq(whysAt(r, q, 12 * minute), [(long(20), DrainingFor(1)), (long(1), Draining), (long(2), DrainingFor(1))])
   assertEq(startsAt([], q, 12 * minute), [long(1)])
-  // the first runs; the second has waited past the bound and the urgent job waits for it in turn
+  // the first runs; the second has waited past the bound and job 20 waits for it in turn
   val after = [dj(20, 1, 15 * minute), dj(2, 12, minute)]
   assertEq(whysAt([dr(1, 12)], after, 16 * minute), [(long(20), DrainingFor(2)), (long(2), Draining)])
   assertEq(startsAt([], after, 16 * minute), [long(2)])
@@ -441,7 +443,7 @@ killReleasesTheHold()
 @test("once the draining job starts, the jobs it held start in their own order as the units allow")
 heldJobsKeepTheirOrder()
   val q = [dj(20, 4, 5 * minute), dj(21, 4, 6 * minute), dj(1, 8, 0)]
-  // the big job starts, and the urgent jobs follow in their band's order as the units allow
+  // the big job starts, and the others follow in queue order as the units allow
   assertEq(startsAt([], q, waitBound), [long(1), long(20)])
   assertEq(whysAt([], q, waitBound), [(long(20), Starting), (long(21), NoUnits), (long(1), Starting)])
 

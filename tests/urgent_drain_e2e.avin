@@ -1,0 +1,75 @@
+module tests
+
+// End to end, the urgent band against a drain (`drain_after`): an urgent job submitted after a big
+// job began draining takes the drain over, the big job waiting `draining for` it in `ls`, `status
+// <id>` and the snapshot, and starts first; one that fits starts at once; holding or killing the big
+// job leaves the urgent job waiting as it would with no drain; and the hand-over outlives `marshal
+// restart`. The helpers are e2e.avin's, top_pty.avin's and landing_e2e.avin's.
+import dev.avinlang.marshal.Why
+
+@test("an urgent job submitted while a big job drains takes the drain over, starts first, and the big job drains for it")
+urgentTakesTheDrainOverE2e()
+  val home = newHome("{\"units\": 2, \"drain_after\": \"1s\"}")
+  val a = submitted(home, "--units", "1", "--", "sleep", "60")
+  assert(within(2000, () -> started(home, a)))
+  val big = submitted(home, "--units", "2", "--", "sleep", "0.2")
+  assert(within(4000, () -> whyOf(home, big) == Some(Why.Draining)), s"${whyOf(home, big)}")
+  val u = submitted(home, "--urgent", "--units", "2", "--", "sleep", "0.2")
+  assertEq(whyOf(home, u), Some(Why.Draining))
+  assertEq(whyOf(home, big), Some(Why.DrainingFor(u)))
+  val ls = m(home, "ls").out
+  assert(ls.contains(s"queued (draining for $u)"), ls)
+  assert(ls.contains("queued (draining)"), ls)
+  val st = m(home, "status", big.toString())
+  assertEq(st.code, 0)
+  assert(st.out.contains(s"job $big is queued (draining for $u)"), st.out)
+  // the hand-over is decided afresh by a restarted daemon, which keeps the urgent band
+  restarted(home)
+  assertEq(whyOf(home, u), Some(Why.Draining))
+  assertEq(whyOf(home, big), Some(Why.DrainingFor(u)))
+  m(home, "kill", a.toString())
+  assertEq(m(home, "wait", u.toString()).code, 0)
+  assertEq(m(home, "wait", big.toString()).code, 0)
+  assert(at(home, u, "started") < at(home, big, "started"), s"${eventsOf(home, u)} ${eventsOf(home, big)}")
+  cleanUp(home)
+
+@test("an urgent job that fits starts at once while a big job drains, and the big job goes on draining")
+urgentFitsDuringADrainE2e()
+  val home = newHome("{\"units\": 2, \"drain_after\": \"1s\"}")
+  val a = submitted(home, "--units", "1", "--", "sleep", "60")
+  assert(within(2000, () -> started(home, a)))
+  val big = submitted(home, "--units", "2", "--", "sleep", "0.2")
+  assert(within(4000, () -> whyOf(home, big) == Some(Why.Draining)), s"${whyOf(home, big)}")
+  // a kind of its own with a long deadline: it would not backfill, so only being urgent starts it
+  val u = submitted(home, "--kind", "late", "--urgent", "--units", "1", "--deadline", "120s", "--", "sleep", "3")
+  assert(within(2000, () -> started(home, u)), eventsOf(home, u).mkString(" "))
+  assertEq(whyOf(home, big), Some(Why.Draining))
+  // an ordinary job like it, submitted while it runs, waits for the drain
+  val plain = submitted(home, "--kind", "late", "--units", "1", "--deadline", "120s", "--", "sleep", "0.1")
+  assertEq(whyOf(home, plain), Some(Why.DrainingFor(big)))
+  m(home, "kill", a.toString())
+  assertEq(m(home, "wait", big.toString()).code, 0)
+  assertEq(m(home, "wait", plain.toString()).code, 0)
+  assert(at(home, big, "started") < at(home, plain, "started"), s"${eventsOf(home, big)} ${eventsOf(home, plain)}")
+  cleanUp(home)
+
+@test("the big job held, then killed: the urgent job waits as it would with no drain, and drains again when it is let go")
+drainerHeldOrKilledE2e()
+  val home = newHome("{\"units\": 2, \"drain_after\": \"1s\"}")
+  val a = submitted(home, "--units", "1", "--", "sleep", "60")
+  assert(within(2000, () -> started(home, a)))
+  val big = submitted(home, "--units", "2", "--", "sleep", "0.2")
+  assert(within(4000, () -> whyOf(home, big) == Some(Why.Draining)), s"${whyOf(home, big)}")
+  val u = submitted(home, "--urgent", "--units", "2", "--", "sleep", "0.2")
+  assertEq(whyOf(home, u), Some(Why.Draining))
+  assertEq(m(home, "hold", big.toString()).code, 0)
+  assertEq(whyOf(home, u), Some(Why.NoUnits))
+  assertEq(whyOf(home, big), Some(Why.Held))
+  assertEq(m(home, "release", big.toString()).code, 0)
+  assertEq(whyOf(home, u), Some(Why.Draining))
+  assertEq(whyOf(home, big), Some(Why.DrainingFor(u)))
+  assertEq(m(home, "kill", big.toString()).code, 0)
+  assertEq(whyOf(home, u), Some(Why.NoUnits))
+  m(home, "kill", a.toString())
+  assertEq(m(home, "wait", u.toString()).code, 0)
+  cleanUp(home)

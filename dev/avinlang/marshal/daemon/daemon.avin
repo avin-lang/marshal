@@ -41,7 +41,7 @@ import dev.avinlang.marshal.{
 }
 
 import dev.avinlang.marshal.{Submit, Wait, Kill, Status, Stop, Rerun, Clean, Cleaned}
-import dev.avinlang.marshal.{Submitted, Ended, Jobs, Using, Viewed, Hi, Done, Failed, Amended, Over, KilledJobs}
+import dev.avinlang.marshal.{Submitted, Ended, Found, Jobs, Using, Viewed, Hi, Done, Failed, Amended, Over, KilledJobs}
 import dev.avinlang.marshal.{Overview, QueuedJob, SavedJob, SavedState}
 import dev.avinlang.marshal.{Cancelled, DependencyFailed, TimedOut}
 import dev.avinlang.marshal.Resident
@@ -680,7 +680,8 @@ class Daemon(
       drainMs(j),
       j.spec.exclusive,
       unsettled,
-      alone(j, b)
+      alone(j, b),
+      j.urgentAt > 0
     )
 
   // Why the load alone holds the exclusive job `j` back at `t`.
@@ -740,6 +741,7 @@ class Daemon(
       Request.KillMany(sel) -> give(reply, killMany(sel))
       Request.List -> give(reply, Jobs(listing()))
       Status -> give(reply, Using(usage()))
+      Request.Lookup(id) -> give(reply, lookup(id))
       Request.Snapshot -> give(reply, Viewed(overview()))
       Stop(force, drain) -> stop(force, drain, Some(reply))
       Request.Hello -> give(reply, Hi(reportedVersion(), process.pid()))
@@ -1001,6 +1003,20 @@ class Daemon(
         Ok(info) -> Ended(info)
         Err(e) -> Failed(s"job $id's last event is unreadable: $e")
       None -> Failed(s"job $id has no ending in the log")
+
+  // The job `id` as it is now: one this daemon holds, running, queued (with why it waits), waiting or
+  // ended; else one an earlier daemon ran or that `clean` forgot, from its ending in the log.
+  lookup(id: long) -> Reply
+    jobs.get(id) match
+      Some(job) ->
+        val t = now()
+        if job.state != "queued" then return Found(job.info(t))
+        val outside = outsideNow().getOrElse(marshal.NoOutside)
+        val why = queuedWhys(t, outside).find(w -> w.0 == id).map(w -> w.2)
+        Found(job.info(t, startsAt(drainExpected(t, outside), id)), why)
+      None -> endedEarlier(id) match
+        Ended(info) -> Found(info)
+        other -> other
 
   kill(id: long) -> Reply
     val job = jobs.get(id) match

@@ -213,7 +213,7 @@ scripts.
 | --- | --- | --- |
 | `queued (no units)` / `queued (no memory)` | the budget is full | wait; ask for fewer `--units` or a smaller `--mem` only if the job truly needs less |
 | `queued (behind N)` | it would fit, but would delay job N at the head of the queue | wait |
-| `queued (draining)` | it has waited past `drain_after` (or is a landing job whose memory does not fit): nothing else starts until it has | wait |
+| `queued (draining)` | it has waited past `drain_after`, or is the urgent job that took a drain over, or is a landing job whose memory does not fit: nothing else starts until it has | wait |
 | `queued (draining for N)` | the machine is emptying so job N can start | wait; it is bounded by `drain_after` |
 | `queued (lane busy)` | another landing job holds the landing lane | wait |
 | `queued (take-slot)` | take-slot.zsh holds the units, or a take-slot run waits ahead of it | wait |
@@ -256,7 +256,7 @@ marshal submit [options] -- <command...>   queue a job; prints its id
 marshal run [options] -- <command...>      submit and wait: prints the log's path, then the result; exits with the job's status
 marshal run-type <type> [parameters]       runs a job type's steps as one job and waits; <type> --help lists its parameters
 marshal train [parameters] <branch...>     run-type train: merges the branches, builds and tests them, lands them when green
-marshal wait <id> | --until <cond> [--timeout <t>] [--since <t>]  waits for the job (--timeout also with an id), prints one result line, exits with its status; or waits for an event (--since only here), prints it, exits 0; 124 on timeout
+marshal wait <id> | --until <cond> [--timeout <t>] [--since <t>]  waits for the job (--timeout also with an id), prints one result line, exits with its status (at once for a job that has already ended); or waits for an event (--since only here), prints it, exits 0; 124 on timeout
 marshal events [--follow] [--since <t>] [<filter>]  the logged events as JSON lines; --follow goes on streaming them until killed
 marshal ls [--compact | -c]                jobs queued, running and recently ended; a queued job's state says why it waits: queued (draining); --compact: one line a job, no wider than the terminal ($COLUMNS, else 80, where output is not one): COMMAND is cut with …, then LABEL, then columns go (FROM, RESV, USED, OWNER, ETA, UNITS, STARTED, ELAPSED, KIND)
 marshal kill <id> | <selector>             stops the job's whole process tree (a queued or waiting job is cancelled); --owner <name>, --label <text> or --all stops every job selected (marshal kill --help)
@@ -271,7 +271,7 @@ marshal resume [<id>]                      continues a paused job; with no id, r
 marshal polite [<fraction> | off]          while you work: admit jobs against only a fraction of the budget (default 0.75, or 3/4 and the like); a job bigger than that runs alone; off: the whole budget again. Running jobs go on; config.json's polite_schedule switches it on by the clock
 marshal tail <id> [-f] [-n <lines>]        the job's log; -f follows it until the job ends
 marshal grep <id> <pattern> [-i] [-v] [-n] [-c] [-F] [-m <n>] [-A|-B|-C <n>] [--last <n>]  the lines of the job's log that match the pattern (a regular expression; -F: literal text), as grep prints them; exits 0 when a line matched, 1 when none did, 2 on an error
-marshal status [--json]                    the budget in use; --json: one JSON object with the running and queued jobs
+marshal status [<id>] [--json]             the budget in use; --json: one JSON object with the running and queued jobs; <id>: that job's state, running, queued (and why), waiting or ended, with its exit status once ended, for any job the daemon or the event log knows; exits 0 whatever the job's outcome
 marshal history [options]                  ended jobs from the event log, newest first: id, kind, outcome, exit code, duration, when, label
 marshal stats [options]                    per kind from the event log: count, success rate, p50/p90/max duration, timeouts, deadline, peak memory
 marshal top                                a live view of the budget, the jobs and their logs; h lists its keys
@@ -299,7 +299,7 @@ same usage to standard error and exits 2. After `--` nothing is an option, so `m
 | `--quick` | The quick lane, for a short job such as the tests of a small package: it starts at once, outside the unit budget, rather than queue for units behind long builds. At most 2 quick jobs run at a time; a third waits in the quick lane, ahead of development jobs, and `ls` shows it `queued (quick lane full)`. Its memory still counts: it starts only when its reservation (`--mem`, or its command's learned peak) fits in the budget's free memory, and holds it while it runs, so a development job may wait for it; until then it waits `queued (no memory)` and development jobs leave that memory to it. It is niced like a development job, never passes a landing job (one that drains the machine holds the quick lane too) nor an exclusive one, and its deadline is at most 2 minutes: 2m by default, a shorter `--deadline` kept, a longer one refused. Past it, it is stopped as any job past its deadline (`timeout`). `ls` and `top` mark its kind with `^`, `top` says `quick` for it running and `quick: 1/2` in the header; `status` names the lane while a quick job runs, and `status --json` has `quick` (running) and `quick_slots`, and `"quick":true` on the job. `rerun` keeps it; `run-type` and `train` take `--quick` too (a type's own deadline over the cap gives way to the cap). Not with `--landing`. When a job submitted without `--quick` is of a kind whose recent successful runs took under 2 minutes at p90 (at least 3 runs learned), `submit`, `run` and `run-type` print a one-line hint on stderr suggesting `--quick`; nothing moves the job into the lane but the option. |
 | `--exclusive` | The job owns the machine, for a benchmark. It starts only when no other marshal job runs, in any lane (development, quick, landing) and take-slot holds nothing; while it runs, nothing else starts, a landing job included. It never pauses or kills a running job: it waits for them, `queued (emptying)`, behind any job queued ahead of it that still waits (`queued (behind N)`). Every job queued after it waits for it, `queued (exclusive N)`, so no stream of short jobs can keep the machine from emptying — except a landing job: one queued before the exclusive job starts goes first, so a benchmark never holds up a release train. It weighs the whole unit budget (`--units` is ignored), is not niced, and keeps its `--deadline`. After its header line, its log begins with a line `marshal exclusive: load 1.52 1.4 1.31; busiest outside marshal: WindowServer 412 12.3%, mds 88 5%` (the load averages, and the 5 busiest processes that are not marshal's or the job's own), and gets another every 30 s, so a result can tell whether anything disturbed it. `ls` and `top` mark its kind with `#`, `top` says `exclusive` for it running, `status` says `exclusive job N owns the machine`, and `status --json` has `exclusive` (the running one's id) and `"exclusive":true` on the job. Two exclusive jobs run one after the other; `rerun` keeps it. Not with `--landing` or `--quick`. |
 | `--quiet-load <n>` | With `--exclusive`: also wait, before starting, until the 1-minute load average has stayed below `n` for a whole minute — work outside marshal it cannot stop but can wait out. The load is read every second; a reading at or above `n` starts the minute again. Where the load cannot be read, it does not hold the job. `--quiet-load auto` is a quarter of the processors (`sysctl hw.ncpu`), at least 1: 4.5 on an 18-core Mac, whose desktop alone keeps the load near 2–3. While marshal's own jobs run it reserves the machine as any exclusive job does, whatever the load: it is `queued (emptying)` and nothing queued after it starts, so marshal's own load cannot keep it waiting. Once nothing of marshal's runs and the load still holds it, it is `settling`: it keeps the machine, `ls` shows `settling (load 7.9 ≥ 4)` while the load is at or above `n` and `settling (load 3.5 < 4 for 20.0s)` while the minute runs, with the wait for the load in ELAPSED, `status --json` lists it under `settling` with `"state": "settling"`, `settling_ms` and `load_overdue`, and `status` counts it apart (`0 running, 2 queued, 1 settling`). A settling job is neither running nor queued: no deadline, ETA or learned duration counts its wait. It never starts before the load settles. Past `load_wait` (`config.json`, 15 minutes, counted from when it began settling) it is overdue: `load_overdue` is true, `ls` adds `overdue`, `top` draws its row red, and its log gets one line, `marshal exclusive: overdue: waited 15m00s for the load to fall below 2; the load is 2.13; still waiting`, then the busiest processes outside marshal. It still waits; quiet the machine or kill it. A settling job keeps all of this across `marshal restart`. |
-| `--urgent` | Queues it in its lane's urgent band: ahead of every job not urgent, behind the urgent jobs already queued. It runs un-niced, as a landing job does, backfilled or not; it still weighs its learned units, or its kind's default without `--units`. `ls` and `top` mark its kind with `!` (`test!`), after the lane's mark when it has one (`test^!` quick, `test*!` landing); the mark stays while it runs and after it ends, and `priority <id> --urgent` adds it too. |
+| `--urgent` | Queues it in its lane's urgent band: ahead of every job not urgent, behind the urgent jobs already queued, and ahead of a development job the machine drains for after `drain_after`: it starts at once if it fits, and otherwise takes the drain over (see Bounded waiting). It runs un-niced, as a landing job does; it still weighs its learned units, or its kind's default without `--units`. `ls` and `top` mark its kind with `!` (`test!`), after the lane's mark when it has one (`test^!` quick, `test*!` landing); the mark stays while it runs and after it ends, and `priority <id> --urgent` adds it too. |
 | `--dir <d>` | Where it runs, relative to the current directory. Default: the current directory. |
 | `--deadline <t>` | Stops it after `t`: a number of minutes, or `90s`, `30m`, `2h`. Default: learned from its command's runs, or its kind's (see [Deadlines](#deadlines)). |
 | `--quiet-timeout <t>` | Stops it once its log has had no new output for `t`, written as `--deadline` writes one: a hung job ends then rather than at its deadline. It is sampled and stopped as a deadline stops it, but its outcome is `quiet`: `wait` says `killed after 10m00s without output (quiet timeout)`, its log ends with that line, the event is `quiet`, and `ls` and `history` show `quiet`. Time paused does not count, and the quiet clock starts again on `resume` and on `marshal restart`. `status --json` gives it as `quiet_ms`; `rerun` keeps it; `run-type` and `train` take it too. Default: none. |
@@ -319,7 +319,7 @@ waiting. A type's parameters may not use those names.
 A job runs with the caller's environment, plus `MARSHAL_JOB` (its id) and `MARSHAL_HOME`, in a
 process group of its own, under `nice -n 15` unless it is a landing, exclusive or urgent job (one in
 the urgent band as it starts, by `--urgent` or `priority --urgent`, whether it starts in its turn or
-backfilled ahead of a draining job), which runs un-niced, with its standard output
+ahead of a draining job), which runs un-niced, with its standard output
 and error in `~/.marshal/jobs/<id>.log`. When its main process ends, what is left of its process tree
 is sent TERM.
 
@@ -331,6 +331,15 @@ started; 125 for a job lost when a daemon died; 126 for a job cancelled because 
 did not succeed. A type's run exits 0 when it is green, 1 when it is red and 2 when its type or
 parameters are wrong. marshal's own failures (a bad command line, an unknown job, no daemon) exit 2;
 `wait --until` exits 1 when no daemon can be reached.
+
+`wait <id>` on a job that has already ended answers at once with its outcome and exits with that
+code. To ask without waiting, `status <id>` prints the job's state in one line (`marshal: job 12 is
+queued (draining for 7); log …`, or, once it has ended, the line `wait` prints) and exits 0 for any
+job marshal knows, whatever its outcome; `status <id> --json` gives the job as `status --json` lists
+it, with `exit` (null until it has ended) and, while it is queued, `why`. Both answer from the
+daemon's memory or, for a job it no longer holds (one `ls` no longer lists, `clean` removed the log
+of, or an earlier daemon ran), from its ending in the event log; a script polling for a job's exit
+uses them rather than `ls`, which keeps only the last 10 ended jobs.
 
 ### Reading a log: tail and grep
 
@@ -569,10 +578,17 @@ ends: nothing polls.
   budget as any running job's do; the **quick** lane runs up to 2 short jobs outside the unit budget; the
   **development** lane is everything else. An **exclusive** job stands apart from all three and owns
   the machine while it runs.
-- **Bounded waiting.** The urgent band and priorities let later jobs start ahead of earlier ones, so
-  a big job could wait for ever while small ones keep taking the units as they free. Once a
-  development job has waited `drain_after` (10 minutes by default; `config.json`) since it queued,
-  it goes ahead of every other development job, and while it does not fit the machine drains for it.
+- **Bounded waiting.** Priorities let later jobs start ahead of earlier ones, so a big job could
+  wait for ever while small ones keep taking the units as they free. Once a development job has
+  waited `drain_after` (10 minutes by default; `config.json`) since it queued, it goes ahead of
+  every other development job not in the urgent band, and while it does not fit the machine drains
+  for it. The urgent band goes ahead of the drain: an urgent job that fits starts at once, and the
+  first urgent job that does not takes the drain over (`queued (draining)`), the job past the bound
+  waiting `queued (draining for <urgent id>)` among the jobs not urgent; two urgent jobs drain in
+  the band's order. Once no urgent job waits, the drain is the job past the bound's again, in the
+  same look. A landing job keeps its lane, and its own drain, ahead of the urgent band; a running
+  exclusive job holds an urgent one as it holds every job, and an urgent job queues ahead of an
+  exclusive one that waits for the machine to empty.
   The drained job is expected to start once enough running jobs have ended, each counted by its
   learned duration (its command's, else its kind's), or by its
   deadline when nothing is learned. Meanwhile another development

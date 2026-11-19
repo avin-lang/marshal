@@ -34,6 +34,14 @@ resultLine(j: JobInfo) -> string
   val attempts = if j.attempt > 1 && j.outcome.isDefined then s" (attempt ${j.attempt})" else ""
   s"marshal: job ${j.id} $how$attempts; log ${j.log}"
 
+// The line `status <id>` prints: an ended job's as `wait` ends with, and a job that has not ended
+// with its state, and why it waits while it is queued (`marshal: job 12 is queued (draining for
+// 7); log …`).
+statusLine(j: JobInfo, why: Option[Why]) -> string
+  if j.outcome.isDefined then return resultLine(j)
+  val reason = why.map(w -> s" (${whyText(w)})").getOrElse("")
+  s"marshal: job ${j.id} is ${j.state}$reason; log ${j.log}"
+
 // A job's state as a listing's column shows it: a job waiting for others with the jobs it waits
 // for (`after 3,4`), a job waiting to retry with the attempt it will make, and a job held by hand
 // as `held`.

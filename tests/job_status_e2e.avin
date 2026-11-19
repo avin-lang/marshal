@@ -1,0 +1,92 @@
+module tests
+
+// End to end, `marshal status <id> [--json]` answers for any job the daemon or its event log knows:
+// running, queued (and why), ended with its exit status, after `ls` has let it go, after `clean`
+// forgot it, and from a fresh daemon; it exits 0 whatever the job's outcome, and 2 for an id no job
+// has had. `wait <id>` on a job that has already ended answers at once from the same places. The
+// helpers are e2e.avin's and control_e2e.avin's.
+import avin.time
+import dev.avinlang.json
+import dev.avinlang.json.Json
+
+@test("status <id> of a running and a queued job: its state, and why the queued one waits")
+statusOfLiveJobs()
+  val home = newHome("{\"units\": 1}")
+  val a = submitted(home, "--units", "1", "--", "sleep", "30")
+  assert(within(2000, () -> started(home, a)))
+  val b = submitted(home, "--units", "1", "--", "sleep", "30")
+  val r = m(home, "status", a.toString())
+  assertEq(r.code, 0)
+  assert(r.out.contains(s"marshal: job $a is running; log "), r.out)
+  val q = m(home, "status", b.toString())
+  assertEq(q.code, 0)
+  assert(q.out.contains(s"marshal: job $b is queued (no units); log "), q.out)
+  val j = json.parse(m(home, "status", "--json", b.toString()).out).ok.get
+  assertEq(j("id").asLong, Some(b))
+  assertEq(j("state").asString, Some("queued"))
+  assertEq(j("why").asString, Some("units"))
+  assertEq(j.get("exit"), Some(Json.Null))
+  m(home, "kill", a.toString())
+  m(home, "kill", b.toString())
+  cleanUp(home)
+
+@test("status <id> of an ended job: its outcome and exit status, exit 0, from memory, after a restart, after clean and from a new daemon")
+statusOfEndedJobs()
+  val home = newHome()
+  val bad = submitted(home, "--", "sh", "-c", "exit 3")
+  assertEq(m(home, "wait", bad.toString()).code, 3)
+  val ok = submitted(home, "--", "true")
+  assertEq(m(home, "wait", ok.toString()).code, 0)
+  checkEnded(home, bad, 3)
+  checkEnded(home, ok, 0)
+  restarted(home)
+  checkEnded(home, bad, 3)
+  // clean forgets the jobs whose logs it removes; the event log still has their endings
+  assertEq(m(home, "clean", "--keep", "0").code, 0)
+  checkEnded(home, bad, 3)
+  assertEq(m(home, "stop").code, 0)
+  // a daemon that never held it answers from the log
+  checkEnded(home, bad, 3)
+  checkEnded(home, ok, 0)
+  cleanUp(home)
+
+// `status <id>` and `status <id> --json` of the ended job `id`, and `wait <id>` at once.
+checkEnded(home: string, id: long, code: int)
+  val r = m(home, "status", id.toString())
+  assertEq(r.code, 0)
+  assert(r.out.contains(s"marshal: job $id exited $code after"), r.out)
+  val j = json.parse(m(home, "status", id.toString(), "--json").out).ok.get
+  assertEq(j("exit").asInt, Some(code))
+  assertEq(j("state").asString, Some("done"))
+  val began = time.monotonic()
+  assertEq(m(home, "wait", id.toString()).code, code)
+  assert((time.monotonic() - began).toMillis < 5000)
+
+@test("status <id> still answers once ls -c has let the job go")
+statusAfterLsForgets()
+  val home = newHome()
+  val first = submitted(home, "--", "sh", "-c", "exit 5")
+  assertEq(m(home, "wait", first.toString()).code, 5)
+  // `ls` lists the last 10 ended jobs (the daemon's `Recent`): 11 later ones push the first out
+  for _ in 1 .. 11
+    val id = submitted(home, "--", "true")
+    assertEq(m(home, "wait", id.toString()).code, 0)
+  assert(!m(home, "ls").out.contains(s"jobs/$first.log") && !m(home, "ls").out.contains("exit 5"), m(home, "ls").out)
+  val r = m(home, "status", first.toString())
+  assertEq(r.code, 0)
+  assert(r.out.contains(s"job $first exited 5"), r.out)
+  assertEq(m(home, "wait", first.toString()).code, 5)
+  cleanUp(home)
+
+@test("status refuses an id no job has had, a word that is not an id, an option and two ids")
+statusRefusals()
+  val home = newHome()
+  val id = submitted(home, "--", "true")
+  assertEq(m(home, "wait", id.toString()).code, 0)
+  refusedWith(m(home, "status", "99"), "no job 99")
+  refusedWith(m(home, "status", "99", "--json"), "no job 99")
+  refusedWith(m(home, "status", "x"), "`x` is not a job id")
+  refusedWith(m(home, "status", "--yaml"), "status takes a job id, --json, both, or nothing")
+  refusedWith(m(home, "status", id.toString(), "--yaml"), "status takes a job id, --json, both, or nothing")
+  refusedWith(m(home, "status", id.toString(), id.toString()), "status takes a job id, --json, both, or nothing")
+  cleanUp(home)

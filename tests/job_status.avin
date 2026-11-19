@@ -1,0 +1,61 @@
+module tests
+
+// `marshal status <id>`: the request and its reply read back as themselves, the line it prints for
+// each state, and its JSON with the exit status `wait` would give. `job`, `roundTrip` and
+// `replyRoundTrip` are protocol.avin's.
+import dev.avinlang.json.Json
+import dev.avinlang.marshal
+import dev.avinlang.marshal.{Found, Outcome, Request, Why}
+
+@test("a lookup and what it finds read back as themselves, with and without a reason to wait")
+lookupRoundTrips()
+  roundTrip(Request.Lookup(7))
+  roundTrip(Request.Lookup(long.MaxValue))
+  assertEq(marshal.encodeRequest(Request.Lookup(7)).render, "{\"op\":\"job\",\"id\":7}")
+  replyRoundTrip(Found(job("running", None)))
+  replyRoundTrip(Found(job("done", Some(Outcome.Exited(3)))))
+  replyRoundTrip(Found(job("queued", None), Some(Why.DrainingFor(12))))
+  replyRoundTrip(Found(job("queued", None), Some(Why.Draining)))
+  replyRoundTrip(Found(job("queued", None), Some(Why.Behind(5))))
+  replyRoundTrip(Found(job("queued", None), Some(Why.NoUnits)))
+  // a lookup without its id is refused
+  assert(marshal.decodeRequest("{\"op\": \"job\"}").isErr)
+  assert(marshal.decodeRequest("{\"op\": \"job\", \"id\": \"x\"}").isErr)
+
+@test("status <id> prints an ended job as wait does, and a live one with its state and why it waits")
+statusLines()
+  assertEq(marshal.statusLine(job("done", Some(Outcome.Exited(3))), None), marshal.resultLine(job("done", Some(Outcome.Exited(3)))))
+  assert(marshal.statusLine(job("done", Some(Outcome.Exited(3))), None).contains("job 7 exited 3 after"))
+  assertEq(marshal.statusLine(job("running", None), None), "marshal: job 7 is running; log /h/jobs/7.log")
+  assertEq(
+    marshal.statusLine(job("queued", None), Some(Why.DrainingFor(12))),
+    "marshal: job 7 is queued (draining for 12); log /h/jobs/7.log"
+  )
+  assertEq(marshal.statusLine(job("queued", None), Some(Why.Draining)), "marshal: job 7 is queued (draining); log /h/jobs/7.log")
+  assertEq(marshal.statusLine(job("waiting", None), None), "marshal: job 7 is waiting; log /h/jobs/7.log")
+  assert(marshal.statusLine(job("done", Some(Outcome.Cancelled)), None).contains("cancelled before it started"))
+
+@test("status <id> --json: the job, its exit status once ended (null before), and why it waits while queued")
+statusJsonOfAJob()
+  val ended = marshal.jobStatusJson(job("done", Some(Outcome.Exited(3))), None)
+  assertEq(ended("exit").asInt, Some(3))
+  assertEq(ended("state").asString, Some("done"))
+  assertEq(ended("id").asLong, Some(long(7)))
+  assertEq(ended.get("why"), None)
+  // every outcome gives the status wait exits with
+  for (o, code) in [
+    (Outcome.Signalled(9), 137),
+    (Outcome.TimedOut, 124),
+    (Outcome.Cancelled, 143),
+    (Outcome.Lost, 125),
+    (Outcome.DependencyFailed(2), 126),
+    (Outcome.Exited(0), 0)
+  ]
+    assertEq(marshal.jobStatusJson(job("done", Some(o)), None)("exit").asInt, Some(code))
+  val running = marshal.jobStatusJson(job("running", None), None)
+  assertEq(running.get("exit"), Some(Json.Null))
+  val queued = marshal.jobStatusJson(job("queued", None), Some(Why.DrainingFor(12)))
+  assertEq(queued("why").asString, Some("draining-for"))
+  assertEq(queued("draining_for").asLong, Some(long(12)))
+  // one line
+  assertEq(queued.render.lines.toVector.length, 1)

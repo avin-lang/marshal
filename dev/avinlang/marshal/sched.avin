@@ -29,11 +29,13 @@ module dev.avinlang.marshal
 //   not start is never overtaken by a marshal job. Take-slot admits only its earliest waiter and
 //   only when it fits, so a waiter that fits now holds its units as if it had started, and one behind
 //   a blocked head waits.
-// - Waiting is bounded (`Fairness`). The urgent band and priorities put later jobs ahead of earlier
-//   ones, and each that fits starts, so a big job could wait for ever while small ones keep starting.
-//   The first development job in queue order that has waited `afterMs` goes ahead of every other
-//   development job; when it does not fit, the machine drains for it. The landing and quick lanes go
-//   on beside it.
+// - Waiting is bounded (`Fairness`). Priorities put later jobs ahead of earlier ones, and each that
+//   fits starts, so a big job could wait for ever while small ones keep starting. The first
+//   development job in queue order that has waited `afterMs` goes ahead of every other development
+//   job not in the urgent band; when it does not fit, the machine drains for it. The urgent band goes
+//   ahead of it: while a development job in the band waits, the first of them in queue order takes the
+//   drain over, and the job past the bound waits for it among the jobs not in the band; once no urgent
+//   job waits, the drain is that job's again. The landing and quick lanes go on beside it.
 // - A drain backfills. The draining job is expected to start once enough running jobs have ended for
 //   it to fit, each counted by its learned duration, or by its deadline when nothing is learned of
 //   its kind (`drainMs`). In queue order, another development job that fits now starts ahead of it
@@ -92,6 +94,7 @@ val Unbounded: Fairness = Fairness(long.MaxValue, 0)
 // `exclusive` makes it own the machine; `unsettled`, on an exclusive job, is why it still waits for
 // the load to settle (`loadWhy`), None once it need not.
 // `alone` says a job bigger than the polite budget runs alone, as an exclusive job does.
+// `urgent` says it is in the urgent band: a drain is for it ahead of every job not in the band.
 data Waiting(
     id: long,
     units: int,
@@ -103,7 +106,8 @@ data Waiting(
     drainMs: long = 0,
     exclusive: bool = false,
     unsettled: Option[Why] = None,
-    alone: bool = false
+    alone: bool = false,
+    urgent: bool = false
 )
 
 // Whether `w` owns the machine while it runs: an exclusive job, or one that runs alone.
@@ -236,8 +240,8 @@ lanePositions(queue: Vector[Waiting]) -> Vector[int]
 // The ticket the daemon keeps among take-slot's waiters, as (arrival, units), or None when nothing
 // of marshal's waits. While a landing job drains the machine, its ticket goes ahead of every
 // take-slot waiter, so take-slot admits none of them before it; otherwise the ticket is the first
-// development job's, at its arrival, so take-slot's later runs wait behind it: the job that has
-// waited past the bound when there is one (`fair`), else the first in queue order.
+// development job's, at its arrival, so take-slot's later runs wait behind it: the job the machine
+// drains for when there is one (`fair`, `drainTarget`), else the first in queue order.
 ticketFor(
     budget: Budget,
     running: Vector[Started],
@@ -255,7 +259,7 @@ ticketFor(
     Some(w) ->
       val first = outside.waiting.map(t -> t.arrived).minOption
       Some((first.filter(a -> a <= w.arrived).map(a -> a - 1).getOrElse(w.arrived), w.units))
-    None -> waitedPast(weighed, fair).orElse(weighed.find(w -> !w.landing && !w.quick)).map(w -> (w.arrived, w.units))
+    None -> drainTarget(weighed, fair).orElse(weighed.find(w -> !w.landing && !w.quick)).map(w -> (w.arrived, w.units))
 
 // What the scheduler weighs beside `queue`'s first exclusive job (not a landing one), which reserves
 // the machine whether or not its load has settled: the queue up to and including it, and every
@@ -268,6 +272,21 @@ upToExclusive(queue: Vector[Waiting]) -> Vector[Waiting]
 // The first development job in queue order that has waited past the bound, if one has.
 waitedPast(queue: Vector[Waiting], fair: Fairness) -> Option[Waiting] =
   queue.find(w -> !w.landing && !w.quick && (fair.wallNow - w.arrived) / 1000 >= fair.afterMs)
+
+// The development jobs that go ahead of every other once `past` has waited past the bound, in the
+// order they go: the urgent band's, in queue order, then `past` (in its place in the band when it is
+// urgent itself). None while no job has waited past the bound.
+drainOrder(queue: Vector[Waiting], past: Option[Waiting]) -> Vector[Waiting] = past match
+  Some(s) ->
+    val band = queue.filter(w -> w.urgent && !w.landing && !w.quick)
+    if band.exists(w -> w.id == s.id) then band else band ++ [s]
+  None -> []
+
+// The development job the machine drains for, once one has waited past the bound, as far as the
+// queue alone says: the first in the urgent band when one waits there, which takes the drain over,
+// else the job past the bound.
+drainTarget(queue: Vector[Waiting], fair: Fairness) -> Option[Waiting] =
+  drainOrder(queue, waitedPast(queue, fair)).headOption
 
 // What the scheduler makes of one waiting job: start it now (no `why`), or why it waits. `ahead` is
 // the draining job it is backfilled ahead of; `at`, on the draining job, when it is expected to start.
@@ -315,10 +334,12 @@ private decide(
     ends += (now, outside.units, 0)
     sure += (now, outside.units, 0)
   var quicks = 0
-  // The job that has waited past the bound, which the machine drains for when it does not fit, and
-  // when on the daemon's clock the drain began: when it waited past the bound.
-  val starved = waitedPast(weighed, fair)
-  val began = starved.map(s -> now - ((fair.wallNow - s.arrived) / 1000 - fair.afterMs)).getOrElse(long.MinValue)
+  // Once a job has waited past the bound, the jobs that go first (`drainOrder`): the urgent band's
+  // development jobs, then it; the first of them that does not fit is the one the machine drains
+  // for. And when on the daemon's clock the drain began: when the job past the bound waited past it.
+  val past = waitedPast(weighed, fair)
+  val first = drainOrder(weighed, past)
+  val began = past.map(s -> now - ((fair.wallNow - s.arrived) / 1000 - fair.afterMs)).getOrElse(long.MinValue)
   for r in running
     if r.landing then laneBusy = true
     elif r.quick then quicks += 1
@@ -358,11 +379,9 @@ private decide(
   // When the blocked head of the queue can start, and which job it is (None for a take-slot
   // waiter); None while the head has not been met.
   var head: Option[(long, Option[long])] = None
-  // The job that has waited past the bound goes first; while it does not fit, the development jobs
-  // after it wait for it (`hold`).
-  val order = starved match
-    Some(s) -> [s] ++ weighed.filter(w -> w.id != s.id)
-    None -> weighed
+  // Those jobs go first; the first of them that does not fit drains the machine, and the development
+  // jobs after it wait for it (`hold`).
+  val order = first ++ weighed.filter(w -> !first.exists(f -> f.id == w.id))
   var hold: Option[long] = None
   // While the machine drains: whether jobs may backfill, when the draining job is expected to
   // start, and the units and memory it leaves spare then.
@@ -400,11 +419,14 @@ private decide(
       units += e.units
       memory += e.memory
       ends += (now + e.expectedMs, e.units, e.memory)
+      // an urgent job that starts ahead of the job the machine drains for is counted by the drain
+      // too, so when the drain ends is known in the same look
+      for w in e.job.toList do sure += (now + drainEstimate(w.expectedMs, w.drainMs), w.units, w.memory)
       if e.job.isEmpty then theirs += e.units
     for w in e.job.toList
       if go
         out += Decision(w.id, None)
-      elif starved.exists(s -> s.id == w.id)
+      elif first.exists(f -> f.id == w.id)
         hold = Some(w.id)
         val why = drainingFor(waitsFor(budget, units, memory, theirs, e, fits, head))
         // it is the head itself, waiting for units or memory to free: others may backfill

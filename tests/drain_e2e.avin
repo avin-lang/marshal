@@ -1,17 +1,18 @@
 module tests
 
 // End to end, the bound on waiting (`drain_after`): before it an urgent job jumps a big job that does
-// not fit; past it the big job says `draining`, an urgent job that would fit waits `draining for` it
-// in `ls` and the snapshot, and starts after it with its whole deadline, since time queued is not
-// time run; killing the big job releases the hold; and the hold outlives `marshal restart`. The
-// helpers are e2e.avin's, top_pty.avin's and landing_e2e.avin's.
+// not fit; past it the big job says `draining`, a job not in the urgent band that would fit waits
+// `draining for` it in `ls` and the snapshot, and starts after it with its whole deadline, since time
+// queued is not time run; killing the big job releases the hold; and the hold outlives `marshal
+// restart`. The urgent band past the bound is urgent_drain_e2e.avin's. The helpers are e2e.avin's,
+// top_pty.avin's and landing_e2e.avin's.
 import avin.fs
 import avin.threads
 import avin.time.millis
 import dev.avinlang.marshal.Why
 
 @test(
-  "past drain_after a big job drains the machine: an urgent job that jumped it before now waits, and starts after it with its whole deadline"
+  "past drain_after a big job drains the machine: an urgent job jumped it before; now a job that would fit waits, and starts after it with its whole deadline"
 )
 drainAfterE2e()
   val home = newHome("{\"units\": 2, \"drain_after\": \"2s\", \"learn_min_runs\": 1}")
@@ -28,10 +29,10 @@ drainAfterE2e()
   assert(within(1500, () -> started(home, early)), eventsOf(home, early).mkString(" "))
   assertEq(whyOf(home, big), Some(Why.NoUnits))
   assert(within(5000, () -> whyOf(home, big) == Some(Why.Draining)), s"${whyOf(home, big)}")
-  // past it an urgent job that fits the free unit, but would end after the big job is expected to
-  // start, waits for it, and says so
+  // past it a job that fits the free unit, but would end after the big job is expected to start,
+  // waits for it, and says so
   // a kind of its own, so the early job's run teaches it nothing
-  val late = submitted(home, "--kind", "late", "--urgent", "--units", "1", "--deadline", "4s", "--", "sleep", "0.3")
+  val late = submitted(home, "--kind", "late", "--units", "1", "--deadline", "4s", "--", "sleep", "0.3")
   assertEq(whyOf(home, late), Some(Why.DrainingFor(big)))
   val ls = m(home, "ls").out
   assert(ls.contains(s"queued (draining for $big)"), ls)
@@ -125,7 +126,7 @@ drainKillReleases()
   assert(within(2000, () -> started(home, a)))
   val big = submitted(home, "--units", "2", "--", "sleep", "0.5")
   assert(within(4000, () -> whyOf(home, big) == Some(Why.Draining)), s"${whyOf(home, big)}")
-  val late = submitted(home, "--urgent", "--units", "1", "--", "sleep", "0.1")
+  val late = submitted(home, "--units", "1", "--", "sleep", "0.1")
   assertEq(whyOf(home, late), Some(Why.DrainingFor(big)))
   assertEq(m(home, "kill", big.toString()).code, 0)
   assertEq(m(home, "wait", late.toString()).code, 0)
@@ -140,7 +141,7 @@ drainAcrossRestart()
   assert(within(2000, () -> started(home, a)))
   val big = submitted(home, "--units", "2", "--", "sleep", "0.2")
   assert(within(4000, () -> whyOf(home, big) == Some(Why.Draining)), s"${whyOf(home, big)}")
-  val late = submitted(home, "--urgent", "--units", "1", "--", "sleep", "0.1")
+  val late = submitted(home, "--units", "1", "--", "sleep", "0.1")
   restarted(home)
   assertEq(whyOf(home, big), Some(Why.Draining))
   assertEq(whyOf(home, late), Some(Why.DrainingFor(big)))

@@ -1472,7 +1472,8 @@ the unbounded wait was not.
 
 - **The bound is a time, `drain_after` in `config.json`, 10 minutes by default (`"never"` turns it
   off).** Once the first development job in queue order has waited that long since it queued, it goes
-  ahead of every other development job, urgent ones included. If it fits, it starts and nothing else
+  ahead of every other development job, urgent ones included (reversed by branch `urgent-drain`:
+  the urgent band now goes ahead of the drain). If it fits, it starts and nothing else
   changes. If not, the machine drains for it: no other development job starts until it has started,
   except as backfill (the next section). Why time: it is what the user notices, is the same for a 1-unit and a 12-unit
   job, and survives `restart` with no new state (a job's arrival is already kept). Alternatives: a
@@ -2549,3 +2550,54 @@ work, so the selectors say whose jobs, and landing jobs are left alone unless as
   daemon as by the command line), reply `{"ok":true,"stopped":[{"id","how","label","landing",
   "exclusive"}...],"skipped_landing":N}`. An older daemon answers `no such request`, which the
   command line shows as it shows any refusal.
+
+## The urgent band goes ahead of a drain; `status <id>` answers for any job (branch `urgent-drain`)
+
+2026-11-19. Reported by the sysl session on 0.3.28: an `--urgent` job waited `queued (draining for
+N)` behind an ordinary job N that had begun draining before it was submitted (6743 behind 6650 and
+6652, 6760 behind 6655), until the ordinary ones were held by hand. And `marshal status <id>`
+errored (`status takes --json or nothing`), while `ls -c` drops ended jobs after the last 10, so a
+script polling for a job's exit never saw it.
+
+- **Cause of the first.** The scheduler (`sched.avin`) never knew a job was urgent: the daemon
+  ordered the band first, but the bound on waiting put the first job past `drain_after` ahead of
+  every development job, the band included, as the `no-starve` entry above decided ("urgent ones
+  included"). **This entry reverses that clause**, on the director's brief from the sysl report.
+- **The urgent band goes ahead of the drain.** `Waiting` carries `urgent` (the daemon's
+  `urgentAt > 0`). Once a job has waited past the bound, the jobs that go first are the band's
+  development jobs in queue order, then that job (`drainOrder`); the first of them that does not
+  fit is the one the machine drains for. So an urgent job that fits starts at once; one that does
+  not takes the drain over (`queued (draining)`), the job past the bound waiting `draining for` it
+  with the other jobs not in the band, keeping its place among them; two urgent jobs drain first
+  come, first served; and when the urgent job starts, the drain is the job past the bound's again
+  in the same look. Backfill ahead of an urgent drain works as for any drain. The drain's start
+  (`began`, which decides how running jobs past their estimate are counted) stays when the job past
+  the bound passed it. Alternatives: urgent jobs that fit start but one that does not waits behind
+  the ordinary drain (still leaves the reported 2-unit urgent job stuck); moving the urgent job to
+  the front only after it too has waited the bound (the report is exactly that wait).
+- **A job started ahead of the drainer in the same look is counted by the drain.** Before, only
+  take-slot waiters could start ahead of the drained job, and the jobs started in the main pass were
+  not in the drain's reckoning (`sure`); with urgent jobs ahead of it they are, so the drained job's
+  expected start is known the same look rather than the next.
+- **Unchanged:** a landing job keeps its lane, and its own memory drain holds the urgent band
+  (`behind N`); a running exclusive job holds an urgent one; an urgent job, queued ahead of a waiting
+  exclusive one, is decided before it; an urgent quick job stays in the quick lane and takes no drain
+  over; before the bound nothing drains for an urgent job (it is the head of the queue as before).
+- **Review with the user:** the starvation `no-starve` fixed can come back through the band: a
+  steady stream of urgent jobs keeps a big ordinary job waiting past `drain_after` for as long as it
+  lasts. The bound still holds among the jobs not urgent, and `--urgent` is meant for a release's
+  critical path, so the stream is bounded by how it is used. Alternative if that proves wrong: a
+  second, longer bound past which even the band waits for the starved job.
+- **`status <id> [--json]`.** It did not exist: `status` took `--json` or nothing. Now `status <id>`
+  asks the daemon (`{"op":"job","id":N}`, reply `{"ok":true,"found":{job…,"waits"…}}`) for the job
+  as it is: one it holds, running, queued (with why it waits), waiting or ended; else one an earlier
+  daemon ran or `clean` forgot, from its ending in the event log (as `wait` already did). It prints
+  `marshal: job 12 is queued (draining for 7); log …`, or for an ended job the line `wait` prints,
+  and exits 0 for any job known, whatever its outcome (2 for an id no job has had); `--json` (before
+  or after the id) is the job as `status --json` lists it, with `exit` (null until ended) and `why`
+  while queued. Alternatives: exiting with the job's own status (that is `wait`'s, and a script
+  could not tell "failed" from "unknown"); keeping more ended jobs in `ls` (still drops some).
+  **Review with the user:** whether `status <id>` should say anything for a job whose events
+  retention removed (it says `job N has no ending in the log`, exit 2).
+- **`wait <id>` on an ended job** already answered at once, from memory or the log; tests now cover
+  it after `ls` lets the job go, after `clean`, after a restart and from a new daemon.

@@ -116,6 +116,9 @@ data Request
   KillMany(selector: KillSelector)
   List
   Status
+  // One job as it is now, whatever its state: running, queued, waiting, or ended, from the daemon's
+  // memory or, for a job it no longer holds, the event log (`Found`).
+  Lookup(id: long)
   // Everything a live view shows: the budget, the running, queued and recent jobs, and why each
   // queued job waits.
   Snapshot
@@ -532,6 +535,8 @@ data Reply
   // `hint` is advice for the submitter ("" for none): see `quickHint`.
   Submitted(id: long, log: string, hint: string = "")
   Ended(job: JobInfo)
+  // What `Lookup` answers: the job as it is now, and why it waits when it is queued.
+  Found(job: JobInfo, why: Option[Why] = None)
   Jobs(jobs: Vector[JobInfo])
   Using(usage: Usage)
   Viewed(overview: Overview)
@@ -563,6 +568,7 @@ encodeRequest(Wait(id)) = Json.obj(("op", Json.str("wait")), ("id", Json.num(id)
 encodeRequest(Kill(id)) = Json.obj(("op", Json.str("kill")), ("id", Json.num(id)))
 encodeRequest(List) = Json.obj(("op", Json.str("ls")))
 encodeRequest(Status) = Json.obj(("op", Json.str("status")))
+encodeRequest(Lookup(id)) = Json.obj(("op", Json.str("job")), ("id", Json.num(id)))
 encodeRequest(Snapshot) = Json.obj(("op", Json.str("snapshot")))
 encodeRequest(Stop(force, drain)) = Json.obj(
   ("op", Json.str("stop")),
@@ -915,6 +921,7 @@ decodeRequest(text: string) -> Result[Request, string]
     "kill" -> Ok(Kill(field(j, "id", v -> v.asLong, "a whole number")?))
     "ls" -> Ok(List)
     "status" -> Ok(Status)
+    "job" -> Ok(Lookup(field(j, "id", v -> v.asLong, "a whole number")?))
     "snapshot" -> Ok(Snapshot)
     "stop" -> Ok(
       Stop(optional(j, "force", v -> v.asBool, "a bool", false)?, optional(j, "wait", v -> v.asBool, "a bool", false)?)
@@ -1212,6 +1219,7 @@ encodeReply(Submitted(id, log, hint)) = Json.Obj(
   ] ++ (if hint.isEmpty then [] else [("hint", Json.str(hint))])
 )
 encodeReply(Ended(job)) = Json.obj(("ok", Json.Bool(true)), ("job", encodeJob(job)))
+encodeReply(Found(job, why)) = Json.obj(("ok", Json.Bool(true)), ("found", encodeFound(job, why)))
 encodeReply(Jobs(jobs)) = Json.obj(("ok", Json.Bool(true)), ("jobs", Json.Arr(jobs.map(encodeJob))))
 encodeReply(Using(u)) = Json.Obj(usageMembers(u))
 encodeReply(Viewed(o)) = Json.obj(("ok", Json.Bool(true)), ("snapshot", encodeOverview(o)))
@@ -1323,6 +1331,7 @@ decodeReply(text: string) -> Result[Reply, string]
   if j.has("cleaned") then return Ok(Cleaned(decodeReport(j("cleaned"))?))
   if j.has("snapshot") then return Ok(Viewed(decodeOverview(j("snapshot"))?))
   if j.has("job") then return Ok(Ended(decodeJob(j("job"))?))
+  if j.has("found") then return decodeFound(j("found"))
   if j.has("jobs")
     val items = field(j, "jobs", v -> v.asVector, "an array")?
     val jobs = Buffer[JobInfo]()
@@ -1406,6 +1415,22 @@ whyId(Load(load, limit, calmMs)) = [
   ("calm_ms", Json.num(calmMs))
 ]
 whyId(_) = Vector[(string, Json)]()
+
+// A `Found` job on the wire: the job, with `waits` and the job its reason names when it waits.
+private encodeFound(j: JobInfo, why: Option[Why]) -> Json = why match
+  Some(w) -> Json.Obj(encodeJob(j).asMembers.get ++ [("waits", Json.str(whyWord(w)))] ++ whyId(w))
+  None -> encodeJob(j)
+
+private decodeFound(j: Json) -> Result[Reply, string] =
+  Ok(Found(decodeJob(j)?, if j.has("waits") then Some(decodeWhy(j)?) else None))
+
+// What `marshal status <id> --json` prints: the job as `ls` encodes it, with `exit`, the status
+// `wait` exits with (null until it has ended), and, while it is queued, `why` and the job its reason
+// names, as `status --json` gives them.
+jobStatusJson(j: JobInfo, why: Option[Why]) -> Json
+  val exit = [("exit", j.outcome.map(o -> Json.num(exitCode(o))).getOrElse(Json.Null))]
+  val reason = why.map(w -> [("why", Json.str(whyWord(w)))] ++ whyId(w)).getOrElse([])
+  Json.Obj(encodeJob(j).asMembers.get ++ exit ++ reason)
 
 private encodeQueued(q: QueuedJob) -> Json =
   Json.Obj(
