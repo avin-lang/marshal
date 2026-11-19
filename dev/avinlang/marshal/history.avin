@@ -34,7 +34,8 @@ data EndedJob(
     urgent: bool = false,
     exclusive: bool = false,
     amended: bool = false,
-    deadlineAmended: bool = false
+    deadlineAmended: bool = false,
+    low: bool = false
 )
 
 // The word an outcome is listed under.
@@ -96,7 +97,8 @@ class Ledger()
       job.urgent,
       job.exclusive,
       job.amended,
-      !teachesDeadline(job.deadlineFrom)
+      !teachesDeadline(job.deadlineFrom),
+      job.low
     )
     position.get(job.id) match
       Some(p) -> ends(p) = e
@@ -286,7 +288,7 @@ historyListing(jobs: Vector[EndedJob], zone: time.Zone) -> string
     [["ID", "KIND", "OUTCOME", "EXIT", "DURATION", "ENDED", "LABEL"]] ++ jobs.map(
       e -> [
         e.id.toString(),
-        kindMarked(e.kind, e.landing, e.quick, e.urgent, e.exclusive),
+        kindMarked(e.kind, e.landing, e.quick, e.urgent, e.exclusive, e.low),
         // a job `amend` changed says so beside how it ended
         if e.amended then e.how + " (amended)" else e.how,
         e.exit.toString(),

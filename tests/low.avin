@@ -1,0 +1,162 @@
+module tests
+
+// Low jobs (low.avin) in the scheduler and the queue: a low job starts only in spare room, behind
+// every job not low; it never drains, never blocks, keeps no take-slot ticket; and what it is refused
+// with, how it is ordered, niced, marked and promoted. `drainBudget`, `waitBound`, `fairAt`, `dj` and
+// `dr` are drain.avin's, `minute` deadline.avin's.
+import dev.avinlang.marshal
+import dev.avinlang.marshal.{Budget, Fairness, JobSpec, Outside, Place, Started, Ticket, Waiting, Why}
+import dev.avinlang.marshal.{NoUnits, Draining, DrainingFor, Behind, Starting, LowWaits, ForExclusive}
+
+// A low development job of `units` that arrived at `arrivedMs` (wall clock, milliseconds), counted
+// by a drain or a backfill as `drainMs` (0: its `expected`).
+lw(id: long, units: int, arrivedMs: long, expected: long = minute, drainMs: long = 0, memory: long = 0) -> Waiting =
+  Waiting(id, units, memory, false, expected, arrivedMs * 1000, drainMs = drainMs, low = true)
+
+lwWhys(running: Vector[Started], queue: Vector[Waiting], nowMs: long, o: Outside = marshal.NoOutside) -> Vector[(long, Why)] =
+  marshal.waits(drainBudget, running, queue, 0, o, fairAt(nowMs)).map(w -> (w.0, w.2))
+
+lwStarts(running: Vector[Started], queue: Vector[Waiting], nowMs: long, o: Outside = marshal.NoOutside) -> Vector[long] =
+  marshal.schedule(drainBudget, running, queue, 0, o, fairAt(nowMs))
+
+@test("a low job starts at once when it fits and nothing else waits, whatever its length")
+lowStartsWhenNothingWaits()
+  assertEq(lwStarts([], [lw(1, 4, 0, expected = 10 * minute)], minute), [long(1)])
+  assertEq(lwStarts([dr(10, 4)], [lw(1, 8, 0, expected = 10 * minute)], minute), [long(1)])
+
+@test("a low job that does not fit waits `low: no spare room` and holds nothing back")
+lowThatDoesNotFitWaits()
+  val r = [dr(10, 8)]
+  assertEq(lwWhys(r, [lw(1, 8, 0)], minute), [(long(1), LowWaits)])
+  assertEq(lwStarts(r, [lw(1, 8, 0), lw(2, 4, 0)], minute), [long(2)])
+  assertEq(lwWhys(r, [lw(1, 8, 0), lw(2, 4, 0)], minute), [(long(1), LowWaits), (long(2), Starting)])
+  // it keeps no take-slot ticket: take-slot's runs never wait on its behalf
+  assertEq(marshal.ticketFor(drainBudget, r, [lw(1, 8, 0)], 0, marshal.NoOutside, fairAt(minute)), None)
+
+@test("behind a blocked head a low job starts only when it ends before the head can start")
+lowBehindABlockedHead()
+  // the running job ends at a minute, so the head (12 units) starts then
+  val r = [dr(10, 4)]
+  val short = [dj(1, 12, 0), lw(2, 4, 0, expected = 30000)]
+  assertEq(lwStarts(r, short, minute), [long(2)])
+  assertEq(lwWhys(r, short, minute), [(long(1), NoUnits), (long(2), Starting)])
+  val long_ = [dj(1, 12, 0), lw(2, 4, 0, expected = 2 * minute)]
+  assertEq(lwStarts(r, long_, minute), [])
+  assertEq(lwWhys(r, long_, minute), [(long(1), NoUnits), (long(2), LowWaits)])
+  // a short estimate not learned from its own work counts as its deadline
+  val guessed = [dj(1, 12, 0), lw(2, 4, 0, expected = 30000, drainMs = 45 * minute)]
+  assertEq(lwStarts(r, guessed, minute), [])
+  // the same job not low waits behind the head, as it always did
+  val plain = [dj(1, 12, 0), dj(2, 4, 0, expected = 2 * minute)]
+  assertEq(lwWhys(r, plain, minute), [(long(1), NoUnits), (long(2), Behind(1))])
+
+@test("a low job never drains the machine, however long it has waited")
+lowNeverDrains()
+  val r = [dr(10, 4)]
+  val q = [lw(1, 12, 0)]
+  assertEq(lwWhys(r, q, 3 * waitBound), [(long(1), LowWaits)])
+  assertEq(marshal.drainStart(drainBudget, r, q, 0, marshal.NoOutside, fairAt(3 * waitBound)), None)
+  assertEq(marshal.drainTarget(q, fairAt(3 * waitBound)), None)
+  // a normal job behind it in arrival waits past the bound and drains; the low job waits for it
+  val both = [dj(2, 12, minute), lw(1, 4, 0, expected = 10 * minute)]
+  assertEq(lwWhys(r, both, 3 * waitBound), [(long(2), Draining), (long(1), LowWaits)])
+
+@test("during a drain a low job backfills only when it ends before the drain's expected start")
+lowDuringADrain()
+  val r = [dr(10, 4)]
+  val ends = [dj(1, 12, 0), lw(2, 4, 0, expected = 30000)]
+  assertEq(marshal.starts(drainBudget, r, ends, 0, marshal.NoOutside, fairAt(waitBound)), [(long(2), Some(long(1)))])
+  val longer = [dj(1, 12, 0), lw(2, 4, 0, expected = 5 * minute)]
+  assertEq(lwWhys(r, longer, waitBound), [(long(1), Draining), (long(2), LowWaits)])
+  // a job not low that takes only what the drained job leaves spare backfills whatever its length;
+  // a low one does not, since a waiting job might take that room
+  val spare = Budget(16, 64 * 1024)
+  val q = [dj(1, 12, 0), lw(2, 4, 0, expected = 5 * minute)]
+  assertEq(marshal.waits(spare, [dr(10, 8)], q, 0, marshal.NoOutside, fairAt(waitBound)).map(w -> w.2), [Draining, LowWaits])
+  val qNormal = [dj(1, 12, 0), dj(2, 4, 0, expected = 5 * minute)]
+  assertEq(marshal.schedule(spare, [dr(10, 8)], qNormal, 0, marshal.NoOutside, fairAt(waitBound)), [long(2)])
+
+@test("a take-slot waiter that arrived after a low job goes before it")
+lowAfterTakeSlot()
+  val o = Outside(0, [Ticket(minute * 1000, 12)], false)
+  assertEq(lwStarts([], [lw(1, 4, 0)], 2 * minute, o), [])
+  assertEq(lwWhys([], [lw(1, 4, 0)], 2 * minute, o), [(long(1), LowWaits)])
+  // a job not low that arrived before the ticket starts ahead of it, as before
+  assertEq(lwStarts([], [dj(1, 4, 0)], 2 * minute, o), [long(1)])
+
+@test("a low job behind an exclusive one waits for it as every job does")
+lowBehindExclusive()
+  val x = Waiting(5, 12, 0, false, minute, 0, exclusive = true)
+  assertEq(lwWhys([dr(10, 4)], [x, lw(1, 4, 0)], minute), [(long(5), marshal.Emptying), (long(1), ForExclusive(5))])
+
+@test("the queue holds the low band behind every job not low: urgent, then by priority, then low")
+lowOrder()
+  val urgent = Place(5, 0, 300)
+  val normal = Place(0, 0, 200)
+  val high = Place(0, 9, 250)
+  val earlyLow = Place(0, 0, 100, true)
+  val highLow = Place(0, 9, 150, true)
+  assert(marshal.placeOrder(normal, earlyLow) < 0)
+  assert(marshal.placeOrder(earlyLow, normal) > 0)
+  assert(marshal.placeOrder(urgent, earlyLow) < 0)
+  assert(marshal.placeOrder(high, highLow) < 0)
+  // among low jobs, priority then arrival
+  assert(marshal.placeOrder(highLow, earlyLow) < 0)
+  assert(marshal.placeOrder(earlyLow, Place(0, 0, 120, true)) < 0)
+  assertEq(marshal.placeOrder(earlyLow, earlyLow), 0)
+
+lowSpec(urgent: bool = false, landing: bool = false, exclusive: bool = false, quick: bool = false, low: bool = true) -> JobSpec =
+  JobSpec("test", 4, 0, landing, "/tmp", None, ["true"], [], urgent, quick = quick, exclusive = exclusive, low = low)
+
+@test("--low is refused with --urgent, --landing, --exclusive and --quick, and taken alone")
+lowRefusals()
+  assertEq(marshal.lowRefusal(lowSpec()), None)
+  assertEq(marshal.lowRefusal(lowSpec(low = false, urgent = true)), None)
+  assertEq(marshal.lowRefusal(lowSpec(urgent = true)), Some("a job is low or urgent, not both"))
+  assertEq(marshal.lowRefusal(lowSpec(landing = true)), Some("a job is low or landing, not both"))
+  assertEq(marshal.lowRefusal(lowSpec(exclusive = true)), Some("a job is low or exclusive, not both"))
+  assertEq(marshal.lowRefusal(lowSpec(quick = true)), Some("a job is low or quick, not both"))
+
+@test("a low job becomes a normal one once it has waited low_promote_after, never with no bound")
+lowPromotion()
+  val hour4: long = 4 * 3600000
+  assert(!marshal.lowPromoted(0, (hour4 - 1) * 1000, Some(hour4)))
+  assert(marshal.lowPromoted(0, hour4 * 1000, Some(hour4)))
+  assert(!marshal.lowPromoted(0, 100 * hour4 * 1000, None))
+  assertEq(marshal.DefaultLowPromote, hour4)
+
+@test("a low job runs at nice 19; a landing, exclusive or urgent one is never niced")
+lowNice()
+  assertEq(marshal.niceFor(false, false, false, true), 19)
+  assertEq(marshal.niceFor(false, false, false), marshal.DevelopmentNice)
+  assertEq(marshal.niceFor(false, false, true, true), 0)
+
+@test("a low job's kind is marked ~, after any lane mark, cut in its name in top's column")
+lowMark()
+  assertEq(marshal.kindMarked("probe", false, false, false, false, true), "probe~")
+  assertEq(marshal.kindMarked("probe", false, false, true, false, true), "probe!")
+  assertEq(marshal.fittedMarked("bisection", false, false, false, 8, false, true), "bisect…~")
+  assertEq(marshal.fittedMarked("test", false, false, false, 8, false, true), "test~")
+
+@test("backfill trusts a duration learned from the job's own work, not its kind's or a guess")
+trustedDurations()
+  assert(marshal.trustedDuration("cmd+dir"))
+  assert(marshal.trustedDuration("cmd"))
+  assert(marshal.trustedDuration("norm+project"))
+  assert(!marshal.trustedDuration("kind+project"))
+  assert(!marshal.trustedDuration("kind"))
+  assert(!marshal.trustedDuration("none"))
+  assert(!marshal.trustedDuration(""))
+
+@test("a job that would overtake a blocked head is counted by its drainMs: a guessed short job waits")
+headBackfillTrustsLearned()
+  val r = [dr(10, 4)]
+  // the same 10-second job: learned, it overtakes; guessed (its deadline, 45m), it waits behind
+  val learned = [dj(1, 12, 0), Waiting(2, 4, 0, false, 10000, 0, drainMs = 10000)]
+  assertEq(lwStarts(r, learned, minute), [long(2)])
+  val guessed = [dj(1, 12, 0), Waiting(2, 4, 0, false, 10000, 0, drainMs = 45 * minute)]
+  assertEq(lwStarts(r, guessed, minute), [])
+  assertEq(lwWhys(r, guessed, minute), [(long(1), NoUnits), (long(2), Behind(1))])
+  // and ahead of a drain the same
+  assertEq(lwStarts(r, guessed, waitBound), [])
+  assertEq(lwStarts(r, learned, waitBound), [long(2)])

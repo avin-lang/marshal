@@ -1573,6 +1573,10 @@ a 12-unit job drained for it, and seven 2–4-unit jobs waited `draining for` it
 
 ## A job running before the drain counts by its deadline once past its estimate (branch `backfill-live`)
 
+**Revised 2026-11-19 (branch `marshal-040`, below):** a job running before the drain is now counted
+by a realistic end, not its deadline. This entry is kept as the history of why the deadline was
+chosen.
+
 **Settled on the user's delegation 2026-11-11.** The bug (user, live on 0.2.11): 4 of 12 units free, a 12-unit job draining, and a
 1-unit 40-minute build and a 4-unit 30-minute test waiting `draining for` it while the one job
 holding the drain had two hours to its deadline. Cause: that job, an avin gate, had run past its
@@ -2601,3 +2605,139 @@ script polling for a job's exit never saw it.
   retention removed (it says `job N has no ending in the log`, exit 2).
 - **`wait <id>` on an ended job** already answered at once, from memory or the log; tests now cover
   it after `ls` lets the job go, after `clean`, after a restart and from a new daemon.
+
+## 0.4.0: `--low`, honest backfill and reservations, a queue that says why, readable colours (branch `marshal-040`)
+
+2026-11-19. Each item was observed live on 2026-11-19 and is **settled by the user 2026-11-19**;
+the sub-choices under them are **settled on the user's delegation 2026-11-19**.
+
+### `--low` (low.avin)
+
+**Settled by the user 2026-11-19.** A low job queues behind every normal and urgent job whatever it
+arrived, starts only when it fits now and delays no waiting job not low, never drains, nothing waits
+on its behalf, runs at nice 19, is marked `~` in KIND and `"low": true`, is refused with `--urgent`,
+`--landing`, `--exclusive`, and becomes normal after `low_promote_after` (4h). Sub-choices:
+
+- **"Delays no waiting job" is: it ends, by `drainMs`, before the blocked head or the draining job
+  can start**, or it fits while no job not low waits at all. Low jobs are decided last, after every
+  take-slot ticket too, so every job not low has been decided first; the head's or drain's expected
+  start bounds every job behind it, since those start no earlier. Alternative: protect every waiting
+  job individually (each one's own expected start; more reckoning for the same answer in practice).
+- **No spare-room rule for a low job.** A job not low may backfill a drain when it takes only what
+  the drained job leaves spare at its start, whatever its length; a low job may not, since a waiting
+  job not low might take that room next. **Review with the user.**
+- **`--quick` is refused with `--low`** as well as the three the brief named: the quick lane starts
+  a job at once outside the budget, the opposite of waiting for spare room.
+- **A low job that cannot start waits `low` (`low: no spare room`)**, never `behind` or `no units`:
+  it is never the head, so no other job waits behind it, and it keeps no take-slot ticket.
+- **Promotion counts from when the job last queued** (`arrived`, as `drain_after` does), is checked
+  on the daemon's 3-second tick, logs a line in the job's log (kept when it starts) and a `promoted`
+  event (a `wait --until promoted` filter), and puts the job in the queue by its priority and
+  arrival, so a promoted job that has waited past `drain_after` may drain at once. That is the bound
+  doing its job: 4 hours of waiting. **Review with the user:** whether a promoted job should restart
+  `drain_after` instead.
+- **`priority <id> --low`** moves a queued development job into the band (and out of the urgent
+  band); a number or `--urgent` takes it out. A landing, exclusive or quick job is refused. `amend
+  --low` is refused, pointing at `priority`. The band is kept across `restart` (`low` in state.json,
+  the spec's when absent) and across retries.
+
+### Backfill trusts only learned durations
+
+**Settled by the user 2026-11-19.** The daemon's `drainMs` is a job's expected duration only when it
+was learned from the job's own work: `cmd+dir`, `cmd`, or `norm+project` (`trustedDuration`); a
+duration from `kind+project`, `kind` or a guess counts as the job's deadline. Every overtaking
+counts a job by `drainMs`: ahead of a drain (as before) and now ahead of a blocked head before any
+drain, which counted the raw estimate. Sub-choice: `norm+project` is trusted, since it is the same
+script made alike (a train's or a release gate's numbered siblings), the work itself; `kind+project`
+is not, since a kind in a project spans work of every length (`udr-test`, a bisect). **Review with
+the user:** `norm+project`.
+
+### A running job past its estimate counts by a realistic end, for every drain
+
+**Settled by the user 2026-11-19; revises `backfill-live`.** A job already running when the drain
+began is expected to end at max(end of its estimate, now + elapsed / 2), held to its deadline (a
+deadline already passed counts as now). Why half the elapsed time: a job's remaining time is
+unknown once its estimate is past, and a run that has gone on for `t` is about as likely to need
+`t/2` more as to end at once (the median remaining life of work whose length is spread), so it
+neither promises the drained job "now" (the bug `backfill-live` fixed) nor a whole deadline (this
+bug: `im-targeted3` made an urgent job wait 23 minutes for a backfilled job). For all drains, not
+only urgent ones: an ordinary drain was just as wrongly reckoned, and one rule is easier to read.
+A job started since the drain began keeps "past its estimate is now", so overruns still never
+compound. The same max applies to a job not yet past its estimate, so one near its estimate's end
+is not expected to end the very moment it reaches it. Alternatives: the deadline (the old rule);
+twice the estimate (no basis once the estimate is wrong); a quantile of the key's runs (most
+drained-on jobs have few runs).
+
+### `--mem` is a ceiling once the command's peak is learned
+
+**Settled by the user 2026-11-19.** A given `--mem` reserves the fewer of it and the command's own
+learned peak plus a margin, once `cmd+dir` or `cmd` has `learn_min_runs` clean peaks; `--mem-exact`
+keeps it; RESV shows `20G→~7.5G`, FROM the key, `resv_from` the key, and `submit` says it on stderr.
+Sub-choices: **the margin is a quarter of the peak, at least 1 GiB**, rounded up to a mebibyte (the
+peak is already the most of the last 3 clean runs; a run that needs more is charged what it holds,
+and the memory-pressure guard is unchanged). **Only the command's own keys**, as for `--units`,
+never a project key. **An external job keeps its `--mem`**: its tree is not where its work runs.
+**Review with the user:** the margin.
+
+### A waiting job says what it waits for
+
+**Settled by the user 2026-11-19.** `ls` and `status <id>` say a queued job's reason in full, from
+the scheduler's own reckoning (`Need`): `queued (needs 3 units, 1 free; waits for 7263, ~16:30)`,
+`queued (draining: needs 30G, 24G free; waits for 7263, ~16:30)`, `queued (behind 7278)`, `queued
+(low: no spare room)`; `status --json` and `status <id> --json` give it as `wait_text` beside the
+word `why`. Sub-choices: the job waited for is the running job whose expected end lets it fit (0,
+and not said, for take-slot's runs); the time is the local clock, `~now` for an end already due; a
+draining job's is reckoned as the drain counts jobs. `ls --compact` keeps the short words, so its
+line still fits the terminal; `top`'s table too, its log header saying it in full. A landing job's
+drain and the quick lane say their words alone (no `Need` is reckoned for them), and so does
+`polite budget`. Alternative: new `Why` constructors carrying the numbers (every reader of the
+protocol word would change).
+
+### A default label from the command
+
+**Settled by the user 2026-11-19.** A job without `--label` is shown with one derived from its
+command, `label_from: "cmd"`. Sub-choices: it is derived when shown, never stored in the spec, so
+`rerun` and `amend --label` behave as before and an older event log reads the same; the derivation
+passes over wrappers and settings as learning does, and a shell's `-c` is its first real step;
+**`kill --label` matches only given labels**, so a derived `sysl test` never kills another session's
+run (`history --label` and `events label=` do match derived ones). **Review with the user:** the
+`kill` exception.
+
+### The log header says the job's state (item 7)
+
+**Settled by the user 2026-11-19.** `top`'s log pane header gains a `state` row: `fullState`, the
+state with the reason in full and then the job's band and lane in words (`; urgent`, `; low`,
+`; landing`), and the kind row shows the kind with its marks. It follows the snapshot, so it is
+live. `marshal tail` gets no header: it prints the log's own lines, works without the daemon and is
+read by scripts; the log's first line is already the job's header, and `status <id>` gives the
+state. **Review with the user:** a header for `tail -f` on a terminal only.
+
+### A job not running yet shows how long it has waited (item 9)
+
+**Settled by the user 2026-11-19.** ELAPSED of a queued, held, waiting (`--after`) or retrying job is
+its wait, marked with a leading `w` (`w12m03s` in `ls`, `w12:03` in `top`, counting on between
+snapshots); `status <id>` and top's log header add `, waited 12m03s` after the state and reason.
+Sub-choices: **the `w` prefix** rather than dim or italic text in `top` (dim fails the contrast bar
+of item 8, italic is not drawn by every terminal, and a prefix reads the same in `ls`, a pipe and
+`top`). **The wait counts from when the job last began to wait** (`waitSince`: its submission, or
+the end of the attempt a retry follows), kept across `restart` (`wait_since` in state.json); a
+waiting job's wait includes the time it waited for the jobs it runs after, which is time the user
+waited. `queued_ms` in `--json` is that wait. **`, waited …` trails the reason** rather than standing
+between the state and it (`queued (behind 3), waited 12m03s`), so `queued (<reason>)` stays one
+phrase that scripts and the docs match. A settling job keeps its wait for the load. **Review with
+the user:** the trailing form.
+
+### Readable colours in `top` (item 8)
+
+**Settled by the user 2026-11-19.** The kill prompt was the theme's black (rendered dim grey) on the
+theme's red. Now: the prompt and an overdue row are bold white on marshal's own `#a00000` (about
+8:1; 7.4:1 at the 256-colour `#af0000`), the bottom line's keys black on `#00afaf` (about 7.8:1), and
+every grey (bright black) value — the log header's values, `-` cells, cancelled jobs, hints — is the
+terminal's own foreground. Colours given as RGB set both foreground and background, so they read
+alike on a dark and a light theme; the 4.5:1 bar is checked by a test. An overdue row takes the
+alert's foreground too, since a cell's own colour may not read on red. The prompt cuts each long path
+in the command to `…/` and its last two parts, and the line to the terminal's width. Kept: the
+selected row's reverse video (the theme's own pair, swapped), the meters' coloured bars (blocks,
+not text), and the coloured state words (green, yellow, red, from the theme's palette, which a
+theme sets for its own background). **Review with the user:** yellow state text on light themes
+whose yellow is pale; a fixed RGB yellow cannot reach 4.5:1 on both black and white by much.

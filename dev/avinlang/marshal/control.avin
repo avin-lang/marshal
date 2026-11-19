@@ -8,19 +8,22 @@ module dev.avinlang.marshal
 // - A held queue starts nothing in either lane, the landing lane included; running jobs go on.
 // - Each lane's queue begins with its urgent band: the urgent jobs, first come first served, in the
 //   order they became urgent. Behind it come the other jobs by priority, the highest first, and
-//   jobs of equal priority by arrival. Priority orders marshal's own jobs; take-slot's waiters keep
+//   jobs of equal priority by arrival, and behind them all the low band, ordered the same way.
+//   Priority orders marshal's own jobs; take-slot's waiters keep
 //   their places by arrival.
 
 // Where a queued job goes: `urgent` is 0 for a job outside the urgent band, and otherwise when it
 // joined the band, larger for a later one; `priority` places the jobs outside the band, and
-// `arrived`, when it was submitted, those of equal priority.
-data Place(urgent: long, priority: int, arrived: long)
+// `arrived`, when it was submitted, those of equal priority. `low` puts it in the low band, behind
+// every job not low (low.avin), and among the low jobs by priority and arrival.
+data Place(urgent: long, priority: int, arrived: long, low: bool = false)
 
 // How two places order their jobs in the queue: negative when the job at `a` goes first.
 placeOrder(a: Place, b: Place) -> int
   if a.urgent > 0 && b.urgent > 0 then return compareLongs(a.urgent, b.urgent)
   if a.urgent > 0 then return -1
   if b.urgent > 0 then return 1
+  if a.low != b.low then return if a.low then 1 else -1
   val byPriority = priorityOrder(a.priority, b.priority)
   if byPriority != 0 then byPriority else compareLongs(a.arrived, b.arrived)
 

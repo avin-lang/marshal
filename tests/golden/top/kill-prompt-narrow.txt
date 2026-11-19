@@ -9,11 +9,10 @@
 |   23 paused         bench        1  ~1│|
 |   24 running        lint         1    │|
 |   30 #1 no units    build        4    │|
-|Kill job 21 (sysl test compiler --timeou|
+|Kill job 21 (sysl test compiler --timeo…|
 --
 0 0..7 Default/Default/1
 0 23..29 Basic(2)/Default/0
-0 29..40 Basic(8)/Default/0
 1 6..13 Basic(2)/Default/0
 1 13..16 Basic(5)/Default/0
 1 16..19 Basic(8)/Default/0
@@ -36,4 +35,4 @@
 9 39..40 Basic(8)/Default/0
 10 6..20 Basic(3)/Default/0
 10 39..40 Basic(8)/Default/0
-11 0..40 Basic(0)/Basic(1)/1
+11 0..40 Rgb(255, 255, 255)/Rgb(160, 0, 0)/1

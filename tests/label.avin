@@ -467,9 +467,10 @@ labelTopLogHeader()
   val title = rowOf(g, "job 1 log, following")
   assert(g.rowText(title + 1).contains("kind"), g.rowText(title + 1))
   assert(g.rowText(title + 1).contains("build   owner  -   label  train 209"), g.rowText(title + 1))
-  assert(g.rowText(title + 2).contains("command") && g.rowText(title + 2).contains("sleep 30"), g.rowText(title + 2))
-  assert(g.rowText(title + 3).contains("──────"), g.rowText(title + 3))
-  assert(!g.rowText(title + 2).contains("label"), g.rowText(title + 2))
+  assert(g.rowText(title + 2).contains("state"), g.rowText(title + 2))
+  assert(g.rowText(title + 3).contains("command") && g.rowText(title + 3).contains("sleep 30"), g.rowText(title + 3))
+  assert(g.rowText(title + 4).contains("──────"), g.rowText(title + 4))
+  assert(!g.rowText(title + 3).contains("label"), g.rowText(title + 3))
   // a job without a label: the kind line is the one there always was, and the command follows it
   val plain = viewing(overviewOf([labelled(2, "")]))
   plain.handle(press(Enter))
@@ -478,8 +479,9 @@ labelTopLogHeader()
   val pt = rowOf(p, "job 2 log, following")
   assert(p.rowText(pt + 1).contains("kind") && p.rowText(pt + 1).contains("build"), p.rowText(pt + 1))
   assertEq(p.rowText(pt + 1).replace("│", "").trim, "kind    build   owner  -")
-  assert(p.rowText(pt + 2).contains("command"), p.rowText(pt + 2))
-  assert(p.rowText(pt + 3).contains("──────"), p.rowText(pt + 3))
+  assert(p.rowText(pt + 2).contains("state"), p.rowText(pt + 2))
+  assert(p.rowText(pt + 3).contains("command"), p.rowText(pt + 3))
+  assert(p.rowText(pt + 4).contains("──────"), p.rowText(pt + 4))
   // a label too long for the rest of the kind line wraps under where it began, every character kept
   val lengthy = (0 ..< 120).map(i -> if i % 10 == 9 then "z" else "a").mkString("")
   val wrapped = viewing(overviewOf([labelled(3, lengthy)]))
@@ -491,7 +493,9 @@ labelTopLogHeader()
   var seen = ""
   var k = 1
   while !w.rowText(wt + k).contains("command") && k < 20
-    seen = seen + w.rowText(wt + k).slice(start, w.rowText(wt + k).byteLength).replace("│", "").trim
+    // the state row stands between the label's last row and the command
+    if !w.rowText(wt + k).contains("state")
+      seen = seen + w.rowText(wt + k).slice(start, w.rowText(wt + k).byteLength).replace("│", "").trim
     k += 1
   assert(!seen.contains("…"), seen)
   assertEq(seen, lengthy)

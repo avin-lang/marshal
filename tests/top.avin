@@ -3,6 +3,7 @@ module tests
 // `marshal top` without a terminal: snapshots made to order are drawn into tui grids of several
 // sizes and read back row by row, and keys are handed to the view as events.
 import avin.time
+import avin.math
 import dev.avinlang.marshal
 import dev.avinlang.marshal.{JobInfo, Outcome, Overview, QueuedJob, TakeSlotUse, Usage, Why}
 import dev.avinlang.marshal.cli
@@ -13,7 +14,7 @@ import dev.avinlang.marshal.top.{
 }
 
 import dev.avinlang.tui.{
-  BrightBlack, Char, Ctrl, Down, End, Enter, Escape, Event, Green, Grid, Home, Key, KeyPress, Magenta, PageDown, PageUp,
+  Bold, BrightBlack, Char, Ctrl, Down, End, Enter, Escape, Event, Green, Grid, Home, Key, KeyPress, Magenta, PageDown, PageUp,
   Red, Resize, Reverse, Span, Stop, Up, Yellow, wrapChars
 }
 
@@ -372,7 +373,8 @@ colours()
   assertEq(at("7").style.fg, Red)
   assertEq(at("6").style.fg, Magenta)
   assertEq(at("5").style.fg, Magenta)
-  assertEq(at("3").style.fg, BrightBlack)
+  // a cancelled job in the terminal's own foreground, which its theme makes readable
+  assertEq(at("3").style.fg, top.Muted.fg)
   // the landing job has one minuteMs left of twenty: red
   val x = columnOf(g, 7, "1:00") + 1
   assertEq(g(x, 7).style.fg, Red)
@@ -535,8 +537,8 @@ logPane()
   val g = drawn(app, 80, 30)
   val title = rowOf(g, "job 1 log, following")
   assert(title > 4, "the pane is under the table")
-  // the box's header (kind, command, rule) takes three rows of the pane's inside
-  assertEq(app.logRows, 30 - 1 - title - 2 - 3)
+  // the box's header (kind, state, command, rule) takes four rows of the pane's inside
+  assertEq(app.logRows, 30 - 1 - title - 2 - 4)
   // the pane's last row holds the log's last line
   assert(g.rowText(27).contains("line 40"), g.rowText(27))
   assert(g.rowText(28).startsWith("╰"), g.rowText(28))
@@ -861,19 +863,98 @@ logHeader()
   val title = rowOf(g, "job 1 log, following")
   assert(g.rowText(title + 1).contains("kind"), g.rowText(title + 1))
   assert(g.rowText(title + 1).contains("build"), g.rowText(title + 1))
-  assert(g.rowText(title + 2).contains("command"), g.rowText(title + 2))
-  assert(g.rowText(title + 2).contains("sysl test compiler"), g.rowText(title + 2))
-  assert(g.rowText(title + 3).contains("──────"), g.rowText(title + 3))
-  assert(!g.rowText(title + 4).contains("command"))
-  assert(g.rowText(title + 4).contains("line "), g.rowText(title + 4))
+  assert(g.rowText(title + 2).contains("state"), g.rowText(title + 2))
+  assert(g.rowText(title + 2).contains("running"), g.rowText(title + 2))
+  assert(g.rowText(title + 3).contains("command"), g.rowText(title + 3))
+  assert(g.rowText(title + 3).contains("sysl test compiler"), g.rowText(title + 3))
+  assert(g.rowText(title + 4).contains("──────"), g.rowText(title + 4))
+  assert(!g.rowText(title + 5).contains("command"))
+  assert(g.rowText(title + 5).contains("line "), g.rowText(title + 5))
   // the rule row holds nothing but the rule
-  assertEq(g.rowText(title + 3).replace("│", "").replace("─", "").trim, "")
+  assertEq(g.rowText(title + 4).replace("│", "").replace("─", "").trim, "")
   // scrolling the log leaves the header where it is
   app.handle(press(PageUp))
   app.logLines = (1 .. 80).map(i -> s"line $i").toVector
   val back = drawn(app, 80, 30)
-  assert(back.rowText(title + 2).contains("sysl test compiler"))
-  assert(back.rowText(title + 3).contains("──────"))
+  assert(back.rowText(title + 3).contains("sysl test compiler"))
+  assert(back.rowText(title + 4).contains("──────"))
+
+// The contrast ratio of two colours given as red, green and blue (WCAG 2): the lighter's relative
+// luminance plus 0.05 over the darker's.
+contrastOf(a: (int, int, int), b: (int, int, int)) -> real
+  val la = luminanceOf(a)
+  val lb = luminanceOf(b)
+  if la > lb then (la + 0.05) / (lb + 0.05) else (lb + 0.05) / (la + 0.05)
+
+luminanceOf(c: (int, int, int)) -> real = 0.2126 * channelOf(c.0) + 0.7152 * channelOf(c.1) + 0.0722 * channelOf(c.2)
+
+channelOf(v: int) -> real
+  val s = real(v) / 255.0
+  if s <= 0.03928 then s / 12.92 else math.pow((s + 0.055) / 1.055, 2.4)
+
+@test("the kill prompt is bold white on a dark red of its own, at least 4.5:1, and cuts a long path to its last two parts")
+killPromptReadable()
+  val long_ = JobInfo(7289, "build", 4, 0, false, "/tmp", ["zsh", "/Users/ed/.claude/tmp/claude-501/s/train/train373.zsh", "go"], "running", None, false, 0, 1000, 60000, "/tmp/l", None)
+  assertEq(top.killPrompt(long_), "Kill job 7289 (zsh …/train/train373.zsh go)? y/n")
+  assertEq(top.shortPath("a/b"), "a/b")
+  assertEq(top.shortPath("/a/b"), "/a/b")
+  assertEq(top.shortPath("sleep"), "sleep")
+  assertEq(top.AlertStyle.fg, top.AlertFg)
+  assert(top.AlertStyle.has(Bold))
+  assert(contrastOf((255, 255, 255), (160, 0, 0)) >= 4.5)
+  // the 256-colour red it becomes, #af0000, too
+  assert(contrastOf((255, 255, 255), (175, 0, 0)) >= 4.5)
+  // the bottom line's keys: black on #00afaf
+  assert(contrastOf((0, 0, 0), (0, 175, 175)) >= 4.5)
+  // drawn: the whole prompt in the alert style, cut to the width
+  val o = full()
+  val app = viewing(Overview(o.usage, 0, [long_], [], []))
+  app.handle(key('k'))
+  val g = drawn(app, 60, 20)
+  assert(g.rowText(19).startsWith("Kill job 7289 (zsh …/train/train373.zsh go)? y/n"), g.rowText(19))
+  assertEq(g(0, 19).style, top.AlertStyle)
+  val narrow = drawn(app, 20, 20)
+  assertEq(narrow.rowText(19).charCount, 20)
+
+@test("the log pane's header says the job's whole state, the reason it waits in full and its marks, and follows it live")
+logHeaderState()
+  val waiting = JobInfo(
+    4,
+    "test",
+    4,
+    0,
+    false,
+    "/tmp",
+    ["sysl", "test", "compiler"],
+    "queued",
+    None,
+    false,
+    12 * minuteMs,
+    0,
+    60000,
+    "/tmp/4.log",
+    None,
+    urgent = true,
+    waitText = "draining: needs 30G, 24G free; waits for 7263, ~16:30"
+  )
+  val o = full()
+  val app = viewing(Overview(o.usage, 0, [], [QueuedJob(waiting, 1, Why.Draining)], []))
+  app.handle(press(Enter))
+  val g = drawn(app, 120, 30)
+  val title = rowOf(g, "job 4 log")
+  assert(g.rowText(title + 1).contains("test!"), g.rowText(title + 1))
+  val state = g.rowText(title + 2)
+  assert(state.contains("queued (draining: needs 30G, 24G free; waits for 7263, ~16:30), waited 12m00s; urgent"), state)
+  // its ELAPSED counts its wait on between snapshots, marked w
+  assert(rowOf(drawn(app, 120, 30, 5000), "w12:05") >= 0)
+  // the next snapshot moves the header with the job: it runs now
+  val running = JobInfo(4, "test", 4, 0, false, "/tmp", ["sysl", "test", "compiler"], "running", None, false, 0, 1000, 60000, "/tmp/4.log", None, urgent = true)
+  app.update(Overview(o.usage, 0, [running], [], []))
+  val later = drawn(app, 120, 30)
+  assert(later.rowText(title + 2).contains("running; urgent"), later.rowText(title + 2))
+  // a narrow pane ends the state in an ellipsis rather than wrapping it
+  val narrow = drawn(app, 30, 30)
+  assert(rowOf(narrow, "state") > 0)
 
 @test("a long command wraps inside the pane, whole, and the log keeps at least a row")
 logHeaderWraps()
@@ -887,7 +968,7 @@ logHeaderWraps()
   val title = rowOf(g, "job 1 log")
   // the wrapped lines under `command` have no label and carry the rest of the text
   var joined = ""
-  var y = title + 2
+  var y = title + 3
   while !g.rowText(y).contains("──────")
     joined = joined + g.rowText(y).drop(1 + 8).dropRight(1).trim
     y = y + 1

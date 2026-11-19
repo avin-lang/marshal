@@ -41,11 +41,18 @@ module dev.avinlang.marshal
 //   its kind (`drainMs`). In queue order, another development job that fits now starts ahead of it
 //   when it too is expected to end by then, or when it takes only units and memory the draining job
 //   will leave spare when it starts. The rest wait for it. A job that was already running when the
-//   drain began and has run past its estimate is counted by its deadline, the latest it can end, as
-//   one whose kind nothing is learned of. A job started since the drain began (one backfilled ahead
-//   of it) that runs past its estimate is expected at any moment, so once the drain waits on it,
+//   drain began is expected to end at the later of its estimate's end and half as long again as it
+//   has run, held to its deadline (`drainEnd`). A job started since the drain began (one backfilled
+//   ahead of it) that runs past its estimate is expected at any moment, so once the drain waits on it,
 //   nothing more backfills: an overrun delays the drain by at most that job's own deadline, and never
 //   compounds. Nothing backfills ahead of a draining job that waits behind take-slot.
+// - Backfill trusts only durations learned from a job's own work (low.avin's `trustedDuration`): the
+//   daemon gives any other job its deadline as `drainMs`, and every overtaking, ahead of a blocked head
+//   or of a drain, counts a job by `drainMs`.
+// - Low jobs (low.avin) are decided last, after every take-slot waiter: one starts when it fits and
+//   is expected to end before the job that waits (the draining job, or the blocked head) can start,
+//   or whenever it fits while nothing waits. One that cannot waits `LowWaits`, is never the head,
+//   never drains and keeps no take-slot ticket.
 // - An exclusive job owns the machine. While one runs, nothing else starts in any lane: every
 //   waiting job waits for it (`ForExclusive`). One that waits never stops a running job; it starts
 //   once nothing else runs or starts, nothing ahead of it waits, take-slot holds nothing, and the
@@ -95,6 +102,8 @@ val Unbounded: Fairness = Fairness(long.MaxValue, 0)
 // the load to settle (`loadWhy`), None once it need not.
 // `alone` says a job bigger than the polite budget runs alone, as an exclusive job does.
 // `urgent` says it is in the urgent band: a drain is for it ahead of every job not in the band.
+// `low` says it is in the low band (low.avin): it starts only in spare room, never drains the machine
+// and holds nothing back; the queue holds it behind every job not low.
 data Waiting(
     id: long,
     units: int,
@@ -107,8 +116,15 @@ data Waiting(
     exclusive: bool = false,
     unsettled: Option[Why] = None,
     alone: bool = false,
-    urgent: bool = false
+    urgent: bool = false,
+    low: bool = false
 )
+
+// What a development job that does not fit needs and what is free as the scheduler looks: `units`
+// (quarters) and `memory` it needs, `freeUnits` and `freeMemory` beside what runs and starts before
+// it, and the running job whose end is expected to let it start (`waitsOn`, 0 where none is, or
+// take-slot's runs) and when (`at`, on the clock of `now`; `long.MaxValue` where never).
+data Need(units: int, freeUnits: int, memory: long, freeMemory: long, waitsOn: long, at: long)
 
 // Whether `w` owns the machine while it runs: an exclusive job, or one that runs alone.
 private owns(w: Waiting) -> bool = w.exclusive || w.alone
@@ -139,6 +155,10 @@ private counts(budget: Budget, quick: bool) -> bool = isPolite(budget) || !quick
 
 // How long a drain counts a job of `expectedMs` and `drainMs` as running.
 private drainEstimate(expectedMs: long, drainMs: long) -> long = if drainMs > 0 then drainMs else expectedMs
+
+// When a running or starting job is expected to end, the units and memory it frees then, and its id
+// (0 for take-slot's runs).
+type End = (long, int, long, long)
 
 // A take-slot waiter: when it arrived (wall-clock microseconds) and the units it waits for.
 data Ticket(arrived: long, units: int)
@@ -200,6 +220,18 @@ settles(
 ) -> Option[long] =
   decide(budget, running, queue, now, outside, fair).find(d -> d.settling).map(d -> d.id)
 
+// What each development job that waits for units or memory needs, and what it waits for (`Need`), in
+// the order the scheduler decides them; jobs that wait for anything else are left out.
+needs(
+    budget: Budget,
+    running: Vector[Started],
+    queue: Vector[Waiting],
+    now: long,
+    outside: Outside = NoOutside,
+    fair: Fairness = Unbounded
+) -> Vector[(long, Need)] =
+  decide(budget, running, queue, now, outside, fair).filter(d -> d.need.isDefined).map(d -> (d.id, d.need.get))
+
 // Each waiting job's place in its lane's queue (from 1) and why it waits, in the order of `queue`:
 // what `schedule` would say of it, with `Starting` for a job it would start now.
 waits(
@@ -259,7 +291,10 @@ ticketFor(
     Some(w) ->
       val first = outside.waiting.map(t -> t.arrived).minOption
       Some((first.filter(a -> a <= w.arrived).map(a -> a - 1).getOrElse(w.arrived), w.units))
-    None -> drainTarget(weighed, fair).orElse(weighed.find(w -> !w.landing && !w.quick)).map(w -> (w.arrived, w.units))
+    // a low job keeps no ticket: take-slot's runs never wait on its behalf
+    None -> drainTarget(weighed, fair).orElse(weighed.find(w -> !w.landing && !w.quick && !w.low)).map(
+      w -> (w.arrived, w.units)
+    )
 
 // What the scheduler weighs beside `queue`'s first exclusive job (not a landing one), which reserves
 // the machine whether or not its load has settled: the queue up to and including it, and every
@@ -269,9 +304,10 @@ upToExclusive(queue: Vector[Waiting]) -> Vector[Waiting]
   if at < 0 then return queue
   queue.take(at + 1) ++ queue.drop(at + 1).filter(w -> w.landing)
 
-// The first development job in queue order that has waited past the bound, if one has.
+// The first development job in queue order that has waited past the bound, if one has. A low job
+// never drains the machine: it becomes a normal job once it has waited long enough (low.avin).
 waitedPast(queue: Vector[Waiting], fair: Fairness) -> Option[Waiting] =
-  queue.find(w -> !w.landing && !w.quick && (fair.wallNow - w.arrived) / 1000 >= fair.afterMs)
+  queue.find(w -> !w.landing && !w.quick && !w.low && (fair.wallNow - w.arrived) / 1000 >= fair.afterMs)
 
 // The development jobs that go ahead of every other once `past` has waited past the bound, in the
 // order they go: the urgent band's, in queue order, then `past` (in its place in the band when it is
@@ -290,13 +326,15 @@ drainTarget(queue: Vector[Waiting], fair: Fairness) -> Option[Waiting] =
 
 // What the scheduler makes of one waiting job: start it now (no `why`), or why it waits. `ahead` is
 // the draining job it is backfilled ahead of; `at`, on the draining job, when it is expected to start.
-// `settling` says an exclusive job has the machine to itself and waits for the load alone.
+// `settling` says an exclusive job has the machine to itself and waits for the load alone. `need`, on
+// a development job that waits for units or memory, is what it needs and waits for.
 private data Decision(
     id: long,
     why: Option[Why],
     ahead: Option[long] = None,
     at: Option[long] = None,
-    settling: bool = false
+    settling: bool = false,
+    need: Option[Need] = None
 )
 
 // The decision for every waiting job: the landing jobs first, then the development jobs in arrival
@@ -321,18 +359,19 @@ private decide(
   val exclusive = queue.find(w -> owns(w) && !w.landing)
   val weighed = upToExclusive(queue).filter(w -> exclusive.forall(x -> w.id != x.id))
   val tickets = exclusive.map(x -> outside.waiting.filter(t -> t.arrived < x.arrived)).getOrElse(outside.waiting)
-  // When each running or starting job is expected to end, with the units and memory it frees.
-  val ends = Buffer[(long, int, long)]()
+  // When each running or starting job is expected to end, with the units and memory it frees and its
+  // id (0 for take-slot's runs).
+  val ends = Buffer[End]()
   // the same, each job counted as a drain counts it (`drainMs`)
-  val sure = Buffer[(long, int, long)]()
+  val sure = Buffer[End]()
   var memory: long = 0
   var laneBusy = outside.landing
   var units = outside.units
   // the units take-slot's runs hold, and its waiters that fit are to hold
   var theirs = outside.units
   if outside.units > 0
-    ends += (now, outside.units, 0)
-    sure += (now, outside.units, 0)
+    ends += (now, outside.units, 0, 0)
+    sure += (now, outside.units, 0, 0)
   var quicks = 0
   // Once a job has waited past the bound, the jobs that go first (`drainOrder`): the urgent band's
   // development jobs, then it; the first of them that does not fit is the one the machine drains
@@ -346,8 +385,8 @@ private decide(
     val frees = if counts(budget, r.quick) then r.units else 0
     units += frees
     memory += r.memory
-    ends += (expectedEnd(r.startedMs, r.expectedMs, now), frees, r.memory)
-    sure += (drainEnd(r, now, began), frees, r.memory)
+    ends += (expectedEnd(r.startedMs, r.expectedMs, now), frees, r.memory, r.id)
+    sure += (drainEnd(r, now, began), frees, r.memory, r.id)
   // the landing job that waits for memory and drains the machine, if one does
   var draining: Option[long] = None
   for w in queue.filter(w -> w.landing)
@@ -362,8 +401,8 @@ private decide(
       // what it weighs holds back the development jobs decided after it
       val taken = w.units
       units += taken
-      ends += (now + w.expectedMs, taken, w.memory)
-      sure += (now + drainEstimate(w.expectedMs, w.drainMs), taken, w.memory)
+      ends += (now + w.expectedMs, taken, w.memory, w.id)
+      sure += (now + drainEstimate(w.expectedMs, w.drainMs), taken, w.memory, w.id)
     else
       out += Decision(w.id, Some(Draining))
       draining = Some(w.id)
@@ -390,6 +429,26 @@ private decide(
   var spareUnits = 0
   var spareMemory: long = 0
   for e in arrivalOrder(order, tickets)
+    // A low job starts only where it delays no job that is not low: whenever it fits while nothing
+    // else waits, and otherwise only when it fits and is expected to end before the job that waits
+    // can start, the draining job or the blocked head (`drainEstimate`: a duration learned from its
+    // own work, else its deadline). It never becomes the head nor drains, so it holds nothing back.
+    if e.job.exists(w -> w.low)
+      val w = e.job.get
+      val fits = units + w.units <= budget.units && memory + w.memory <= budget.memory
+      val estimate = drainEstimate(w.expectedMs, w.drainMs)
+      val until = if hold.isDefined then (if backfills then drainAt else now) else head.map(h -> h.0).getOrElse(
+        long.MaxValue
+      )
+      if fits && (until == long.MaxValue || (until > now && estimate <= until - now))
+        units += w.units
+        memory += w.memory
+        ends += (now + w.expectedMs, w.units, w.memory, w.id)
+        sure += (now + estimate, w.units, w.memory, w.id)
+        out += Decision(w.id, None, hold)
+      else
+        out += Decision(w.id, Some(LowWaits))
+      continue
     if hold.isDefined
       for w in e.job.toList
         val fits = units + w.units <= budget.units && memory + w.memory <= budget.memory
@@ -399,8 +458,8 @@ private decide(
         if backfills && fits && (endsFirst || spare)
           units += w.units
           memory += w.memory
-          ends += (now + w.expectedMs, w.units, w.memory)
-          sure += (now + estimate, w.units, w.memory)
+          ends += (now + w.expectedMs, w.units, w.memory, w.id)
+          sure += (now + estimate, w.units, w.memory, w.id)
           if !endsFirst
             spareUnits -= w.units
             spareMemory -= w.memory
@@ -409,19 +468,22 @@ private decide(
           out += Decision(w.id, hold.map(id -> DrainingFor(id)))
       continue
     val fits = units + e.units <= budget.units && memory + e.memory <= budget.memory
+    // how long a job is counted as running when it would overtake the blocked head: a duration
+    // learned from its own work, else its deadline (`drainMs`), as a drain counts it
+    val overtakes = e.job.map(w -> drainEstimate(w.expectedMs, w.drainMs)).getOrElse(e.expectedMs)
     val go = head match
       None ->
         if !fits then head = Some((whenFits(budget, units, memory, e.units, e.memory, ends), e.job.map(w -> w.id)))
         fits
       // take-slot never lets a waiter overtake; a marshal job may, when it delays nobody
-      Some((at, _)) -> e.job.isDefined && fits && now + e.expectedMs <= at
+      Some((at, _)) -> e.job.isDefined && fits && now + overtakes <= at
     if go
       units += e.units
       memory += e.memory
-      ends += (now + e.expectedMs, e.units, e.memory)
+      ends += (now + e.expectedMs, e.units, e.memory, e.job.map(w -> w.id).getOrElse(0))
       // an urgent job that starts ahead of the job the machine drains for is counted by the drain
       // too, so when the drain ends is known in the same look
-      for w in e.job.toList do sure += (now + drainEstimate(w.expectedMs, w.drainMs), w.units, w.memory)
+      for w in e.job.toList do sure += (now + drainEstimate(w.expectedMs, w.drainMs), w.units, w.memory, w.id)
       if e.job.isEmpty then theirs += e.units
     for w in e.job.toList
       if go
@@ -437,9 +499,11 @@ private decide(
             val free = freeAt(budget, units, memory, sure, drainAt)
             spareUnits = free.0 - e.units
             spareMemory = free.1 - e.memory
-        out += Decision(w.id, Some(why), None, if backfills then Some(drainAt) else None)
+        val need = if fits then None else Some(needOf(budget, units, memory, e, sure))
+        out += Decision(w.id, Some(why), None, if backfills then Some(drainAt) else None, need = need)
       else
-        out += Decision(w.id, Some(waitsFor(budget, units, memory, theirs, e, fits, head)))
+        val need = if fits then None else Some(needOf(budget, units, memory, e, ends))
+        out += Decision(w.id, Some(waitsFor(budget, units, memory, theirs, e, fits, head)), need = need)
   for x in exclusive.toList
     // it waits behind a job ahead of it that waits, then for the machine to empty (holding back what
     // is behind it all along, its load settled or not); one whose load has not settled once the
@@ -473,8 +537,8 @@ private quickLane(
     now: long,
     quicks: int,
     memory: long,
-    ends: Buffer[(long, int, long)],
-    sure: Buffer[(long, int, long)],
+    ends: Buffer[End],
+    sure: Buffer[End],
     out: Buffer[Decision]
 ) -> (long, int)
   var free = QuickSlots - quicks
@@ -492,8 +556,8 @@ private quickLane(
       used += w.memory
       val taken = if counts(budget, true) then w.units else 0
       units += taken
-      ends += (now + w.expectedMs, taken, w.memory)
-      sure += (now + drainEstimate(w.expectedMs, w.drainMs), taken, w.memory)
+      ends += (now + w.expectedMs, taken, w.memory, w.id)
+      sure += (now + drainEstimate(w.expectedMs, w.drainMs), taken, w.memory, w.id)
     else
       out += Decision(
         w.id,
@@ -533,15 +597,22 @@ drainingFor(NoMemory) = Draining
 drainingFor(PoliteBudget) = Draining
 drainingFor(why) = why
 
-// When a drain that began at `began` counts the running job `r` as ending: at the end of its estimate
-// (`drainMs`); once past it, at its deadline when it was already running as the drain began, and
-// otherwise (a job backfilled ahead of the drain, or one whose deadline is not known or is past) at
-// once.
+// When a drain that began at `began` counts the running job `r` as ending.
+// - A job already running as the drain began is expected to end at the later of the end of its
+//   estimate (`drainMs`) and half as long again as it has run so far (`now + elapsed / 2`), held to its
+//   deadline: a job well into its run is not expected to end the moment its estimate passes, nor to
+//   use its whole deadline. A deadline already passed counts as now (the job is being stopped).
+// - A job started since (backfilled ahead of the drain, or a landing or quick job) is expected at the
+//   end of its estimate, and once past it at any moment, so an overrun delays the drain by at most
+//   that job's own deadline and delays never compound.
 private drainEnd(r: Started, now: long, began: long) -> long
   val end = r.startedMs + drainEstimate(r.expectedMs, r.drainMs)
-  if end > now then return end
+  if r.startedMs >= began then return if end > now then end else now
+  val elapsed = if now > r.startedMs then now - r.startedMs else 0
+  val realistic = if end > now + elapsed / 2 then end else now + elapsed / 2
+  if r.deadlineMs <= 0 then return realistic
   val latest = r.startedMs + r.deadlineMs
-  if r.deadlineMs > 0 && r.startedMs < began && latest > now then latest else now
+  if latest <= now then now elif realistic < latest then realistic else latest
 
 // A running job past its expected end may end at any moment: it is expected now.
 private expectedEnd(startedMs: long, expectedMs: long, now: long) -> long =
@@ -551,14 +622,14 @@ private expectedEnd(startedMs: long, expectedMs: long, now: long) -> long =
 private data Entry(job: Option[Waiting], units: int, memory: long, expectedMs: long)
 
 // The development jobs of `queue` and take-slot's `tickets` in one arrival order; a ticket goes first
-// on a tie.
+// on a tie. Low jobs come after every ticket, as they come after every job not low.
 private arrivalOrder(queue: Vector[Waiting], tickets: Vector[Ticket]) -> Vector[Entry]
   val sorted = tickets.sortBy(t -> t.arrived)
   val out = Buffer[Entry]()
   var t = 0
   for w in queue
     if w.landing || w.quick then continue
-    while t < sorted.length && sorted(t).arrived <= w.arrived
+    while t < sorted.length && (w.low || sorted(t).arrived <= w.arrived)
       out += Entry(None, sorted(t).units, 0, 0)
       t += 1
     out += Entry(Some(w), w.units, w.memory, w.expectedMs)
@@ -574,22 +645,39 @@ private whenFits(
     memory: long,
     units: int,
     needs: long,
-    ends: Buffer[(long, int, long)]
-) -> long
+    ends: Buffer[End]
+) -> long = whenFitsBy(budget, used, memory, units, needs, ends).0
+
+// The same, with the id of the job whose end is expected to make them fit (0 for take-slot's runs, or
+// where they never fit).
+private whenFitsBy(
+    budget: Budget,
+    used: int,
+    memory: long,
+    units: int,
+    needs: long,
+    ends: Buffer[End]
+) -> (long, long)
   var freeUnits = budget.units - used
   var freeMemory = budget.memory - memory
-  for (at, u, m) in ends.sortBy(e -> e.0)
+  for (at, u, m, id) in ends.sortBy(e -> e.0)
     freeUnits += u
     freeMemory += m
-    if units <= freeUnits && needs <= freeMemory then return at
-  long.MaxValue
+    if units <= freeUnits && needs <= freeMemory then return (at, id)
+  (long.MaxValue, 0)
+
+// What the job of `e` needs beside `used` units and `memory`, and the job in `ends` whose end is
+// expected to let it start, and when.
+private needOf(budget: Budget, used: int, memory: long, e: Entry, ends: Buffer[End]) -> Need
+  val (at, id) = whenFitsBy(budget, used, memory, e.units, e.memory, ends)
+  Need(e.units, budget.units - used, e.memory, budget.memory - memory, id, at)
 
 // The units and memory free at `at`, beside `used` units and `memory` now, if the jobs in `ends` end
 // when they are expected to.
-private freeAt(budget: Budget, used: int, memory: long, ends: Buffer[(long, int, long)], at: long) -> (int, long)
+private freeAt(budget: Budget, used: int, memory: long, ends: Buffer[End], at: long) -> (int, long)
   var freeUnits = budget.units - used
   var freeMemory = budget.memory - memory
-  for (t, u, m) in ends
+  for (t, u, m, _) in ends
     if t <= at
       freeUnits += u
       freeMemory += m
@@ -619,6 +707,6 @@ val DevelopmentNice: int = 15
 // The `nice` level a job is started under, however it starts (in its turn, or backfilled ahead of a
 // draining job): 0, not niced, for a landing job, an exclusive one and one in the urgent band as it
 // starts (`--urgent`, or moved there by `priority`), since each is work the machine is waiting on;
-// `DevelopmentNice` for every other job.
-niceFor(landing: bool, exclusive: bool, urgent: bool) -> int =
-  if landing || exclusive || urgent then 0 else DevelopmentNice
+// `LowNice` for one in the low band as it starts (low.avin); `DevelopmentNice` for every other job.
+niceFor(landing: bool, exclusive: bool, urgent: bool, low: bool = false) -> int =
+  if landing || exclusive || urgent then 0 elif low then LowNice else DevelopmentNice

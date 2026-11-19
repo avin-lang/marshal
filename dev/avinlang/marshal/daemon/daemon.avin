@@ -142,6 +142,9 @@ class Job(
     val log: string
 )
   var state = "queued"
+  // since when it has waited to run (the daemon's clock): its submission, or the end of the attempt
+  // a retry follows
+  var waitSince: long = submittedMs
   var pid: long = 0
   var startedMs: long = 0
   var startedAt: long = 0
@@ -166,6 +169,9 @@ class Job(
   var priority = 0
   // when it joined the urgent band (wall-clock microseconds), or 0 outside it
   var urgentAt: long = 0
+  // whether it is in the low band (low.avin): its spec's `--low`, until `priority` or promotion
+  // changes it
+  var low = false
   // whether `amend` changed its settings; and whether a queued job an amended `--after` sent back to
   // wait rejoins the queue in the place it had (its `arrived` and `urgentAt`) rather than at the back
   var amended = false
@@ -222,16 +228,20 @@ class Job(
 
   // `expectedStart` is when it is expected to start (wall-clock milliseconds), on the job the
   // machine drains for; 0 otherwise. `startsIn` is how long a queued job is expected to wait yet,
-  // -1 where that is not known (eta.avin).
-  info(now: long, expectedStart: long = 0, startsIn: long = -1) -> JobInfo =
+  // -1 where that is not known (eta.avin). `waitText` is why a queued job waits, in full (`needText`).
+  // A job submitted without a label is shown with one derived from its command (`derivedLabel`).
+  info(now: long, expectedStart: long = 0, startsIn: long = -1, waitText: string = "") -> JobInfo =
     val waits = state == "queued" || state == "waiting" || state == "retrying"
     val elapsed = if waits then long(0) else ran(now)
-    val queued = if waits then now - submittedMs else startedMs - submittedMs
+    // how long it has waited: a job not running yet since it last began to wait (a retry since the
+    // attempt before it ended), a started one from its submission to its start
+    val queued = if waits then now - waitSince else startedMs - submittedMs
     val rss = if state == "running" then resident.now else 0
     // a waiting job that asked to be urgent joins the urgent band once it queues
     val urgent = urgentAt > 0 || (state == "waiting" && spec.urgent)
     // a settling job is queued to the daemon, and settling to everyone who asks
     val settles = state == "queued" && settling
+    val derived = if spec.label.isEmpty then marshal.derivedLabel(spec.cmd) else ""
     JobInfo(
       id,
       spec.kind,
@@ -259,7 +269,7 @@ class Job(
       attempt,
       reserved,
       learnedMem,
-      spec.label,
+      if derived.nonEmpty then derived else spec.label,
       spec.quietMs,
       reservedFrom,
       spec.external,
@@ -284,7 +294,10 @@ class Job(
       deadlineFrom,
       project,
       spec.retries,
-      amended
+      amended,
+      low,
+      if state == "queued" then waitText else "",
+      if derived.nonEmpty then "cmd" else ""
     )
 
 // The daemon's state, owned by its own thread.
@@ -395,8 +408,9 @@ class Daemon(
   memoryLearning() -> marshal.MemoryLearning =
     marshal.MemoryLearning(marshal.defaultMemoryLearning.window, config.learning.minRuns, marshal.defaultMemoryLearning.marginPercent)
 
-  // Gives `job` its reservation: the memory it gave, or the peak learned from the first trusted key
-  // of its chain (learning.avin), or before any is, the most its chain holds or its class's share
+  // Gives `job` its reservation: the memory it gave (held to its command's own learned peak and
+  // margin where that is less, `memoryCeiling`), or the peak learned from the first trusted key of
+  // its chain (learning.avin), or before any is, the most its chain holds or its class's share
   // (`unlearnedMemory`).
   reserve(job: Job)
     val s = job.spec
@@ -405,6 +419,15 @@ class Daemon(
     val h = marshal.memoryHistory(learning, chain)
     val unlearned = marshal.unlearnedMemory(chain, s.kind, s.landing, config.budget.memory)
     val r = marshal.reservationFor(learning, s.memory, s.memoryGiven, h.peaks, config.budget.memory, unlearned)
+    // a given memory is a ceiling once the command's own runs teach a lower peak (`memoryCeiling`),
+    // unless it was given exactly; an external job's tree is not where its work runs, so it keeps it
+    if s.memory > 0 && !s.memExact && !s.external
+      val own = marshal.memoryHistory(learning, chain.filter(c -> c.1 == marshal.FromDir || c.1 == marshal.FromCmd))
+      for c in marshal.memoryCeiling(learning, s.memory, own.peaks).toList
+        job.reserved = c
+        job.learnedMem = true
+        job.reservedFrom = own.from
+        return
     job.reserved = r.bytes
     job.learnedMem = r.learned
     job.reservedFrom = marshal.reservationSource(s.memory, s.memoryGiven, r, h.from, unlearned)
@@ -624,9 +647,9 @@ class Daemon(
       ts.register(j.pid, j.spec.units)
       ts.unlock()
 
-  // How long a drain counts a job as running: its learned duration, or its deadline when nothing is
-  // learned of its kind.
-  drainMs(j: Job) -> long = if j.durationLearned then j.expectedMs else j.deadlineMs
+  // How long a drain, and any backfill, counts a job as running: its duration learned from its own
+  // work (low.avin's `trustedDuration`), or its deadline when that is a guess or comes from its kind.
+  drainMs(j: Job) -> long = if j.durationLearned && marshal.trustedDuration(j.durationFrom) then j.expectedMs else j.deadlineMs
 
   // Polite mode as it is now, from the schedule and what the user set by hand; None while marshal
   // is not polite.
@@ -681,7 +704,8 @@ class Daemon(
       j.spec.exclusive,
       unsettled,
       alone(j, b),
-      j.urgentAt > 0
+      j.urgentAt > 0,
+      j.low
     )
 
   // Why the load alone holds the exclusive job `j` back at `t`.
@@ -709,6 +733,7 @@ class Daemon(
         Tick ->
           measureDisk()
           measurePressure()
+          promoteLow()
           if queue.nonEmpty then schedule()
         Sweep -> sweep()
         Sample ->
@@ -764,6 +789,8 @@ class Daemon(
   submit(given: JobSpec, extra: Vector[(string, Json)] = []) -> Reply
     if stopping || draining then return Failed("the daemon is stopping and takes no new jobs")
     for why in marshal.exclusiveRefusal(given).toList do return Failed(why)
+    for why in marshal.lowRefusal(given).toList do return Failed(why)
+    if given.memExact && !given.memoryGiven && given.memory <= 0 then return Failed(marshal.MemExactWithoutMem)
     // an exclusive job is the only one running, so it weighs the whole budget; one that gave no
     // units weighs what its command's runs teach, and one that gave more than they teach weighs
     // what they teach unless it gave them exactly
@@ -802,6 +829,7 @@ class Daemon(
     val job = Job(id, spec, now(), time.now().epochMicros, deadline, 0, s"$home/jobs/$id.log")
     job.project = projectFor(spec.dir)
     job.deadlineFrom = deadlineFrom
+    job.low = spec.low
     estimate(job)
     job.owner = ownerOf(spec)
     job.unitsLearned = sized.learned && !spec.exclusive
@@ -820,7 +848,9 @@ class Daemon(
       record("submitted", job, [("spec", marshal.encodeSpec(spec))] ++ extra)
       reconsider(job)
     schedule()
-    val hints = [marshal.quickHint(config.learning, spec, past), unitsHint(spec)].filter(h -> h.nonEmpty)
+    // a given memory held to its command's learned peak is said, as capped units are
+    val memHint = if job.learnedMem && spec.memory > job.reserved then s"marshal: memory ~${marshal.roundSize(job.reserved)}, learned (asked ${marshal.formatSize(spec.memory)}); --mem-exact keeps ${marshal.formatSize(spec.memory)}" else ""
+    val hints = [marshal.quickHint(config.learning, spec, past), unitsHint(spec), memHint].filter(h -> h.nonEmpty)
     Submitted(id, job.log, hints.mkString("\n"))
 
   // `rerun`: job `id`, ended, submitted again with the same command, directory, environment, kind,
@@ -860,7 +890,10 @@ class Daemon(
         spec.quietLoad,
         spec.unitsGiven,
         spec.owner,
-        spec.unitsExact
+        spec.unitsExact,
+        0,
+        spec.low,
+        spec.memExact
       ),
       [("rerun_of", Json.num(id))]
     )
@@ -957,6 +990,8 @@ class Daemon(
     job.pgid = 0
     job.pausedMs = 0
     job.attempt += 1
+    // its wait counts again from now, as it waits to run again
+    job.waitSince = t
     // a learned deadline is learned again, so an attempt after a timeout is not stopped where it was
     if !job.spec.quick && job.spec.deadlineMs.isEmpty
       val d = learnedDeadline(job.spec)
@@ -1012,8 +1047,10 @@ class Daemon(
         val t = now()
         if job.state != "queued" then return Found(job.info(t))
         val outside = outsideNow().getOrElse(marshal.NoOutside)
-        val why = queuedWhys(t, outside).find(w -> w.0 == id).map(w -> w.2)
-        Found(job.info(t, startsAt(drainExpected(t, outside), id)), why)
+        val whys = queuedWhys(t, outside)
+        val why = whys.find(w -> w.0 == id).map(w -> w.2)
+        val texts = waitTexts(t, outside, whys)
+        Found(job.info(t, startsAt(drainExpected(t, outside), id), waitText = texts.get(id).getOrElse("")), why)
       None -> endedEarlier(id) match
         Ended(info) -> Found(info)
         other -> other
@@ -1187,7 +1224,9 @@ class Daemon(
     Done
 
   // Places the queued job `id`, which may start it at once: a number takes it out of the urgent
-  // band and places it by priority; `Urgent` moves it to the back of the band, even from within it.
+  // band and places it by priority; `Urgent` moves it to the back of the band, even from within it;
+  // `LowBand` moves a development job into the low band (low.avin), out of the urgent band. A number
+  // or `Urgent` takes it out of the low band.
   prioritize(id: long, p: marshal.Priority) -> Reply
     val job = queued(id, "is given a priority") match
       Ok(j) -> j
@@ -1196,9 +1235,17 @@ class Daemon(
       marshal.Level(n) ->
         job.priority = n
         job.urgentAt = 0
+        job.low = false
       marshal.Urgent ->
         job.urgentAt = 0
+        job.low = false
         job.urgentAt = urgentMark()
+      marshal.LowBand ->
+        if job.spec.landing || job.spec.exclusive || job.spec.quick then return Failed(
+          s"job $id is ${if job.spec.landing then "a landing" elif job.spec.exclusive then "an exclusive" else "a quick"} job: only a development job is low"
+        )
+        job.urgentAt = 0
+        job.low = true
     order()
     record("prioritized", job)
     schedule()
@@ -1289,6 +1336,21 @@ class Daemon(
     val text = if changes.isEmpty then "  nothing changed: each setting already had that value" else marshal.changesText(changes)
     Amended(text, if a.units.isDefined then unitsHint(spec) else "")
 
+  // A queued low job that has waited `low_promote_after` since it last queued becomes a normal job
+  // (low.avin): its log and a `promoted` event say so, and the queue is ordered again.
+  promoteLow()
+    val wallNow = time.now().epochMicros
+    var any = false
+    for job in queue
+      if job.low && marshal.lowPromoted(job.arrived, wallNow, config.lowPromoteMs)
+        job.low = false
+        any = true
+        val waited = marshal.formatMillis((wallNow - job.arrived) / 1000)
+        val _ = fs.appendText(job.log, s"marshal: low job ${job.id} waited $waited for spare room; it is a normal job now\n")
+        eprintln(s"marshal: low job ${job.id} waited $waited; it is a normal job now")
+        record("promoted", job)
+    if any then order()
+
   // The mark of a job joining the urgent band now: behind every urgent job queued.
   urgentMark() -> long = marshal.urgentMark(time.now().epochMicros, queue.map(j -> j.urgentAt).toVector)
 
@@ -1296,8 +1358,8 @@ class Daemon(
   // priority, the highest first, keeping arrival order among equals.
   order() = queue.sortInPlaceWith(
     (a, b) -> marshal.placeOrder(
-      marshal.Place(a.urgentAt, a.priority, a.arrived),
-      marshal.Place(b.urgentAt, b.priority, b.arrived)
+      marshal.Place(a.urgentAt, a.priority, a.arrived, a.low),
+      marshal.Place(b.urgentAt, b.priority, b.arrived, b.low)
     )
   )
 
@@ -1382,19 +1444,20 @@ class Daemon(
     val spec = job.spec
     // a landing job, an exclusive one (a benchmark, alone on the machine) and an urgent one are not
     // niced, backfilled or not
-    val level = marshal.niceFor(spec.landing, spec.exclusive, job.urgentAt > 0)
+    val level = marshal.niceFor(spec.landing, spec.exclusive, job.urgentAt > 0, job.low)
     val program = if level == 0 then Command(spec.cmd(0), spec.cmd.drop(1)*) else Command(
       "nice",
       (["-n", level.toString()] ++ spec.cmd)*
     )
     // The first attempt's log begins with the job, its project and its directory (`logHeader`),
-    // ahead of the line an overdue exclusive job's log already holds; a retry's output follows the
+    // ahead of the lines its log already holds (an overdue exclusive job's, a low job's promotion); a retry's output follows the
     // earlier attempts'. Everything else is added after it.
     // (a note a log cannot take is lost; the job itself is not affected)
     if job.attempt > 1
       val _ = fs.appendText(job.log, s"marshal: attempt ${job.attempt} of ${spec.retries + 1}\n")
     else
-      val before = if job.overdue then fs.readText(job.log).getOrElse("") else ""
+      // what was written while it waited (an overdue exclusive job's line, a low job's promotion)
+      val before = fs.readText(job.log).getOrElse("")
       val _ = fs.writeText(job.log, marshal.logHeader(job.id, job.project, spec.dir) + before)
     for id in ahead.toList
       val _ = fs.appendText(job.log, s"marshal: backfilled ahead of $id\n")
@@ -1868,10 +1931,37 @@ class Daemon(
     val t = now()
     val outside = outsideNow().getOrElse(marshal.NoOutside)
     val drain = drainExpected(t, outside)
-    val starts = startsIn(t, outside, queuedWhys(t, outside))
+    val whys = queuedWhys(t, outside)
+    val starts = startsIn(t, outside, whys)
+    val texts = waitTexts(t, outside, whys)
     (
       running.toVector ++ queue.toVector ++ waitingJobs.toVector ++ ended.takeRight(Recent)
-    ).map(j -> j.info(t, startsAt(drain, j.id), starts.get(j.id).getOrElse(-1)))
+    ).map(j -> j.info(t, startsAt(drain, j.id), starts.get(j.id).getOrElse(-1), texts.get(j.id).getOrElse("")))
+
+  // Why each queued job waits, in full (`needText`), by id: the reason, and for one that waits for
+  // units or memory what it needs and what is free, and the running job whose end is expected to let
+  // it start, with when on the local clock (`~16:30`).
+  waitTexts(t: long, outside: Outside, whys: Vector[(long, int, Why)]) -> Map[long, string]
+    val b = budgetNow()
+    val started = running.map(j -> startedOf(j, t, b)).toVector
+    val waiting = eligible().map(j -> waitingOf(j, t, b))
+    val needs = if blocked() then Vector[(long, marshal.Need)]() else marshal.needs(
+      b,
+      started,
+      waiting,
+      t,
+      outside,
+      marshal.fairness(config, time.now().epochMicros)
+    )
+    val wall = time.now().epochMillis
+    val out = MutableMap[long, string]()
+    for (id, _, why) in whys
+      val need = needs.find(n -> n.0 == id).map(n -> n.1)
+      val at = need.filter(n -> n.at < long.MaxValue).map(n -> if n.at <= t then "~now" else "~" + time.epochMillis(
+        wall + (n.at - t)
+      ).atZone(zone).format("hh:mm")).getOrElse("")
+      out(id) = marshal.needText(why, need, at)
+    out.toMap
 
   // Why each queued job waits, with its place in its lane's queue (`queueWaits`); while the disk is
   // low, every one not held, by hand or with the whole queue, waits for it, and while it is not but
@@ -1967,8 +2057,13 @@ class Daemon(
     val drain = drainExpected(t, outside.getOrElse(marshal.NoOutside))
     val whys = queuedWhys(t, outside.getOrElse(marshal.NoOutside))
     val starts = startsIn(t, outside.getOrElse(marshal.NoOutside), whys)
+    val texts = waitTexts(t, outside.getOrElse(marshal.NoOutside), whys)
     val queued = whys.map(
-      w -> QueuedJob(jobs(w.0).info(t, startsAt(drain, w.0), starts.get(w.0).getOrElse(-1)), w.1, w.2)
+      w -> QueuedJob(
+        jobs(w.0).info(t, startsAt(drain, w.0), starts.get(w.0).getOrElse(-1), texts.get(w.0).getOrElse("")),
+        w.1,
+        w.2
+      )
     )
     val recent = (earlier ++ ended.takeRight(Recent).map(j -> j.info(t))).takeRight(Recent).reverse
     Overview(
@@ -2224,7 +2319,9 @@ class Daemon(
       j.deadlineFrom,
       j.project,
       j.amended,
-      j.keepsPlace
+      j.keepsPlace,
+      j.low,
+      wall(j.waitSince)
     )
     SavedState(
       reportedVersion(),
@@ -2279,6 +2376,8 @@ class Daemon(
       job.held = sj.held
       job.priority = sj.priority
       job.urgentAt = sj.urgentAt
+      job.low = sj.low
+      job.waitSince = if sj.waitSince > 0 then mono(sj.waitSince) else mono(sj.submittedAt)
       job.amended = sj.amended
       job.keepsPlace = sj.keepsPlace
       job.pausedMs = sj.pausedMs

@@ -61,8 +61,8 @@ val Commands: Vector[(string, string)] = [
   ("hold <id>", "keeps a queued job from starting; it keeps its place"),
   ("release <id>", "lets a held job start again"),
   (
-    "priority <id> <n> | --urgent",
-    "places a queued job in its lane: higher first; --urgent: the back of the urgent band"
+    "priority <id> <n> | --urgent | --low",
+    "places a queued job in its lane: higher first; --urgent: the back of the urgent band; --low: behind every job not low, started only in spare room (a number or --urgent makes it normal again)"
   ),
   (
     "amend <id> [options]",
@@ -120,8 +120,17 @@ Options of submit and run:
                     --units is, ~ in RESV; until it has run 3 times, the most any run of its
                     work reached (max in FROM), else the share of the budget --units takes (def);
                     --mem 0 reserves none). While it runs it is charged the most it has held
-                    where that is more
-  --external       its work runs outside its own processes (docker run, a VM, sudo to another
+                    where that is more. A given size is a ceiling: once what it runs has run 3
+                    times, it reserves the fewer of it and their peak plus a quarter (at least 1G)
+                    (20G→~7.5G in RESV)
+  --mem-exact       with --mem: reserve exactly that size, even where its runs peaked lower
+  --low             for exploratory or probe work: queue it behind every job not low and start it
+                    only in spare room, when it fits and is expected (by its own learned runs, else
+                    its deadline) to end before any waiting job could start; it never drains the
+                    machine, runs at nice 19, and after config.json's low_promote_after (4h) of
+                    waiting becomes a normal job; ~ in KIND. Not with --urgent, --landing,
+                    --exclusive or --quick
+  --external      its work runs outside its own processes (docker run, a VM, sudo to another
                     account's daemon): it reserves exactly --mem, which it must give, and its
                     measured peak is never learned (@ in RESV)
   --landing         run it in the landing lane: first, whatever units others hold, not niced;
@@ -161,7 +170,10 @@ Options of submit and run:
   --retries <n>     run it again, up to n times, when it fails or times out (default: 0)
   --retry-delay <t> wait t before each retry: 90s, 30m, 2h (default: none)
   --label <text>    a note to find the job by, shown in ls, history and top: one line of at most 80
-                    characters, no control characters (default: none; run-type and train take it too)
+                    characters, no control characters (default: one from the command, at most 40
+                    characters: a shell's script as its last two path parts, f1fix/gate.zsh, else
+                    the program and its first argument, sysl test; label_from "cmd" in --json, and
+                    kill --label matches only a given one; run-type and train take it too)
   --owner <name>    who the job is for, shown in OWNER in ls and top: one word (default: the
                     project its --dir is in under ~/dev, such as avin for ~/dev/avin-lang/avin,
                     else its label)
@@ -241,7 +253,7 @@ Options of history and stats (both read events.jsonl; no daemon is needed):
   --failed          history only: jobs that did not exit 0 (failed, signal, killed, timeout, quiet, cancelled, lost)
   --limit <n>       history only: at most n jobs (default 20)
 
-A job's kind is marked as in ls: * landing, ^ quick, # exclusive, then ! urgent.\
+A job's kind is marked as in ls: * landing, ^ quick, # exclusive, then ! urgent or ~ low.\
 """
 
 val Footer: string = "Marshal's files are in $MARSHAL_HOME, or ~/.marshal. `marshal <command> --help` describes one command."
@@ -380,22 +392,23 @@ withId([word], body) = word.toLongOption() match
   None -> complain(s"marshal: `$word` is not a job id")
 withId(_, _) = complain("marshal: give one job id")
 
-// `priority <id> <n>` or `priority <id> --urgent`.
+// `priority <id> <n>`, `priority <id> --urgent` or `priority <id> --low`.
 priority(args: Vector[string]) -> int
   val (word, level) = args match
     [w, l] -> (w, l)
-    _ -> return complain("marshal: priority takes a job id and a whole number, or --urgent")
+    _ -> return complain("marshal: priority takes a job id and a whole number, --urgent or --low")
   val id = word.toLongOption() match
     Some(n) -> n
     None -> return complain(s"marshal: `$word` is not a job id")
   val p = parsePriority(level) match
     Some(p) -> p
-    None -> return complain(s"marshal: `$level` is not a priority: a whole number, or --urgent")
+    None -> return complain(s"marshal: `$level` is not a priority: a whole number, --urgent or --low")
   simple(Request.Prioritize(id, p), s"marshal: job $id is placed")
 
-// A priority as the command line gives it: a whole number, or `--urgent`.
+// A priority as the command line gives it: a whole number, `--urgent` or `--low`.
 parsePriority(word: string) -> Option[marshal.Priority]
 parsePriority("--urgent") = Some(marshal.Urgent)
+parsePriority("--low") = Some(marshal.LowBand)
 parsePriority(word) = word.toIntOption().map(n -> marshal.Level(n))
 
 // `kill --owner/--label/--all [--queued | --running] [--include-landing] [--yes]`. An id beside a
@@ -578,6 +591,8 @@ parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]
   var external = false
   var exclusive = false
   var exact = false
+  var memExact = false
+  var low = false
   var quietLoad = 0.0
   var i = 0
   while i < args.length
@@ -588,6 +603,14 @@ parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]
     if !word.startsWith("--") then break
     if word == "--landing"
       landing = true
+      i += 1
+      continue
+    if word == "--low"
+      low = true
+      i += 1
+      continue
+    if word == "--mem-exact"
+      memExact = true
       i += 1
       continue
     if word == "--urgent"
@@ -649,6 +672,7 @@ parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]
   val cmd = args.drop(i)
   if cmd.isEmpty then return Err("no command to run: give it after `--`")
   if exact && units.isEmpty then return Err(marshal.ExactWithoutUnits)
+  if memExact && !memoryGiven then return Err(marshal.MemExactWithoutMem)
   marshal.externalRefusal(external, memoryGiven) match
     Some(why) -> return Err(why)
     None -> ()
@@ -676,9 +700,13 @@ parseSubmission(args: Vector[string], dir: string, env: Vector[(string, string)]
     quietLoad,
     units.isDefined,
     owner,
-    exact
+    exact,
+    0,
+    low,
+    memExact
   )
   for why in marshal.exclusiveRefusal(spec).toList do return Err(why)
+  for why in marshal.lowRefusal(spec).toList do return Err(why)
   Ok(spec)
 
 // The value of `--quiet-timeout`, written as `--deadline` writes a deadline, in milliseconds.

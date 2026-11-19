@@ -236,7 +236,9 @@ asLost(j: JobInfo) -> JobInfo = JobInfo(
   heldCores = j.heldCores,
   unitsAsked = j.unitsAsked,
   retries = j.retries,
-  amended = j.amended
+  amended = j.amended,
+  low = j.low,
+  labelFrom = j.labelFrom
 )
 
 // Whether an event ends its job for good: an ending, and not one of an attempt that runs again.

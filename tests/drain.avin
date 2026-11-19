@@ -197,11 +197,13 @@ backfillOverrun()
   val q = [dj(1680, 12, 0), lj(3, 1, minute, 30 * 1000)]
   // at 9 minutes B is overdue but the drain still waits for A until 10: a 30-second job fits before it
   assertEq(marshal.schedule(drainBudget, [a, b], q, 9 * minute, marshal.NoOutside, fairAt(waitBound)), [long(3)])
-  // at 11 minutes only overdue B holds the drain: it is expected now, and not even a 1 ms job backfills
+  // at 11 minutes only overdue B holds the drain, which began as B started (the wall clock 11 minutes
+  // past the bound): it is expected now, and not even a 1 ms job backfills
   val tiny = [dj(1680, 12, 0), lj(3, 1, minute, 1)]
-  assertEq(marshal.schedule(drainBudget, [b], tiny, 11 * minute, marshal.NoOutside, fairAt(waitBound)), [])
+  val sinceB = fairAt(waitBound + 11 * minute)
+  assertEq(marshal.schedule(drainBudget, [b], tiny, 11 * minute, marshal.NoOutside, sinceB), [])
   assertEq(
-    marshal.waits(drainBudget, [b], tiny, 11 * minute, marshal.NoOutside, fairAt(waitBound)).map(w -> (w.0, w.2)),
+    marshal.waits(drainBudget, [b], tiny, 11 * minute, marshal.NoOutside, sinceB).map(w -> (w.0, w.2)),
     [(long(1680), Draining), (long(3), DrainingFor(1680))]
   )
   // and when B ends, the drainer starts
@@ -226,12 +228,14 @@ backfillMemory()
 
 @test("nothing backfills when the drainer is expected to start now: it fits as soon as a unit frees")
 noBackfillWhenDrainIsDue()
-  // the running job is past its estimate, so it may end at any moment
+  // the running job started as the drain began (the wall clock 2 minutes past the bound) and is
+  // past its estimate, so it may end at any moment
   val r = [lr(10, 4, 0, minute)]
   val q = [dj(1, 12, 0), lj(2, 1, minute, 1), Waiting(3, 1, 0, false, 1, 2 * minute * 1000)]
-  assertEq(marshal.schedule(drainBudget, r, q, 2 * minute, marshal.NoOutside, fairAt(waitBound)), [])
+  val since = fairAt(waitBound + 2 * minute)
+  assertEq(marshal.schedule(drainBudget, r, q, 2 * minute, marshal.NoOutside, since), [])
   assertEq(
-    marshal.waits(drainBudget, r, q, 2 * minute, marshal.NoOutside, fairAt(waitBound)).map(w -> (w.0, w.2)),
+    marshal.waits(drainBudget, r, q, 2 * minute, marshal.NoOutside, since).map(w -> (w.0, w.2)),
     [(long(1), Draining), (long(2), DrainingFor(1)), (long(3), DrainingFor(1))]
   )
 
@@ -294,19 +298,20 @@ liveQueue() -> Vector[Waiting]
 val liveIdleTakeSlot: Outside = Outside(0, [], false)
 
 @test(
-  "the live screenshot: a job running since before the drain, past its estimate, is counted by its deadline, so a short job backfills"
+  "the live screenshot: a job running since before the drain, past its estimate, is counted by a realistic end, so a short job backfills"
 )
 backfillPastEstimateBeforeTheDrain()
   val now = 20 * minute
   val fair = fairAt(now)
-  // the drain waits for 1800 until its deadline at 125 minutes: 1815 fits now and ends long before
+  // the drain waits for 1800, 15 minutes into its run, half as long again: until 27m30s (its
+  // deadline, at 125 minutes, no longer); 1815 fits now and ends long before
   assertEq(
     marshal.starts(liveBudget, liveRunning(true), liveQueue(), now, liveIdleTakeSlot, fair),
     [(long(1815), Some(long(1802)))]
   )
   assertEq(
     marshal.drainStart(liveBudget, liveRunning(true), liveQueue(), now, liveIdleTakeSlot, fair),
-    Some((long(1802), 125 * minute))
+    Some((long(1802), 27 * minute + 30 * 1000))
   )
   // 1819 fits the 3 free units (the landing job holds 1 of the 12) but not beside 1815; the rest do
   // not fit now
@@ -328,24 +333,28 @@ backfillPastEstimateBeforeTheDrain()
   assertEq(marshal.schedule(liveBudget, liveRunning(true), without, now, liveIdleTakeSlot, fair), [long(1819)])
   // no take-slot directory at all decides the same
   assertEq(marshal.schedule(liveBudget, liveRunning(true), liveQueue(), now, marshal.NoOutside, fair), [long(1815)])
-  // a job whose deadline is not known is still expected at any moment, and nothing backfills
-  assertEq(marshal.schedule(liveBudget, liveRunning(false), liveQueue(), now, liveIdleTakeSlot, fair), [])
+  // a job whose deadline is not known is expected the same: half again its run, with no cap
+  assertEq(marshal.schedule(liveBudget, liveRunning(false), liveQueue(), now, liveIdleTakeSlot, fair), [long(1815)])
   assertEq(
     marshal.drainStart(liveBudget, liveRunning(false), liveQueue(), now, liveIdleTakeSlot, fair),
-    Some((long(1802), now))
+    Some((long(1802), 27 * minute + 30 * 1000))
   )
 
-@test("the long job's deadline bounds the window: a backfill that would end after it waits")
+@test("a long job past its estimate opens a window of half its run so far, held to its deadline: a backfill that would end after it waits")
 backfillPastEstimateBoundedByDeadline()
-  // at 20 minutes 1800 has 105 minutes left to its deadline
+  // at 20 minutes 1800 has run 15 minutes past a 13-minute estimate: it is expected 7m30s on
   val now = 20 * minute
   val q = [
     dw(1802, 12, 0, minute, 5 * minute, 0, learned = false),
-    dw(1, 1, minute, 105 * minute, 200 * minute, 0),
-    dw(2, 1, 2 * minute, 106 * minute, 200 * minute, 0)
+    dw(1, 1, minute, 7 * minute + 30 * 1000, 200 * minute, 0),
+    dw(2, 1, 2 * minute, 7 * minute + 30 * 1000 + 1, 200 * minute, 0)
   ]
   val r = [dlr(1800, 4, 5 * minute, 13 * minute, 120 * minute)]
   assertEq(marshal.schedule(liveBudget, r, q, now, marshal.NoOutside, fairAt(now)), [long(1)])
+  // its deadline at 26 minutes comes first: the window is 6 minutes, and the first job waits too
+  val capped = [dlr(1800, 4, 5 * minute, 13 * minute, 21 * minute)]
+  assertEq(marshal.schedule(liveBudget, capped, q, now, marshal.NoOutside, fairAt(now)), [])
+  assertEq(marshal.drainStart(liveBudget, capped, q, now, marshal.NoOutside, fairAt(now)), Some((long(1802), 26 * minute)))
   // a deadline already passed (the job is being stopped) is expected at once
   val stopping = [dlr(1800, 4, 5 * minute, 13 * minute, 14 * minute)]
   assertEq(marshal.schedule(liveBudget, stopping, q, now, marshal.NoOutside, fairAt(now)), [])

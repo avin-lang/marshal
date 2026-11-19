@@ -52,7 +52,8 @@ padCells(text: string, width: int) -> string =
 // What `ls --compact` prints for `jobs` on a terminal `width` cells wide: `listing`'s header and one
 // row per job, each a single line of at most `width` cells.
 compactListing(jobs: Vector[JobInfo], whys: Vector[(long, Why)], width: int) -> string
-  val rows = listingRows(jobs, whys).map(r -> r.map(oneLine))
+  // a queued job's reason in its short words: the full one is `ls`'s, `status <id>`'s and top's
+  val rows = listingRows(jobs, whys, true).map(r -> r.map(oneLine))
   val widths = (0 ..< rows(0).length).map(c -> rows.map(r -> textWidth(r(c))).max).toVector
   val labelNatural = widths(LabelColumn)
   val commandNeed = minOf(CompactCommandMin, widths(CommandColumn))

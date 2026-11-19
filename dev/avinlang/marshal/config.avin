@@ -25,7 +25,10 @@ module dev.avinlang.marshal
 //                   (see `takeSlotDir`)
 //   drain_after     how long a development job may wait before the machine drains for it ("10m");
 //                   "never" never drains (see `Fairness`)
-//   load_wait       how long a settling exclusive job may wait for its `--quiet-load` before it is
+//   low_promote_after
+//                   how long a `--low` job may wait before it becomes a normal one ("4h"); "never"
+//                   keeps it low for ever (low.avin)
+//   load_wait      how long a settling exclusive job may wait for its `--quiet-load` before it is
 //                   overdue ("15m"): it still waits, and `top` draws it red; "never" never marks
 //                   it (see `loadOverdue`)
 //   disk_min        the least free disk new jobs start beside ("20G"); "0" for no guard (disk.avin)
@@ -57,7 +60,8 @@ data Config(
     projects: Option[string] = None,
     nofile: Option[long] = None,
     politeSchedule: Vector[PoliteWindow] = [],
-    raiseAfterMs: Option[long] = Some(RaiseAfterMs)
+    raiseAfterMs: Option[long] = Some(RaiseAfterMs),
+    lowPromoteMs: Option[long] = Some(DefaultLowPromote)
 )
 
 // How long a development job waits before the machine drains for it, unless config.json says.
@@ -94,7 +98,7 @@ readConfigOn(text: string, machineMemory: long, processors: Option[int]) -> Resu
     if ![
       "units", "memory", "reserve", "deadline_floor", "deadline_margin", "learn_window", "learn_min_runs", "take_slot", "keep_logs",
       "keep_jobs", "keep_events", "keep_steps", "drain_after", "load_wait", "disk_min", "projects", "nofile",
-      "polite_schedule", "raise_after"
+      "polite_schedule", "raise_after", "low_promote_after"
     ].contains(key)
       return Err(s"config.json: no setting `$key`")
   val units = whole(j, "units", processors.filter(n -> n >= 1).getOrElse(FallbackUnits))?
@@ -126,6 +130,7 @@ readConfigOn(text: string, machineMemory: long, processors: Option[int]) -> Resu
   val drainAfter = waitSetting(j, "drain_after", DefaultDrainAfter)?
   val loadWait = waitSetting(j, "load_wait", DefaultLoadWait)?
   val raiseAfter = waitSetting(j, "raise_after", RaiseAfterMs)?
+  val lowPromote = waitSetting(j, "low_promote_after", DefaultLowPromote)?
   val diskMin = size(j, "disk_min", DefaultDiskMin)?
   val projects = j.get("projects") match
     None -> None
@@ -152,7 +157,8 @@ readConfigOn(text: string, machineMemory: long, processors: Option[int]) -> Resu
       projects,
       nofile,
       schedule,
-      raiseAfter
+      raiseAfter,
+      lowPromote
     )
   )
 

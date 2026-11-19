@@ -29,12 +29,17 @@ labelShowsEverywhere()
   assertEq(submittedEvent("spec")("label").asString, Some("train 209"))
   val finishedEvent = events(home).find(e -> e("id").asLong == Some(id) && e("event").asString == Some("finished")).get
   assertEq(finishedEvent("label").asString, Some("train 209"))
-  // the job without a label has no label in any event
+  // the job without a label carries one derived from its command, said to be derived; its spec has
+  // none, so a rerun derives it again
   for e in events(home).filter(e -> e("id").asLong == Some(plainId))
-    assert(!e.render.contains("\"label\""), e.render)
+    assertEq(e("label").asString, Some("exit"))
+    assertEq(e("label_from").asString, Some("cmd"))
+    assert(!e.get("spec").exists(s -> s.has("label")), e.render)
+  // a given label is never said to be derived
+  assert(!submittedEvent.has("label_from"), submittedEvent.render)
   cleanUp(home)
 
-@test("ls and history have a LABEL column, with empty cells, while no listed job has a label")
+@test("ls and history have a LABEL column, and a job given no label shows one derived from its command")
 labelNoColumn()
   val home = newHome()
   val id = submitted(home, "--", "sh", "-c", "exit 0")
@@ -42,11 +47,16 @@ labelNoColumn()
   val history = m(home, "history").out.lines.toVector
   assert(history(0).endsWith("LABEL"), history(0))
   assertEq(history.length, 2)
-  submitted(home, "--", "sleep", "30")
+  assert(history(1).endsWith("exit"), history(1))
+  submitted(home, "--", "zsh", "/tmp/f1fix/gate.zsh")
   val ls = m(home, "ls").out.lines.toVector
   assert(ls(0).contains("LABEL") && ls(0).indexOf("LABEL") < ls(0).indexOf("COMMAND"), ls(0))
-  assertEq(ls(1).indexOf("sleep 30"), ls(0).indexOf("COMMAND"))
-  assert(!m(home, "status", "--json").out.contains("\"label\""), m(home, "status", "--json").out)
+  val row = ls.find(l -> l.contains("zsh /tmp/f1fix/gate.zsh")).get
+  assertEq(row.indexOf("f1fix/gate.zsh  zsh"), ls(0).indexOf("LABEL"))
+  val st = m(home, "status", "--json").out
+  assert(st.contains("\"label\":\"f1fix/gate.zsh\"") && st.contains("\"label_from\":\"cmd\""), st)
+  // kill --label matches only a label that was given
+  assertEq(m(home, "kill", "--label", "gate").code, 1)
   cleanUp(home)
 
 @test("a running job's label is in status --json and ls while it runs")

@@ -116,6 +116,29 @@ reservationFor(
     Some(p) -> Reservation(if p > budget then budget else p, true)
     None -> Reservation(if unlearned.bytes > budget then budget else unlearned.bytes, false)
 
+// A given `--mem` is a ceiling, as a given `--units` is: once the command's own runs (`ownPeaks`,
+// its `cmd+dir` or `cmd` key's, the first with enough runs) have taught a peak, a job that gave more
+// than that peak and its margin (`ceilingMargin`) reserves the peak and margin instead; None while
+// they have not, or when it gave no more. `--mem-exact` keeps what was given.
+memoryCeiling(learning: MemoryLearning, given: long, ownPeaks: Vector[long]) -> Option[long] =
+  learnedPeak(learning, ownPeaks) match
+    Some(p) ->
+      val c = withCeilingMargin(p)
+      if c < given then Some(c) else None
+    None -> None
+
+// The room a ceiling leaves above a learned peak: a quarter of it, at least a gibibyte, rounded up to
+// a whole mebibyte. A learned peak is the most of the last few clean runs, so a run that needs a
+// little more still fits; one that needs much more is charged what it holds (`holding`).
+withCeilingMargin(peak: long) -> long
+  val quarter = peak / 4
+  val margin = if quarter > MemorySpreadFloor then quarter else MemorySpreadFloor
+  if peak > long.MaxValue - margin - Mebi then return long.MaxValue
+  (peak + margin + Mebi - 1) / Mebi * Mebi
+
+// Why `--mem-exact` alone is refused: it keeps a given memory exactly, and none was given.
+val MemExactWithoutMem: string = "`--mem-exact` keeps the memory `--mem` gives exactly: give `--mem <size>` with it"
+
 // What a job reserves when no key of its chain is trusted, and where that came from (`resv_from`).
 data Unlearned(bytes: long, from: string)
 
@@ -321,6 +344,68 @@ private commandOfScript(script: string) -> string
       step.clear()
   if step.nonEmpty && !preparation.contains(step(0)) then signatureOf(step.toVector, false) else ""
 
+// The label a job submitted without `--label` is shown with, from its command (`label_from: "cmd"`
+// in `--json`): a shell running a script is the script's last two path parts (`f1fix/gate.zsh`), as is
+// a program that is itself a script; a shell running `-c` is the label of the first step of what it
+// runs that is not a `cd`, `export` or the like; any other program is its name and its first argument
+// that is not an option or a number, as its last path component (`sysl test`). Wrappers (`env`,
+// `nice`, `caffeinate`, ...) and `NAME=value` settings before the program are passed over. At most
+// `DerivedLabelMax` characters, a longer one cut with `…`; "" for an empty command.
+derivedLabel(cmd: Vector[string]) -> string = cutLabel(labelOf(cmd, true))
+
+// The longest label `derivedLabel` gives, in characters.
+val DerivedLabelMax: int = 40
+
+private cutLabel(text: string) -> string =
+  if text.charCount <= DerivedLabelMax then text else text.take(DerivedLabelMax - 1) + "…"
+
+// A script's last two path parts: `gate.zsh` for one with none above it.
+private lastTwo(path: string) -> string = path.split("/").filter(p -> p.nonEmpty && p != ".").takeRight(2).mkString("/")
+
+private labelOf(words: Vector[string], shellC: bool) -> string
+  var i = 0
+  var more = true
+  while more && i < words.length
+    val w = words(i)
+    if isSetting(w)
+      i += 1
+    elif wrappers.contains(baseName(w))
+      i = afterWrapper(words, i + 1, baseName(w))
+    else
+      more = false
+  if i >= words.length then return ""
+  val program = baseName(words(i))
+  val rest = words.drop(i + 1)
+  if isScript(program) then return lastTwo(words(i))
+  if shells.contains(program)
+    var k = 0
+    while k < rest.length && isOption(rest(k))
+      val a = rest(k)
+      if a == "-o" || a == "+o"
+        k += 2
+      elif !a.startsWith("--") && a.endsWith("c")
+        if k + 1 >= rest.length || !shellC then return program + " -c"
+        val inner = labelOf(firstStep(rest(k + 1)), false)
+        return if inner.isEmpty then program + " -c" else inner
+      else
+        k += 1
+    return if k < rest.length then lastTwo(rest(k)) else program
+  program + namedWords(rest, 1)
+
+// The words of the first step of a `-c` script that is not a `cd`, `export` or the like; none when
+// it has none.
+private firstStep(script: string) -> Vector[string]
+  val tokens = script.replace("\n", " ").replace("\t", " ").split(" ").filter(t -> t.nonEmpty).toVector
+  val step = Buffer[string]()
+  for t in tokens
+    val sep = t == "&&" || t == "||" || t == ";" || t == "|"
+    val word = if !sep && t.endsWith(";") then t.dropRight(1) else t
+    if !sep && word.nonEmpty then step += word
+    if sep || t.endsWith(";")
+      if step.nonEmpty && !preparation.contains(step(0)) then return step.toVector
+      step.clear()
+  if step.nonEmpty && !preparation.contains(step(0)) then step.toVector else []
+
 // Steps of a shell script that prepare for the command rather than run it.
 private val preparation: Set[string] = {"cd", "export", "set", "unset", "source", ".", "pushd", "ulimit", "umask"}
 
@@ -360,8 +445,9 @@ memoryHistory(learning: MemoryLearning, chain: Vector[(Vector[long], string)]) -
 // memory it gave (`--mem`, `0` among them), the key its learned peak came from (`cmd+dir`, `cmd`,
 // `norm+project` or `kind+project`), or, while no key is trusted, `unlearned`'s source (`max` or
 // `default`; `none` where no fallback was asked for).
+// A given memory held to its command's peak (`memoryCeiling`) says the key that peak came from.
 reservationSource(memory: long, given: bool, r: Reservation, from: string, unlearned: Unlearned = NothingLearned) -> string =
-  if given || memory > 0 then "given" elif r.learned then from else unlearned.from
+  if r.learned then from elif given || memory > 0 then "given" else unlearned.from
 
 // What admission counts a running job as holding: its reservation, or the most it has been measured
 // holding in this run (`peak`) where that is more. A job holding more than it reserved delays the

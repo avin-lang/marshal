@@ -1,0 +1,187 @@
+module tests
+
+// What 0.4.0 says and reserves: a queued job's reason in full (`Need`, `needText`), the whole state
+// top's log header shows (`fullState`), a label derived from the command (`derivedLabel`), a given
+// `--mem` held to the command's learned peak (`memoryCeiling`), and the wire forms of `--low`,
+// `--mem-exact`, `priority --low` and the `low` reason. `drainBudget`, `fairAt`, `dj` and `dr` are
+// drain.avin's, `minute` deadline.avin's.
+import dev.avinlang.marshal
+import dev.avinlang.marshal.{JobInfo, JobSpec, Need, Request, Started, Waiting, Why}
+import dev.avinlang.marshal.{NoUnits, NoMemory, Draining, DrainingFor, Behind, LowWaits, Held}
+
+val gib: long = long(1024) * 1024 * 1024
+
+wtJob(
+    id: long,
+    state: string = "queued",
+    waitText: string = "",
+    urgent: bool = false,
+    low: bool = false,
+    landing: bool = false,
+    queuedMs: long = 12 * 60000
+) -> JobInfo =
+  JobInfo(
+    id,
+    "test",
+    4,
+    0,
+    landing,
+    "/tmp",
+    ["sh", "x.sh"],
+    state,
+    None,
+    false,
+    queuedMs,
+    0,
+    60000,
+    "/tmp/x.log",
+    None,
+    urgent = urgent,
+    low = low,
+    waitText = waitText
+  )
+
+@test("a job that does not fit says what it needs, what is free, and the running job it waits for and when")
+needsOfAWaitingJob()
+  // 12 units budget (in quarters), job 10 holds 8 until a minute; job 1 needs 8
+  val r = [dr(10, 8)]
+  val q = [dj(1, 8, 0)]
+  assertEq(marshal.needs(drainBudget, r, q, 0, marshal.NoOutside, fairAt(minute)), [(long(1), Need(8, 4, 0, 64 * 1024, 10, minute))])
+  // a job that fits has no need, nor does one waiting behind another
+  assertEq(marshal.needs(drainBudget, [], q, 0, marshal.NoOutside, fairAt(minute)), [])
+  // memory short: the need says so
+  val m = [dj(2, 1, 0, memory = 64 * 1024)]
+  assertEq(
+    marshal.needs(drainBudget, [dr(11, 1, memory = 1024)], m, 0, marshal.NoOutside, fairAt(minute)),
+    [(long(2), Need(1, 11, 64 * 1024, 63 * 1024, 11, minute))]
+  )
+
+@test("the draining job's need is reckoned as the drain counts the running jobs")
+needOfTheDrainingJob()
+  val r = [dr(10, 4)]
+  val q = [dj(1, 12, 0)]
+  val n = marshal.needs(drainBudget, r, q, 0, marshal.NoOutside, fairAt(11 * minute))
+  assertEq(n, [(long(1), Need(12, 8, 0, 64 * 1024, 10, minute))])
+
+@test("the reason in full: draining and short of memory, short of units, and reasons that name no shortage")
+needTexts()
+  val mem = Need(4, 12, 30 * gib, 24 * gib, 7263, 0)
+  assertEq(marshal.needText(Draining, Some(mem), "~16:30"), "draining: needs 30G, 24G free; waits for 7263, ~16:30")
+  val units = Need(12, 4, 0, 64 * gib, 0, long.MaxValue)
+  assertEq(marshal.needText(NoUnits, Some(units), ""), "needs 3 units, 1 free")
+  assertEq(marshal.needText(NoUnits, Some(Need(4, 0, 0, 0, 9, 0)), "~now"), "needs 1 unit, 0 free; waits for 9, ~now")
+  // free below nothing (a job charged more than it weighs) is said as 0
+  assertEq(marshal.needText(NoUnits, Some(Need(4, -2, 0, 0, 0, 0)), ""), "needs 1 unit, 0 free")
+  val both = Need(8, 4, 30 * gib, 24 * gib, 5, 0)
+  assertEq(marshal.needText(NoMemory, Some(both), ""), "needs 2 units, 1 free, and 30G, 24G free; waits for 5")
+  assertEq(marshal.needText(Behind(7278), None, ""), "behind 7278")
+  assertEq(marshal.needText(LowWaits, None, ""), "low: no spare room")
+  assertEq(marshal.needText(DrainingFor(3), None, ""), "draining for 3")
+  // a need with nothing short says the reason alone
+  assertEq(marshal.needText(Draining, Some(Need(4, 8, 0, 64 * gib, 0, 0)), "~16:30"), "draining")
+
+@test("ls says the reason in full; ls --compact keeps the short words; held stays held")
+stateCells()
+  val j = wtJob(1, waitText = "needs 3 units, 1 free")
+  assertEq(marshal.stateWithWhy(j, [(long(1), NoUnits)]), "queued (needs 3 units, 1 free)")
+  assertEq(marshal.stateWithWhy(j, [(long(1), NoUnits)], true), "queued (no units)")
+  assertEq(marshal.stateWithWhy(j, [(long(1), Held)]), "queued")
+  assertEq(marshal.stateWithWhy(wtJob(2), [(long(2), NoUnits)]), "queued (no units)")
+  // a running job's cell is its state alone
+  assertEq(marshal.stateWithWhy(wtJob(3, "running", "x"), []), "running")
+  // `status <id>` says it in full too
+  assert(marshal.statusLine(j, Some(NoUnits)).contains("is queued (needs 3 units, 1 free)"), marshal.statusLine(j, Some(NoUnits)))
+
+@test("ls --compact stays within the terminal's width with a long reason")
+compactKeepsWidth()
+  val j = wtJob(1, waitText = "draining: needs 30G, 24G free, and 12 units, 1 free; waits for 7263, ~16:30")
+  val out = marshal.compactListing([j], [(long(1), Draining)], 60)
+  for line in out.lines.toVector do assert(line.charCount <= 60, line)
+  assert(out.contains("queued (draining)"), out)
+
+@test("the log header's state: the reason in full, then the band and lane the kind marks")
+fullStates()
+  assertEq(marshal.fullState(wtJob(1, waitText = "behind 7278", urgent = true)), "queued (behind 7278), waited 12m00s; urgent")
+  assertEq(marshal.fullState(wtJob(1, waitText = "low: no spare room", low = true)), "queued (low: no spare room), waited 12m00s; low")
+  assertEq(marshal.fullState(wtJob(1, "running", landing = true)), "running; landing")
+  assertEq(marshal.fullState(wtJob(1, "running")), "running")
+  assertEq(marshal.fullState(wtJob(1)), "queued, waited 12m00s")
+  // waiting for other jobs, and to retry, count too
+  assertEq(marshal.fullState(wtJob(1, "waiting", queuedMs = 5000)), "waiting, waited 5.0s")
+
+@test("a job not running yet shows how long it has waited, marked w in ELAPSED and said in status <id>")
+waitedShown()
+  assertEq(marshal.elapsedColumn(wtJob(1), 0), "w12m00s")
+  assertEq(marshal.elapsedColumn(wtJob(1, "waiting", queuedMs = 5000), 0), "w5.0s")
+  assertEq(marshal.elapsedColumn(wtJob(1, "retrying", queuedMs = 3000), 0), "w3.0s")
+  assertEq(marshal.elapsedColumn(wtJob(1, "running", queuedMs = 3000), 65000), "1m05s")
+  assertEq(marshal.statusLine(wtJob(1), Some(Behind(3))), "marshal: job 1 is queued (behind 3), waited 12m00s; log /tmp/x.log")
+  assertEq(marshal.statusLine(wtJob(1, "running"), None), "marshal: job 1 is running; log /tmp/x.log")
+  assertEq(marshal.waitedFor(wtJob(1, "settling")), "")
+
+@test("a label from the command: a shell's script by its last two path parts, else the program and its first argument")
+derivedLabels()
+  assertEq(marshal.derivedLabel(["zsh", "/u/scratch/f1fix/gate.zsh", "--fast"]), "f1fix/gate.zsh")
+  assertEq(marshal.derivedLabel(["sh", "scripts/test.sh", "low"]), "scripts/test.sh")
+  assertEq(marshal.derivedLabel(["bash", "gate.sh"]), "gate.sh")
+  assertEq(marshal.derivedLabel(["sysl", "test", "compiler", "--file", "x"]), "sysl test")
+  assertEq(marshal.derivedLabel(["/opt/homebrew/bin/avin", "build", "."]), "avin build")
+  assertEq(marshal.derivedLabel(["make", "-j4", "all"]), "make all")
+  assertEq(marshal.derivedLabel(["sleep", "30"]), "sleep")
+  assertEq(marshal.derivedLabel(["true"]), "true")
+  // wrappers and settings are passed over; a script run directly is its last two parts
+  assertEq(marshal.derivedLabel(["caffeinate", "-dimsu", "env", "A=1", "sysl", "test", "."]), "sysl test")
+  assertEq(marshal.derivedLabel(["./scripts/run.sh", "x"]), "scripts/run.sh")
+  // a shell's -c is the first step that is not a cd or export
+  assertEq(marshal.derivedLabel(["sh", "-c", "cd /x && export A=1; sysl test compiler"]), "sysl test")
+  assertEq(marshal.derivedLabel(["sh", "-c", "exit 0"]), "exit")
+  assertEq(marshal.derivedLabel(["sh", "-c"]), "sh -c")
+  assertEq(marshal.derivedLabel([]), "")
+  // at most 40 characters
+  val sixty = "".padEnd(60, 'a')
+  val long_ = marshal.derivedLabel(["prog", sixty])
+  assertEq(long_.charCount, 40)
+  assert(long_.endsWith("…"), long_)
+  // every derived label is a label a job may carry
+  for cmd in [["zsh", "/a/b/c.zsh"], ["sysl", "test"], ["prog", sixty]]
+    assert(marshal.checkLabel(marshal.derivedLabel(cmd)).isOk, marshal.derivedLabel(cmd))
+
+@test("a given --mem is held to the command's learned peak plus a quarter, at least 1G, once it has 3 runs")
+memoryCeilings()
+  val learning = marshal.defaultMemoryLearning
+  // fcr-gate3: gave 20G, peaked 6G: reserves 7.5G
+  assertEq(marshal.memoryCeiling(learning, 20 * gib, [6 * gib, 5 * gib, 6 * gib]), Some(6 * gib + 6 * gib / 4))
+  // fewer than 3 runs teach nothing
+  assertEq(marshal.memoryCeiling(learning, 20 * gib, [6 * gib, 6 * gib]), None)
+  // a ceiling at or above what was given changes nothing
+  assertEq(marshal.memoryCeiling(learning, 7 * gib, [6 * gib, 6 * gib, 6 * gib]), None)
+  // a small peak keeps at least a gibibyte of room
+  assertEq(marshal.withCeilingMargin(512 * 1024 * 1024), 512 * 1024 * 1024 + gib)
+  // the most of the last 3 is the peak
+  assertEq(marshal.memoryCeiling(learning, 20 * gib, [12 * gib, 2 * gib, 3 * gib, 4 * gib]), Some(5 * gib))
+  // the source of a ceiling reservation is the key it was learned from
+  assertEq(marshal.reservationSource(20 * gib, true, marshal.Reservation(5 * gib, true), "cmd"), "cmd")
+  assertEq(marshal.reservationSource(20 * gib, true, marshal.Reservation(20 * gib, false), "cmd"), "given")
+
+@test("RESV shows a held --mem with what was given and an arrow, as UNITS shows a ceiling")
+memoryCeilingShown()
+  val j = JobInfo(1, "test", 4, 20 * gib, false, "/tmp", ["x"], "queued", None, false, 0, 0, 0, "/l", None, reserved = 7 * gib + gib / 2, reservedLearned = true)
+  assertEq(marshal.reservedText(j), "20G→~7.5G")
+
+@test("--low, --mem-exact, priority --low and the low reason travel the wire and back")
+lowOnTheWire()
+  val spec = JobSpec("test", 4, 8 * gib, false, "/tmp", None, ["true"], [], memoryGiven = true, low = true, memExact = true)
+  assertEq(marshal.decodeSpec(marshal.encodeSpec(spec)), Ok(spec))
+  val plain = JobSpec("test", 4, 0, false, "/tmp", None, ["true"], [])
+  assert(!marshal.encodeSpec(plain).render.contains("low"), marshal.encodeSpec(plain).render)
+  assertEq(marshal.decodeRequest(marshal.encodeRequest(Request.Prioritize(3, marshal.LowBand)).render), Ok(Request.Prioritize(3, marshal.LowBand)))
+  val info = wtJob(4, waitText = "low: no spare room", low = true)
+  val back = marshal.decodeJob(marshal.encodeJob(info))
+  assertEq(back.map(j -> (j.low, j.waitText)), Ok((true, "low: no spare room")))
+
+@test("config.json's low_promote_after: 4h by default, a wait, or never")
+lowPromoteConfig()
+  assertEq(marshal.readConfig("", 0).map(c -> c.lowPromoteMs), Ok(Some(marshal.DefaultLowPromote)))
+  assertEq(marshal.readConfig("{\"low_promote_after\": \"30m\"}", 0).map(c -> c.lowPromoteMs), Ok(Some(30 * minute)))
+  assertEq(marshal.readConfig("{\"low_promote_after\": \"never\"}", 0).map(c -> c.lowPromoteMs), Ok(None))
+  assert(marshal.readConfig("{\"low_promote_after\": 5}", 0).isErr)

@@ -1,0 +1,70 @@
+module tests
+
+// A job already running when a drain began is counted by a realistic end, not its whole deadline:
+// the later of its estimate's end and half as long again as it has run, held to its deadline
+// (sched.avin's `drainEnd`). The reported case: `im-targeted3` (estimate 3m45s, at 9m, deadline 60m)
+// made the drain expect its urgent job ~50 minutes later, so a 23-minute job backfilled ahead and the
+// urgent job waited 23 minutes when im-targeted3 ended 31 seconds later. `drainBudget`, `waitBound`,
+// `fairAt` and `dj` are drain.avin's, `minute` deadline.avin's.
+import dev.avinlang.marshal
+import dev.avinlang.marshal.{Started, Waiting, Why}
+import dev.avinlang.marshal.{Draining, DrainingFor, Starting}
+
+// A job of 4 units running since `startedMs` on the daemon's clock, estimated at `expected` (learned:
+// its `drainMs` the same), with `deadline`.
+rl(id: long, startedMs: long, expected: long, deadline: long) -> Started =
+  Started(id, 4, 0, false, startedMs, expected, false, expected, deadline)
+
+// The daemon's clock `nowMs` and the wall clock `wallMs`, a 12-unit job that arrived at 0 past the
+// bound: the drain began when it passed it, `wallMs - waitBound` before `wallMs`.
+rlStart(r: Vector[Started], q: Vector[Waiting], nowMs: long, wallMs: long) -> Option[(long, long)] =
+  marshal.drainStart(drainBudget, r, q, nowMs, marshal.NoOutside, fairAt(wallMs))
+
+@test("a job past its estimate, running before the drain, is expected at half as long again as it has run, not at its deadline")
+pastEstimateHalfAgain()
+  // running since 0, at 9 minutes, its estimate 3m45s, its deadline an hour; the drain began at 8m
+  val r = [rl(10, 0, 225000, 60 * minute)]
+  val q = [dj(1, 12, 0)]
+  assertEq(rlStart(r, q, 9 * minute, 11 * minute), Some((long(1), 9 * minute + 9 * minute / 2)))
+  // the reported 23-minute job does not backfill ahead of the drain; a 2-minute one does
+  val long_ = q ++ [dj(2, 1, minute, expected = 23 * minute)]
+  assertEq(marshal.schedule(drainBudget, r, long_, 9 * minute, marshal.NoOutside, fairAt(11 * minute)), [])
+  assertEq(
+    marshal.waits(drainBudget, r, long_, 9 * minute, marshal.NoOutside, fairAt(11 * minute)).map(w -> w.2),
+    [Draining, DrainingFor(1)]
+  )
+  val short = q ++ [dj(2, 1, minute, expected = 2 * minute)]
+  assertEq(marshal.schedule(drainBudget, r, short, 9 * minute, marshal.NoOutside, fairAt(11 * minute)), [long(2)])
+
+@test("the realistic end is held to the job's deadline, and a deadline already passed counts as now")
+realisticHeldToDeadline()
+  val q = [dj(1, 12, 0)]
+  // at 9m, half again is 13m30s, but the deadline is 10m
+  assertEq(rlStart([rl(10, 0, 225000, 10 * minute)], q, 9 * minute, 11 * minute), Some((long(1), 10 * minute)))
+  // a deadline already passed: being stopped, expected now
+  assertEq(rlStart([rl(10, 0, 225000, 8 * minute)], q, 9 * minute, 11 * minute), Some((long(1), 9 * minute)))
+  // no deadline known: half again
+  assertEq(rlStart([rl(10, 0, 225000, 0)], q, 9 * minute, 11 * minute), Some((long(1), 9 * minute + 9 * minute / 2)))
+
+@test("a job not yet past its estimate is expected at the later of its estimate's end and half again what it has run")
+beforeEstimate()
+  val q = [dj(1, 12, 0)]
+  // estimate 20m, at 9m: its estimate ends later than 13m30s
+  assertEq(rlStart([rl(10, 0, 20 * minute, 60 * minute)], q, 9 * minute, 11 * minute), Some((long(1), 20 * minute)))
+  // estimate 10m, at 9m: half again (13m30s) is later than the estimate's end
+  assertEq(rlStart([rl(10, 0, 10 * minute, 60 * minute)], q, 9 * minute, 11 * minute), Some((long(1), 9 * minute + 9 * minute / 2)))
+
+@test("a job started since the drain began and past its estimate is still expected at once, so overruns never compound")
+startedSinceDrain()
+  val q = [dj(1, 12, 0)]
+  // the drain began at 8m; this job started at 8m30s and its 10-second estimate has passed
+  assertEq(rlStart([rl(10, 8 * minute + 30000, 10000, 60 * minute)], q, 9 * minute, 11 * minute), Some((long(1), 9 * minute)))
+  // so nothing backfills behind it
+  val behind = q ++ [dj(2, 1, minute, expected = 1000)]
+  assertEq(marshal.schedule(drainBudget, [rl(10, 8 * minute + 30000, 10000, 60 * minute)], behind, 9 * minute, marshal.NoOutside, fairAt(11 * minute)), [])
+
+@test("the rule holds for an urgent drain too")
+urgentDrainRealistic()
+  val r = [rl(10, 0, 225000, 60 * minute)]
+  val q = [Waiting(30, 12, 0, false, minute, 11 * minute * 1000, urgent = true), dj(1, 12, 0)]
+  assertEq(rlStart(r, q, 9 * minute, 11 * minute), Some((long(30), 9 * minute + 9 * minute / 2)))

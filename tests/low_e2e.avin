@@ -1,0 +1,153 @@
+module tests
+
+// End to end, `--low` against a real daemon: marked `~` in ls and history, `low: true` in status
+// --json, behind every job not low in the queue, `low: no spare room` while a job not low waits,
+// started once nothing else waits, niced 19, refused beside --urgent, --landing, --exclusive and
+// --quick, moved in and out of the low band by `priority`, kept across `restart`, and promoted to a
+// normal job after `low_promote_after`. The helpers are e2e.avin's, control_e2e.avin's,
+// landing_e2e.avin's and ls_why_e2e.avin's.
+import avin.fs
+import avin.threads
+import avin.time.millis
+import dev.avinlang.marshal.Why
+
+val twentyGib: long = long(20) * 1024 * 1024 * 1024
+
+@test("a low job is marked ~, says low: true, and starts at once while nothing else waits")
+lowMarkedE2e()
+  val home = newHome("{\"units\": 2}")
+  val low = submitted(home, "--low", "--units", "1", "--", "sleep", "30")
+  assert(within(2000, () -> started(home, low)))
+  assert(lsRowOf(home, low).contains("build~"), lsRowOf(home, low))
+  val running = statusJsonOf(home)("running").asVector.get.find(j -> j("id").asLong == Some(low)).get
+  assertEq(running("low").asBool, Some(true))
+  m(home, "kill", low.toString())
+  m(home, "wait", low.toString())
+  assert(within(2000, () -> m(home, "history").out.contains("build~")), m(home, "history").out)
+  cleanUp(home)
+
+@test("a low job waits behind a job not low that waits, says why, and starts once that job has started")
+lowWaitsBehindE2e()
+  val home = newHome("{\"units\": 2}")
+  val a = submitted(home, "--units", "1", "--", "sleep", "60")
+  assert(within(2000, () -> started(home, a)))
+  // the low job came first, and fits the free unit; the job not low after it needs both
+  val low = submitted(home, "--low", "--units", "1", "--deadline", "120s", "--", "sleep", "0.2")
+  assert(within(2000, () -> started(home, low)))
+  m(home, "wait", low.toString())
+  val big = submitted(home, "--units", "2", "--", "sleep", "0.2")
+  // a command nothing is learned of (`sleep 0.3` is learned as `sleep`, which the first low job
+  // taught), so it is counted by its deadline
+  val low2 = submitted(home, "--low", "--units", "1", "--deadline", "30m", "--", "cat", "/dev/null")
+  // it fits the free unit, but its deadline runs past big's expected start (a's guessed 10 minutes)
+  assertEq(whyOf(home, low2), Some(Why.LowWaits))
+  assert(lsRowOf(home, low2).contains("queued (low: no spare room)"), lsRowOf(home, low2))
+  assertEq(lsQueuedJson(home, low2)("why").asString, Some("low"))
+  // queued behind the job not low that arrived after it
+  assertEq(queuedIds(home), [big, low2])
+  assertEq(m(home, "status", low2.toString()).out.contains(s"job $low2 is queued (low: no spare room)"), true)
+  m(home, "kill", a.toString())
+  assertEq(m(home, "wait", low2.toString()).code, 0)
+  assert(at(home, big, "started") <= at(home, low2, "started"), s"${eventsOf(home, big)} ${eventsOf(home, low2)}")
+  cleanUp(home)
+
+@test("a low job never drains the machine: past drain_after it still waits, holding nothing back")
+lowNeverDrainsE2e()
+  val home = newHome("{\"units\": 2, \"drain_after\": \"1s\"}")
+  val a = submitted(home, "--units", "1", "--", "sleep", "60")
+  assert(within(2000, () -> started(home, a)))
+  val low = submitted(home, "--low", "--units", "2", "--", "sleep", "0.2")
+  threads.sleep(millis(2500))
+  assertEq(whyOf(home, low), Some(Why.LowWaits))
+  // a job not low that fits starts beside it at once
+  val small = submitted(home, "--units", "1", "--", "sleep", "0.2")
+  assert(within(2000, () -> started(home, small)), eventsOf(home, small).mkString(" "))
+  m(home, "kill", a.toString())
+  assertEq(m(home, "wait", low.toString()).code, 0)
+  cleanUp(home)
+
+@test("a low job runs at nice 19")
+lowNicedE2e()
+  val home = newHome()
+  val low = submitted(home, "--low", "--", "sh", "-c", "ps -o nice= -p $$")
+  assertEq(m(home, "wait", low.toString()).code, 0)
+  // 19 more than the daemon's own (the test may itself run niced, and 20 is the most there is)
+  val level = logOf(home, low).trim.lines.toVector.last.trim
+  assert(level == "19" || level == "20", logOf(home, low))
+  // a job not low beside it runs at 15 more
+  val plain = submitted(home, "--", "sh", "-c", "ps -o nice= -p $$")
+  assertEq(m(home, "wait", plain.toString()).code, 0)
+  val plainLevel = logOf(home, plain).trim.lines.toVector.last.trim.toIntOption().getOrElse(-1)
+  assert(plainLevel < level.toIntOption().getOrElse(0) || plainLevel == 20, logOf(home, plain))
+  cleanUp(home)
+
+@test("--low is refused beside --urgent, --landing, --exclusive and --quick, and --mem-exact without --mem")
+lowRefusedE2e()
+  val home = newHome()
+  for flag in ["--urgent", "--landing", "--exclusive", "--quick"]
+    val r = m(home, "submit", "--low", flag, "--", "true")
+    assertEq(r.code, 2)
+    assert(r.out.contains("a job is low or"), r.out)
+  val exact = m(home, "submit", "--mem-exact", "--", "true")
+  assertEq(exact.code, 2)
+  assert(exact.out.contains("--mem-exact"), exact.out)
+  cleanUp(home)
+
+@test("priority --low moves a queued job into the low band; a number or --urgent takes it out")
+priorityLowE2e()
+  val home = newHome("{\"units\": 1}")
+  val a = submitted(home, "--units", "1", "--", "sleep", "60")
+  assert(within(2000, () -> started(home, a)))
+  val b = submitted(home, "--units", "1", "--", "sleep", "30")
+  val c = submitted(home, "--units", "1", "--", "sleep", "30")
+  assertEq(m(home, "priority", b.toString(), "--low").code, 0)
+  assertEq(queuedIds(home), [c, b])
+  assert(lsRowOf(home, b).contains("build~"), lsRowOf(home, b))
+  // the band outlives a restart
+  restarted(home)
+  assertEq(queuedIds(home), [c, b])
+  assertEq(lsQueuedJson(home, b)("low").asBool, Some(true))
+  assertEq(m(home, "priority", b.toString(), "5").code, 0)
+  assertEq(queuedIds(home), [b, c])
+  assert(!lsQueuedJson(home, b).has("low"))
+  assertEq(m(home, "priority", c.toString(), "--low").code, 0)
+  assertEq(m(home, "priority", c.toString(), "--urgent").code, 0)
+  assertEq(queuedIds(home), [c, b])
+  // a landing job is never low
+  val land = submitted(home, "--landing", "--", "sleep", "30")
+  assertEq(m(home, "priority", land.toString(), "--low").code == 0, false)
+  m(home, "stop", "--force")
+  cleanUp(home)
+
+@test("a low job that has waited low_promote_after becomes a normal job, logged, and may then drain")
+lowPromotedE2e()
+  val home = newHome("{\"units\": 2, \"low_promote_after\": \"1s\", \"drain_after\": \"1s\"}")
+  val a = submitted(home, "--units", "1", "--", "sleep", "60")
+  assert(within(2000, () -> started(home, a)))
+  val low = submitted(home, "--low", "--units", "2", "--", "sleep", "0.2")
+  assert(within(6000, () -> eventsOf(home, low).contains("promoted")), eventsOf(home, low).mkString(" "))
+  assert(within(4000, () -> whyOf(home, low) == Some(Why.Draining)), s"${whyOf(home, low)}")
+  assert(!lsQueuedJson(home, low).has("low"))
+  m(home, "kill", a.toString())
+  assertEq(m(home, "wait", low.toString()).code, 0)
+  assert(logOf(home, low).contains("it is a normal job now"), logOf(home, low))
+  cleanUp(home)
+
+@test("a given --mem is held to the command's learned peak after 3 runs; --mem-exact keeps it")
+memCeilingE2e()
+  val home = newHome()
+  // long enough for the daemon to measure each run's peak
+  for _ in 0 ..< 3
+    val id = submitted(home, "--mem", "20G", "--", "sh", "-c", "sleep 2")
+    assertEq(m(home, "wait", id.toString()).code, 0)
+  val held = submitted(home, "--mem", "20G", "--", "sh", "-c", "sleep 2")
+  m(home, "wait", held.toString())
+  val ev = events(home).find(e -> e("id").asLong == Some(held) && e("event").asString == Some("submitted")).get
+  assert(ev("resv").asLong.get < twentyGib, ev.render)
+  assert(ev("resv_from").asString == Some("cmd+dir") || ev("resv_from").asString == Some("cmd"), ev.render)
+  val exact = submitted(home, "--mem", "20G", "--mem-exact", "--", "sh", "-c", "sleep 2")
+  m(home, "wait", exact.toString())
+  val ex = events(home).find(e -> e("id").asLong == Some(exact) && e("event").asString == Some("submitted")).get
+  assertEq(ex("resv").asLong, Some(twentyGib))
+  assertEq(ex("resv_from").asString, Some("given"))
+  cleanUp(home)

@@ -59,7 +59,9 @@ amendedSpec(s: JobSpec, a: Amendment, deadline: Option[long]) -> JobSpec =
     s.unitsGiven || a.units.isDefined,
     s.owner,
     s.unitsExact,
-    if a.units.isDefined then 0 else s.unitsAsked
+    if a.units.isDefined then 0 else s.unitsAsked,
+    s.low,
+    s.memExact
   )
 
 // The job among `deps` through which a wait for them would come back to job `id`, or None: `waits`
@@ -171,7 +173,8 @@ amendRefusal(option: string) -> Option[string] = option match
   "--landing" | "--exclusive" | "--quick" | "--urgent" -> Some(
     s"`$option` is the job's lane, which is not amended: kill the job and submit it again (for urgency, `marshal priority <id> --urgent` moves a queued job ahead)"
   )
-  "--dir" | "--kind" | "--owner" | "--external" | "--quiet-load" | "--units-exact" | "--retry-delay" | "--" -> Some(
+  "--low" -> Some("`--low` is a band, which amend does not change: `marshal priority <id> --low` moves a queued job into it")
+  "--dir" | "--kind" | "--owner" | "--external" | "--quiet-load" | "--units-exact" | "--mem-exact" | "--retry-delay" | "--" -> Some(
     s"`$option` is not amended: what the job is and how it runs make a different job; kill it and submit it again"
   )
   _ -> None

@@ -1,0 +1,46 @@
+module dev.avinlang.marshal
+
+// Low jobs (`--low`): exploratory work, probes, anything that may wait for spare room.
+//
+// - A low job queues behind every normal and urgent job, whatever it arrived, and among the low jobs
+//   by priority and arrival as any job is (control.avin's `placeOrder`).
+// - It starts only when it fits now and delays no job that is not low: while nothing else waits,
+//   whenever it fits; while a job waits for room (the blocked head, or a job the machine drains for),
+//   only when it is expected to end before that job can start, by a duration learned from its own
+//   work (`trustedDuration`); a guessed one counts as its deadline. It never drains the machine, and
+//   nothing waits on its behalf: a low job that cannot start waits `low: no spare room`
+//   (`Why.LowWaits`) and holds nothing back.
+// - Its processes run at `LowNice`.
+// - It is not urgent, landing, exclusive or quick (`lowRefusal`).
+// - Waiting is still bounded: once it has waited `low_promote_after` (config.json, 4h by default)
+//   since it last queued, it becomes a normal job (`lowPromoted`), logged in its log and as a
+//   `promoted` event; from then on it is a development job like any other. A low job already running
+//   is never stopped.
+
+// How long a low job waits before it becomes a normal one, unless config.json says.
+val DefaultLowPromote: long = 4 * 3600000
+
+// The `nice` level a low job runs at: the lowest, so it takes only what nothing else wants.
+val LowNice: int = 19
+
+// Why a job asking for `--low` cannot have it, or None when it can.
+lowRefusal(spec: JobSpec) -> Option[string]
+  if !spec.low then return None
+  if spec.urgent then return Some("a job is low or urgent, not both")
+  if spec.landing then return Some("a job is low or landing, not both")
+  if spec.exclusive then return Some("a job is low or exclusive, not both")
+  if spec.quick then return Some("a job is low or quick, not both")
+  None
+
+// Whether a low job that last queued at `arrived` (wall-clock microseconds) has waited long enough,
+// at `wallNow`, to become a normal job: `promoteMs` past it; never with no bound (None).
+lowPromoted(arrived: long, wallNow: long, promoteMs: Option[long]) -> bool = promoteMs match
+  Some(ms) -> (wallNow - arrived) / 1000 >= ms
+  None -> false
+
+// Whether an expected duration from `from` (eta.avin's `Expectation.from`) is learned from the job's
+// own work, which backfill may trust: its command in its directory (`cmd+dir`), its command anywhere
+// (`cmd`), or its command with its numbers made alike in its project (`norm+project`, a train's or a
+// release gate's numbered siblings). Its kind in its project (`kind+project`), its kind anywhere
+// (`kind`) and a guess (`none`) cover other work, and are not.
+trustedDuration(from: string) -> bool = from == FromDir || from == FromCmd || from == FromNorm

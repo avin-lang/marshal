@@ -37,10 +37,17 @@ resultLine(j: JobInfo) -> string
 // The line `status <id>` prints: an ended job's as `wait` ends with, and a job that has not ended
 // with its state, and why it waits while it is queued (`marshal: job 12 is queued (draining for
 // 7); log …`).
+// A job not running yet adds how long it has waited (`waitedFor`): `marshal: job 12 is queued
+// (draining for 7), waited 12m03s; log …`.
 statusLine(j: JobInfo, why: Option[Why]) -> string
   if j.outcome.isDefined then return resultLine(j)
-  val reason = why.map(w -> s" (${whyText(w)})").getOrElse("")
-  s"marshal: job ${j.id} is ${j.state}$reason; log ${j.log}"
+  val reason = why.map(w -> s" (${if j.waitText.nonEmpty then j.waitText else whyText(w)})").getOrElse("")
+  s"marshal: job ${j.id} is ${j.state}$reason${waitedFor(j)}; log ${j.log}"
+
+// `, waited 12m03s` for a job not running yet (queued, held, waiting for others or to retry; not a
+// settling one, whose wait is for the load), counted since it last began to wait; "" otherwise.
+waitedFor(j: JobInfo) -> string =
+  if notRunYet(j) && !settling(j) then s", waited ${formatMillis(j.queuedMs)}" else ""
 
 // A job's state as a listing's column shows it: a job waiting for others with the jobs it waits
 // for (`after 3,4`), a job waiting to retry with the attempt it will make, and a job held by hand
@@ -67,11 +74,17 @@ notRunYet(j: JobInfo) -> bool = j.outcome.isEmpty && (
   j.state == "queued" || j.state == "settling" || j.state == "waiting" || j.state == "retrying"
 )
 
-// The ELAPSED column for `ms` of run time: `-` for a job that has not started, whose wait is
-// `queued_ms` in the JSON, except that a settling job shows how long it has waited for the load
-// (`settlingMs`), which is not run time; once it runs, the column counts its run from 0.
+// The ELAPSED column for `ms` of run time: for a job that has not started, how long it has waited
+// (`queued_ms` in the JSON) marked `w` (`waitedText`), except that a settling job shows how long it
+// has waited for the load (`settlingMs`), which is not run time; once it runs, the column counts its
+// run from 0.
 elapsedColumn(j: JobInfo, ms: long) -> string =
-  if settling(j) then formatMillis(j.settlingMs) elif notRunYet(j) then "-" else formatMillis(ms)
+  if settling(j) then formatMillis(j.settlingMs) elif notRunYet(j) then waitedText(formatMillis(j.queuedMs)) else formatMillis(ms)
+
+// How long a job not running yet (queued, held, waiting for others, waiting to retry) has waited,
+// marked `w` so it is never read as run time: `w12m03s` in `ls`, `w12:03` in `top`. `time` is the
+// wait as the view writes a time.
+waitedText(time: string) -> string = "w" + time
 
 // When a job started, as the STARTED column shows it: the local date and minute, `11-07 08:31`, in
 // `zone`; `-` for a job that has not started (queued, or cancelled before it ran).
@@ -109,19 +122,70 @@ whyText(MemoryPressure(cause)) = s"memory pressure: $cause"
 whyText(PoliteBudget) = "polite budget"
 whyText(RunsAlone) = "polite: runs alone"
 whyText(ForAlone(id)) = s"polite: $id runs alone"
+whyText(LowWaits) = "low: no spare room"
 
 // A job's state cell in `ls`: `stateColumn`, and for a job that is plainly `queued` or `settling` and
 // has a reason in `whys` (job id, reason), the reason after it: `queued (draining)`,
-// `settling (load 30.4 ≥ 4.5)`. A settling job past `load_wait` adds `overdue`. A job held by hand
-// already says `held`, so its reason adds nothing.
-stateWithWhy(j: JobInfo, whys: Vector[(long, Why)]) -> string
+// `settling (load 30.4 ≥ 4.5)`. The reason is the job's own `waitText` where the daemon gave one
+// (`queued (needs 3 units, 1 free)`), unless `brief` asks for the short words (`ls --compact`). A
+// settling job past `load_wait` adds `overdue`. A job held by hand already says `held`, so its reason
+// adds nothing.
+stateWithWhy(j: JobInfo, whys: Vector[(long, Why)], brief: bool = false) -> string
   val state = stateColumn(j)
   if state != "queued" && state != "settling" then return state
   val overdue = if j.loadOverdue then ", overdue" else ""
   whys.find(w -> w.0 == j.id) match
     Some((_, Held)) -> state
-    Some((_, why)) -> s"$state (${whyText(why)}$overdue)"
-    None -> if overdue.isEmpty then state else s"$state (overdue)"
+    Some((_, why)) -> s"$state (${if j.waitText.nonEmpty && !brief then j.waitText else whyText(why)}$overdue)"
+    None ->
+      if j.waitText.nonEmpty && !brief then s"$state (${j.waitText}$overdue)"
+      elif overdue.isEmpty then state
+      else s"$state (overdue)"
+
+// What a queued job needs and what is free as the scheduler last looked (sched.avin's `Need`), in
+// words: `3 units, 1 free`, `30G, 24G free`, or both joined by `and`; "" where neither is short.
+needWords(n: Need) -> string
+  val parts = Buffer[string]()
+  if n.units > n.freeUnits
+    val free = if n.freeUnits < 0 then 0 else n.freeUnits
+    parts += s"${formatUnits(n.units)} unit${if n.units == wholeUnits(1) then "" else "s"}, ${formatUnits(free)} free"
+  if n.memory > n.freeMemory
+    val free = if n.freeMemory < 0 then long(0) else n.freeMemory
+    parts += s"${roundSize(n.memory)}, ${roundSize(free)} free"
+  if parts.isEmpty then "" else "needs " + parts.mkString(", and ")
+
+// Why a queued job waits, in full, as `ls` and `status <id>` say it after `queued`: the reason's words
+// (`whyText`), and where the scheduler said what it needs (`need`), that, then the running job whose
+// end lets it start and when (`atText`, such as `~16:30`; "" where not known):
+// `draining: needs 30G, 24G free; waits for 7263, ~16:30`, `needs 3 units, 1 free`. A reason that
+// names no shortage (`behind 7278`, `low: no spare room`) is its words alone.
+needText(why: Why, need: Option[Need], atText: string) -> string
+  val words = whyText(why)
+  val n = need match
+    Some(n) -> n
+    None -> return words
+  val short = needWords(n)
+  if short.isEmpty then return words
+  val waits = if n.waitsOn > 0 then s"; waits for ${n.waitsOn}${if atText.isEmpty then "" else ", " + atText}" elif atText.nonEmpty then s"; $atText" else ""
+  why match
+    Draining -> s"draining: $short$waits"
+    NoUnits | NoMemory -> s"$short$waits"
+    // the polite budget, a part of the machine, is what it waits for: its words say so already
+    _ -> words
+
+// A job's whole state in words, as the log pane's header in `top` says it: its state, and for a queued
+// or settling job the reason it waits in full (`stateWithWhy` with its `waitText`), and for a job not
+// running yet how long it has waited (`waitedFor`); then what band and lane it is in, which the KIND
+// column marks: `queued (behind 7278), waited 12m03s; urgent`, `running; landing`.
+fullState(j: JobInfo) -> string
+  val state = stateWithWhy(j, []) + waitedFor(j)
+  val marks = Buffer[string]()
+  if j.landing then marks += "landing"
+  if j.quick then marks += "quick"
+  if j.exclusive then marks += "exclusive"
+  if j.urgent then marks += "urgent"
+  if j.low then marks += "low"
+  if marks.isEmpty then state else state + "; " + marks.mkString(", ")
 
 // The listing `ls` prints: a header, then one row per job. A LABEL column stands before COMMAND, and
 // always, empty for a job without a label. UNITS is what a job weighs (`unitsText`) and USED the cores
@@ -139,12 +203,13 @@ val ListingColumns: Vector[string] = [
   "ID", "STATE", "KIND", "UNITS", "USED", "RESV", "STARTED", "ELAPSED", "ETA", "OWNER", "FROM", "LABEL", "COMMAND"
 ]
 
-listingRows(jobs: Vector[JobInfo], whys: Vector[(long, Why)]) -> Vector[Vector[string]]
+// `brief` gives a queued job's reason in its short words (`ls --compact`).
+listingRows(jobs: Vector[JobInfo], whys: Vector[(long, Why)], brief: bool = false) -> Vector[Vector[string]]
   val zone = time.localZone()
   [ListingColumns] ++ jobs.map(
     j -> [
       j.id.toString(),
-      stateWithWhy(j, whys),
+      stateWithWhy(j, whys, brief),
       laneKind(j),
       unitsText(j),
       usedText(j),
@@ -185,16 +250,24 @@ ownerText(j: JobInfo) -> string = if j.owner.isEmpty then "-" else j.owner
 
 // A job's kind as a listing shows it, marked with its lane: `*` after a landing job's, `^` after a
 // quick job's, `#` after an exclusive job's, and `!` after that for a job in the urgent band
-// (`test^!`, `test*!`, `bench#!`).
-laneKind(j: JobInfo) -> string = kindMarked(j.kind, j.landing, j.quick, j.urgent, j.exclusive)
+// (`test^!`, `test*!`, `bench#!`), or `~` for a low job (`probe~`).
+laneKind(j: JobInfo) -> string = kindMarked(j.kind, j.landing, j.quick, j.urgent, j.exclusive, j.low)
 
 // A job's kind and marks fitted to a column `width` cells wide: unchanged when they fit; otherwise the
 // kind's name is cut and ends in `…`, and every mark follows whole (`avin-g…*`, `funl-t…!`, `te…^!`).
 // Only where the marks and the ellipsis alone are wider than the column are the marks cut, from the right.
-fittedKind(j: JobInfo, width: int) -> string = fittedMarked(j.kind, j.landing, j.quick, j.urgent, width, j.exclusive)
+fittedKind(j: JobInfo, width: int) -> string = fittedMarked(j.kind, j.landing, j.quick, j.urgent, width, j.exclusive, j.low)
 
-fittedMarked(kind: string, landing: bool, quick: bool, urgent: bool, width: int, exclusive: bool = false) -> string
-  val marks = kindMarked("", landing, quick, urgent, exclusive)
+fittedMarked(
+    kind: string,
+    landing: bool,
+    quick: bool,
+    urgent: bool,
+    width: int,
+    exclusive: bool = false,
+    low: bool = false
+) -> string
+  val marks = kindMarked("", landing, quick, urgent, exclusive, low)
   val whole = kind + marks
   if whole.charCount <= width then return whole
   val room = width - marks.charCount - 1
@@ -202,10 +275,10 @@ fittedMarked(kind: string, landing: bool, quick: bool, urgent: bool, width: int,
   kind.take(room) + "…" + marks
 
 // A kind with its marks: the lane's (`*` landing, `^` quick, `#` exclusive; a job is in one), then
-// `!` for urgent.
-kindMarked(kind: string, landing: bool, quick: bool, urgent: bool, exclusive: bool = false) -> string
+// `!` for urgent or `~` for low (a job is at most one of them, and a low job is in no lane of its own).
+kindMarked(kind: string, landing: bool, quick: bool, urgent: bool, exclusive: bool = false, low: bool = false) -> string
   val lane = if landing then "*" elif quick then "^" elif exclusive then "#" else ""
-  kind + lane + (if urgent then "!" else "")
+  kind + lane + (if urgent then "!" elif low then "~" else "")
 
 // The line `status` prints. The quick lane is named only while a quick job runs, and an exclusive job
 // only while it runs. While marshal is polite, the units and memory are shown against the polite

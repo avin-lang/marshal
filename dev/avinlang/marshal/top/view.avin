@@ -10,9 +10,9 @@ import dev.avinlang.marshal.{NoUnits, NoMemory, LaneBusy, Draining, ForTakeSlot,
 import dev.avinlang.marshal.{Exited, Signalled, TimedOut, Cancelled, Lost, DependencyFailed, Quiet}
 
 import dev.avinlang.tui.{
-  Black, Blue, Bold, BrightBlack, Char, Cluster, Column, Ctrl, Cyan, Dim, Down, End, Enter, Escape, Event, Fill, Fixed,
-  Green, Grid, Home, Key, KeyPress, Magenta, Modal, ModalStack, PageDown, PageUp, Rect, Red, Reverse, Rounded,
-  Scrollbar, ScrollView, Segment, Span, Stop, Style, Table, Up, Yellow, textWidth, wrapChars
+  Blue, Bold, Char, Cluster, Color, Column, Ctrl, Cyan, Down, End, Enter, Escape, Event, Fill, Fixed,
+  Green, Grid, Home, Key, KeyPress, Magenta, Modal, ModalStack, PageDown, PageUp, Rect, Red, Reverse, Rgb, Rounded,
+  Scrollbar, ScrollView, Segment, Span, Stop, Style, Table, Up, Yellow, fitted, textWidth, wrapChars
 }
 
 // Which jobs the table lists.
@@ -103,6 +103,7 @@ whyText(Why.MemoryPressure(_)) = "mem pressure"
 whyText(Why.PoliteBudget) = "polite"
 whyText(Why.RunsAlone) = "runs alone"
 whyText(Why.ForAlone(id)) = s"alone $id"
+whyText(Why.LowWaits) = "low"
 whyText(w) = marshal.whyText(w)
 
 // A time as a clock: `0:07`, `18:12`, `1:02:03`; a negative time is shown as none.
@@ -145,16 +146,16 @@ stateOf(l: Line) -> (string, Style)
       )
       Some(TimedOut) -> ("timeout", Style.fg(Red).with(Bold | Reverse))
       Some(Quiet(_)) -> ("quiet", Style.fg(Red).with(Bold | Reverse))
-      Some(Cancelled) -> ("cancelled", Style.fg(BrightBlack))
+      Some(Cancelled) -> ("cancelled", Muted)
       Some(Lost) -> ("lost", Style.fg(Magenta).with(Bold | Reverse))
-      Some(DependencyFailed(after)) -> (s"dep $after failed", Style.fg(BrightBlack))
+      Some(DependencyFailed(after)) -> (s"dep $after failed", Muted)
 
 // A line's DEADLINE cell and its style: time left for a running job, the deadline it will have for a
 // queued one, nothing for one that ended.
 deadlineOf(l: Line, since: long) -> (string, Style)
   val j = l.job
-  if j.outcome.isDefined then return ("-", Style.fg(BrightBlack))
-  if l.queued.isDefined || waiting(l) then return (clock(j.deadlineMs), Style.fg(BrightBlack))
+  if j.outcome.isDefined then return ("-", Muted)
+  if l.queued.isDefined || waiting(l) then return (clock(j.deadlineMs), Muted)
   val left = timeLeft(j, since)
   (if left <= 0 then "over" else clock(left), leftStyle(left, j.deadlineMs))
 
@@ -165,14 +166,33 @@ elapsedOf(
     since: long
 ) -> long = if l.job.outcome.isDefined || l.job.paused then l.job.elapsedMs else l.job.elapsedMs + since
 
-// A line's ELAPSED cell: its run time, `-` for a job that has not run, and for a settling job how
-// long it has waited for the load (not run time: it restarts from 0 when the job runs).
+// A line's ELAPSED cell: its run time; for a job that has not run, how long it has waited, counting
+// on between snapshots and marked `w` (`w12:03`, `waitedText`) so it is not read as run time; and
+// for a settling job how long it has waited for the load (not run time: it restarts from 0 when the
+// job runs).
 elapsedText(l: Line, since: long) -> string
   if marshal.settling(l.job) then return clock(l.job.settlingMs + since)
-  if marshal.notRunYet(l.job) then "-" else clock(elapsedOf(l, since))
+  if marshal.notRunYet(l.job) then marshal.waitedText(clock(l.job.queuedMs + since)) else clock(elapsedOf(l, since))
 
-// The background of an overdue settling job's row: the whole row, so it stands out from every state.
-val OverdueStyle: Style = Style.plain().withBg(Red)
+// What asks for attention at once: the kill prompt and an overdue job's row. Both colours are given,
+// not the theme's, so it reads the same on a dark and a light terminal: bold white on a dark red,
+// a contrast of about 8:1 (#a00000; 7.4:1 at the 256-colour #af0000), well past the 4.5:1 bar. The
+// theme's own red behind its own foreground was dim grey on brick red on a dark terminal.
+val AlertFg: Color = Rgb(255, 255, 255)
+val AlertBg: Color = Rgb(160, 0, 0)
+val AlertStyle: Style = Style(AlertFg, AlertBg, Bold)
+
+// Text said quietly (an empty value, a hint, the log header's values): the terminal's own foreground,
+// which its theme makes readable on its background. Grey (bright black) is under 4.5:1 on a light
+// background, and dim is fainter still.
+val Muted: Style = Style.plain()
+
+// The bottom line's key names: black on a teal of its own, about 7.8:1 (#00afaf, the same in 256
+// colours), where the theme's black on its cyan could be grey on cyan.
+val KeyStyle: Style = Style(Rgb(0, 0, 0), Rgb(0, 175, 175), 0)
+
+// The style of an overdue settling job's row: the whole row, so it stands out from every state.
+val OverdueStyle: Style = AlertStyle
 
 // Whether a line's row is drawn on `OverdueStyle`.
 overdue(l: Line) -> bool = marshal.settling(l.job) && l.job.loadOverdue
@@ -295,7 +315,7 @@ allCells(l: Line, since: long, zone: time.Zone, today: string, width: int) -> Ve
 // is known.
 etaOf(l: Line, since: long) -> (string, Style)
   val text = marshal.etaColumn(l.job, if l.job.outcome.isDefined then 0 else since)
-  if text == "-" || l.job.state != "running" then (text, Style.fg(BrightBlack)) else (text, Style.plain())
+  if text == "-" || l.job.state != "running" then (text, Muted) else (text, Style.plain())
 
 // The LABEL column: as wide as the longest label drawn, measured in display cells, between its heading
 // and `LabelCap`, cut with an ellipsis; always drawn, empty for a job without a label, except where the
@@ -682,45 +702,56 @@ class App(val sock: string)
     // the lines read are the last `logRows + logBack()` of the log, or all of a shorter one: the
     // pane shows those that end `logBack()` lines before the last
     logView.draw(g, inside, logLines)
-    if logLines.isEmpty then g.text(inside.x, inside.y, "(nothing in the log yet)", Style.fg(BrightBlack), inside)
+    if logLines.isEmpty then g.text(inside.x, inside.y, "(nothing in the log yet)", Muted, inside)
 
-  // The fixed header of the log pane: the job's kind, then its owner and its label if it has one beside it, and its whole command line, wrapped to the
+  // The fixed header of the log pane: the job's kind with its marks, then its owner and its label if it has one beside it, its whole state on a row of its own (`fullState`), and its whole command line, wrapped to the
   // pane, labels in bold and values dim, then a rule; the log scrolls below it, so none of this
   // can be taken for a line the job printed. At least one row is left for the log, so a command
   // too long for a short pane ends in an ellipsis. Returns the rows used (none if the pane is too
   // small to also show a log row).
   private drawLogHeader(g: Grid, box: Rect, j: JobInfo) -> int
-    if box.h < 4 || box.w < 1 then return 0
+    if box.h < 5 || box.w < 1 then return 0
     val width = maxInt(box.w - LogLabel.charCount, 1)
     val lines = wrapChars(j.cmd.mkString(" "), width)
+    // the kind carries its marks (`test!`, `probe~`), as the KIND column does
+    val kind = marshal.laneKind(j)
     // the label stands on the kind's line, after the kind, and wraps onto the rows below under
-    // where it began, whole while there is room: one command row, the rule and one log row stay
-    // the owner stands between the kind and the label, whole, since the job list's OWNER column cuts it
+    // where it began, whole while there is room: the state row, one command row, the rule and one
+    // log row stay; the owner stands between the kind and the label, whole, since the job list's
+    // OWNER column cuts it
     val owner = marshal.ownerText(j)
-    val ownerX = box.x + LogLabel.charCount + j.kind.charCount + LabelGap
+    val ownerX = box.x + LogLabel.charCount + kind.charCount + LabelGap
     val ownerEnd = ownerX + OwnerWord.charCount + textWidth(owner)
     val labelX = ownerEnd + LabelGap + LabelWord.charCount
     val labelLines = if j.label.isEmpty then [] else wrapChars(j.label, maxInt(box.x + box.w - labelX, 1))
-    val labelShown = labelLines.take(maxInt(box.h - 3, 1))
+    val labelShown = labelLines.take(maxInt(box.h - 4, 1))
     val extra = maxInt(labelShown.length - 1, 0)
-    // kind, the label's further rows, the rule and at least one log row leave this many for the command
-    val room = maxInt(box.h - 3 - extra, 0)
+    // kind, the label's further rows, the state, the rule and at least one log row leave this many
+    // for the command
+    val room = maxInt(box.h - 4 - extra, 0)
     val shownLines = if lines.length <= room then lines else lines.take(room)
     val clipped = lines.length > shownLines.length
     g.text(box.x, box.y, "kind", Style.plain().with(Bold), box)
-    g.text(box.x + LogLabel.charCount, box.y, j.kind, Style.fg(BrightBlack), box)
+    g.text(box.x + LogLabel.charCount, box.y, kind, Muted, box)
     g.text(ownerX, box.y, OwnerWord.trim, Style.plain().with(Bold), box)
-    g.text(ownerX + OwnerWord.charCount, box.y, owner, Style.fg(BrightBlack), box)
+    g.text(ownerX + OwnerWord.charCount, box.y, owner, Muted, box)
     if labelShown.nonEmpty
       g.text(ownerEnd + LabelGap, box.y, LabelWord.trim, Style.plain().with(Bold), box)
     for (text, k) in labelShown.zipWithIndex
-      g.text(labelX, box.y + k, text, Style.fg(BrightBlack), box)
-    val top = box.y + 1 + extra
+      g.text(labelX, box.y + k, text, Muted, box)
+    // the whole state, never cut by a column: the reason a queued job waits in full and the job's
+    // band and lane (`fullState`), as the snapshot last said, so it follows the job live; a state
+    // wider than the pane ends in an ellipsis
+    val stateY = box.y + 1 + extra
+    val state = marshal.fullState(j)
+    g.text(box.x, stateY, "state", Style.plain().with(Bold), box)
+    g.text(box.x + LogLabel.charCount, stateY, fitted(state, width), Muted, box)
+    val top = stateY + 1
     for (text, k) in shownLines.zipWithIndex
       val last = clipped && k == shownLines.length - 1
       val t = if last && text.charCount > 1 then text.take(text.charCount - 1) + "…" elif last then "…" else text
       if k == 0 then g.text(box.x, top, "command", Style.plain().with(Bold), box)
-      g.text(box.x + LogLabel.charCount, top + k, t, Style.fg(BrightBlack), box)
+      g.text(box.x + LogLabel.charCount, top + k, t, Muted, box)
     val ruleY = top + maxInt(shownLines.length, 1)
     g.hline(box.x, ruleY, box.w, Style.fg(Cyan), clip = box)
     ruleY - box.y + 1
@@ -731,7 +762,7 @@ class App(val sock: string)
     val why = problem.getOrElse("asking the daemon…")
     g.text(0, 2, why, Style.fg(Yellow))
     val hint = if noDaemon then "s starts one; q quits; looking again every second" else "q quits; looking again every second"
-    g.text(0, 3, hint, Style.fg(BrightBlack))
+    g.text(0, 3, hint, Muted)
 
   // The bottom line: a kill's question, or the keys and the last message.
   private drawFooter(g: Grid)
@@ -740,14 +771,14 @@ class App(val sock: string)
     val line = Rect(0, y, g.width, 1)
     g.fill(0, y, g.width, 1, Style.plain())
     if confirming is Some(j)
-      g.text(0, y, s"Kill job ${j.id} (${j.cmd.mkString(" ")})? y/n", Style(Black, Red, Bold), line)
+      g.text(0, y, fitted(killPrompt(j), g.width), AlertStyle, line)
       return
     val x = g.keyHints(
       0,
       y,
       footerKeys,
       Style.plain().with(Bold),
-      Style(Black, Cyan, 0),
+      KeyStyle,
       line,
       sep = 0,
       gap = 0,
@@ -757,10 +788,21 @@ class App(val sock: string)
     val right = if position.nonEmpty && x + 2 + textWidth(
       position
     ) <= g.width then g.width - textWidth(position) else g.width
-    if right < g.width then g.text(right, y, position, Style.fg(BrightBlack), line)
+    if right < g.width then g.text(right, y, position, Muted, line)
     val room = (if right < g.width then right - 1 else g.width) - x - 1
     if message.nonEmpty && room > 0
       g.textIn(x + 1, y, room, message, Style.fg(Yellow), 1, line)
+
+// The kill prompt for `j`: `Kill job 7289 (zsh …/train/train373.zsh)? y/n`, each long path in its
+// command cut to its last two parts (`shortPath`), so the job and the question fit the line.
+killPrompt(j: JobInfo) -> string = s"Kill job ${j.id} (${j.cmd.map(shortPath).mkString(" ")})? y/n"
+
+// A path of more than two parts as `…/` and its last two (`…/train/train373.zsh`); any other word as
+// it is.
+shortPath(word: string) -> string
+  if !word.contains("/") then return word
+  val parts = word.split("/").filter(p -> p.nonEmpty).toVector
+  if parts.length <= 2 then word else "…/" + parts.takeRight(2).mkString("/")
 
 // The help, over the screen: the lines one column in from its border, cut at the box's edge where the
 // screen is too small, and closed by any key.
@@ -881,7 +923,7 @@ drawHeader(
     ] ++ settlingSpans(u) ++ held ++ politeSpans(u) ++ [Span("   landing: "), styled(laneText(o))] ++ quickText(u)
   )
   val shown = s"filter: ${filterName(f)}" + owner.map(o -> s"  owner: $o").getOrElse("")
-  if g.width > textWidth(shown) then g.text(g.width - textWidth(shown), 0, shown, Style.fg(BrightBlack))
+  if g.width > textWidth(shown) then g.text(g.width - textWidth(shown), 0, shown, Muted)
   val barWidth = meterWidth(g.width)
   val bracket = MeterAt + barWidth + 2
   val outside = u.takeSlot.map(t -> t.units).getOrElse(0)
@@ -1013,14 +1055,15 @@ settlingSpans(u: Usage) -> Vector[Span]
   if u.settling == 0 then return []
   [Span("  "), Span(s"${u.settling} settling", Some(Style.fg(Yellow).with(Bold)))]
 
-// Redraws row `y` of `g`, from column `x` for `w` cells, on `bg`, its text and colours kept: what
-// marks an overdue settling job's row.
+// Redraws row `y` of `g`, from column `x` for `w` cells, in `bg`'s colours, its text kept: what
+// marks an overdue settling job's row. The text takes `bg`'s foreground and boldness too, since a
+// cell's own colour may not read on the new background.
 tintRow(g: Grid, x: int, y: int, w: int, bg: Style)
   for col in maxInt(x, 0) ..< minInt(x + w, g.width)
     val cell = g(col, y)
     if cell.isContinuation() then continue
     val wide = col + 1 < g.width && g(col + 1, y).isContinuation()
-    val _ = g.put(col, y, Cluster(cell.text, if wide then 2 else 1), cell.style.withBg(bg.bg))
+    val _ = g.put(col, y, Cluster(cell.text, if wide then 2 else 1), bg)
 
 // Who holds the landing lane, as the header says it.
 laneText(o: Overview) -> (string, Style)
@@ -1032,7 +1075,7 @@ laneText(o: Overview) -> (string, Style)
       (s"job $id$units", Style.fg(Cyan).with(Bold))
     None ->
       if o.usage.takeSlot.exists(t -> t.landing) then ("take-slot", Style.fg(Magenta).with(Bold))
-      else ("free", Style.fg(BrightBlack))
+      else ("free", Muted)
 
 // The unit budget as a bar `width` cells wide between brackets, drawn in bars: marshal's development
 // units in green, take-slot's after them in magenta, the rest blank, all in quarters, with `label`

@@ -19,7 +19,7 @@ urgentTakesTheDrainOverE2e()
   assertEq(whyOf(home, big), Some(Why.DrainingFor(u)))
   val ls = m(home, "ls").out
   assert(ls.contains(s"queued (draining for $u)"), ls)
-  assert(ls.contains("queued (draining)"), ls)
+  assert(ls.contains(s"queued (draining: needs 2 units, 1 free; waits for $a"), ls)
   val st = m(home, "status", big.toString())
   assertEq(st.code, 0)
   assert(st.out.contains(s"job $big is queued (draining for $u)"), st.out)

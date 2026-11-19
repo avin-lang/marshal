@@ -36,7 +36,11 @@ import dev.avinlang.json.Json
 // `project` are where its units and deadline came from and its project (protocol.avin's `JobInfo`);
 // "" when absent, and the new image works the project out again. `amended` says `amend` changed the
 // job's settings (its spec is the amended one), and `keepsPlace` that a queued job an amended
-// `--after` sent back to wait rejoins the queue where it was; false when absent.
+// `--after` sent back to wait rejoins the queue where it was; false when absent. `low` says it is in
+// the low band now (low.avin; `priority` or promotion may have changed what its spec asked); its
+// spec's `low` when absent. `waitSince` is since when a job not running yet has waited (wall clock,
+// milliseconds: its submission, or the end of the attempt a retry follows); 0 when absent, read as
+// its submission.
 data SavedJob(
     id: long,
     spec: JobSpec,
@@ -82,7 +86,9 @@ data SavedJob(
     deadlineFrom: string = "",
     project: string = "",
     amended: bool = false,
-    keepsPlace: bool = false
+    keepsPlace: bool = false,
+    low: bool = false,
+    waitSince: long = 0
 )
 
 // The whole daemon: the version and process that saved it, when, when the daemon first began, the
@@ -174,7 +180,9 @@ encodeSavedJob(j: SavedJob) -> Json = Json.obj(
   ("deadline_from", Json.str(j.deadlineFrom)),
   ("project", Json.str(j.project)),
   ("amended", Json.Bool(j.amended)),
-  ("keeps_place", Json.Bool(j.keepsPlace))
+  ("keeps_place", Json.Bool(j.keepsPlace)),
+  ("low", Json.Bool(j.low)),
+  ("wait_since", Json.num(j.waitSince))
 )
 
 // The level and count pairs of `cpu_levels`; none where a state saved before them lacks it.
@@ -298,7 +306,9 @@ decodeSavedJob(j: Json) -> Result[SavedJob, string]
       maybeText(j, "deadline_from")?.getOrElse(""),
       maybeText(j, "project")?.getOrElse(""),
       truthOr(j, "amended", false)?,
-      truthOr(j, "keeps_place", false)?
+      truthOr(j, "keeps_place", false)?,
+      truthOr(j, "low", spec.low)?,
+      wholeOrZero(j, "wait_since")?
     )
   )
 

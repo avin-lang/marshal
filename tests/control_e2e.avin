@@ -233,12 +233,13 @@ priorityErrors()
     s"job $running is running: only a queued job is given a priority"
   )
   refusedWith(m(home, "priority", running.toString(), "--urgent"), s"job $running is running")
-  refusedWith(m(home, "priority", queued.toString()), "priority takes a job id and a whole number, or --urgent")
-  refusedWith(m(home, "priority"), "priority takes a job id and a whole number, or --urgent")
+  refusedWith(m(home, "priority", queued.toString()), "priority takes a job id and a whole number, --urgent or --low")
+  refusedWith(m(home, "priority"), "priority takes a job id and a whole number, --urgent or --low")
   refusedWith(
     m(home, "priority", queued.toString(), "1", "2"),
-    "priority takes a job id and a whole number, or --urgent"
+    "priority takes a job id and a whole number, --urgent or --low"
   )
+  refusedWith(m(home, "priority", queued.toString(), "low"), "`low` is not a priority")
   refusedWith(m(home, "priority", "x", "1"), "`x` is not a job id")
   refusedWith(m(home, "priority", queued.toString(), "urgent"), "`urgent` is not a priority")
   refusedWith(m(home, "priority", queued.toString(), "1.5"), "`1.5` is not a priority")

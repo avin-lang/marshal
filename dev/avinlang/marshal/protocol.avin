@@ -6,7 +6,7 @@ import dev.avinlang.json
 import dev.avinlang.json.Json
 
 // marshal's version, as `avin.hocon` gives it: what `marshal version` and `marshal restart` print.
-val Version: string = "0.3.29"
+val Version: string = "0.4.0"
 
 // What a job is to run and how much of the machine it takes. `urgent` queues it in its lane's urgent
 // band, behind the urgent jobs already queued and ahead of every other. `after` names the jobs it
@@ -30,7 +30,9 @@ val Version: string = "0.3.29"
 // was given, in quarters, while the job weighs less (0 while it weighs what it gave); `unitsExact`
 // (`--units-exact`) keeps the given units as they are. `owner` is who submitted
 // it as `--owner` named them, "" where it was not named and is derived from the directory and the
-// label (`ownerOf`).
+// label (`ownerOf`). `low` queues it behind every job not low and starts it only in spare room
+// (low.avin). A given memory is a ceiling as given units are (memory.avin's `memoryCeiling`) unless
+// `memExact` (`--mem-exact`) keeps it as it is.
 data JobSpec(
     kind: string,
     units: int,
@@ -55,7 +57,9 @@ data JobSpec(
     unitsGiven: bool = true,
     owner: string = "",
     unitsExact: bool = false,
-    unitsAsked: int = 0
+    unitsAsked: int = 0,
+    low: bool = false,
+    memExact: bool = false
 )
 
 // The units `s` was given, in quarters: those it asked for when it weighs fewer, else its own.
@@ -90,7 +94,9 @@ withSizing(s: JobSpec, units: int, asked: int) -> JobSpec =
     s.unitsGiven,
     s.owner,
     s.unitsExact,
-    asked
+    asked,
+    s.low,
+    s.memExact
   )
 
 // The longest label, in characters.
@@ -157,10 +163,12 @@ data Request
   Watch(source: string, cond: Condition, mode: Mode, since: Option[long], sinceId: Option[long])
 
 // The priority a queued job is given: a number (higher first, equal ones in arrival order, all
-// behind the urgent band), or the back of the urgent band.
+// behind the urgent band), the back of the urgent band, or the low band behind every other job
+// (`LowBand`, low.avin). A number or `Urgent` takes a job out of the low band.
 data Priority
   Level(n: int)
   Urgent
+  LowBand
 
 // What `amend` changes; None leaves a setting as it is. `deadlineMs` is a deadline measured from the
 // job's start, or, with `extend`, what is added to the deadline it has. `units` is in quarters and
@@ -285,7 +293,10 @@ retryable(_, _) = false
 // does not say. `project` is the project its directory is in (learning.avin's `projectOf`), which
 // its runs are learned under. `retries` is how many times more it runs after failing (`JobSpec`),
 // and `amended` says `amend` changed its settings after it was submitted (a `deadlineFrom` of
-// `amended` says its deadline was among them).
+// `amended` says its deadline was among them). `low` says it is in the low band (low.avin).
+// `waitText` is why a queued job waits, in full (`needText`: what it needs and what is free, the job
+// it waits for and when), "" for any other. `labelFrom` is `cmd` where `label` was derived from the
+// command because none was given (memory.avin's `derivedLabel`), "" for a given label or none.
 data JobInfo(
     id: long,
     kind: string,
@@ -338,7 +349,10 @@ data JobInfo(
     deadlineFrom: string = "",
     project: string = "",
     retries: int = 0,
-    amended: bool = false
+    amended: bool = false,
+    low: bool = false,
+    waitText: string = "",
+    labelFrom: string = ""
 )
 
 // Whether a job is settling: an exclusive job with the machine to itself that waits only for the
@@ -361,8 +375,13 @@ usedText(j: JobInfo) -> string =
 
 // The memory a listing shows for a job: its reservation, `~` before one learned from its kind's
 // peaks, `@` before that of a job whose work runs elsewhere (`--external`); `-` for none. A job that
-// says no reservation shows the memory it declared.
+// says no reservation shows the memory it declared. A job whose given memory is held to its
+// command's learned peak (memory.avin's `memoryCeiling`) shows what it gave and an arrow before it
+// (`20G→~7.5G`), as UNITS shows a ceiling.
 reservedText(j: JobInfo) -> string
+  if j.reservedLearned && j.reserved > 0 && j.memory > j.reserved then return formatSize(j.memory) + "→~" + roundSize(
+    j.reserved
+  )
   if j.reservedLearned && j.reserved > 0 then return "~" + roundSize(j.reserved)
   val r = if j.reserved > j.memory then j.reserved else j.memory
   if j.external then return "@" + formatSize(r)
@@ -493,7 +512,8 @@ data TakeSlotUse(dir: string, units: int, waiting: int, landing: bool)
 // `MemoryPressure(cause)`, `cause` `warn`, `critical` or `swapping` (pressure.avin). While marshal is polite (polite.avin), a job that would
 // fit beside what runs in the full budget but not in the polite one waits `PoliteBudget`; one bigger
 // than the polite budget waits `RunsAlone` until nothing else of marshal's runs, and every job held
-// back by it, waiting or running alone, waits `ForAlone(id)`.
+// back by it, waiting or running alone, waits `ForAlone(id)`. A low job (low.avin) that cannot start
+// in spare room waits `LowWaits`.
 data Why
   NoUnits
   NoMemory
@@ -514,6 +534,7 @@ data Why
   PoliteBudget
   RunsAlone
   ForAlone(id: long)
+  LowWaits
 
 // A queued job, its place in its lane's queue (from 1; landing jobs, quick jobs and development jobs
 // each have a queue), and why it waits.
@@ -603,6 +624,11 @@ encodeRequest(Prioritize(id, Urgent)) = Json.obj(
   ("op", Json.str("priority")),
   ("id", Json.num(id)),
   ("priority", Json.str("urgent"))
+)
+encodeRequest(Prioritize(id, LowBand)) = Json.obj(
+  ("op", Json.str("priority")),
+  ("id", Json.num(id)),
+  ("priority", Json.str("low"))
 )
 encodeRequest(KillMany(s)) = Json.Obj(
   [("op", Json.str("kill_many"))] ++ killSelectorMembers(s)
@@ -746,8 +772,12 @@ encodeSpec(s: JobSpec) -> Json = Json.Obj(
   ) ++ quickMember(s.quick) ++ exclusiveMembers(s.exclusive, s.quietLoad) ++ ownerMember(s.owner) ++ sizingMembers(
     s.unitsExact,
     s.unitsAsked
-  )
+  ) ++ flagMember("low", s.low) ++ flagMember("mem_exact", s.memExact)
 )
+
+// A flag's member of an object: none while it is false, as with a label, so what marshal wrote
+// before the flag and what it writes without it are the same.
+private flagMember(name: string, on: bool) -> Vector[(string, Json)] = if on then [(name, Json.Bool(true))] else []
 
 // How given units were weighed, as members of an object: `units_exact` for units kept as given,
 // `units_asked` and `units_capped` for a job that weighs fewer than it asked for; none otherwise, as
@@ -874,7 +904,10 @@ decodeSpec(j: Json) -> Result[JobSpec, string]
       // absent from what marshal wrote before given units were a ceiling, and where there is
       // nothing to say
       optional(j, "units_exact", v -> v.asBool, "a bool", false)?,
-      askedOf(j)?))
+      askedOf(j)?,
+      // absent from what marshal wrote before low jobs and memory ceilings, and while false
+      optional(j, "low", v -> v.asBool, "a bool", false)?,
+      optional(j, "mem_exact", v -> v.asBool, "a bool", false)?))
 
 // What a `units` field must be.
 private val unitsWanted: string = "a number of units in steps of 0.25"
@@ -940,7 +973,7 @@ decodeRequest(text: string) -> Result[Request, string]
     "priority" -> Ok(
       Prioritize(
         field(j, "id", v -> v.asLong, "a whole number")?,
-        field(j, "priority", priorityOf, "a whole number or \"urgent\"")?
+        field(j, "priority", priorityOf, "a whole number, \"urgent\" or \"low\"")?
       )
     )
     "kill_many" -> Ok(KillMany(decodeKillSelector(j)?))
@@ -956,6 +989,7 @@ decodeRequest(text: string) -> Result[Request, string]
 
 private priorityOf(j: Json) -> Option[Priority] = j.asString match
   Some("urgent") -> Some(Urgent)
+  Some("low") -> Some(LowBand)
   Some(_) -> None
   None -> j.asInt.map(n -> Level(n))
 
@@ -1030,6 +1064,11 @@ private learnedFromMembers(i: JobInfo) -> Vector[(string, Json)]
   // `retries` only for a job that has some, `amended` only for an amended one
   if i.retries > 0 then out += ("retries", Json.num(i.retries))
   if i.amended then out += ("amended", Json.Bool(true))
+  // `low` only for a job in the low band, `wait_text` only on a queued job that says why it waits,
+  // `label_from` only where the label was derived (`"cmd"`, memory.avin's `derivedLabel`)
+  if i.low then out += ("low", Json.Bool(true))
+  if i.waitText.nonEmpty then out += ("wait_text", Json.str(i.waitText))
+  if i.labelFrom.nonEmpty then out += ("label_from", Json.str(i.labelFrom))
   out.toVector
 
 // `settling_ms` and `load_overdue` are there only on a settling job.
@@ -1156,7 +1195,12 @@ decodeJob(j: Json) -> Result[JobInfo, string]
       optional(j, "project", v -> v.asString, "a string", "")?,
       // absent from what marshal wrote before amend, and for a job without retries or amends
       optional(j, "retries", v -> v.asInt, "an int", 0)?,
-      optional(j, "amended", v -> v.asBool, "a bool", false)?))
+      optional(j, "amended", v -> v.asBool, "a bool", false)?,
+      // absent from what marshal wrote before low jobs, waits said in full and derived labels, and
+      // where false or empty
+      optional(j, "low", v -> v.asBool, "a bool", false)?,
+      optional(j, "wait_text", v -> v.asString, "a string", "")?,
+      optional(j, "label_from", v -> v.asString, "a string", "")?))
 
 encodeTakeSlot(t: TakeSlotUse) -> Json = Json.obj(
   ("dir", Json.str(t.dir)),
@@ -1398,6 +1442,7 @@ whyWord(MemoryPressure(_)) = "memory-pressure"
 whyWord(PoliteBudget) = "polite"
 whyWord(RunsAlone) = "alone"
 whyWord(ForAlone(_)) = "for-alone"
+whyWord(LowWaits) = "low"
 
 // The job a reason names, as the field beside its word: `behind` for `Behind`, `draining_for` for
 // `DrainingFor`, `exclusive_id` for `ForExclusive` (beside the job's own `exclusive`), `alone_id` for
@@ -1467,6 +1512,7 @@ private decodeWhy(j: Json) -> Result[Why, string]
     "polite" -> Ok(PoliteBudget)
     "alone" -> Ok(RunsAlone)
     "for-alone" -> Ok(ForAlone(field(j, "alone_id", v -> v.asLong, "a whole number")?))
+    "low" -> Ok(LowWaits)
     other -> Err(s"no such reason to wait: `$other`")
 
 private decodeQueued(j: Json) -> Result[QueuedJob, string] =

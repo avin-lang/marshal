@@ -36,7 +36,8 @@ drainAfterE2e()
   assertEq(whyOf(home, late), Some(Why.DrainingFor(big)))
   val ls = m(home, "ls").out
   assert(ls.contains(s"queued (draining for $big)"), ls)
-  assert(ls.contains("queued (draining)"), ls)
+  // the draining job says what it needs and the job it waits for
+  assert(ls.contains(s"queued (draining: needs 2 units, 1 free; waits for $a"), ls)
   threads.sleep(millis(500))
   assert(!started(home, late))
   // it waits longer than its own deadline, and still finishes: the deadline counts from its start
@@ -80,7 +81,7 @@ drainBackfillE2e()
   cleanUp(home)
 
 @test(
-  "a job running since before the drain and past its learned estimate counts by its deadline: a short job backfills, and status --json says when the drained job is expected to start"
+  "a job running since before the drain and past its learned estimate counts by half again its run so far: a short job backfills, and status --json says when the drained job is expected to start"
 )
 drainBackfillPastEstimateE2e()
   // every home has a take-slot directory of its own, idle here
@@ -90,6 +91,8 @@ drainBackfillPastEstimateE2e()
   // learned to take a moment, so at once past its estimate, and given a minute
   val a = submitted(home, "--kind", "w", "--units", "2", "--deadline", "60s", "--", "sleep", "60")
   assert(within(2000, () -> started(home, a)))
+  // it runs a while first, so the window it opens (half its run so far) holds a short job
+  threads.sleep(millis(5000))
   // each job a kind of its own, so none is learned from another's run
   val big = submitted(home, "--kind", "big", "--units", "3", "--", "sleep", "0.2")
   assert(within(4000, () -> whyOf(home, big) == Some(Why.Draining)), s"${whyOf(home, big)}")
@@ -100,14 +103,14 @@ drainBackfillPastEstimateE2e()
   assertEq(running.get("expected_start_at"), None)
   val queued = st("queued").asVector.get.find(x -> x("id").asLong == Some(big)).get
   assertEq(queued("duration_learned").asBool, Some(false))
-  // expected to start when the running job's deadline ends it
+  // expected to start half as long again as the running job has run, well before its deadline
   val startsAt = queued("expected_start_at").asLong.get
   val aStarted = running("started_at").asLong.get
-  assert(aStarted + 59000 <= startsAt <= aStarted + 61000, s"$startsAt vs $aStarted")
+  assert(aStarted + 7000 <= startsAt < aStarted + 30000, s"$startsAt vs $aStarted")
   // the snapshot carries it too
   assertEq(snapshotOf(home).queued.find(q -> q.job.id == big).map(q -> q.job.expectedStart > 0), Some(true))
   // a short job fits the free unit and ends long before: it backfills
-  val brief = submitted(home, "--kind", "brief", "--units", "1", "--deadline", "10s", "--", "sleep", "0.2")
+  val brief = submitted(home, "--kind", "brief", "--units", "1", "--deadline", "2s", "--", "sleep", "0.2")
   assert(within(2000, () -> started(home, brief)), eventsOf(home, brief).mkString(" "))
   val ev = events(home).find(e -> e("id").asLong == Some(brief) && e("event").asString == Some("started")).get
   assertEq(ev("backfilled_ahead_of").asLong, Some(big))

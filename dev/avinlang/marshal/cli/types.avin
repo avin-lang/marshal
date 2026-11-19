@@ -23,7 +23,8 @@ data TypeLine(
     label: string = "",
     quietMs: long = 0,
     quick: bool = false,
-    unitsExact: bool = false
+    unitsExact: bool = false,
+    low: bool = false
 )
 
 // Takes run-type's own options out of `args` (they may stand anywhere before a `--`), leaving the
@@ -39,6 +40,7 @@ typeLine(args: Vector[string]) -> Result[TypeLine, string]
   var submitOnly = false
   var quick = false
   var exact = false
+  var low = false
   var help = false
   val rest = Buffer[string]()
   var i = 0
@@ -56,6 +58,9 @@ typeLine(args: Vector[string]) -> Result[TypeLine, string]
       continue
     if word == "--units-exact"
       exact = true
+      continue
+    if word == "--low"
+      low = true
       continue
     if word == "--help" || word == "-h"
       help = true
@@ -77,7 +82,7 @@ typeLine(args: Vector[string]) -> Result[TypeLine, string]
       _ -> marshal.parseSize(value) match
         Some(n) -> memory = Some(n)
         None -> return Err(s"`--mem $value`: a size is a whole number with K, M, G or T, such as 29G")
-  Ok(TypeLine(dir, deadline, units, memory, submitOnly, help, rest.toVector, label, quiet, quick, exact))
+  Ok(TypeLine(dir, deadline, units, memory, submitOnly, help, rest.toVector, label, quiet, quick, exact, low))
 
 // `marshal run-type <type> …`, or with `typeName` given, `marshal train …` and the like.
 runType(args: Vector[string], typeName: Option[string]) -> int
@@ -142,7 +147,8 @@ runType(args: Vector[string], typeName: Option[string]) -> int
     line.quietMs,
     quick = line.quick,
     // the units `--units` or the type gives, kept exactly
-    unitsExact = line.unitsExact
+    unitsExact = line.unitsExact,
+    low = line.low
   )
   val (id, log) = askDaemon(Request.Submit(spec)) match
     Ok(Submitted(id, log, hint)) ->

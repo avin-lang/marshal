@@ -6,7 +6,7 @@
 |   ID STATE          KIND     UNITS   RESV   RSS STARTED  ELAPSED     ETA DEADLINE COMMAND          |
 |   61 exclusive      bench#      12      -     - -           2:00       -    28:00 ./bench          |
 |   62 exclusive      bench#!      1      -     - -           2:00       -    28:00 ./bench -x       |
-|   63 #1 no units    bench#       1      -     - -              -       -    30:00 make -j4         |
+|   63 #1 no units    bench#       1      -     - -          w0:00       -    30:00 make -j4         |
 |   60 exit 0         bench#       1      -     - -           2:00       -        - make -j4         |
 |                                                                                                    |
 |                                                                                                    |
@@ -18,8 +18,6 @@
 0 0..7 Default/Default/1
 0 19..28 Basic(2)/Default/0
 0 30..38 Basic(3)/Default/0
-0 50..54 Basic(8)/Default/0
-0 89..100 Basic(8)/Default/0
 1 6..35 Basic(2)/Default/0
 1 35..49 Basic(8)/Default/0
 2 6..49 Basic(8)/Default/0
@@ -27,26 +25,19 @@
 5 0..100 Default/Default/17
 6 0..6 Default/Default/16
 6 6..20 Basic(2)/Default/17
-6 20..66 Default/Default/16
-6 66..73 Basic(8)/Default/16
-6 73..100 Default/Default/16
+6 20..100 Default/Default/16
 7 6..20 Basic(2)/Default/1
-7 66..73 Basic(8)/Default/0
 8 6..20 Basic(3)/Default/0
-8 66..73 Basic(8)/Default/0
-8 74..82 Basic(8)/Default/0
 9 6..20 Basic(2)/Default/0
-9 66..73 Basic(8)/Default/0
-9 74..82 Basic(8)/Default/0
 15 0..1 Default/Default/1
-15 1..6 Basic(0)/Basic(6)/0
+15 1..6 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
 15 6..11 Default/Default/1
-15 11..15 Basic(0)/Basic(6)/0
+15 11..15 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
 15 15..16 Default/Default/1
-15 16..21 Basic(0)/Basic(6)/0
+15 16..21 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
 15 21..22 Default/Default/1
-15 22..29 Basic(0)/Basic(6)/0
+15 22..29 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
 15 29..30 Default/Default/1
-15 30..36 Basic(0)/Basic(6)/0
+15 30..36 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
 15 36..37 Default/Default/1
-15 37..42 Basic(0)/Basic(6)/0
+15 37..42 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0

@@ -74,6 +74,7 @@ is one line of the budget in use; `marshal top` is the live view, for people.
 | A heavy command marshal has never run (a new gate script, a new compiler suite) | `--mem 34G` for its first run; `--units <n>` only if far from the default | Until it has run once it reserves no memory, and weighs 4 units for a `test` and 1 otherwise. After one run its memory is learned; leave `--mem` out from then on. |
 | You know the parallelism and want it kept | `--units <n>` | A given `--units` is a **ceiling**: once the command has 3 measured runs, the job weighs the fewer of what you gave and what the runs used (`8→~1.5` in UNITS). |
 | The job truly needs exactly n cores whatever it was measured using | `--units <n> --units-exact` | Keeps n even where runs used fewer. Refused without `--units`. |
+| Exploratory or probe work: a bisect, a survey, a soak, anything that may wait | `--low` | Queues behind every job not low and starts only in spare room, when it fits and is expected to end before any waiting job could start; never drains the machine, runs at nice 19, and becomes a normal job after 4 hours of waiting (`low_promote_after`). The considerate default for work nobody is waiting on. |
 | A short check: one package's tests, a lint, a probe | `--quick` | Starts at once in the quick lane (2 slots), outside the unit budget, rather than queueing behind long builds. Its deadline is at most 2 minutes. |
 | The gate of a merge train: the one run everyone is waiting on | `--landing` (or `marshal train`, which uses the landing lane itself) | Starts before every development job; drains the machine until its memory fits. One at a time. |
 | A release's critical path | `--urgent` | Joins the urgent band, ahead of every job not urgent, and runs un-niced. Not for ordinary work: it delays everyone else. |
@@ -83,7 +84,7 @@ is one line of the budget in use; `marshal top` is the live view, for people.
 | A flaky step worth retrying | `--retries <n> [--retry-delay <t>]` | Reruns it on a nonzero exit, a signal or a deadline. |
 | Work done outside the job's own processes: `docker run`, a VM, `sudo -u` another account | `--external --mem <size>` | marshal cannot measure it; it reserves exactly `--mem` and learns nothing. |
 | A job submitted on another session's behalf | `--owner <name>` | Otherwise the owner is the project its `--dir` is in, or its label. |
-| A queued job should go sooner or later | `marshal priority <id> <n>` (higher first) or `marshal priority <id> --urgent` | Orders marshal's own queue; a held job (`marshal hold`) keeps its place. |
+| A queued job should go sooner or later | `marshal priority <id> <n>` (higher first), `marshal priority <id> --urgent`, or `marshal priority <id> --low` (into the low band; a number or `--urgent` takes it out) | Orders marshal's own queue; a held job (`marshal hold`) keeps its place. |
 | You are working at the machine | `marshal polite` (or config.json's `polite_schedule`) | Admits jobs against three quarters of the budget; `marshal polite off` gives it all back. |
 
 **Units, in short.** A unit is about a core. Leave `--units` out: a command's weight is learned from
@@ -97,7 +98,25 @@ too: `marshal: units 1.5, learned (asked 8); --units-exact keeps 8`.
 per kind. Keep the names of recurring scripts stable (`gate.zsh`, not `gate4.zsh`): the script's
 path is what its memory, cores and duration are learned under. Do not give `--mem` to work marshal
 already knows: a learned reservation follows the work up and down, while a given one stays wrong
-once the work changes.
+once the work changes. A given `--mem` is a ceiling, as `--units` is: once the command has 3 clean
+runs, it reserves the fewer of what you gave and their peak plus a quarter (at least 1G) —
+`20G→~7.5G` in RESV, and `marshal: memory ~7.5G, learned (asked 20G); --mem-exact keeps 20G` on
+stderr. `--mem-exact` keeps the given size. A job that grows past its reservation is still charged
+what it holds.
+
+**Labels, in short.** A job given no `--label` is shown with one from its command, at most 40
+characters: a shell's script as its last two path parts (`f1fix/gate.zsh`), else the program and
+its first argument (`sysl test`). `status --json` marks it `"label_from": "cmd"`; `kill --label`
+matches only labels that were given.
+
+**Low jobs, in short.** Use `--low` for work nobody is waiting on. A low job is decided after every
+job not low: it starts at once when it fits and nothing else waits; while a job waits for room, only
+when it fits and is expected to end before that job could start, judged by the duration its own runs
+taught (its deadline when nothing is learned of it). It never drains the machine and holds nothing
+back: one that cannot start waits `queued (low: no spare room)`. KIND marks it `~` (`test~`),
+`status --json` says `"low": true`, and it runs at nice 19. It is refused with `--urgent`,
+`--landing`, `--exclusive` and `--quick`. After `low_promote_after` (config.json, `4h`) of waiting it
+becomes a normal job, said in its log and by a `promoted` event; a running low job is never stopped.
 
 **Deadlines, in short.** After 3 successful runs a command's deadline is learned (twice the median,
 or 1.5 times the longest, at least 5 minutes), and enforced at 1.5 times that (`deadline_margin`), so
@@ -197,9 +216,16 @@ when the top you are running is another version it adds it in yellow with a hint
 
 `marshal ls` lists the running and queued jobs and the recently ended ones, with the columns ID,
 STATE, KIND, UNITS, USED, RESV, STARTED, ELAPSED, ETA, OWNER, FROM, LABEL and COMMAND. KIND is marked
-`*` for a landing job, `^` a quick one, `#` an exclusive one, then `!` an urgent one (`test^!`).
-A queued job's STATE says why it waits, as `queued (<reason>)`; `top` shows the same reason after
-the job's place in its lane (`#2 no units`), in a few words shortened as noted.
+`*` for a landing job, `^` a quick one, `#` an exclusive one, then `!` an urgent one (`test^!`) or
+`~` a low one (`test~`).
+A queued job's STATE says why it waits, as `queued (<reason>)`, in full: a job short of units or
+memory says what it needs, what is free, and the running job whose end is expected to let it start,
+with when on the local clock — `queued (needs 3 units, 1 free; waits for 7263, ~16:30)`,
+`queued (draining: needs 30G, 24G free; waits for 7263, ~16:30)` (`~now` for a job already past its
+estimate). `status <id>` says the same, and `status --json` gives it as `wait_text`. `ls --compact`
+and `top`'s table keep the short words (`no units`, `draining`) so a line fits; `top`'s log pane
+header (Enter) says the whole state, live, with the job's band and lane (`queued (behind 7278);
+urgent`).
 
 `marshal ls --compact` (or `-c`) prints the same columns with every job on one line, no wider than
 the terminal: its width where output is a terminal, else `$COLUMNS`, else 80. A long COMMAND is cut
@@ -211,9 +237,10 @@ scripts.
 
 | State | Meaning | What to do |
 | --- | --- | --- |
-| `queued (no units)` / `queued (no memory)` | the budget is full | wait; ask for fewer `--units` or a smaller `--mem` only if the job truly needs less |
+| `queued (needs 3 units, 1 free; …)` / `queued (needs 30G, 24G free; …)` (`ls -c`, `top`: `no units` / `no memory`) | the budget is full | wait; ask for fewer `--units` or a smaller `--mem` only if the job truly needs less |
+| `queued (low: no spare room)` (`top`: `low`) | a `--low` job: it does not fit, or would not end before a waiting job could start | wait; it holds nothing back |
 | `queued (behind N)` | it would fit, but would delay job N at the head of the queue | wait |
-| `queued (draining)` | it has waited past `drain_after`, or is the urgent job that took a drain over, or is a landing job whose memory does not fit: nothing else starts until it has | wait |
+| `queued (draining: needs …)` (a landing job: `queued (draining)`) | it has waited past `drain_after`, or is the urgent job that took a drain over, or is a landing job whose memory does not fit: nothing else starts until it has | wait |
 | `queued (draining for N)` | the machine is emptying so job N can start | wait; it is bounded by `drain_after` |
 | `queued (lane busy)` | another landing job holds the landing lane | wait |
 | `queued (take-slot)` | take-slot.zsh holds the units, or a take-slot run waits ahead of it | wait |
@@ -241,7 +268,10 @@ The other columns: UNITS is what a job weighs (`~` before learned ones, `8→~1.
 and weighs what its command's runs teach); USED the cores a running job keeps busy, or an ended job's
 peak (`-` where nothing was measured); RESV the memory it reserves (`~29G` learned, `@29G` an
 `--external` job's declared, plain a given `--mem`); STARTED the local date and minute; ELAPSED the
-run time (a settling job's wait for the load); ETA a running job's expected time left (`~6m`, `<1m`
+run time, or for a job not running yet (queued, held, waiting for others or to retry) how long it
+has waited, marked `w` so it is never read as run time (`w12m03s`; a retry counts from its re-queue;
+`queued_ms` in `--json`, and `status <id>` adds `, waited 12m03s`), and for a settling job its wait
+for the load; ETA a running job's expected time left (`~6m`, `<1m`
 once past it) or a queued job's expected start (`in ~3m`), `-` where not known; OWNER who the job is
 for; FROM where its units, memory and deadline came from, as `units/memory/deadline` (see
 [How marshal learns](#how-marshal-learns)): `dir` (its command in its directory), `cmd`, `norm`
@@ -264,7 +294,7 @@ marshal rerun <id>                         submits an ended job again: its comma
 marshal clean [--older-than <t>] [--keep <n>] [--dry-run]  removes the logs of ended jobs (never a job that is not over), stale run directories and unused compiled steps; prints what went and the bytes freed; --dry-run only lists them
 marshal hold <id>                          keeps a queued job from starting; it keeps its place
 marshal release <id>                       lets a held job start again
-marshal priority <id> <n> | --urgent       places a queued job in its lane: higher first; --urgent: the back of the urgent band
+marshal priority <id> <n> | --urgent | --low  places a queued job in its lane: higher first; --urgent: the back of the urgent band; --low: behind every job not low, started only in spare room (a number or --urgent makes it normal again)
 marshal amend <id> [options]               changes a job's settings in place: queued, it keeps its place; running, only --deadline, --label, --retries, --quiet-timeout
 marshal pause [<id>]                       stops a running job's processes, keeping its units, its deadline's clock stopped; with no id, holds the queue
 marshal resume [<id>]                      continues a paused job; with no id, releases the queue
@@ -293,6 +323,8 @@ same usage to standard error and exits 2. After `--` nothing is an option, so `m
 | `--kind <k>` | What the job is, for learning its deadline. Default: `test` when a word of the command is `test`, otherwise `build`. |
 | `--units <n>` | Its weight, a number above 0 in steps of 0.25 (`0.5`, `1.25`, `4`); anything else is refused. Default: the cores recent clean runs of the same work used, rounded up to a quarter (`~` in UNITS; see [How marshal learns](#how-marshal-learns)), and until a key is trusted a share of the budget by class: a quarter for a gate, train, release or landing job, a sixth for a test, a ninth for a build, 1 unit for anything else. While it runs it is charged what it uses where that is more, and raised to it after `raise_after`. A given value is a ceiling: once the command has `learn_min_runs` (3) measured runs, the job weighs the fewer of it and what they teach (`8→~1.5` in UNITS, `units_capped` in `status --json`, and a line on stderr). A given value it keeps that is far from what recent runs used gets a one-line hint on stderr. |
 | `--units-exact` | With `--units`: weigh exactly the units given, even where the command's runs used fewer. Refused without `--units`. |
+| `--low` | The low band, for exploratory or probe work: behind every job not low, started only in spare room (see Low jobs, in short), never draining, at nice 19, `~` in KIND, `"low": true` in `status --json`; normal after `low_promote_after`. `priority <id> --low` moves a queued development job into the band. Not with `--urgent`, `--landing`, `--exclusive` or `--quick`; `run-type` and `train` take it too. |
+| `--mem-exact` | With `--mem`: reserve exactly the size given, even where the command's runs peaked lower. Refused without `--mem`. |
 | `--mem <size>` | Memory it needs: `29G`, `512M` (powers of 1024). Default: the learned peak of the same work (see [Memory](#memory)); until that is trusted, the most any of its runs reached, else its class's share of the budget, never 0. `--mem 0` reserves nothing and learns nothing. |
 | `--external` | Its work runs outside its own processes: `docker run`, a VM, or a command run as another account through `sudo` (see [Work outside the job's processes](#work-outside-the-jobs-processes)). It needs `--mem`, and is refused without it; it reserves exactly that and holds it whatever its process tree measures; its measured peak is never learned from, so its command's later jobs are not taught a near-zero peak. `ls` and `top` show its RESV with `@` before it (`@29G`), `status --json` gives `"external": true`, and `rerun` keeps it. A command whose first word (or the first after `sudo`) is `docker` with `run`, `compose`, `build` or `buildx`, or `docker-compose`, submitted without it gets a warning on stderr and is submitted all the same. |
 | `--landing` | The landing lane: starts before every development job, whatever units the others hold, at normal priority, once its memory fits beside what runs; until then nothing else starts, so the running jobs drain for it. Once it runs, it is charged against the unit budget as any job is (what it weighs, or what it is measured using where that is more, and raised after `raise_after`), so the development jobs after it wait for the units it leaves. One landing job runs at a time. One whose memory alone exceeds the budget starts when nothing else runs. |
@@ -308,7 +340,7 @@ same usage to standard error and exits 2. After `--` nothing is an option, so `m
 | `--after-any <ids>` | Waits until they have ended, then queues it however they ended. |
 | `--retries <n>` | Runs it again, up to `n` times, when it exits nonzero, is ended by a signal it was not sent by `kill`, or passes its deadline or its quiet timeout. Default 0. |
 | `--retry-delay <t>` | Waits `t` before each retry. Default: none. |
-| `--label <text>` | A note to find the job by, such as `train 209`: one line of 1 to 80 characters, no control characters (newline, tab), no space at either end; a longer or malformed label is refused, not cut. It shows in `ls`, `history`, `top` (a LABEL column, empty for a job without one; the whole label beside the kind in the log pane) and `status --json`, and is in the events. `rerun` keeps it; `run-type` and `train` take `--label` too. Default: none. |
+| `--label <text>` | A note to find the job by, such as `train 209`: one line of 1 to 80 characters, no control characters (newline, tab), no space at either end; a longer or malformed label is refused, not cut. It shows in `ls`, `history`, `top` (a LABEL column, empty for a job without one; the whole label beside the kind in the log pane) and `status --json`, and is in the events. `rerun` keeps it; `run-type` and `train` take `--label` too. Default: one derived from the command (at most 40 characters: a shell's script as its last two path parts, else the program and its first argument), marked `"label_from": "cmd"` in `status --json` and the events, and never matched by `kill --label`. |
 | `--owner <name>` | Who the job is for, such as the session or project that submits it: one word of 1 to 40 letters, digits, `-`, `_` and `.`. Without it the owner is the project the job's `--dir` is in, under the directory projects live in (`~/dev`, or `config.json`'s `projects`): the first directory under it (`~/dev/nex/src` is `nex`), or, where that is an organisation's directory holding repositories rather than one itself, the repository under it (`~/dev/avin-lang/avin/compiler` is `avin`); a git worktree named `<repo>-<branch>` beside its repository is its repository's (`~/dev/sysl-lang/sysl-fix-x` is `sysl`), and a repository with a dash in its name stays itself (`sysl-bootstrap`). Outside that directory the owner is the job's label, and without one there is none (`-`). It shows in OWNER in `ls` and `top`, whose `o` key shows one owner's jobs, and in `status --json` as `owner`; `rerun` keeps it. |
 
 `run-type` and `train` take `--dir`, `--deadline`, `--units` and `--mem` too, which override the
@@ -317,7 +349,7 @@ type gives, kept exactly; alone it keeps the type's), and `--submit`, which prin
 waiting. A type's parameters may not use those names.
 
 A job runs with the caller's environment, plus `MARSHAL_JOB` (its id) and `MARSHAL_HOME`, in a
-process group of its own, under `nice -n 15` unless it is a landing, exclusive or urgent job (one in
+process group of its own, under `nice -n 15` (`nice -n 19` for a low job) unless it is a landing, exclusive or urgent job (one in
 the urgent band as it starts, by `--urgent` or `priority --urgent`, whether it starts in its turn or
 ahead of a draining job), which runs un-niced, with its standard output
 and error in `~/.marshal/jobs/<id>.log`. When its main process ends, what is left of its process tree
@@ -589,15 +621,19 @@ ends: nothing polls.
   same look. A landing job keeps its lane, and its own drain, ahead of the urgent band; a running
   exclusive job holds an urgent one as it holds every job, and an urgent job queues ahead of an
   exclusive one that waits for the machine to empty.
-  The drained job is expected to start once enough running jobs have ended, each counted by its
-  learned duration (its command's, else its kind's), or by its
-  deadline when nothing is learned. Meanwhile another development
-  job that fits starts (backfills) when it too is expected to end by then, or when it takes only
-  units and memory the drained job will leave spare; its log's first line and its `started` event
-  say `backfilled ahead of <id>` (`backfilled_ahead_of`). A job that was running before the drain
-  began and has run past its estimate is counted by its deadline; one started since (backfilled)
-  that runs past its estimate may end at any moment, so once the drain waits on it nothing more
-  backfills. `status --json` gives every job's `expected_ms` and `duration_learned`, and the drained
+  The drained job is expected to start once enough running jobs have ended, each counted by the
+  duration learned from its own work (its command in its directory, its command, or its command
+  with its numbers made alike in its project), or by its deadline when its estimate is a guess or
+  only its kind's. Meanwhile another development
+  job that fits starts (backfills) when it too is expected to end by then, counted the same way, or
+  when it takes only units and memory the drained job will leave spare; its log's first line and its
+  `started` event say `backfilled ahead of <id>` (`backfilled_ahead_of`). A job that was running
+  before the drain began is expected to end at the later of its estimate's end and half as long
+  again as it has run so far, held to its deadline (a job 9 minutes into a 3m45s estimate is
+  expected 4m30s from now, not at its deadline an hour on); one started since (backfilled) that runs
+  past its estimate may end at any moment, so once the drain waits on it nothing more backfills. A
+  job overtaking a blocked head before any drain is counted the same way: a guessed short job does
+  not overtake. `status --json` gives every job's `expected_ms` and `duration_learned`, and the drained
   job's `expected_start_at`. `ls` shows the drained job
   `queued (draining)` and the jobs it holds back `queued (draining for <id>)`. Landing and quick
   jobs go on beside it. Time queued never counts against a job's deadline, which runs from its
@@ -960,6 +996,7 @@ starting, saying which. A change takes effect when the daemon next starts (`mars
 | `learn_min_runs` | `3` | how many clean runs a key needs before units, memory or a deadline are learned from it, and before a given `--units` becomes a ceiling |
 | `raise_after` | `"90s"` | how long a running job must use more cores than it weighs before it weighs what it used; `"never"` only charges it what it uses |
 | `drain_after` | `"10m"` | how long a development job waits before the machine drains for it; `"never"` never drains |
+| `low_promote_after` | `"4h"` | how long a `--low` job waits for spare room before it becomes a normal job; `"never"` keeps it low |
 | `load_wait` | `"15m"` | how long a settling exclusive job waits for its `--quiet-load` before it is marked overdue (it still waits); `"never"` never marks it |
 | `disk_min` | `"20G"` | the least free disk new jobs start beside; `"0"` for no guard |
 | `projects` | `~/dev` | the absolute directory projects live in, whose first level names a job's owner |
@@ -1180,8 +1217,9 @@ against its own budget. `marshal status` shows what take-slot holds.
   and the peak as before.
 - **Jobs**: running jobs, then queued ones, then the last ten that ended, the latest first, then the
   earlier ones scrolled back to (see Scrolling back). ELAPSED
-  is the time since the job started (a paused job's stands still), `-` for a job that has not started,
-  and counts on between snapshots; DEADLINE is a running job's time left, yellow under a quarter of its
+  is the time since the job started (a paused job's stands still), or for a job that has not started
+  how long it has waited, marked `w` (`w12:03`; the log header says `waited 12m03s`), and counts on
+  between snapshots; DEADLINE is a running job's time left, yellow under a quarter of its
   deadline or five minutes and red under a tenth or one minute, and a queued job's deadline to come.
   A queued job's STATE is its place in its lane's queue and why it waits, in yellow (`#2 no units`),
   in the words of [Reading the queue](#reading-the-queue) with five shortened: `quick full`, `disk
@@ -1191,7 +1229,9 @@ against its own budget. `marshal status` shows what take-slot holds.
   `quiet`, `lost`, `cancelled`, `dep N failed` or `signal N`.
 - **Keys**: Up, Down, PgUp, PgDn, Home, End select a job; Enter or `l` opens its log in a pane under
   the table, following the end as it grows (PgUp, PgDn, Home, End scroll it while it is open, Esc
-  closes it); `k` kills the selected job after `y`; `f` shows all jobs, the running, the queued or
+  closes it); `k` kills the selected job after `y` (the prompt, `Kill job 7289 (zsh
+  …/train/train373.zsh)? y/n`, is bold white on a dark red of marshal's own, readable on a dark
+  and a light terminal alike, each long path in the command cut to its last two parts); `f` shows all jobs, the running, the queued or
   the ended ones; `o` shows only the first owner's jobs (in alphabetical order, among the jobs
   listed and loaded), the next owner's at the next press, and every owner's again after the last,
   with whichever `f` filter is on; `h` or `?` the keys; `s` starts a daemon when there is none; `q`
@@ -1204,10 +1244,18 @@ against its own budget. `marshal status` shows what take-slot holds.
   list no ended jobs and load none. The table draws a scroll bar down its right edge while its lines
   overflow, and the bottom line says which lines show, `jobs 41–60 of 1,234`, with `+` after the
   count while earlier jobs may be there that are not loaded yet.
-- **Log pane header**: the pane opens with the job's `kind` and its whole `command` (wrapped to the
-  pane, never cut off, which the table has to do), bold labels and dim values, ruled off from the
-  log. The header stays put while the log scrolls under it; in a very short pane the command is
-  shortened with `…` so the log keeps a row.
+- **Log pane header**: the pane opens with the job's `kind` with its marks (`test!`, `probe~`), its
+  whole `state` — the reason a queued job waits in full (`queued (draining: needs 30G, 24G free;
+  waits for 7263, ~16:30)`), then its band and lane (`; urgent`, `; low`, `; landing`), which the
+  table's STATE column shortens — and its whole `command` (wrapped to the pane, never cut off, which
+  the table has to do), bold labels and values in the terminal's own foreground, ruled off from the
+  log. The state follows the job live with every snapshot. The header stays put while the log
+  scrolls under it; in a very short pane the command is shortened with `…` so the log keeps a row.
+- **Colours**: what must be read is never grey or dim: quiet values are the terminal's own
+  foreground, which its theme makes readable; the kill prompt and an overdue row are bold white on
+  marshal's own dark red (about 8:1), and the bottom line's keys black on its own teal (about 7.8:1),
+  so neither depends on the theme's palette. `marshal tail` prints the log's own lines, whose first
+  is the job's header (`marshal: job 12, project …, dir …`); `marshal status <id>` gives the state.
 - **Idle**: the selected row's highlight hides after 5 seconds without a key, so a glance at
   progress is not a row to read around; `top` starts that way. The selected job is remembered while
   it is hidden. The first Up, Down, PgUp, PgDn, Home, End, Enter or `l` after that only shows the
