@@ -335,7 +335,8 @@ drainTarget(queue: Vector[Waiting], fair: Fairness) -> Option[Waiting] =
 // What the scheduler makes of one waiting job: start it now (no `why`), or why it waits. `ahead` is
 // the draining job it is backfilled ahead of; `at`, on the draining job, when it is expected to start.
 // `settling` says an exclusive job has the machine to itself and waits for the load alone. `need`, on
-// a development job that waits for units or memory, is what it needs and waits for.
+// a development job that waits for units or memory and on a landing job that drains the machine, is
+// what it needs and waits for.
 private data Decision(
     id: long,
     why: Option[Why],
@@ -412,7 +413,12 @@ private decide(
       ends += (now + w.expectedMs, taken, w.memory, w.id)
       sure += (now + drainEstimate(w.expectedMs, w.drainMs), taken, w.memory, w.id)
     else
-      out += Decision(w.id, Some(Draining))
+      // it waits for memory (and, polite, units) to free: what it needs, and the running job whose
+      // end is expected to let it start, as a development job's drain says them
+      val needUnits = if polite then w.units else 0
+      val (at, id) = whenFitsBy(budget, if polite then units else 0, memory, needUnits, w.memory, sure)
+      val need = Need(needUnits, budget.units - (if polite then units else 0), w.memory, budget.memory - memory, id, at)
+      out += Decision(w.id, Some(Draining), need = Some(need))
       draining = Some(w.id)
   // While a landing job drains the machine, every development job waits behind it and no take-slot
   // waiter is counted as admitted.

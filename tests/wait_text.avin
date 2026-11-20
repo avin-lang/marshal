@@ -77,8 +77,42 @@ needTexts()
   assertEq(marshal.needText(Behind(7278), None, ""), "behind 7278")
   assertEq(marshal.needText(LowWaits, None, ""), "low: no spare room")
   assertEq(marshal.needText(DrainingFor(3), None, ""), "draining for 3")
-  // a need with nothing short says the reason alone
-  assertEq(marshal.needText(Draining, Some(Need(4, 8, 0, 64 * gib, 0, 0)), "~16:30"), "draining")
+  // a need with nothing short says the reason alone, but a draining job always says what it waits for
+  assertEq(marshal.needText(NoUnits, Some(Need(4, 8, 0, 64 * gib, 0, 0)), "~16:30"), "no units")
+  assertEq(marshal.needText(Draining, Some(Need(4, 8, 0, 64 * gib, 7263, 0)), "~now"), "draining; waits for 7263, ~now")
+  // waiting on take-slot's runs, and on nothing that frees enough
+  assertEq(marshal.needText(Draining, Some(Need(4, 8, 0, 64 * gib, 0, 0)), "~16:30"), "draining; waits for take-slot, ~16:30")
+  assertEq(marshal.needText(Draining, Some(Need(4, 12, 30 * gib, 24 * gib, 0, long.MaxValue)), ""), "draining: needs 30G, 24G free; no running job's end frees enough")
+  assertEq(marshal.needText(Draining, Some(Need(4, 12, 30 * gib, 24 * gib, 0, 0)), ""), "draining: needs 30G, 24G free; waits for take-slot")
+
+@test("a landing job that drains the machine says what it needs and the running job it waits for, a late one now")
+needOfTheDrainingLandingJob()
+  val r = [dr(10, 4, memory = 40 * 1024)]
+  val q = [dl(1, 0, memory = 40 * 1024)]
+  // its units are not counted outside polite mode: memory alone
+  assertEq(marshal.needs(drainBudget, r, q, 0, marshal.NoOutside, fairAt(0)), [(long(1), Need(0, 12, 40 * 1024, 24 * 1024, 10, minute))])
+  // five minutes on, the running job is past its expected minute: it is expected now
+  assertEq(
+    marshal.needs(drainBudget, r, q, 5 * minute, marshal.NoOutside, fairAt(5 * minute)),
+    [(long(1), Need(0, 12, 40 * 1024, 24 * 1024, 10, 5 * minute))]
+  )
+  // and the development job behind it has no need of its own: it waits behind the landing job
+  assertEq(marshal.needs(drainBudget, r, q ++ [dj(2, 1, 0)], 0, marshal.NoOutside, fairAt(0)).length, 1)
+
+@test("the short words name the job a draining job waits on, where the daemon said one")
+drainingShortWords()
+  val j = wtJob(1, waitText = "draining; waits for 7263, ~now")
+  assertEq(marshal.briefWhy(Draining, j), "draining")
+  val on = JobInfo(1, "test", 4, 0, false, "/tmp", ["sh", "x.sh"], "queued", None, false, 0, 0, 60000, "/tmp/x.log", None, waitsOn = 7263)
+  assertEq(marshal.briefWhy(Draining, on), "draining on 7263")
+  assertEq(marshal.stateWithWhy(on, [(long(1), Draining)], true), "queued (draining on 7263)")
+  // other reasons keep their words
+  assertEq(marshal.briefWhy(NoUnits, on), "no units")
+  assertEq(marshal.briefWhy(DrainingFor(3), on), "draining for 3")
+  // waits_on travels the wire, and is left out where none
+  assertEq(marshal.encodeJob(on).get("waits_on").flatMap(v -> v.asLong), Some(long(7263)))
+  assertEq(marshal.decodeJob(marshal.encodeJob(on)).ok.get.waitsOn, 7263)
+  assertEq(marshal.encodeJob(j).get("waits_on"), None)
 
 @test("ls says the reason in full; ls --compact keeps the short words; held stays held")
 stateCells()

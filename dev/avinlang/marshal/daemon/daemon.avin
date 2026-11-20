@@ -205,6 +205,10 @@ class Job(
   // one by its deadline; and where it came from (`Expectation.from`)
   var durationLearned = false
   var durationFrom = ""
+  // what its ETA counts down from, None for no ETA, and the runs of the key its duration came from,
+  // which say how long it may go on once it is past that (eta.avin's `etaBasis`, `timeLeft`)
+  var etaBasis: Option[marshal.EtaBasis] = None
+  var etaRuns: Vector[long] = []
   // where its units and its deadline came from (`unitsSource`, `LearnedDeadline.from`), and the
   // project its directory is in, which its runs are learned under (learning.avin)
   var unitsFrom = ""
@@ -257,7 +261,7 @@ class Job(
   // machine drains for; 0 otherwise. `startsIn` is how long a queued job is expected to wait yet,
   // -1 where that is not known (eta.avin). `waitText` is why a queued job waits, in full (`needText`).
   // A job submitted without a label is shown with one derived from its command (`derivedLabel`).
-  info(now: long, expectedStart: long = 0, startsIn: long = -1, waitText: string = "") -> JobInfo =
+  info(now: long, expectedStart: long = 0, startsIn: long = -1, waitText: string = "", waitsOn: long = 0) -> JobInfo =
     val waits = state == "queued" || state == "waiting" || state == "retrying"
     val elapsed = if waits then long(0) else ran(now)
     // how long it has waited: a job not running yet since it last began to wait (a retry since the
@@ -270,6 +274,9 @@ class Job(
     // a settling job is queued to the daemon, and settling to everyone who asks
     val settles = state == "queued" && settling
     val derived = if spec.label.isEmpty then marshal.derivedLabel(spec.cmd) else ""
+    val eta = if state != "running" then marshal.NoEta else etaBasis match
+      Some(b) -> marshal.timeLeft(b, etaRuns, elapsed, deadlineMs)
+      None -> marshal.NoEta
     JobInfo(
       id,
       spec.kind,
@@ -327,7 +334,11 @@ class Job(
       if state == "queued" then waitText else "",
       if derived.nonEmpty then "cmd" else "",
       if held && waits then heldGroup else "",
-      if waits then heldFor(now) else 0
+      if waits then heldFor(now) else 0,
+      eta.ms,
+      eta.late,
+      eta.guess,
+      if state == "queued" then waitsOn else 0
     )
 
 // The daemon's state, owned by its own thread.
@@ -365,6 +376,9 @@ class Daemon(
   // The longest a job ran before its deadline stopped it, by the same keys, since a job of the key
   // last exited 0: its command takes at least that long.
   val overruns = MutableMap[string, long]()
+  // The share of its deadline each job that exited 0 took, in thousandths, by its kind's key in its
+  // project (eta.avin's `deadlineShare`): what a guessed ETA reads.
+  val shares = MutableMap[string, Buffer[long]]()
   // The project of each directory a job has named (learning.avin's `projectOf`).
   val projects = MutableMap[string, string]()
   // The processor use of the whole machine, from its tick counters, measured with the jobs'.
@@ -499,6 +513,21 @@ class Daemon(
     job.expectedMs = e.ms
     job.durationLearned = e.learned
     job.durationFrom = e.from
+    reckonEta(job)
+
+  // Gives `job` what its ETA counts down from and the runs that say how long it may go on past
+  // that, from its expectation and where that came from (eta.avin's `etaBasis`).
+  reckonEta(job: Job)
+    val s = job.spec
+    val kindProject = marshal.kindProjectKey(s.kind, s.landing, projectFor(s.dir))
+    job.etaBasis = marshal.etaBasis(
+      job.expectedMs,
+      job.durationFrom,
+      job.deadlineMs,
+      shares.get(kindProject).map(b -> b.toVector).getOrElse([]),
+      config.learning.minRuns
+    )
+    job.etaRuns = chainIn(durations, s).find(c -> c.1 == job.durationFrom).map(c -> c.0).getOrElse([])
 
   // Who a job of `s` is for (owner.avin).
   ownerOf(s: JobSpec) -> string = marshal.ownerHere(s.owner, s.dir, s.label, marshal.projectsRoot(config.projects))
@@ -524,13 +553,16 @@ class Daemon(
   rememberOverrun(key: string, ms: long)
     if ms > overruns.get(key).getOrElse(0) then overruns(key) = ms
 
-  // Learns how long a job that succeeded ran, under every key of its chain; the jobs not started
+  // Learns how long a job that succeeded ran, under every key of its chain, and the share of its
+  // deadline (`deadlineMs`) that was, under its kind's key in its project; the jobs not started
   // yet are estimated again, and what is learned is written to `memory.json`. A success ends what a
   // run its deadline stopped said of the work.
-  learnDuration(spec: JobSpec, ms: long)
-    for key in chainOf(spec).map(k -> k.key)
-      rememberDuration(key, ms)
-      overruns.remove(key)
+  learnDuration(spec: JobSpec, ms: long, deadlineMs: long = 0)
+    for k in chainOf(spec)
+      rememberDuration(k.key, ms)
+      overruns.remove(k.key)
+      val share = marshal.deadlineShare(ms, deadlineMs)
+      if k.from == marshal.FromKindProject && share >= 0 then remember(shares, k.key, share)
     for j in queue ++ waitingJobs do estimate(j)
     saveMemory()
 
@@ -1088,8 +1120,8 @@ class Daemon(
         val outside = outsideNow().getOrElse(marshal.NoOutside)
         val whys = queuedWhys(t, outside)
         val why = whys.find(w -> w.0 == id).map(w -> w.2)
-        val texts = waitTexts(t, outside, whys)
-        Found(job.info(t, startsAt(drainExpected(t, outside), id), waitText = texts.get(id).getOrElse("")), why)
+        val wait = waitsOf(t, outside, whys).get(id).getOrElse(("", long(0)))
+        Found(job.info(t, startsAt(drainExpected(t, outside), id), waitText = wait.0, waitsOn = wait.1), why)
       None -> endedEarlier(id) match
         Ended(info) -> Found(info)
         other -> other
@@ -1742,7 +1774,7 @@ class Daemon(
           val b = Buffer[long]()
           b += info.elapsedMs
           histories(key) = b
-      learnDuration(job.spec, info.elapsedMs)
+      learnDuration(job.spec, info.elapsedMs, job.deadlineMs)
     for w in job.waiters do give(w, Ended(info))
     job.waiters.clear()
     waitersOf(job.id)
@@ -2021,15 +2053,18 @@ class Daemon(
     val drain = drainExpected(t, outside)
     val whys = queuedWhys(t, outside)
     val starts = startsIn(t, outside, whys)
-    val texts = waitTexts(t, outside, whys)
+    val waits = waitsOf(t, outside, whys)
     (
       running.toVector ++ queue.toVector ++ waitingJobs.toVector ++ ended.takeRight(Recent)
-    ).map(j -> j.info(t, startsAt(drain, j.id), starts.get(j.id).getOrElse(-1), texts.get(j.id).getOrElse("")))
+    ).map(j ->
+      val wait = waits.get(j.id).getOrElse(("", long(0)))
+      j.info(t, startsAt(drain, j.id), starts.get(j.id).getOrElse(-1), wait.0, wait.1))
 
   // Why each queued job waits, in full (`needText`), by id: the reason, and for one that waits for
   // units or memory what it needs and what is free, and the running job whose end is expected to let
   // it start, with when on the local clock (`~16:30`).
-  waitTexts(t: long, outside: Outside, whys: Vector[(long, int, Why)]) -> Map[long, string]
+  // With each, the running job whose end is expected to let it start (0 where none is said).
+  waitsOf(t: long, outside: Outside, whys: Vector[(long, int, Why)]) -> Map[long, (string, long)]
     val b = budgetNow()
     val started = running.map(j -> startedOf(j, t, b)).toVector
     val waiting = eligible().map(j -> waitingOf(j, t, b))
@@ -2042,13 +2077,13 @@ class Daemon(
       marshal.fairness(config, time.now().epochMicros)
     )
     val wall = time.now().epochMillis
-    val out = MutableMap[long, string]()
+    val out = MutableMap[long, (string, long)]()
     for (id, _, why) in whys
       val need = needs.find(n -> n.0 == id).map(n -> n.1)
       val at = need.filter(n -> n.at < long.MaxValue).map(n -> if n.at <= t then "~now" else "~" + time.epochMillis(
         wall + (n.at - t)
       ).atZone(zone).format("hh:mm")).getOrElse("")
-      out(id) = marshal.needText(why, need, at)
+      out(id) = (marshal.needText(why, need, at), need.map(n -> n.waitsOn).getOrElse(0))
     out.toMap
 
   // Why each queued job waits, with its place in its lane's queue (`queueWaits`); while the disk is
@@ -2085,7 +2120,7 @@ class Daemon(
         holds(j),
         j.spec.landing,
         j.spec.quick,
-        marshal.etaLeft(j.info(t))
+        marshal.etaLeft(j.info(t)).ms
       )).toVector
     val queuedNow = whys.map(w ->
       val j = jobs(w.0)
@@ -2097,7 +2132,7 @@ class Daemon(
         j.spec.quick,
         w.1,
         w.2,
-        if marshal.commandLearned(j.durationFrom) then j.expectedMs else -1
+        j.etaBasis.map(b -> b.ms).getOrElse(-1)
       ))
     val b = budgetNow()
     val used = running.filter(j -> marshal.isPolite(b) || !j.spec.quick).map(j -> chargeOf(j)).sum + outside.units
@@ -2145,10 +2180,16 @@ class Daemon(
     val drain = drainExpected(t, outside.getOrElse(marshal.NoOutside))
     val whys = queuedWhys(t, outside.getOrElse(marshal.NoOutside))
     val starts = startsIn(t, outside.getOrElse(marshal.NoOutside), whys)
-    val texts = waitTexts(t, outside.getOrElse(marshal.NoOutside), whys)
+    val waits = waitsOf(t, outside.getOrElse(marshal.NoOutside), whys)
     val queued = whys.map(
       w -> QueuedJob(
-        jobs(w.0).info(t, startsAt(drain, w.0), starts.get(w.0).getOrElse(-1), texts.get(w.0).getOrElse("")),
+        jobs(w.0).info(
+          t,
+          startsAt(drain, w.0),
+          starts.get(w.0).getOrElse(-1),
+          waits.get(w.0).map(x -> x.0).getOrElse(""),
+          waits.get(w.0).map(x -> x.1).getOrElse(0)
+        ),
         w.1,
         w.2
       )
@@ -2487,6 +2528,7 @@ class Daemon(
       job.durationLearned = sj.durationLearned
       job.durationFrom = sj.durationFrom
       job.owner = ownerOf(sj.spec)
+      reckonEta(job)
       // a settling job keeps its claim on the machine, its load wait's clock and its overdue mark
       job.settling = sj.settling
       job.settlingSince = if sj.settlingSince > 0 then Some(mono(sj.settlingSince)) else None
@@ -2808,6 +2850,9 @@ run(home: string, resume: Option[string] = None) -> int
     for ms in runs do daemon.rememberDuration(key, ms)
   // what a run its deadline stopped says of its command is the event log's alone
   for (key, ms) in recovered.overruns do daemon.rememberOverrun(key, ms)
+  // and so is the share of its deadline each run took
+  for (key, taken) in recovered.shares
+    for share in taken do daemon.remember(daemon.shares, key, share)
   if loaded.isErr || read.fromVersion1 || read.withoutDurations || read.staleScripts || read.staleProjects then daemon.saveMemory()
   // the free disk is known before the first job can start
   daemon.diskFree = marshal.diskFree(daemon.diskDirs()).getOrElse(-1)

@@ -136,6 +136,11 @@ whyText(RunsAlone) = "polite: runs alone"
 whyText(ForAlone(id)) = s"polite: $id runs alone"
 whyText(LowWaits) = "low: no spare room"
 
+// Why a queued job `j` waits, in short words (`whyText`), a draining job naming the running job whose
+// end is expected to let it start where the daemon said one (`draining on 7263`).
+briefWhy(why: Why, j: JobInfo) -> string =
+  if why == Draining && j.waitsOn > 0 then s"draining on ${j.waitsOn}" else whyText(why)
+
 // A job's state cell in `ls`: `stateColumn`, and for a job that is plainly `queued` or `settling` and
 // has a reason in `whys` (job id, reason), the reason after it: `queued (draining)`,
 // `settling (load 30.4 ≥ 4.5)`. The reason is the job's own `waitText` where the daemon gave one
@@ -148,7 +153,7 @@ stateWithWhy(j: JobInfo, whys: Vector[(long, Why)], brief: bool = false) -> stri
   val overdue = if j.loadOverdue then ", overdue" else ""
   whys.find(w -> w.0 == j.id) match
     Some((_, Held)) -> state
-    Some((_, why)) -> s"$state (${if j.waitText.nonEmpty && !brief then j.waitText else whyText(why)}$overdue)"
+    Some((_, why)) -> s"$state (${if j.waitText.nonEmpty && !brief then j.waitText else briefWhy(why, j)}$overdue)"
     None ->
       if j.waitText.nonEmpty && !brief then s"$state (${j.waitText}$overdue)"
       elif overdue.isEmpty then state
@@ -170,17 +175,24 @@ needWords(n: Need) -> string
 // (`whyText`), and where the scheduler said what it needs (`need`), that, then the running job whose
 // end lets it start and when (`atText`, such as `~16:30`; "" where not known):
 // `draining: needs 30G, 24G free; waits for 7263, ~16:30`, `needs 3 units, 1 free`. A reason that
-// names no shortage (`behind 7278`, `low: no spare room`) is its words alone.
+// names no shortage (`behind 7278`, `low: no spare room`) is its words alone. A draining job always
+// says what it waits for, whether or not it is short of anything now: `draining; waits for 7263, ~now`
+// (a job past its expected end is expected now), `waits for take-slot`, or that no running job's end
+// frees enough.
 needText(why: Why, need: Option[Need], atText: string) -> string
   val words = whyText(why)
   val n = need match
     Some(n) -> n
     None -> return words
   val short = needWords(n)
-  if short.isEmpty then return words
   val waits = if n.waitsOn > 0 then s"; waits for ${n.waitsOn}${if atText.isEmpty then "" else ", " + atText}" elif atText.nonEmpty then s"; $atText" else ""
+  // a draining job always says what it waits for: the job whose end lets it start, else take-slot's
+  // runs, else that nothing running frees enough
+  if why == Draining
+    val on = if n.waitsOn > 0 then waits elif n.at < long.MaxValue then s"; waits for take-slot${if atText.isEmpty then "" else ", " + atText}" else "; no running job's end frees enough"
+    return if short.isEmpty then s"draining$on" else s"draining: $short$on"
+  if short.isEmpty then return words
   why match
-    Draining -> s"draining: $short$waits"
     NoUnits | NoMemory -> s"$short$waits"
     // the polite budget, a part of the machine, is what it waits for: its words say so already
     _ -> words

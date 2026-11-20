@@ -6,7 +6,7 @@ import dev.avinlang.json
 import dev.avinlang.json.Json
 
 // marshal's version, as `avin.hocon` gives it: what `marshal version` and `marshal restart` print.
-val Version: string = "0.4.1"
+val Version: string = "0.4.2"
 
 // What a job is to run and how much of the machine it takes. `urgent` queues it in its lane's urgent
 // band, behind the urgent jobs already queued and ahead of every other. `after` names the jobs it
@@ -280,8 +280,12 @@ retryable(_, _) = false
 // the processor time measured, in milliseconds (cores.avin). `owner` is who submitted it: the owner
 // it named, or the one derived from its directory or label (`ownerOf`), "" where there is none.
 // `durationFrom` says where `expectedMs` came from (`durationSource`: `cmd+dir`, `cmd`, `kind` or
-// `none`), "" from a daemon that does not say; only a duration learned from its command's own runs
-// gives it an ETA (eta.avin). `startsInMs` is how long a queued job is expected to wait before it
+// `none`), "" from a daemon that does not say; only a duration learned from its command's own runs,
+// or guessed from its kind's in its project, gives it an ETA (eta.avin). `etaMs` is a running job's
+// expected time left as the daemon reckoned it when it answered (`timeLeft`), -1 where it has none
+// or did not say; `etaLate` says the job is past what that counted down from, and `etaGuess` that it
+// counted down from a guess. `waitsOn` is the running job whose end is expected to let a queued job
+// that waits for units or memory (or drains) start, 0 where none is said. `startsInMs` is how long a queued job is expected to wait before it
 // starts, as the daemon reckoned it when it answered; -1 where that is not known. `heldCores` is
 // the level the job held (`CpuMeter.held`), in hundredths, -1 where it has not been measured or
 // the daemon did not say: what its command's units are learned from. `unitsAsked` is the units a
@@ -360,7 +364,11 @@ data JobInfo(
     waitText: string = "",
     labelFrom: string = "",
     heldGroup: string = "",
-    heldMs: long = 0
+    heldMs: long = 0,
+    etaMs: long = -1,
+    etaLate: bool = false,
+    etaGuess: bool = false,
+    waitsOn: long = 0
 )
 
 // Whether a job is settling: an exclusive job with the machine to itself that waits only for the
@@ -1115,6 +1123,8 @@ private learnedFromMembers(i: JobInfo) -> Vector[(string, Json)]
   // `held_group` only on a job a filtered hold holds, `held_ms` only where it has been held
   if i.heldGroup.nonEmpty then out += ("held_group", Json.str(i.heldGroup))
   if i.heldMs > 0 then out += ("held_ms", Json.num(i.heldMs))
+  // `waits_on` only on a queued job whose wait ends with a running job's
+  if i.waitsOn > 0 then out += ("waits_on", Json.num(i.waitsOn))
   out.toVector
 
 // `settling_ms` and `load_overdue` are there only on a settling job.
@@ -1124,13 +1134,16 @@ private settlingMembers(i: JobInfo) -> Vector[(string, Json)] = if i.state == "s
 ] else Vector[(string, Json)]()
 
 // `duration_from` is left out where the daemon did not say; `eta_ms`, a running job's expected time
-// left, only where its command's runs teach it (`etaLeft`); `starts_in_ms` only on a queued job
-// whose start can be reckoned.
+// left, only where it has one (`etaLeft`), with `eta_late` and `eta_guess` only where true;
+// `starts_in_ms` only on a queued job whose start can be reckoned.
 private etaMembers(i: JobInfo) -> Vector[(string, Json)]
   val out = Buffer[(string, Json)]()
   if i.durationFrom.nonEmpty then out += ("duration_from", Json.str(i.durationFrom))
   val left = etaLeft(i)
-  if left >= 0 then out += ("eta_ms", Json.num(left))
+  if left.ms >= 0
+    out += ("eta_ms", Json.num(left.ms))
+    if left.late then out += ("eta_late", Json.Bool(true))
+    if left.guess then out += ("eta_guess", Json.Bool(true))
   if i.startsInMs >= 0 then out += ("starts_in_ms", Json.num(i.startsInMs))
   out.toVector
 
@@ -1249,7 +1262,14 @@ decodeJob(j: Json) -> Result[JobInfo, string]
       optional(j, "label_from", v -> v.asString, "a string", "")?,
       // absent from what marshal wrote before hold groups, and where empty or 0
       optional(j, "held_group", v -> v.asString, "a string", "")?,
-      optional(j, "held_ms", wholeNumber, "a whole number", 0)?))
+      optional(j, "held_ms", wholeNumber, "a whole number", 0)?,
+      // absent on a job without an ETA, and where false; a running job's `eta_ms` written before
+      // late ETAs is read as it is
+      optional(j, "eta_ms", wholeNumber, "a whole number", long(-1))?,
+      optional(j, "eta_late", v -> v.asBool, "a bool", false)?,
+      optional(j, "eta_guess", v -> v.asBool, "a bool", false)?,
+      // absent on a job whose wait ends with no running job's, and from what marshal wrote before
+      optional(j, "waits_on", wholeNumber, "a whole number", 0)?))
 
 encodeTakeSlot(t: TakeSlotUse) -> Json = Json.obj(
   ("dir", Json.str(t.dir)),

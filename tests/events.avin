@@ -235,6 +235,31 @@ overruns()
   )
   assertEq(marshal.recover([]).overruns, Map[string, long]())
 
+@test("shares hold the thousandths of its deadline each run that exited 0 took, by its kind's key in its project")
+shares()
+  // every job here has a one-minute deadline
+  val lines = [
+    ended(1, 30000, 0),
+    ended(2, 15000, 0),
+    ended(3, 6000, 1),
+    timedOut(4, 61000),
+    ended(5, 45000, 0, "test", true),
+    ended(6, 60000, 0)
+  ]
+  val r = marshal.recover(lines, 10, dir -> "/p")
+  assertEq(r.shares.get(marshal.kindProjectKey("test", false, "/p")), Some([long(500), long(250), long(1000)]))
+  assertEq(r.shares.get(marshal.kindProjectKey("test", true, "/p")), Some([long(750)]))
+  // only the kind's key in its project: not the command's keys
+  assertEq(r.shares.size, 2)
+  // a run without a deadline teaches none
+  val none = line(
+    "finished",
+    JobInfo(7, "test", 16, 0, false, "/d", ["make", "it"], "done", Some(Outcome.Exited(0)), false, 5, 100, 0, "/h/jobs/7.log", None),
+    [("run_ms", Json.num(100)), ("exit", Json.num(0))]
+  )
+  assertEq(marshal.recover([none], 10, dir -> "/p").shares, Map[string, Vector[long]]())
+  assertEq(marshal.recover([]).shares, Map[string, Vector[long]]())
+
 @test("lines that are not events are counted and skipped, blank lines ignored")
 unreadable()
   val r = marshal.recover(["", "not json", "{\"event\": \"started\"}", "[1]", ended(9, 1, 0), "   "])

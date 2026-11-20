@@ -2,10 +2,12 @@ module tests
 
 // Durations learned per command and what they say of when jobs end and start (eta.avin): the median
 // of a command's last five successful runs, in its directory before anywhere, before its kind's; a
-// running job's time left; a queued job's start, reckoned from the running jobs' expected ends in
-// queue order, and none where something no duration measures stands in the way.
+// running job's time left, late past its expectation and a guess from its kind in its project; a
+// queued job's start, reckoned from the running jobs' expected ends in queue order, and none where
+// something no duration measures stands in the way; and the evaluation that chose the rules, over
+// fixed histories.
 import dev.avinlang.marshal
-import dev.avinlang.marshal.{Budget, EtaQueued, EtaRunning, JobInfo, LearnedDuration, Why}
+import dev.avinlang.marshal.{Budget, EtaBasis, EtaLeft, EtaQueued, EtaRunning, JobInfo, LearnedDuration, Why}
 
 private val Min: long = 60000
 
@@ -45,7 +47,16 @@ expectations()
     marshal.Expectation(2 * Min, true, "kind")
   )
 
-private runningEta(elapsed: long, expected: long, from: string, paused: bool = false) -> JobInfo =
+private runningEta(
+    elapsed: long,
+    expected: long,
+    from: string,
+    paused: bool = false,
+    deadline: long = 30 * Min,
+    eta: long = -1,
+    late: bool = false,
+    guess: bool = false
+) -> JobInfo =
   JobInfo(
     1,
     "build",
@@ -59,15 +70,18 @@ private runningEta(elapsed: long, expected: long, from: string, paused: bool = f
     false,
     0,
     elapsed,
-    30 * Min,
+    deadline,
     "/l",
     None,
     paused = paused,
     expectedMs = expected,
-    durationFrom = from
+    durationFrom = from,
+    etaMs = eta,
+    etaLate = late,
+    etaGuess = guess
   )
 
-private queuedJob(startsIn: long) -> JobInfo =
+private queuedJob(startsIn: long, eta: long = -1) -> JobInfo =
   JobInfo(
     2,
     "build",
@@ -84,21 +98,111 @@ private queuedJob(startsIn: long) -> JobInfo =
     30 * Min,
     "/l",
     None,
-    startsInMs = startsIn
+    startsInMs = startsIn,
+    etaMs = eta
   )
 
 @test(
-  "a running job's ETA is its command's expected duration less its run time, none past it, and only from its command"
+  "a running job's ETA is its expected duration less its run time, from its own command, a guess from its kind in its project"
 )
 etaLeft()
-  assertEq(marshal.etaLeft(runningEta(2 * Min, 8 * Min, "cmd")), 6 * Min)
-  assertEq(marshal.etaLeft(runningEta(2 * Min, 8 * Min, "cmd+dir")), 6 * Min)
-  assertEq(marshal.etaLeft(runningEta(9 * Min, 8 * Min, "cmd")), 0)
+  assertEq(marshal.etaLeft(runningEta(2 * Min, 8 * Min, "cmd")), EtaLeft(6 * Min))
+  assertEq(marshal.etaLeft(runningEta(2 * Min, 8 * Min, "cmd+dir")), EtaLeft(6 * Min))
+  assertEq(marshal.etaLeft(runningEta(2 * Min, 8 * Min, "norm+project")), EtaLeft(6 * Min))
+  // its kind's runs in its project: a guess
+  assertEq(marshal.etaLeft(runningEta(2 * Min, 8 * Min, "kind+project")), EtaLeft(6 * Min, false, true))
   // a kind's duration, a guessed one, and one a daemon did not say give none
-  assertEq(marshal.etaLeft(runningEta(2 * Min, 8 * Min, "kind")), -1)
-  assertEq(marshal.etaLeft(runningEta(2 * Min, 8 * Min, "none")), -1)
-  assertEq(marshal.etaLeft(runningEta(2 * Min, 8 * Min, "")), -1)
-  assertEq(marshal.etaLeft(queuedJob(Min)), -1)
+  assertEq(marshal.etaLeft(runningEta(2 * Min, 8 * Min, "kind")), marshal.NoEta)
+  assertEq(marshal.etaLeft(runningEta(2 * Min, 8 * Min, "none")), marshal.NoEta)
+  assertEq(marshal.etaLeft(runningEta(2 * Min, 8 * Min, "")), marshal.NoEta)
+  assertEq(marshal.etaLeft(queuedJob(Min)), marshal.NoEta)
+
+@test("past its expected duration a job is late, and goes on half what it has run, never past its deadline")
+etaLeftLate()
+  // 9 minutes run of 8 expected, a 30-minute deadline: late, 4.5 minutes more
+  assertEq(marshal.etaLeft(runningEta(9 * Min, 8 * Min, "cmd")), EtaLeft(9 * Min / 2, true))
+  // exactly at its expectation it is late
+  assertEq(marshal.etaLeft(runningEta(8 * Min, 8 * Min, "cmd")).late, true)
+  assertEq(marshal.etaLeft(runningEta(8 * Min - 1, 8 * Min, "cmd")), EtaLeft(1))
+  // 25 minutes run: half of it would pass the deadline, which leaves 5
+  assertEq(marshal.etaLeft(runningEta(25 * Min, 8 * Min, "cmd")), EtaLeft(5 * Min, true))
+  // at or past its deadline: nothing left, still late
+  assertEq(marshal.etaLeft(runningEta(30 * Min, 8 * Min, "cmd")), EtaLeft(0, true))
+  assertEq(marshal.etaLeft(runningEta(31 * Min, 8 * Min, "cmd")), EtaLeft(0, true))
+  // a guess that is late is both
+  assertEq(marshal.etaLeft(runningEta(10 * Min, 8 * Min, "kind+project")), EtaLeft(5 * Min, true, true))
+  // without a deadline nothing holds it
+  assertEq(marshal.etaLeft(runningEta(40 * Min, 8 * Min, "cmd", deadline = 0)), EtaLeft(20 * Min, true))
+
+@test("the daemon's reckoning of a running job's time left is the one shown, late and guess included")
+etaLeftFromDaemon()
+  assertEq(marshal.etaLeft(runningEta(2 * Min, 8 * Min, "cmd", eta = 11 * Min, late = true)), EtaLeft(11 * Min, true))
+  assertEq(marshal.etaLeft(runningEta(2 * Min, 8 * Min, "kind", eta = 0, guess = true)), EtaLeft(0, false, true))
+  // a queued job has none whatever it carries
+  assertEq(marshal.etaLeft(queuedJob(Min, eta = Min)), marshal.NoEta)
+  // and the column shows it so
+  assertEq(marshal.etaColumn(runningEta(2 * Min, 8 * Min, "cmd", eta = 11 * Min, late = true)), "+~11m")
+  assertEq(marshal.etaColumn(runningEta(2 * Min, 8 * Min, "kind", eta = 0, guess = true)), "<1m?")
+
+@test("time left past the basis is the median of the key's runs that went on longer, else half the run time")
+timeLeft()
+  val b = EtaBasis(10 * Min, false)
+  // on time: the runs do not matter
+  assertEq(marshal.timeLeft(b, [40 * Min], 4 * Min, 60 * Min), EtaLeft(6 * Min))
+  // 12 minutes run: of 9, 11, 14, 20 and 30, the runs longer are 14, 20, 30; their median 20 is 8 more
+  assertEq(marshal.timeLeft(b, [9 * Min, 11 * Min, 14 * Min, 20 * Min, 30 * Min], 12 * Min, 60 * Min), EtaLeft(8 * Min, true))
+  // no run went on so long: half what it has run
+  assertEq(marshal.timeLeft(b, [9 * Min, 11 * Min], 12 * Min, 60 * Min), EtaLeft(6 * Min, true))
+  assertEq(marshal.timeLeft(b, [], 12 * Min, 60 * Min), EtaLeft(6 * Min, true))
+  // the deadline holds either
+  assertEq(marshal.timeLeft(b, [50 * Min], 12 * Min, 20 * Min), EtaLeft(8 * Min, true))
+  assertEq(marshal.timeLeft(b, [], 4 * Min, 5 * Min), EtaLeft(Min))
+  // no deadline (0): nothing holds it
+  assertEq(marshal.timeLeft(b, [50 * Min], 12 * Min, 0), EtaLeft(38 * Min, true))
+  // a guess stays one
+  assertEq(marshal.timeLeft(EtaBasis(10 * Min, true), [], 2 * Min, 0), EtaLeft(8 * Min, false, true))
+
+@test("an ETA counts down from the command's own expectation; a kind's in its project is a guess raised by its deadline share")
+etaBases()
+  assertEq(marshal.etaBasis(8 * Min, "cmd+dir", 30 * Min), Some(EtaBasis(8 * Min, false)))
+  assertEq(marshal.etaBasis(8 * Min, "cmd", 30 * Min), Some(EtaBasis(8 * Min, false)))
+  assertEq(marshal.etaBasis(8 * Min, "norm+project", 30 * Min), Some(EtaBasis(8 * Min, false)))
+  // its own command's expectation is not raised by shares
+  assertEq(marshal.etaBasis(Min, "cmd", 30 * Min, [500, 500, 500]), Some(EtaBasis(Min, false)))
+  // a kind's in its project with too few shares: its median, a guess
+  assertEq(marshal.etaBasis(Min, "kind+project", 30 * Min, [500, 500]), Some(EtaBasis(Min, true)))
+  // three shares of a half: half the 30-minute deadline, above the kind's minute
+  assertEq(marshal.etaBasis(Min, "kind+project", 30 * Min, [400, 500, 600]), Some(EtaBasis(15 * Min, true)))
+  // the kind's median where it is the larger
+  assertEq(marshal.etaBasis(20 * Min, "kind+project", 30 * Min, [100, 100, 100]), Some(EtaBasis(20 * Min, true)))
+  // never past the deadline, even from shares above a whole (a deadline since lowered)
+  assertEq(marshal.etaBasis(Min, "kind+project", 10 * Min, [2000, 2000, 2000]), Some(EtaBasis(10 * Min, true)))
+  // no deadline: the kind's median alone
+  assertEq(marshal.etaBasis(Min, "kind+project", 0, [500, 500, 500]), Some(EtaBasis(Min, true)))
+  // only the latest twenty shares count: twenty of a tenth after many halves
+  val shares = Vector.fill(30, long(500)) ++ Vector.fill(20, long(100))
+  assertEq(marshal.etaBasis(Min, "kind+project", 30 * Min, shares), Some(EtaBasis(3 * Min, true)))
+  // shares of nothing are not runs
+  assertEq(marshal.etaBasis(Min, "kind+project", 30 * Min, [0, 0, 0]), Some(EtaBasis(Min, true)))
+  // minRuns is the config's
+  assertEq(marshal.etaBasis(Min, "kind+project", 30 * Min, [500], 1), Some(EtaBasis(15 * Min, true)))
+  // nothing from a kind alone, a guess, a job a daemon said nothing of, or no expectation
+  assertEq(marshal.etaBasis(8 * Min, "kind", 30 * Min, [500, 500, 500]), None)
+  assertEq(marshal.etaBasis(8 * Min, "none", 30 * Min), None)
+  assertEq(marshal.etaBasis(8 * Min, "", 30 * Min), None)
+  assertEq(marshal.etaBasis(0, "cmd", 30 * Min), None)
+
+@test("a run's deadline share is the thousandths of its deadline it took; none without a deadline")
+deadlineShares()
+  assertEq(marshal.deadlineShare(15 * Min, 30 * Min), 500)
+  assertEq(marshal.deadlineShare(0, 30 * Min), 0)
+  assertEq(marshal.deadlineShare(30 * Min, 30 * Min), 1000)
+  assertEq(marshal.deadlineShare(45 * Min, 30 * Min), 1500)
+  assertEq(marshal.deadlineShare(1, 3), 333)
+  assertEq(marshal.deadlineShare(Min, 0), -1)
+  assertEq(marshal.deadlineShare(-1, Min), -1)
+  // a week's deadline, to the thousandth
+  assertEq(marshal.deadlineShare(7 * 24 * 60 * Min - 1, 7 * 24 * 60 * Min), 999)
 
 @test("an ETA reads roughly: <1m, minutes rounded up, then hours and minutes; a start from an hour on in hours")
 etaTexts()
@@ -123,6 +227,18 @@ etaColumn()
   assertEq(marshal.etaColumn(runningEta(2 * Min, 8 * Min, "cmd"), 10 * Min), "<1m")
   assertEq(marshal.etaColumn(runningEta(2 * Min, 8 * Min, "cmd", paused = true), 3 * Min), "~6m")
   assertEq(marshal.etaColumn(runningEta(2 * Min, 8 * Min, "kind")), "-")
+  // a guess is marked ?, a late job +, a late guess both
+  assertEq(marshal.etaColumn(runningEta(2 * Min, 8 * Min, "kind+project")), "~6m?")
+  assertEq(marshal.etaColumn(runningEta(10 * Min, 8 * Min, "cmd")), "+~5m")
+  assertEq(marshal.etaColumn(runningEta(10 * Min, 8 * Min, "kind+project")), "+~5m?")
+  // a late job counts down too, to <1m, and stands still while paused
+  assertEq(marshal.etaColumn(runningEta(10 * Min, 8 * Min, "cmd"), 2 * Min), "+~3m")
+  assertEq(marshal.etaColumn(runningEta(10 * Min, 8 * Min, "cmd"), 9 * Min), "+<1m")
+  assertEq(marshal.etaColumn(runningEta(10 * Min, 8 * Min, "cmd", paused = true), 9 * Min), "+~5m")
+  // at its deadline: nothing left
+  assertEq(marshal.etaColumn(runningEta(30 * Min, 8 * Min, "cmd")), "+<1m")
+  // an hour and more late
+  assertEq(marshal.etaColumn(runningEta(130 * Min, 60 * Min, "cmd", deadline = 0)), "+~1h05")
   assertEq(marshal.etaColumn(queuedJob(5 * Min)), "in ~5m")
   assertEq(marshal.etaColumn(queuedJob(5 * Min), 2 * Min), "in ~3m")
   assertEq(marshal.etaColumn(queuedJob(-1)), "-")
@@ -248,3 +364,93 @@ landingStarts()
   // a landing job draining for memory waits on what no duration says
   val draining = marshal.startEstimates(etaBudget, 0, 0, [], [waitingEta(1, 8, 1, Why.Draining, Min, landing = true)])
   assertEq(draining.get(1), None)
+
+@test("a queued job behind a late job starts when the late job is reckoned to end, not at once; never past its deadline")
+startsBehindLate()
+  // the running job, 30 minutes into a run expected to take 20 under a 50-minute deadline, holds
+  // every unit: late, it is reckoned to go on 15 minutes more
+  val late = marshal.etaLeft(runningEta(30 * Min, 20 * Min, "cmd", deadline = 50 * Min))
+  assertEq(late, EtaLeft(15 * Min, true))
+  val queued = [waitingEta(1, 8, 1, Why.NoUnits, Min), waitingEta(2, 48, 2, Why.Behind(1), Min)]
+  val got = marshal.startEstimates(etaBudget, 48, 0, [runEta(48, late.ms)], queued)
+  assertEq(got.get(1), Some(15 * Min))
+  assertEq(got.get(2), Some(16 * Min))
+  // 45 minutes in, its deadline leaves 5
+  val near = marshal.etaLeft(runningEta(45 * Min, 20 * Min, "cmd", deadline = 50 * Min))
+  assertEq(marshal.startEstimates(etaBudget, 48, 0, [runEta(48, near.ms)], queued).get(1), Some(5 * Min))
+  // a late running job in the landing lane holds its lane as long
+  val lane = marshal.startEstimates(
+    etaBudget,
+    0,
+    0,
+    [runEta(8, late.ms, landing = true)],
+    [waitingEta(3, 8, 1, Why.LaneBusy, Min, landing = true)]
+  )
+  assertEq(lane.get(3), Some(15 * Min))
+  // a guessed one's start is reckoned from it as well
+  val guessed = marshal.etaLeft(runningEta(2 * Min, 8 * Min, "kind+project"))
+  assertEq(marshal.startEstimates(etaBudget, 48, 0, [runEta(48, guessed.ms)], queued).get(1), Some(6 * Min))
+
+// The error of a time-left rule over a history: each run after the third, with the runs before it
+// as history, its expectation their median of five, at 0, 25, 50, 75 and 90 percent of its run;
+// the total |reckoned - true| time left, and the part of it after the run passed its expectation.
+private evaluate(history: Vector[long], deadline: long, rule: (long, Vector[long], long) -> long) -> (long, long)
+  var total: long = 0
+  var late: long = 0
+  for i in 3 ..< history.length
+    val before = history.take(i)
+    val expected = marshal.median(before.takeRight(5))
+    val actual = history(i)
+    for pct in [0, 25, 50, 75, 90]
+      val elapsed = actual * long(pct) / 100
+      val err = (rule(expected, before, elapsed) - (actual - elapsed)).abs
+      total += err
+      if elapsed >= expected then late += err
+  (total, late)
+
+@test("evaluation: over a gate that is sometimes slow, the late rule's time left beats counting down to nothing")
+evaluationLate()
+  // a gate of about 52 minutes that sometimes takes 75 to 90, under a 2-hour deadline
+  val history = [50, 52, 51, 75, 53, 80, 52, 54, 90, 51, 78, 55].map(m -> long(m) * Min)
+  val deadline = 120 * Min
+  val (oldTotal, oldLate) = evaluate(history, deadline, (expected, runs, elapsed) -> if expected > elapsed then expected - elapsed else 0)
+  val (newTotal, newLate) = evaluate(
+    history,
+    deadline,
+    (expected, runs, elapsed) -> marshal.timeLeft(EtaBasis(expected, false), runs, elapsed, deadline).ms
+  )
+  // the whole error falls (486 to 465 minutes) and the late part most (113 to 92)
+  assertEq(oldTotal / Min, 486)
+  assertEq(newTotal / Min, 465)
+  assertEq(oldLate / Min, 113)
+  assertEq(newLate / Min, 92)
+  assert(newTotal < oldTotal && newLate < oldLate, "the late rule is the better")
+
+@test("evaluation: a new command's guess raised by its project's deadline share is less often under half its time")
+evaluationNewCommand()
+  // earlier runs of the kind in the project took 40%, 45% and 42% of their deadlines
+  val shares: Vector[long] = [400, 450, 420]
+  // (the kind's median in the project, the deadline, what the new command really took): the first
+  // is the loop of kill tests, 41 seconds expected and 40 minutes taken under a 30-minute deadline
+  // amended to 50
+  val cases: Vector[(long, long, long)] = [
+    (41000, 30 * Min, 40 * Min),
+    (2 * Min, 20 * Min, 9 * Min),
+    (Min, 60 * Min, 25 * Min),
+    (5 * Min, 10 * Min, 4 * Min),
+    (30000, 45 * Min, 15 * Min)
+  ]
+  var oldUnder = 0
+  var newUnder = 0
+  var oldErr: long = 0
+  var newErr: long = 0
+  for (kind, deadline, actual) in cases
+    val guess = marshal.etaBasis(kind, "kind+project", deadline, shares).get
+    assert(guess.guess, "a guess")
+    if actual > 2 * kind then oldUnder += 1
+    if actual > 2 * guess.ms then newUnder += 1
+    oldErr += (kind - actual).abs
+    newErr += (guess.ms - actual).abs
+  assertEq(marshal.etaBasis(41000, "kind+project", 30 * Min, shares).map(b -> b.ms), Some(756000))
+  assertEq((oldUnder, newUnder), (4, 1))
+  assertEq((oldErr / Min, newErr / Min), (85, 33))

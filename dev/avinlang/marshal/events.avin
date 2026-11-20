@@ -50,6 +50,9 @@ eventLine(ts: long, event: string, job: JobInfo, extra: Vector[(string, Json)]) 
 // - `overruns`: the longest `run_ms` of a `timeout` event since the last job that exited 0, by the
 //   keys of its chain but its kind's in its project (`overrunKeys`): work its deadline stopped takes
 //   at least that long, which its next deadline allows for (deadline.avin).
+// - `shares`: the share of its deadline (`deadline_ms`, where above 0) each job that taught a
+//   duration took, in thousandths (eta.avin's `deadlineShare`), oldest first, by its kind's key in
+//   its project (`kindProjectKey`): what an ETA guessed for a command with no runs of its own reads.
 data Recovered(
     nextId: long,
     open: Vector[Json],
@@ -59,7 +62,8 @@ data Recovered(
     peaks: Map[string, Vector[long]],
     cores: Map[string, Vector[long]] = Map(),
     durations: Map[string, Vector[long]] = Map(),
-    overruns: Map[string, long] = Map()
+    overruns: Map[string, long] = Map(),
+    shares: Map[string, Vector[long]] = Map()
 )
 
 recover(lines: Iterable[string], keep: int = 10, projectOf: (string) -> string = projectHere) -> Recovered
@@ -83,6 +87,7 @@ recover(lines: Iterable[string], keep: int = 10, projectOf: (string) -> string =
   val cores = MutableMap[string, Buffer[long]]()
   val durations = MutableMap[string, Buffer[long]]()
   val overruns = MutableMap[string, long]()
+  val shares = MutableMap[string, Buffer[long]]()
   for line in lines
     if line.trim.isEmpty then continue
     val ev = json.parse(line) match
@@ -146,6 +151,9 @@ recover(lines: Iterable[string], keep: int = 10, projectOf: (string) -> string =
           for k in chain
             appendTo(durations, k.key, ms)
             overruns.remove(k.key)
+          val share = deadlineShare(ms, ev.get("deadline_ms").flatMap(v -> v.asLong).getOrElse(0))
+          if share >= 0
+            for k in chain.filter(k -> k.from == FromKindProject) do appendTo(shares, k.key, share)
         None -> ()
   val open = last.filter(e -> !endings.contains(e.1.get("event").flatMap(v -> v.asString).getOrElse(""))).map(e -> e.1)
   val learned = histories.keys.map(k -> (k, histories(k).toVector)).toMap
@@ -164,7 +172,8 @@ recover(lines: Iterable[string], keep: int = 10, projectOf: (string) -> string =
     peaked,
     busy,
     took,
-    overruns.toMap
+    overruns.toMap,
+    shares.keys.map(k -> (k, shares(k).toVector)).toMap
   )
 
 private appendTo(m: MutableMap[string, Buffer[long]], key: string, value: long)

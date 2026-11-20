@@ -620,3 +620,31 @@ goldenPolite()
   assert(on.rowText(1).contains("3.25/9 of 12]"), on.rowText(1))
   assert(on.rowText(2).contains("12G/42G of 56G]"), on.rowText(2))
   assert(!drawn(viewing(politeDaemon(None)), 120, 12).rowText(0).contains("polite"))
+
+// Running jobs whose ETAs are on time, late, a guess and a late guess, one with none, and a queued
+// job's start.
+etaMarks() -> Overview
+  val running = [
+    gjob(60, expected = 10 * minuteMs, from = "cmd", elapsed = 4 * minuteMs),
+    gjob(61, expected = 10 * minuteMs, from = "cmd+dir", elapsed = 14 * minuteMs),
+    gjob(62, expected = 10 * minuteMs, from = "kind+project", elapsed = 4 * minuteMs),
+    gjob(63, expected = 10 * minuteMs, from = "kind+project", elapsed = 26 * minuteMs),
+    gjob(64, expected = 10 * minuteMs, from = "kind", elapsed = 4 * minuteMs)
+  ]
+  val queued = [QueuedJob(gjob(65, state = "queued", expected = 3 * minuteMs, from = "cmd", startsIn = 4 * minuteMs), 1, Why.NoUnits)]
+  Overview(Usage(5, 48, 0, 16 * G, 5, 1, None, None), 60000, running, queued, [])
+
+@test("golden: a late ETA is marked +, a guessed one ?, a late guess both, and the deadline holds a late one")
+goldenEtaMarks()
+  golden("eta-marks", drawn(viewing(etaMarks()), 120, 12))
+  val g = drawn(viewing(etaMarks()), 120, 12)
+  val rows = (0 ..< g.height).map(y -> g.rowText(y)).toVector
+  val row = (id: string) -> rows.find(r -> r.trim.startsWith(id + " ")).getOrElse("")
+  assert(row("60").contains(" ~6m "), row("60"))
+  // 14 minutes in: late, 7 more
+  assert(row("61").contains(" +~7m "), row("61"))
+  assert(row("62").contains(" ~6m? "), row("62"))
+  // 26 minutes in of a 30-minute deadline: 13 more would pass it, which leaves 4
+  assert(row("63").contains(" +~4m? "), row("63"))
+  assert(!row("64").contains("~"), row("64"))
+  assert(row("65").contains(" in ~4m "), row("65"))

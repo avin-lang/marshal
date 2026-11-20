@@ -237,8 +237,10 @@ A queued job's STATE says why it waits, as `queued (<reason>)`, in full: a job s
 memory says what it needs, what is free, and the running job whose end is expected to let it start,
 with when on the local clock — `queued (needs 3 units, 1 free; waits for 7263, ~16:30)`,
 `queued (draining: needs 30G, 24G free; waits for 7263, ~16:30)` (`~now` for a job already past its
-estimate). `status <id>` says the same, and `status --json` gives it as `wait_text`. `ls --compact`
-and `top`'s table keep the short words (`no units`, `draining`) so a line fits; `top`'s log pane
+estimate). A draining job, landing ones included, always says what it waits for: the running job,
+else `waits for take-slot`, else that no running job's end frees enough. `status <id>` says the
+same, and `status --json` gives it as `wait_text`, with the running job as `waits_on`. `ls --compact`
+and `top`'s table keep the short words (`no units`, `draining on 7263`) so a line fits; `top`'s log pane
 header (Enter) says the whole state, live, with the job's band and lane (`queued (behind 7278);
 urgent`).
 
@@ -255,7 +257,7 @@ scripts.
 | `queued (needs 3 units, 1 free; …)` / `queued (needs 30G, 24G free; …)` (`ls -c`, `top`: `no units` / `no memory`) | the budget is full | wait; ask for fewer `--units` or a smaller `--mem` only if the job truly needs less |
 | `queued (low: no spare room)` (`top`: `low`) | a `--low` job: it does not fit, or would not end before a waiting job could start | wait; it holds nothing back |
 | `queued (behind N)` | it would fit, but would delay job N at the head of the queue | wait |
-| `queued (draining: needs …)` (a landing job: `queued (draining)`) | it has waited past `drain_after`, or is the urgent job that took a drain over, or is a landing job whose memory does not fit: nothing else starts until it has | wait |
+| `queued (draining: needs …; waits for <id>)` | it has waited past `drain_after`, or is the urgent job that took a drain over, or is a landing job whose memory does not fit: nothing else starts until it has | wait |
 | `queued (draining for N)` | the machine is emptying so job N can start | wait; it is bounded by `drain_after` |
 | `queued (lane busy)` | another landing job holds the landing lane | wait |
 | `queued (take-slot)` | take-slot.zsh holds the units, or a take-slot run waits ahead of it | wait |
@@ -288,8 +290,9 @@ has waited, marked `w` so it is never read as run time (`w12m03s`; a retry count
 `queued_ms` in `--json`, and `status <id>` adds `, waited 12m03s`), and for a settling job its wait
 for the load. Time held is not waiting: a job held now shows how long it has been held, marked `h`
 (`h5m00s`), and once released `w` again with its wait leaving the hold out (`held_ms` in `--json`,
-and `status <id>` adds `, held 5m00s`); ETA a running job's expected time left (`~6m`, `<1m`
-once past it) or a queued job's expected start (`in ~3m`), `-` where not known; OWNER who the job is
+and `status <id>` adds `, held 5m00s`); ETA a running job's expected time left (`~6m`; `+~4m` once
+past its expected duration; `~6m?` where that is a guess) or a queued job's expected start
+(`in ~3m`), `-` where not known (Durations and ETAs); OWNER who the job is
 for; FROM where its units, memory and deadline came from, as `units/memory/deadline` (see
 [How marshal learns](#how-marshal-learns)): `dir` (its command in its directory), `cmd`, `norm`
 (its command made alike, in its project), `proj` (its kind in its project), `given`, `def` (a
@@ -967,10 +970,17 @@ there; before any, of its command made alike in its project, or its kind in its 
 those has 3 runs alike enough to trust; before that, its kind's (the median of the kind's last runs
 once it has 3, half its default deadline until then); never more than its deadline. The scheduler's backfill and drains read it, whichever it
 is, and a command's own runs make them sharper. A queued job estimates again when a run of its
-command ends. Only a duration learned from the command's own runs gives an ETA, since a kind's runs
-(every test of every project) say little of when one of them ends: a running job's ETA is its
-expected duration less the time it has run (`~6m`, `~1h05`, and `<1m` once it is past it). A queued
-job's expected start is reckoned from the running jobs' expected ends: the jobs of each lane, in
+command ends. A running job's ETA is its expected duration less the time it has run (`~6m`,
+`~1h05`, `<1m`), where that duration is learned from its command's own runs (`cmd+dir`, `cmd`,
+`norm+project`). A command with no runs of its own whose duration comes from its kind in its
+project gets a guess, marked `?` (`~6m?`): the larger of that and its deadline times the median
+share of their deadlines the last 20 runs of that kind in that project took, once there are 3; a
+kind alone, or nothing, gives none, since a kind's runs (every test of every project) say little of
+when one of them ends. A job past its expected duration is late, marked `+` (`+~4m`): its time left
+is then the median of its command's runs that went on longer than it has run, less what it has run,
+or, where none did, half what it has run; never more than its deadline leaves, since the deadline
+stops it. A queued job's expected start is reckoned from the running jobs' expected ends, late ones
+included: the jobs of each lane, in
 queue order, each start at the earliest end after which its units and memory fit beside what runs
 and what is reckoned to start before it (`in ~3m`, and to the hour from an hour on, `in ~2h`). Where
 a start waits on an end that is not known (a running job whose command has no learned duration), or
@@ -978,8 +988,8 @@ on what no duration measures (take-slot, the load, an exclusive job, a held queu
 job and every one behind it in its lane have none (`-`); a held job is passed over. `ls` and `top`
 show both in ETA; `status --json` gives `duration_from` (`cmd+dir`, `cmd`, `norm+project`,
 `kind+project`, `kind` or `none`), a
-running job's `eta_ms` and a queued job's `starts_in_ms` (from when the daemon answered), each where
-it is known.
+running job's `eta_ms` (with `eta_late` and `eta_guess` where true) and a queued job's
+`starts_in_ms` (from when the daemon answered), each where it is known.
 
 ### Deadlines
 
@@ -1258,7 +1268,8 @@ against its own budget. `marshal status` shows what take-slot holds.
   header says `polite ¾` (with `until 16:05` while the schedule sets it) and the units and memory
   meters are drawn against the polite budget, of the full one: `3.25/9 of 12`, `12G/42G of 56G`.
 - **Cores, ETA and owner**: CORES is the cores a running job keeps busy now, as `ls`'s USED has it
-  (`-` for any other). ETA is a running job's expected time left (`~6m`) or a queued job's expected
+  (`-` for any other). ETA is a running job's expected time left (`~6m`, `+~4m` late, `~6m?` a
+  guess) or a queued job's expected
   start (`in ~3m`, dim), counting on between snapshots, `-` where it is not known (see Durations
   and ETAs). OWNER is who the job is for (`--owner`, its project, or its label; `-` for
   none), up to 10 cells, cut with `…`; it stands before LABEL, and LABEL gives way first on a

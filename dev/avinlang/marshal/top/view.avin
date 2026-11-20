@@ -129,7 +129,7 @@ stateOf(l: Line) -> (string, Style)
   val j = l.job
   l.queued match
     Some(_) if marshal.settling(j) -> ("settling", Style.fg(Yellow).with(Bold))
-    Some((position, why)) -> (s"#$position ${whyText(why)}", Style.fg(Yellow))
+    Some((position, why)) -> (s"#$position ${if why == Draining then marshal.briefWhy(why, j) else whyText(why)}", Style.fg(Yellow))
     None -> j.outcome match
       None if waiting(l) -> (marshal.stateColumn(j), Style.fg(Yellow))
       None ->
@@ -312,9 +312,9 @@ allCells(l: Line, since: long, zone: time.Zone, today: string, width: int) -> Ve
     Span(j.cmd.mkString(" "))
   ]
 
-// A line's ETA cell and its style: a running job's expected time left (`~6m`, `<1m` once it is past
-// its expected duration), plain; a queued job's expected start (`in ~3m`), dim; `-` where neither
-// is known.
+// A line's ETA cell and its style: a running job's expected time left (`~6m`; `+~4m` once it is past
+// its expected duration, `~6m?` where that is a guess), plain; a queued job's expected start
+// (`in ~3m`), dim; `-` where neither is known.
 etaOf(l: Line, since: long) -> (string, Style)
   val text = marshal.etaColumn(l.job, if l.job.outcome.isDefined then 0 else since)
   if text == "-" || l.job.state != "running" then (text, Muted) else (text, Style.plain())
@@ -890,7 +890,8 @@ val helpLines: Vector[string] = [
   "after 3,4 waits for jobs 3 and 4",
   "to end; retry 2 waits to make its second attempt.",
   "DEADLINE is the time left; yellow, then red, as it nears. ETA is",
-  "the expected time left (~6m) or start (in ~3m); CORES those in use;",
+  "the expected time left (~6m; +~4m past its expected end; ~6m? a",
+  "guess) or start (in ~3m); CORES those in use;",
   "OWNER who it is for; disk low: under disk_min, nothing starts."
 ]
 

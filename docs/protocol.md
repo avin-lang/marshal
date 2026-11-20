@@ -92,7 +92,11 @@ kind's default deadline while too few are known; never more than its deadline. `
 says whether it is learned (true for either median), and `duration_from` where it came from:
 `cmd+dir`, `cmd`, `kind` or `none`. A drain counts a job by `expected_ms` when it is learned and by
 `deadline_ms` otherwise. `eta_ms` is present on a running job whose duration is its command's
-(`cmd+dir` or `cmd`): its expected time left, 0 once it is past it. `starts_in_ms` is present on a
+(`cmd+dir`, `cmd` or `norm+project`) or its kind's in its project (`kind+project`): its expected
+time left, never past its deadline; `eta_late` (true, absent for false) says it is past its expected
+duration, its time left then reckoned from its command's longer runs, and `eta_guess` (true, absent
+for false) that its duration was its kind's in its project, raised by its deadline share, not its
+command's own. `starts_in_ms` is present on a
 queued job whose start can be reckoned from the running jobs' expected ends: how long after the
 reply it is expected to start. `expected_start_at` is present only on the queued job the machine
 drains for (`waits` `draining`): when it is expected to start, in milliseconds since 1970, absent
@@ -135,7 +139,8 @@ older daemon's replies and events have none). A derived label is never in the `s
 absent for false) says the job is in the low band now. `wait_text` (absent but on a queued job) is
 why it waits, in full, as `ls` and `status <id>` say it: what it needs and what is free, and the
 running job whose end is expected to let it start, with when on the local clock
-(`needs 3 units, 1 free; waits for 7263, ~16:30`). `held_group` (absent but on a held job a
+(`needs 3 units, 1 free; waits for 7263, ~16:30`); a draining job always names what it waits for.
+`waits_on` (absent for none) is that running job's id. `held_group` (absent but on a held job a
 `hold_many` put in a group) is that group's name, and `held_ms` (absent for 0) how long a job not
 started has been held since it last began to wait, its current hold included: time `queued_ms`
 leaves out. Every event of a job carries it, the

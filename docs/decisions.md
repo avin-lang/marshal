@@ -2828,3 +2828,102 @@ returns to its queue position; the time held is not counted as waiting. Sub-choi
   is not subtracted from a wait that only began at `arrived`.
 - **A retry starts the held clock again**, as it starts the wait again.
 - **A hold saved by an older daemon** (no `held_at`) counts as held from the restart.
+
+## 0.4.2: ETAs that say when they are late or guessed (branch `eta-accuracy`)
+
+2026-11-20. The user asked whether ETA accuracy could be improved. Three faults: a job past its
+expected duration showed `<1m` for ever (a sysl gate expected at 52 minutes, at 56 showing `<1m`), and
+every queued start behind it `in <1m`; a brand-new command took its kind's median in its project as
+its own and showed a confident ETA (a 30-run loop of kill tests: 41s expected, about 40 minutes
+real); and the deadline every job carries was never read as a signal. **Settled on the user's
+delegation 2026-11-20**, by the numbers below.
+
+### The study
+
+Every job in the machine's event log (`~/.marshal/events.jsonl`, jobs 1 to 8070) was replayed in
+order, each estimated from the runs before it alone, by the chain of keys and rules marshal uses
+(the command signature approximated: settings and wrappers skipped, the program and two named
+words, a script by its path). 7,776 jobs ran to an end (finished, timed out, quiet; killed and
+amended ones left out); 6,061 had a learned duration; 1,775 ran 5 minutes or more, where an ETA
+matters, 893 of those past their expectation. Errors are |reckoned - real| / real run time.
+
+At submission, the ETA shown today (own keys and `kind+project`): median 0.36, p90 8.33, 15% of jobs
+taking more than twice it, 48% over it (n=6,061); 5 minutes or more: 0.29 / 0.93 / 25% / 70%.
+
+**Time left once past the expectation** (5 minutes or more; median and p90 of the error, then in
+minutes):
+
+| rule | error | minutes |
+|---|---|---|
+| today: count down to `<1m` and stay | 0.20 / 0.67 | 2 / 10 |
+| **median of the key's runs longer than elapsed, else elapsed × 1.5; deadline cap** | **0.16 / 0.50** | **1 / 8** |
+| the same, its factor learned (came to 1.54) | 0.15 / 0.54 | 1 / 8 |
+| elapsed × 1.5, deadline cap | 0.33 / 0.50 | 3 / 10 |
+| elapsed × 1.25, deadline cap | 0.17 / 0.58 | 2 / 8 |
+| to the deadline | 3.56 / 8.41 | 37 / 108 |
+| halfway to the deadline | 1.64 / 4.10 | 17 / 53 |
+
+Across the whole run (sampled at 0, 25, 50, 75 and 90% of it; 5 minutes or more): today 0.20 / 0.75,
+chosen 0.17 / 0.66. Over every job, short ones included, the chosen rule's p90 is worse (0.25 / 1.09
+against 0.17 / 0.64 past the expectation) but the error in minutes is the same (0 / 4): a job of
+seconds shows `<1m` either way.
+
+**Queued starts** (780 jobs that waited a minute or more and started within 5 s of one job's end,
+taken as their blocker; their start reckoned as its end, at submission and halfway through the wait,
+1,182 samples): today 0.61 / 1.18, chosen 0.39 / 1.62.
+
+**A command with no runs of its own** (its duration from its kind in its project, or none; with a
+deadline; n=2,556, 700 of 5 minutes or more). Shown is the share given an ETA:
+
+| rule | shown | error | > 2× | over | 5 min+: error, > 2× |
+|---|---|---|---|---|---|
+| today: the kind's median in the project | 33% | 0.83 | 27% | 46% | 0.51, 46% |
+| **larger of that and deadline × the kind's median deadline share in the project** | 33% | 0.84 | **16%** | **34%** | **0.37, 33%** |
+| the same with the project's share, or the owner's | 33% | 0.81, 0.87 | 16%, 15% | 33% | 0.37, 0.47 |
+| geometric mean of the kind's median and deadline × share | 33% | 0.77 | 24% | 44% | 0.42, 43% |
+| deadline × project share alone | 86% | 0.74 | 24% | 46% | 0.49, 45% |
+| max(kind's median, deadline / 4) | 33% | 6.00 | 3% | 9% | 0.61, 9% |
+| no ETA | 0% | | | | |
+
+### What was chosen (eta.avin)
+
+- **A job past its expected duration is late** (`timeLeft`): its time left is the median of its
+  key's runs that went on longer than it has run, less what it has run; where none did, half what
+  it has run (× 1.5 in all; the learned factor came to 1.54 and added nothing, so it is fixed). Never
+  more than its deadline leaves, which stops it. Shown `+~4m`. Running jobs' ends feed queued starts
+  as before, so a queue behind a late job is no longer `in <1m`.
+- **A command with no runs of its own is a guess** (`etaBasis`): from `kind+project`, the larger of
+  that median and its deadline times the median of the last 20 deadline shares (thousandths of its
+  deadline a run that exited 0 took) of its kind in its project, once there are `learn_min_runs`;
+  never past its deadline. Shown with `?` (`~6m?`, `+~4m?` late). It cuts the long jobs taking more
+  than twice their ETA from 46% to 33%, still a third, so it stays marked. From a kind alone or nothing,
+  no ETA, as before. Shares are learned live and recovered from the event log at start, as overruns
+  are; `memory.json` is unchanged.
+- **The scheduler is untouched**: `expected_ms`, backfill and drains read what they read before. A
+  queued job's own run in the start reckoning is its ETA basis (so a `kind+project` job counts by its
+  guess), capped by its deadline.
+- **The daemon reckons the time left** and sends it (`eta_ms`, `eta_late`, `eta_guess`), since the
+  key's runs live in the daemon; `ls` and `top` show it. A reply without it (an older daemon) is
+  reckoned from `expected_ms` and `duration_from` alone.
+
+Alternatives: elapsed × a factor alone (simpler, no runs needed; worse median past the expectation,
+0.33 or 0.17 against 0.16, and worse starts); the deadline as the end (honest as a bound, but 37
+minutes out at the median); no ETA for a new command (honest, but loses a third of the ETAs shown,
+and the guess, marked, is closer). Not done: marking a queued start `?` when an end it waits on is
+a guess, and giving a start behind a running job with no ETA its deadline as a bound.
+
+**Review with the user:** the display: `+~4m` for late (the time left, `+` marking it is past its
+expected end) and `?` for a guess; alternatives were `late`, `+4m?`, or colour alone in `top`.
+
+### A draining job always says what it waits for
+
+Asked by the director 2026-11-20: a queued job showed bare `draining` while the job it waited on was
+past its expected end. A landing job draining the machine was given no need, so its reason was the
+bare word, and `top`'s and `ls --compact`'s short words never named a job. Now a draining landing
+job's need is reckoned as a development drain's is (memory, and units only when polite, against the
+running jobs' drain ends; a late job is expected now, `~now`); a draining job's reason in full always
+ends with what it waits for (`waits for 7263, ~now`, `waits for take-slot`, or `no running job's end
+frees enough`), even when it is short of nothing now; and the daemon sends the job it waits on
+(`waits_on`), which the short words show as `draining on 7263`. Alternative: carrying the id in the
+`Draining` reason itself (a wire change to `why` every client reads). **Review with the user:** the
+short words `draining on <id>`.

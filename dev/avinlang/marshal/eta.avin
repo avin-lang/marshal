@@ -10,12 +10,19 @@ module dev.avinlang.marshal
 // made alike in its project, or of its kind in its project (learning.avin), once one of those has
 // enough runs alike enough to trust; before that, the median of its kind's runs (deadline.avin),
 // which is guessed rather than learned until the kind has enough. The scheduler's backfill and
-// drains read the expected duration whichever it is; an ETA is shown only for one learned from the
-// same work's runs, since a kind's runs (every test of every project) say little of when one of
-// them ends.
+// drains read the expected duration whichever it is.
 //
-// A running job's ETA is its expected duration less the time it has run, nothing once it is past
-// it. A queued job's expected start is reckoned from the running jobs' expected ends: the jobs of
+// An ETA counts down from the job's ETA basis (`etaBasis`): its expected duration where that is
+// learned from its own command (`cmd+dir`, `cmd`, `norm+project`); for a command with no runs of
+// its own whose duration comes from its kind in its project, the larger of that and its deadline
+// times the share of their deadlines that kind's runs in that project took (`deadlineShares`), a
+// guess the ETA marks with `?`; none from its kind alone or from nothing, since a kind's runs
+// (every test of every project) say little of when one of them ends. A job past its basis is late:
+// its time left is then the median of its key's runs that went on longer than it has run, less
+// what it has run, or, where none did, half what it has run; never past its deadline, which stops
+// it (`timeLeft`). A late ETA is marked `+`.
+//
+// A queued job's expected start is reckoned from the running jobs' expected ends: the jobs of
 // each lane, in their queue's order, each start at the earliest end after which its units and
 // memory fit beside what runs and what is reckoned to have started before it. Only where every end
 // that start waits for is known: a job waiting for something no duration measures (take-slot, the
@@ -70,17 +77,67 @@ expectationFor(
   val held = if ms < deadline then ms else deadline
   Expectation(if held < 1 then 1 else held, learned, from)
 
-// Whether a duration from `from` is learned from the same work (a key of learning.avin's chain),
-// which an ETA may be given from, rather than from its kind's runs or guessed.
-commandLearned(from: string) -> bool =
-  from == FromCmd || from == FromDir || from == FromNorm || from == FromKindProject
+// Whether a duration from `from` is learned from the job's own command (made alike or not), which
+// an ETA is given from as it is.
+ownDuration(from: string) -> bool = from == FromCmd || from == FromDir || from == FromNorm
 
-// A running job's expected time left, in milliseconds: none past its expected duration, and -1 for
-// a job that is not running or whose duration is not its command's own.
-etaLeft(j: JobInfo) -> long
-  if j.state != "running" || !commandLearned(j.durationFrom) || j.expectedMs <= 0 then return -1
-  val left = j.expectedMs - j.elapsedMs
-  if left < 0 then 0 else left
+// How many of a kind's latest deadline shares in a project (`deadlineShares`) a guess reads.
+val ShareWindow: int = 20
+
+// What an ETA counts down from: `ms`, and whether that is a guess rather than learned from the
+// job's own command.
+data EtaBasis(ms: long, guess: bool)
+
+// The ETA basis of a job expected to run `expectedMs` (learned from `from`) under `deadlineMs`
+// (0 for none), given its kind's deadline shares in its project (`shares`, oldest first, in
+// thousandths of a deadline): its expectation where its own command's runs teach it; for one from
+// its kind in its project, a guess of the larger of that and its deadline times the median of the
+// latest `ShareWindow` shares, once there are `minRuns` of them, never past its deadline; None from
+// anything else.
+etaBasis(expectedMs: long, from: string, deadlineMs: long, shares: Vector[long] = [], minRuns: int = 3) -> Option[EtaBasis]
+  if expectedMs <= 0 then return None
+  if ownDuration(from) then return Some(EtaBasis(expectedMs, false))
+  if from != FromKindProject then return None
+  val counted = shares.filter(s -> s > 0).takeRight(ShareWindow)
+  var ms = expectedMs
+  if deadlineMs > 0 && counted.length >= minRuns && counted.nonEmpty
+    val byDeadline = deadlineMs / 1000 * median(counted) + deadlineMs % 1000 * median(counted) / 1000
+    if byDeadline > ms then ms = byDeadline
+  if deadlineMs > 0 && ms > deadlineMs then ms = deadlineMs
+  Some(EtaBasis(ms, true))
+
+// The share of its deadline a run took, in thousandths (`deadlineShares`); -1 without a deadline.
+deadlineShare(ranMs: long, deadlineMs: long) -> long =
+  if deadlineMs <= 0 || ranMs < 0 then -1 else ranMs / deadlineMs * 1000 + ranMs % deadlineMs * 1000 / deadlineMs
+
+// A running job's expected time left (`ms`, -1 where there is none), whether it is past its basis
+// (`late`), and whether its basis is a guess.
+data EtaLeft(ms: long, late: bool = false, guess: bool = false)
+
+val NoEta: EtaLeft = EtaLeft(-1)
+
+// The time left of a job that has run `elapsedMs` of a `basis`, its key's runs `runs` (oldest
+// first) and its deadline `deadlineMs` (0 for none): its basis less what it has run; past it, late,
+// the median of the runs longer than it has run less what it has run, or half what it has run where
+// none was; never more than its deadline leaves.
+timeLeft(basis: EtaBasis, runs: Vector[long], elapsedMs: long, deadlineMs: long) -> EtaLeft
+  val late = elapsedMs >= basis.ms
+  val longer = runs.filter(r -> r > elapsedMs)
+  var left = if !late then basis.ms - elapsedMs elif longer.nonEmpty then median(longer) - elapsedMs else elapsedMs / 2
+  if deadlineMs > 0
+    val toDeadline = if deadlineMs > elapsedMs then deadlineMs - elapsedMs else long(0)
+    if left > toDeadline then left = toDeadline
+  EtaLeft(left, late, basis.guess)
+
+// A running job's expected time left as the daemon reckoned it (`JobInfo.etaMs`), or, from a daemon
+// that did not say, from its expectation alone (`etaBasis`, `timeLeft` without runs or shares);
+// `NoEta` for a job that is not running or has no basis.
+etaLeft(j: JobInfo) -> EtaLeft
+  if j.state != "running" then return NoEta
+  if j.etaMs >= 0 then return EtaLeft(j.etaMs, j.etaLate, j.etaGuess)
+  etaBasis(j.expectedMs, j.durationFrom, j.deadlineMs) match
+    Some(b) -> timeLeft(b, [], j.elapsedMs, j.deadlineMs)
+    None -> NoEta
 
 // A time to come, roughly: `<1m`, `~6m` (minutes rounded up), `~1h05`.
 etaText(ms: long) -> string
@@ -96,13 +153,16 @@ startText(ms: long) -> string
   if ms < 3600000 then return "in " + etaText(ms)
   s"in ~${(ms + 1800000) / 3600000}h"
 
-// The ETA column of `ls` and `top`: a running job's time left, a queued job's expected start, `-`
-// otherwise. `since` is how long after the listing was made it is shown (a paused job stands still).
+// The ETA column of `ls` and `top`: a running job's time left (`~6m`), marked `+` once it is past
+// its basis (`+~4m`) and `?` where its basis is a guess (`~6m?`); a queued job's expected start;
+// `-` otherwise. `since` is how long after the listing was made it is shown (a paused job stands
+// still).
 etaColumn(j: JobInfo, since: long = 0) -> string
   val left = etaLeft(j)
-  if left >= 0
+  if left.ms >= 0
     val passed = if j.paused then 0 else since
-    return etaText(if left > passed then left - passed else 0)
+    val text = etaText(if left.ms > passed then left.ms - passed else 0)
+    return (if left.late then "+" else "") + text + (if left.guess then "?" else "")
   if j.state == "queued" && j.startsInMs >= 0
     return startText(if j.startsInMs > since then j.startsInMs - since else 0)
   "-"
