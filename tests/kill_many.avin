@@ -89,6 +89,23 @@ killNamesStates()
   assert(!killsNames(own, "queued"))
   assert(!killsNames(own, "running", o = "avin"))
 
+@test("a running job already being stopped is never named again, by any selector or lane; one not yet stopped is")
+killNamesBeingStopped()
+  val selectors = [
+    KillSelector(all = true),
+    KillSelector(all = true, running = true),
+    KillSelector(all = true, queued = true, running = true),
+    KillSelector(all = true, includeLanding = true),
+    KillSelector(owner = Some("sysl")),
+    KillSelector(label = Some("train"))
+  ]
+  for s in selectors
+    assert(!marshal.killNames(s, "running", "sysl", "train 12", true), s.toString())
+    assert(marshal.killNames(s, "running", "sysl", "train 12", false), s.toString())
+  // the flag only ever narrows: an ended job stays unnamed
+  assert(!marshal.killNames(KillSelector(all = true), "done", "sysl", "train 12", true))
+  assert(!marshal.killNames(KillSelector(all = true), "done", "sysl", "train 12", false))
+
 @test("a landing job is stopped only when the selector includes landing jobs")
 killLandingRule()
   assert(marshal.killsLanding(KillSelector(all = true), false))
