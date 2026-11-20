@@ -23,7 +23,7 @@ jobJson(home: string, id: long) -> Json
   val s = json.parse(r.out.trim).ok.get
   (s("running").asVector.get ++ s("queued").asVector.get).find(j -> j("id").asLong == Some(id)).get
 
-@test("a queued, a held and an --after job show their wait, marked w, in ELAPSED, and a job that waited counts its run from its start")
+@test("a queued and an --after job show their wait, marked w, in ELAPSED, a held job its time held, marked h, and a job that waited counts its run from its start")
 elapsedFromStart()
   val home = newHome("{\"units\": 1}")
   val blocker = submitted(home, "--", "sleep", "30")
@@ -33,9 +33,12 @@ elapsedFromStart()
   assertEq(m(home, "hold", held.toString()).code, 0)
   threads.sleep(millis(1500))
   // each shows its wait, marked w so it is not read as run time: 1.5 seconds or more
-  for id in [queued, held, after]
+  for id in [queued, after]
     val cell = elapsedCell(home, id)
     assert(cell.startsWith("w") && !cell.startsWith("w0.") && !cell.endsWith("ms"), cell)
+  // the held job's wait stops while it is held: it shows how long it has been held, marked h
+  val heldCell = elapsedCell(home, held)
+  assert(heldCell.startsWith("h") && !heldCell.startsWith("h0.") && !heldCell.endsWith("ms"), heldCell)
   // the wait is in queued_ms, and elapsed_ms is 0
   assertEq(jobJson(home, queued)("elapsed_ms").asLong, Some(long(0)))
   assert(jobJson(home, queued)("queued_ms").asLong.get >= 1400, jobJson(home, queued).render)
