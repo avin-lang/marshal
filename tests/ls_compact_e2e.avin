@@ -7,7 +7,9 @@ import dev.avinlang.tui.textWidth
 @test("ls --compact cuts the command to $COLUMNS, and -c is the same")
 compactToColumns()
   val home = newHome()
-  val id = submitted(home, "--", "sleep", "30", "--padding-argument-one", "--padding-argument-two", "--padding-argument-three")
+  // `sleep` refuses options it does not know and ends at once, which changed the row between the two
+  // listings compared below; a shell's script ignores its arguments and keeps running
+  val id = submitted(home, "--", "sh", "-c", "sleep 30", "--padding-argument-one", "--padding-argument-two", "--padding-argument-three")
   assert(within(2000, () -> started(home, id)))
   val narrow = mWith(home, [("COLUMNS", "60")], "ls", "--compact")
   assertEq(narrow.code, 0)
@@ -25,7 +27,7 @@ compactToColumns()
 @test("ls --compact without $COLUMNS is 80 wide, and plain ls is unchanged by the flag existing")
 compactDefaultWidth()
   val home = newHome()
-  val id = submitted(home, "--", "sleep", "30", "--padding-argument-one", "--padding-argument-two", "--padding-argument-three", "--padding-argument-four")
+  val id = submitted(home, "--", "sh", "-c", "sleep 30", "--padding-argument-one", "--padding-argument-two", "--padding-argument-three", "--padding-argument-four")
   assert(within(2000, () -> started(home, id)))
   val rows = mWith(home, [("COLUMNS", "")], "ls", "-c").out.lines.toVector
   assertEq(rows.length, 2)

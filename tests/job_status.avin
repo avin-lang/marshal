@@ -31,8 +31,8 @@ statusLines()
     marshal.statusLine(job("queued", None), Some(Why.DrainingFor(12))),
     "marshal: job 7 is queued (draining for 12), waited 12ms; log /h/jobs/7.log"
   )
-  assertEq(marshal.statusLine(job("queued", None), Some(Why.Draining)), "marshal: job 7 is queued (draining); log /h/jobs/7.log")
-  assertEq(marshal.statusLine(job("waiting", None), None), "marshal: job 7 is waiting; log /h/jobs/7.log")
+  assertEq(marshal.statusLine(job("queued", None), Some(Why.Draining)), "marshal: job 7 is queued (draining), waited 12ms; log /h/jobs/7.log")
+  assertEq(marshal.statusLine(job("waiting", None), None), "marshal: job 7 is waiting, waited 12ms; log /h/jobs/7.log")
   assert(marshal.statusLine(job("done", Some(Outcome.Cancelled)), None).contains("cancelled before it started"))
 
 @test("status <id> --json: the job, its exit status once ended (null before), and why it waits while queued")
