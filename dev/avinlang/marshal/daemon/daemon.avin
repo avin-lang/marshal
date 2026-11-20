@@ -1150,7 +1150,8 @@ class Daemon(
   // classified as it was when the request was read. The jobs that have not started go first, the
   // newest first, so a selected job that waits for another selected one is killed itself rather than
   // cancelled for the other's failure; each ends with the `killed` event a `kill` of it gives. A
-  // running job is stopped as `kill` stops it (a paused one is continued first). A landing job it
+  // running job is stopped as `kill` stops it (a paused one is continued first); one already being
+  // stopped (killed or past its deadline, its exit not yet seen) is not named again. A landing job it
   // names is left alone unless `sel` includes landing jobs, and counted. With `dryRun` nothing is
   // stopped: the reply lists what would be.
   killMany(sel: marshal.KillSelector) -> Reply
@@ -1158,7 +1159,8 @@ class Daemon(
     var skipped = 0
     val named = Buffer[Job]()
     for job in jobs.values.toVector.sortBy(j -> j.id)
-      if !marshal.killNames(sel, job.state, job.owner, job.spec.label) then continue
+      val beingStopped = job.state == "running" && (job.killed || job.timedOut)
+      if !marshal.killNames(sel, job.state, job.owner, job.spec.label, beingStopped) then continue
       if marshal.killsLanding(sel, job.spec.landing) then named += job else skipped += 1
     val runs = named.toVector.map(j -> (j.id, j.state == "running")).toMap
     if !sel.dryRun
