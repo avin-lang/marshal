@@ -537,8 +537,8 @@ logPane()
   val g = drawn(app, 80, 30)
   val title = rowOf(g, "job 1 log, following")
   assert(title > 4, "the pane is under the table")
-  // the box's header (kind, state, command, rule) takes four rows of the pane's inside
-  assertEq(app.logRows, 30 - 1 - title - 2 - 4)
+  // the box's header (kind and state, command, rule) takes three rows of the pane's inside
+  assertEq(app.logRows, 30 - 1 - title - 2 - 3)
   // the pane's last row holds the log's last line
   assert(g.rowText(27).contains("line 40"), g.rowText(27))
   assert(g.rowText(28).startsWith("╰"), g.rowText(28))
@@ -863,21 +863,20 @@ logHeader()
   val title = rowOf(g, "job 1 log, following")
   assert(g.rowText(title + 1).contains("kind"), g.rowText(title + 1))
   assert(g.rowText(title + 1).contains("build"), g.rowText(title + 1))
-  assert(g.rowText(title + 2).contains("state"), g.rowText(title + 2))
-  assert(g.rowText(title + 2).contains("running"), g.rowText(title + 2))
-  assert(g.rowText(title + 3).contains("command"), g.rowText(title + 3))
-  assert(g.rowText(title + 3).contains("sysl test compiler"), g.rowText(title + 3))
-  assert(g.rowText(title + 4).contains("──────"), g.rowText(title + 4))
-  assert(!g.rowText(title + 5).contains("command"))
-  assert(g.rowText(title + 5).contains("line "), g.rowText(title + 5))
+  assert(g.rowText(title + 1).contains("build   state  running   owner"), g.rowText(title + 1))
+  assert(g.rowText(title + 2).contains("command"), g.rowText(title + 2))
+  assert(g.rowText(title + 2).contains("sysl test compiler"), g.rowText(title + 2))
+  assert(g.rowText(title + 3).contains("──────"), g.rowText(title + 3))
+  assert(!g.rowText(title + 4).contains("command"))
+  assert(g.rowText(title + 4).contains("line "), g.rowText(title + 4))
   // the rule row holds nothing but the rule
-  assertEq(g.rowText(title + 4).replace("│", "").replace("─", "").trim, "")
+  assertEq(g.rowText(title + 3).replace("│", "").replace("─", "").trim, "")
   // scrolling the log leaves the header where it is
   app.handle(press(PageUp))
   app.logLines = (1 .. 80).map(i -> s"line $i").toVector
   val back = drawn(app, 80, 30)
-  assert(back.rowText(title + 3).contains("sysl test compiler"))
-  assert(back.rowText(title + 4).contains("──────"))
+  assert(back.rowText(title + 2).contains("sysl test compiler"))
+  assert(back.rowText(title + 3).contains("──────"))
 
 // The contrast ratio of two colours given as red, green and blue (WCAG 2): the lighter's relative
 // luminance plus 0.05 over the darker's.
@@ -940,21 +939,32 @@ logHeaderState()
   val o = full()
   val app = viewing(Overview(o.usage, 0, [], [QueuedJob(waiting, 1, Why.Draining)], []))
   app.handle(press(Enter))
-  val g = drawn(app, 120, 30)
+  val g = drawn(app, 140, 30)
   val title = rowOf(g, "job 4 log")
-  assert(g.rowText(title + 1).contains("test!"), g.rowText(title + 1))
-  val state = g.rowText(title + 2)
-  assert(state.contains("queued (draining: needs 30G, 24G free; waits for 7263, ~16:30), waited 12m00s; urgent"), state)
+  // the state stands on the kind's row, after the kind and before the owner
+  val state = g.rowText(title + 1)
+  assert(state.contains("test!   state  queued (draining: needs 30G, 24G free; waits for 7263, ~16:30), waited 12m00s; urgent   owner"), state)
+  assert(g.rowText(title + 2).contains("command"), g.rowText(title + 2))
   // its ELAPSED counts its wait on between snapshots, marked w
   assert(rowOf(drawn(app, 120, 30, 5000), "w12:05") >= 0)
   // the next snapshot moves the header with the job: it runs now
   val running = JobInfo(4, "test", 4, 0, false, "/tmp", ["sysl", "test", "compiler"], "running", None, false, 0, 1000, 60000, "/tmp/4.log", None, urgent = true)
   app.update(Overview(o.usage, 0, [running], [], []))
   val later = drawn(app, 120, 30)
-  assert(later.rowText(title + 2).contains("running; urgent"), later.rowText(title + 2))
-  // a narrow pane ends the state in an ellipsis rather than wrapping it
-  val narrow = drawn(app, 30, 30)
-  assert(rowOf(narrow, "state") > 0)
+  assert(later.rowText(title + 1).contains("state  running; urgent   owner"), later.rowText(title + 1))
+  // a pane too narrow for the whole state ends it in an ellipsis and keeps the owner whole
+  val narrow = drawn(app, 60, 30)
+  val nt = rowOf(narrow, "job 4 log")
+  assert(narrow.rowText(nt + 1).contains("state  running; urgent"), narrow.rowText(nt + 1))
+  val queuedApp = viewing(Overview(o.usage, 0, [], [QueuedJob(waiting, 1, Why.Draining)], []))
+  queuedApp.handle(press(Enter))
+  val q = drawn(queuedApp, 60, 30)
+  val qRow = q.rowText(rowOf(q, "job 4 log") + 1)
+  assert(qRow.contains("…   owner  -"), qRow)
+  assert(!qRow.contains("12m00s"), qRow)
+  // every narrow width still draws
+  for w in [12, 20, 30]
+    drawn(queuedApp, w, 30)
 
 @test("a long command wraps inside the pane, whole, and the log keeps at least a row")
 logHeaderWraps()
@@ -968,7 +978,7 @@ logHeaderWraps()
   val title = rowOf(g, "job 1 log")
   // the wrapped lines under `command` have no label and carry the rest of the text
   var joined = ""
-  var y = title + 3
+  var y = title + 2
   while !g.rowText(y).contains("──────")
     joined = joined + g.rowText(y).drop(1 + 8).dropRight(1).trim
     y = y + 1

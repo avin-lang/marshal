@@ -706,7 +706,7 @@ class App(val sock: string)
     logView.draw(g, inside, logLines)
     if logLines.isEmpty then g.text(inside.x, inside.y, "(nothing in the log yet)", Muted, inside)
 
-  // The fixed header of the log pane: the job's kind with its marks, then its owner and its label if it has one beside it, its whole state on a row of its own (`fullState`), and its whole command line, wrapped to the
+  // The fixed header of the log pane: the job's kind with its marks, then its whole state (`fullState`) and its owner beside it, its label if it has one (beside them when it fits, else on rows of its own), and its whole command line, wrapped to the
   // pane, labels in bold and values dim, then a rule; the log scrolls below it, so none of this
   // can be taken for a line the job printed. At least one row is left for the log, so a command
   // too long for a short pane ends in an ellipsis. Returns the rows used (none if the pane is too
@@ -717,38 +717,45 @@ class App(val sock: string)
     val lines = wrapChars(j.cmd.mkString(" "), width)
     // the kind carries its marks (`test!`, `probe~`), as the KIND column does
     val kind = marshal.laneKind(j)
-    // the label stands on the kind's line, after the kind, and wraps onto the rows below under
-    // where it began, whole while there is room: the state row, one command row, the rule and one
-    // log row stay; the owner stands between the kind and the label, whole, since the job list's
-    // OWNER column cuts it
+    // the kind's line carries, after the kind, the job's whole state and its owner: the state is
+    // never cut by a column (the reason a queued job waits in full and the job's band and lane,
+    // `fullState`, as the snapshot last said, so it follows the job live), but it gives way to the
+    // owner, whole since the job list's OWNER column cuts it, and ends in an ellipsis
     val owner = marshal.ownerText(j)
-    val ownerX = box.x + LogLabel.charCount + kind.charCount + LabelGap
-    val ownerEnd = ownerX + OwnerWord.charCount + textWidth(owner)
-    val labelX = ownerEnd + LabelGap + LabelWord.charCount
-    val labelLines = if j.label.isEmpty then [] else wrapChars(j.label, maxInt(box.x + box.w - labelX, 1))
+    val ownerPart = OwnerWord.charCount + textWidth(owner)
+    val stateX = box.x + LogLabel.charCount + kind.charCount + LabelGap
+    val stateWordEnd = stateX + StateWord.charCount
+    val state = marshal.fullState(j)
+    val stateShown = fitted(state, maxInt(box.x + box.w - stateWordEnd - LabelGap - ownerPart, 1))
+    val ownerX = stateWordEnd + textWidth(stateShown) + LabelGap
+    val ownerEnd = ownerX + ownerPart
+    // the label stands after the owner when it fits there whole; otherwise it has rows of its own
+    // under the kind's, wrapped to the pane, whole while there is room: one command row, the rule
+    // and one log row stay, and a label cut short ends in an ellipsis
+    val inlineX = ownerEnd + LabelGap + LabelWord.charCount
+    val inline = j.label.nonEmpty && inlineX + textWidth(j.label) <= box.x + box.w
+    val labelLines = if j.label.isEmpty || inline then [] else wrapChars(j.label, width)
     val labelShown = labelLines.take(maxInt(box.h - 4, 1))
-    val extra = maxInt(labelShown.length - 1, 0)
-    // kind, the label's further rows, the state, the rule and at least one log row leave this many
-    // for the command
-    val room = maxInt(box.h - 4 - extra, 0)
+    val labelClipped = labelLines.length > labelShown.length
+    // kind, the label's rows, the rule and at least one log row leave this many for the command
+    val room = maxInt(box.h - 3 - labelShown.length, 0)
     val shownLines = if lines.length <= room then lines else lines.take(room)
     val clipped = lines.length > shownLines.length
     g.text(box.x, box.y, "kind", Style.plain().with(Bold), box)
     g.text(box.x + LogLabel.charCount, box.y, kind, Muted, box)
+    g.text(stateX, box.y, StateWord.trim, Style.plain().with(Bold), box)
+    g.text(stateWordEnd, box.y, stateShown, Muted, box)
     g.text(ownerX, box.y, OwnerWord.trim, Style.plain().with(Bold), box)
     g.text(ownerX + OwnerWord.charCount, box.y, owner, Muted, box)
-    if labelShown.nonEmpty
+    if inline
       g.text(ownerEnd + LabelGap, box.y, LabelWord.trim, Style.plain().with(Bold), box)
+      g.text(inlineX, box.y, j.label, Muted, box)
     for (text, k) in labelShown.zipWithIndex
-      g.text(labelX, box.y + k, text, Muted, box)
-    // the whole state, never cut by a column: the reason a queued job waits in full and the job's
-    // band and lane (`fullState`), as the snapshot last said, so it follows the job live; a state
-    // wider than the pane ends in an ellipsis
-    val stateY = box.y + 1 + extra
-    val state = marshal.fullState(j)
-    g.text(box.x, stateY, "state", Style.plain().with(Bold), box)
-    g.text(box.x + LogLabel.charCount, stateY, fitted(state, width), Muted, box)
-    val top = stateY + 1
+      val last = labelClipped && k == labelShown.length - 1
+      val t = if last && text.charCount > 1 then text.take(text.charCount - 1) + "…" elif last then "…" else text
+      if k == 0 then g.text(box.x, box.y + 1, LabelWord.trim, Style.plain().with(Bold), box)
+      g.text(box.x + LogLabel.charCount, box.y + 1 + k, t, Muted, box)
+    val top = box.y + 1 + labelShown.length
     for (text, k) in shownLines.zipWithIndex
       val last = clipped && k == shownLines.length - 1
       val t = if last && text.charCount > 1 then text.take(text.charCount - 1) + "…" elif last then "…" else text
@@ -836,8 +843,10 @@ private logScroll() -> ScrollView
   view.rows = 10
   view
 
-// A job's owner and label in the log pane header stand after its kind, in that order: `owner` or
-// `label`, two spaces, the text, with `LabelGap` spaces before each word. An owner never given shows `-`.
+// A job's state, owner and label in the log pane header stand after its kind, in that order: `state`,
+// `owner` or `label`, two spaces, the text, with `LabelGap` spaces before each word. An owner never
+// given shows `-`. A label that does not fit there whole has rows of its own under the kind's.
+val StateWord: string = "state  "
 val OwnerWord: string = "owner  "
 val LabelWord: string = "label  "
 val LabelGap: int = 3

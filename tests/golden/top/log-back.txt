@@ -17,11 +17,12 @@
 |   36 #7 starting    build        1      -     - -          w0:00       -    30:00 -               make -j4            │|
 |   37 #8 held        build        1      -     - -          w0:00       -    30:00 -     日本語の… make -j4            │|
 |   38 #9 queue held  build        1      -     - -          w0:00       -    30:00 -               make -j4            │|
-|╭─job 21 log, 7 lines back; PgUp PgDn Home End scroll, Esc closes──────────────────────────────────────────────────────╮|
-|│kind    test*   owner  sysl   label  release 0.3 train                                                                │|
-|│state   running; landing                                                                                              │|
+|╭─job 21 log, 8 lines back; PgUp PgDn Home End scroll, Esc closes──────────────────────────────────────────────────────╮|
+|│kind    test*   state  running; landing   owner  sysl   label  release 0.3 train                                      │|
 |│command sysl test compiler --timeout 1800                                                                             │|
 |│──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────│|
+|│line 44 of the build output                                                                                           │|
+|│line 45 of the build output                                                                                           │|
 |│line 46 of the build output                                                                                           │|
 |│line 47 of the build output                                                                                           │|
 |│line 48 of the build output                                                                                           │|
@@ -29,7 +30,6 @@
 |│line 50 of the build output                                                                                           │|
 |│line 51 of the build output                                                                                           │|
 |│line 52 of the build output                                                                                           │|
-|│line 53 of the build output                                                                                           │|
 |╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯|
 |hHelp EnterLog kKill fFilter oOwner qQuit                                                                jobs 1–13 of 20|
 --
@@ -79,15 +79,15 @@
 20 0..1 Basic(6)/Default/0
 20 1..5 Default/Default/1
 20 17..22 Default/Default/1
-20 31..36 Default/Default/1
+20 43..48 Default/Default/1
+20 57..62 Default/Default/1
 20 119..120 Basic(6)/Default/0
 21 0..1 Basic(6)/Default/0
-21 1..6 Default/Default/1
+21 1..8 Default/Default/1
 21 119..120 Basic(6)/Default/0
-22 0..1 Basic(6)/Default/0
-22 1..8 Default/Default/1
-22 119..120 Basic(6)/Default/0
-23 0..120 Basic(6)/Default/0
+22 0..120 Basic(6)/Default/0
+23 0..1 Basic(6)/Default/0
+23 119..120 Basic(6)/Default/0
 24 0..1 Basic(6)/Default/0
 24 119..120 Basic(6)/Default/0
 25 0..1 Basic(6)/Default/0

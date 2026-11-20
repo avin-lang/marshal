@@ -16,15 +16,15 @@
 |                                                            |
 |                                                            |
 |╭─job 1 log, following; PgUp PgDn Home End scroll, Esc cl…─╮|
-|│kind    build   owner  -   label  a label long enough to w│|
-|│                                  rap in a narrow pane    │|
-|│state   running                                           │|
+|│kind    build   state  running   owner  -                 │|
+|│label   a label long enough to wrap in a narrow pane      │|
 |│command sh -c abcdefghijabcdefghijabcdefghijabcdefghijabcd│|
 |│        efghijabcdefghijabcdefghijabcdefghijabcdefghijabcd│|
 |│        efghijabcdefghijabcdefghijabcdefghijabcdefghij    │|
 |│──────────────────────────────────────────────────────────│|
 |│first                                                     │|
 |│last                                                      │|
+|│                                                          │|
 |│                                                          │|
 |╰──────────────────────────────────────────────────────────╯|
 |hHelp EnterLog kKill fFilter oOwner qQuit                   |
@@ -46,21 +46,21 @@
 18 0..1 Basic(6)/Default/0
 18 1..5 Default/Default/1
 18 17..22 Default/Default/1
-18 28..33 Default/Default/1
+18 34..39 Default/Default/1
 18 59..60 Basic(6)/Default/0
 19 0..1 Basic(6)/Default/0
+19 1..6 Default/Default/1
 19 59..60 Basic(6)/Default/0
 20 0..1 Basic(6)/Default/0
-20 1..6 Default/Default/1
+20 1..8 Default/Default/1
 20 59..60 Basic(6)/Default/0
 21 0..1 Basic(6)/Default/0
-21 1..8 Default/Default/1
 21 59..60 Basic(6)/Default/0
 22 0..1 Basic(6)/Default/0
 22 59..60 Basic(6)/Default/0
-23 0..1 Basic(6)/Default/0
-23 59..60 Basic(6)/Default/0
-24 0..60 Basic(6)/Default/0
+23 0..60 Basic(6)/Default/0
+24 0..1 Basic(6)/Default/0
+24 59..60 Basic(6)/Default/0
 25 0..1 Basic(6)/Default/0
 25 59..60 Basic(6)/Default/0
 26 0..1 Basic(6)/Default/0

@@ -18,11 +18,11 @@
 |   37 #8 held        build        1      -     - │|
 |   38 #9 queue held  build        1      -     - │|
 |╭─job 21 log, following; PgUp PgDn Home End scr…─╮|
-|│kind    test*   owner  sysl   label  release 0.3│|
-|│                                      train     │|
-|│state   running; landing                        │|
+|│kind    test*   state  running; l…   owner  sysl│|
+|│label   release 0.3 train                       │|
 |│command sysl test compiler --timeout 1800       │|
 |│────────────────────────────────────────────────│|
+|│line 53 of the build output                     │|
 |│line 54 of the build output                     │|
 |│line 55 of the build output                     │|
 |│line 56 of the build output                     │|
@@ -71,17 +71,17 @@
 20 0..1 Basic(6)/Default/0
 20 1..5 Default/Default/1
 20 17..22 Default/Default/1
-20 31..36 Default/Default/1
+20 38..43 Default/Default/1
 20 49..50 Basic(6)/Default/0
 21 0..1 Basic(6)/Default/0
+21 1..6 Default/Default/1
 21 49..50 Basic(6)/Default/0
 22 0..1 Basic(6)/Default/0
-22 1..6 Default/Default/1
+22 1..8 Default/Default/1
 22 49..50 Basic(6)/Default/0
-23 0..1 Basic(6)/Default/0
-23 1..8 Default/Default/1
-23 49..50 Basic(6)/Default/0
-24 0..50 Basic(6)/Default/0
+23 0..50 Basic(6)/Default/0
+24 0..1 Basic(6)/Default/0
+24 49..50 Basic(6)/Default/0
 25 0..1 Basic(6)/Default/0
 25 49..50 Basic(6)/Default/0
 26 0..1 Basic(6)/Default/0

@@ -446,7 +446,7 @@ labelTopLogOwner()
   app.logLines = ["a line"]
   val g = drawn(app, 100, 30)
   val title = rowOf(g, "job 1 log, following")
-  assert(g.rowText(title + 1).contains(s"build   owner  $owner   label  train 209"), g.rowText(title + 1))
+  assert(g.rowText(title + 1).contains(s"build   state  running   owner  $owner   label  train 209"), g.rowText(title + 1))
   // an owner in wide characters is shown whole, and the label stands after its full width
   val wide = viewing(overviewOf([labelled(2, "x", owner = "日本語の持ち主")]))
   wide.handle(press(Enter))
@@ -457,7 +457,7 @@ labelTopLogOwner()
   assert(kindRow.indexOf("label") > kindRow.indexOf("主"), kindRow)
 
 @test(
-  "top's log pane header shows the whole label after the kind, wrapped under where it began, and is as it was for a job without one"
+  "top's log pane header shows the state and owner on the kind's row, the label after them when it fits and on rows of its own when not, and no label row for a job without one"
 )
 labelTopLogHeader()
   val app = viewing(overviewOf([labelled(1, "train 209"), labelled(2, "")]))
@@ -466,11 +466,10 @@ labelTopLogHeader()
   val g = drawn(app, 100, 30)
   val title = rowOf(g, "job 1 log, following")
   assert(g.rowText(title + 1).contains("kind"), g.rowText(title + 1))
-  assert(g.rowText(title + 1).contains("build   owner  -   label  train 209"), g.rowText(title + 1))
-  assert(g.rowText(title + 2).contains("state"), g.rowText(title + 2))
-  assert(g.rowText(title + 3).contains("command") && g.rowText(title + 3).contains("sleep 30"), g.rowText(title + 3))
-  assert(g.rowText(title + 4).contains("──────"), g.rowText(title + 4))
-  assert(!g.rowText(title + 3).contains("label"), g.rowText(title + 3))
+  assert(g.rowText(title + 1).contains("build   state  running   owner  -   label  train 209"), g.rowText(title + 1))
+  assert(g.rowText(title + 2).contains("command") && g.rowText(title + 2).contains("sleep 30"), g.rowText(title + 2))
+  assert(g.rowText(title + 3).contains("──────"), g.rowText(title + 3))
+  assert(!g.rowText(title + 2).contains("label"), g.rowText(title + 2))
   // a job without a label: the kind line is the one there always was, and the command follows it
   val plain = viewing(overviewOf([labelled(2, "")]))
   plain.handle(press(Enter))
@@ -478,28 +477,37 @@ labelTopLogHeader()
   val p = drawn(plain, 100, 30)
   val pt = rowOf(p, "job 2 log, following")
   assert(p.rowText(pt + 1).contains("kind") && p.rowText(pt + 1).contains("build"), p.rowText(pt + 1))
-  assertEq(p.rowText(pt + 1).replace("│", "").trim, "kind    build   owner  -")
-  assert(p.rowText(pt + 2).contains("state"), p.rowText(pt + 2))
-  assert(p.rowText(pt + 3).contains("command"), p.rowText(pt + 3))
-  assert(p.rowText(pt + 4).contains("──────"), p.rowText(pt + 4))
-  // a label too long for the rest of the kind line wraps under where it began, every character kept
+  assertEq(p.rowText(pt + 1).replace("│", "").trim, "kind    build   state  running   owner  -")
+  assert(p.rowText(pt + 2).contains("command"), p.rowText(pt + 2))
+  assert(p.rowText(pt + 3).contains("──────"), p.rowText(pt + 3))
+  // a label too long for the rest of the kind line has rows of its own under it, wrapped to the
+  // pane, every character kept
   val lengthy = (0 ..< 120).map(i -> if i % 10 == 9 then "z" else "a").mkString("")
   val wrapped = viewing(overviewOf([labelled(3, lengthy)]))
   wrapped.handle(press(Enter))
   wrapped.logLines = ["a line"]
   val w = drawn(wrapped, 60, 30)
   val wt = rowOf(w, "job 3 log, following")
-  val start = w.rowText(wt + 1).indexOf("label") + 7
+  assertEq(w.rowText(wt + 1).replace("│", "").trim, "kind    build   state  running   owner  -")
+  assert(w.rowText(wt + 2).drop(1).startsWith("label   "), w.rowText(wt + 2))
   var seen = ""
-  var k = 1
+  var k = 2
   while !w.rowText(wt + k).contains("command") && k < 20
-    // the state row stands between the label's last row and the command
-    if !w.rowText(wt + k).contains("state")
-      seen = seen + w.rowText(wt + k).slice(start, w.rowText(wt + k).byteLength).replace("│", "").trim
+    seen = seen + w.rowText(wt + k).drop(1 + 8).dropRight(1).trim
     k += 1
   assert(!seen.contains("…"), seen)
   assertEq(seen, lengthy)
-  assert(w.rowText(wt + 1).contains("kind") && w.rowText(wt + 1).contains("build   owner  -   label  "), w.rowText(wt + 1))
-  assert(!w.rowText(wt + 2).contains("label") && !w.rowText(wt + 2).contains("kind"), w.rowText(wt + 2))
-  assert(k > 2 && w.rowText(wt + k).contains("command"), w.rowText(wt + k))
+  assert(!w.rowText(wt + 3).contains("label") && !w.rowText(wt + 3).contains("kind"), w.rowText(wt + 3))
+  assert(k > 3 && w.rowText(wt + k).contains("command"), w.rowText(wt + k))
   assertEq(rowOf(w, "command"), wt + k)
+  // a pane too short for the whole label ends it in an ellipsis and keeps the command and a log row
+  val endless = (0 ..< 2000).map(i -> if i % 10 == 9 then "z" else "a").mkString("")
+  val tall = viewing(overviewOf([labelled(4, endless)]))
+  tall.handle(press(Enter))
+  tall.logLines = ["a line"]
+  val s = drawn(tall, 60, 30)
+  val st = rowOf(s, "job 4 log, following")
+  val cmd = rowOf(s, "command")
+  assert(s.rowText(st + 2).drop(1).startsWith("label   "), s.rowText(st + 2))
+  assert(s.rowText(cmd - 1).replace("│", "").trim.endsWith("…"), s.rowText(cmd - 1))
+  assert(rowOf(s, "a line") > cmd + 1)
