@@ -44,7 +44,7 @@ val Commands: Vector[(string, string)] = [
   ),
   (
     "ls [--compact | -c]",
-    "jobs queued, running and recently ended; a queued job's state says why it waits: queued (draining); --compact: one line a job, no wider than the terminal ($COLUMNS, else 80, where output is not one): COMMAND is cut with …, then LABEL, then columns go (FROM, RESV, USED, OWNER, ETA, UNITS, STARTED, ELAPSED, KIND)"
+    "jobs queued, running and recently ended, after a line naming the reservation while one stands; a queued job's state says why it waits: queued (draining); --compact: one line a job, no wider than the terminal ($COLUMNS, else 80, where output is not one): COMMAND is cut with …, then LABEL, then columns go (FROM, RESV, USED, OWNER, ETA, UNITS, STARTED, ELAPSED, KIND)"
   ),
   (
     "kill <id> | <selector>",
@@ -84,6 +84,11 @@ val Commands: Vector[(string, string)] = [
     "polite [<fraction> | off]",
     "while you work: admit jobs against only a fraction of the budget (default 0.75, or 3/4 and the like); a job bigger than that runs alone; off: the whole budget again. Running jobs go on; config.json's polite_schedule switches it on by the clock"
   ),
+  (
+    "reserve --owner <name> --for <t>",
+    "for a release: only the owner's jobs start (its --owner on submit, or its default owner), and quick jobs; every other job waits in its place, `reserved for <name>`, and submitting goes on; running jobs go on. --for (such as 3h, at most 24h) is required: it ends by itself. Reserving again replaces it"
+  ),
+  ("unreserve", "ends the reservation: the jobs it kept waiting start in their queue order"),
   ("tail <id> [-f] [-n <lines>]", "the job's log; -f follows it until the job ends"),
   (
     "grep <id> <pattern> [-i] [-v] [-n] [-c] [-F] [-m <n>] [-A|-B|-C <n>] [--last <n>]",
@@ -385,6 +390,8 @@ main(args: Vector[string]) -> int
       if rest.isEmpty then simple(Request.ResumeQueue, "marshal: the queue is released")
       else withId(rest, id -> simple(Request.ResumeJob(id), s"marshal: job $id is resumed"))
     "polite" -> polite(rest)
+    "reserve" -> reserve(rest)
+    "unreserve" -> if rest.isEmpty then unreserve() else complain("marshal: unreserve takes no arguments")
     "ls" -> list(rest)
     "status" -> rest match
       [] -> status()
@@ -1148,6 +1155,10 @@ list(args: Vector[string]) -> int
   askDaemon(Request.List) match
     Ok(Jobs(jobs)) ->
       val whys = queuedWhys(jobs)
+      // a reservation that stands comes first, on a line of its own
+      askDaemon(Request.Status) match
+        Ok(Using(u)) if u.reserve.isDefined -> println(reserveState(u.reserve))
+        _ -> ()
       println(
         if compact then marshal.compactListing(
           jobs,
@@ -1180,6 +1191,64 @@ polite(args: Vector[string]) -> int
     Ok(Failed(e)) -> complain(s"marshal: $e")
     Ok(other) -> complain(s"marshal: unexpected reply $other")
     Err(e) -> complain(e)
+
+// What `marshal reserve` asks for: `--owner <name>` and `--for <t>`, in either order, both required;
+// or why the arguments are not that.
+reserveRequest(args: Vector[string]) -> Result[Request, string]
+  var owner: Option[string] = None
+  var forMs: Option[long] = None
+  var i = 0
+  while i < args.length
+    val word = args(i)
+    if word != "--owner" && word != "--for" then return Err(
+      s"marshal: reserve takes --owner <name> and --for <t>, not `$word`"
+    )
+    if i + 1 >= args.length then return Err(s"marshal: $word needs a value")
+    val value = args(i + 1)
+    if word == "--owner"
+      if owner.isDefined then return Err("marshal: reserve takes one --owner")
+      owner = Some(value)
+    else
+      if forMs.isDefined then return Err("marshal: reserve takes one --for")
+      val parsed = marshal.parseDeadline(value)
+      if parsed.isEmpty then return Err(s"marshal: --for takes a time such as 3h, 90m or 600s, not `$value`")
+      forMs = parsed
+    i += 2
+  if owner.isEmpty then return Err("marshal: reserve needs --owner <name>: the owner whose jobs alone start")
+  if forMs.isEmpty then return Err(
+    "marshal: reserve needs --for <t>, such as 3h or 90m: a reservation always ends by itself"
+  )
+  marshal.reserveRefusal(owner.get, forMs.get) match
+    Some(why) -> Err(s"marshal: $why")
+    None -> Ok(Request.Reserve(owner.get, forMs.get))
+
+// Reserves marshal for an owner, and prints the reservation it leaves.
+reserve(args: Vector[string]) -> int
+  val request = reserveRequest(args) match
+    Ok(r) -> r
+    Err(e) -> return complain(e)
+  askDaemon(request) match
+    Ok(Using(u)) ->
+      println(reserveState(u.reserve))
+      0
+    Ok(Failed(e)) -> complain(s"marshal: $e")
+    Ok(other) -> complain(s"marshal: unexpected reply $other")
+    Err(e) -> complain(e)
+
+// Ends the reservation, if one stands, and says that every owner's jobs start.
+unreserve() -> int
+  askDaemon(Request.Unreserve) match
+    Ok(Using(u)) ->
+      println(reserveState(u.reserve))
+      0
+    Ok(Failed(e)) -> complain(s"marshal: $e")
+    Ok(other) -> complain(s"marshal: unexpected reply $other")
+    Err(e) -> complain(e)
+
+// The line `reserve` and `unreserve` print: the reservation that stands, or that there is none.
+reserveState(r: Option[marshal.ReserveUse]) -> string = r match
+  Some(res) -> s"marshal: ${marshal.reserveText(res.owner, res.leftMs)}: only its jobs and quick jobs start"
+  None -> "marshal: not reserved: every owner's jobs start"
 
 status() -> int
   askDaemon(Request.Status) match

@@ -86,6 +86,7 @@ is one line of the budget in use; `marshal top` is the live view, for people.
 | A job submitted on another session's behalf | `--owner <name>` | Otherwise the owner is the project its `--dir` is in, or its label. |
 | A queued job should go sooner or later | `marshal priority <id> <n>` (higher first), `marshal priority <id> --urgent`, or `marshal priority <id> --low` (into the low band; a number or `--urgent` takes it out) | Orders marshal's own queue; a held job (`marshal hold`) keeps its place. |
 | You are working at the machine | `marshal polite` (or config.json's `polite_schedule`) | Admits jobs against three quarters of the budget; `marshal polite off` gives it all back. |
+| A release needs the machine for its own jobs | `marshal reserve --owner rel0120 --for 3h`, every release job submitted `--owner rel0120`; `marshal unreserve` when done | Only that owner's jobs (and quick ones) start; others keep submitting and wait in place, `reserved for rel0120`. It ends by itself at `--for`; no per-job holds. |
 | The queue is stuck behind an exclusive job (a benchmark) or a drain | `marshal hold --exclusive` (or `--draining`), later `marshal release --group <name>` | Holds them as one group, printed with the release command; they keep their place, and the time held is not counted as waiting. |
 
 **Units, in short.** A unit is about a core. Leave `--units` out: a command's weight is learned from
@@ -272,6 +273,7 @@ scripts.
 | `queued (polite budget)` (`top`: `polite`) | marshal is polite and the polite part of the budget is full | wait, or `marshal polite off` if the machine is free |
 | `queued (polite: runs alone)` (`top`: `runs alone`) | marshal is polite and the job is bigger than the polite budget: it waits for marshal to empty, then runs by itself | wait |
 | `queued (polite: N runs alone)` (`top`: `alone N`) | job N runs alone, or waits to, ahead of it | wait |
+| `queued (reserved for rel0120)` (`top`: `reserved`) | marshal is reserved for another owner (`marshal reserve`); `status`, `ls` and `top` say for how long | wait: it starts in its place when the reservation ends, by itself or by `marshal unreserve` |
 | `after 3,4` | it waits for jobs 3 and 4 to end (`--after`) | wait |
 | `retry 2` | it failed and waits out its retry delay before attempt 2 | wait |
 | `paused` | someone ran `marshal pause <id>` | `marshal resume <id>`, if it is yours |
@@ -305,7 +307,7 @@ marshal run-type <type> [parameters]       runs a job type's steps as one job an
 marshal train [parameters] <branch...>     run-type train: merges the branches, builds and tests them, lands them when green
 marshal wait <id> | --until <cond> [--timeout <t>] [--since <t>]  waits for the job (--timeout also with an id), prints one result line, exits with its status (at once for a job that has already ended); or waits for an event (--since only here), prints it, exits 0; 124 on timeout
 marshal events [--follow] [--since <t>] [<filter>]  the logged events as JSON lines; --follow goes on streaming them until killed
-marshal ls [--compact | -c]                jobs queued, running and recently ended; a queued job's state says why it waits: queued (draining); --compact: one line a job, no wider than the terminal ($COLUMNS, else 80, where output is not one): COMMAND is cut with …, then LABEL, then columns go (FROM, RESV, USED, OWNER, ETA, UNITS, STARTED, ELAPSED, KIND)
+marshal ls [--compact | -c]                jobs queued, running and recently ended, after a line naming the reservation while one stands; a queued job's state says why it waits: queued (draining); --compact: one line a job, no wider than the terminal ($COLUMNS, else 80, where output is not one): COMMAND is cut with …, then LABEL, then columns go (FROM, RESV, USED, OWNER, ETA, UNITS, STARTED, ELAPSED, KIND)
 marshal kill <id> | <selector>             stops the job's whole process tree (a queued or waiting job is cancelled); --owner <name>, --label <text> or --all stops every job selected (marshal kill --help)
 marshal rerun <id>                         submits an ended job again: its command, directory, environment, kind, label and resources; prints the new id
 marshal clean [--older-than <t>] [--keep <n>] [--dry-run]  removes the logs of ended jobs (never a job that is not over), stale run directories and unused compiled steps; prints what went and the bytes freed; --dry-run only lists them
@@ -317,6 +319,8 @@ marshal amend <id> [options]               changes a job's settings in place: qu
 marshal pause [<id>]                       stops a running job's processes, keeping its units, its deadline's clock stopped; with no id, holds the queue
 marshal resume [<id>]                      continues a paused job; with no id, releases the queue
 marshal polite [<fraction> | off]          while you work: admit jobs against only a fraction of the budget (default 0.75, or 3/4 and the like); a job bigger than that runs alone; off: the whole budget again. Running jobs go on; config.json's polite_schedule switches it on by the clock
+marshal reserve --owner <name> --for <t>   for a release: only the owner's jobs start (its --owner on submit, or its default owner), and quick jobs; every other job waits in its place, `reserved for <name>`, and submitting goes on; running jobs go on. --for (such as 3h, at most 24h) is required: it ends by itself. Reserving again replaces it
+marshal unreserve                          ends the reservation: the jobs it kept waiting start in their queue order
 marshal tail <id> [-f] [-n <lines>]        the job's log; -f follows it until the job ends
 marshal grep <id> <pattern> [-i] [-v] [-n] [-c] [-F] [-m <n>] [-A|-B|-C <n>] [--last <n>]  the lines of the job's log that match the pattern (a regular expression; -F: literal text), as grep prints them; exits 0 when a line matched, 1 when none did, 2 on an error
 marshal status [<id>] [--json]             the budget in use; --json: one JSON object with the running and queued jobs; <id>: that job's state, running, queued (and why), waiting or ended, with its exit status once ended, for any job the daemon or the event log knows; exits 0 whatever the job's outcome
@@ -1095,7 +1099,8 @@ landing lane free; take-slot holds 0 units, 0 waiting; cpu 1 (jobs 0), disk 156G
 - the lanes: `landing` (the landing job's id or null), `quick` (quick jobs running) and
   `quick_slots`, `exclusive` (the running exclusive job's id or null), `take_slot` (`dir`, `units`,
   `waiting`, `landing`, or null when none is shared), `queue_held`, `polite` (`fraction`, `units`,
-  `memory`, or null);
+  `memory`, or null), `reserve` (`owner`, `until` in milliseconds since 1970, `left_ms`, or null
+  while marshal is not reserved);
 - the machine: `cpu` and `job_cpu` (cores, once measured), `disk_free` (bytes, once measured),
   `disk_min`, `disk_low`, `nofile`, and the memory-pressure guard's `mem_pressure`, `swap_used`,
   `swap_growth`, `mem_pressure_holds` and `mem_pressure_cause`;
@@ -1105,10 +1110,11 @@ landing lane free; take-slot holds 0 units, 0 waiting; cpu 1 (jobs 0), disk 156G
 
 A queued or settling job also has `why`, the protocol's word for why it has not started: `units`,
 `memory`, `lane`, `draining`, `take-slot`, `behind`, `draining-for`, `starting`, `held`,
-`queue-held`, `quick-lane`, `emptying`, `load`, `exclusive`, `disk-low`, `polite`, `alone` or
-`for-alone`; and beside it the job or value the reason names: `behind` (an id) for `behind`,
+`queue-held`, `quick-lane`, `emptying`, `load`, `exclusive`, `disk-low`, `polite`, `alone`,
+`for-alone` or `reserved`; and beside it the job or value the reason names: `behind` (an id) for `behind`,
 `draining_for` for `draining-for`, `exclusive_id` for `exclusive`, `alone_id` for `for-alone`,
-`disk_free` for `disk-low`, and `load`, `load_limit` and `calm_ms` for `load`. In `marshal ls` the
+`disk_free` for `disk-low`, `reserved_for` (the owner) for `reserved`, and `load`, `load_limit` and
+`calm_ms` for `load`. In `marshal ls` the
 same reason follows `queued` in the words of [Reading the queue](#reading-the-queue).
 
 ## Job types and trains

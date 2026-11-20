@@ -17,6 +17,11 @@ module dev.avinlang.marshal
 // `spec`, the specification as amended, which `rerun` then submits. A job that
 // is retried ends each attempt with an ending event that adds `"retrying": true`, and then records
 // `retry`, so its last event is an ending only once its last attempt has ended.
+//
+// Three events are marshal's own rather than a job's, and carry no job but `id` 0 (`MachineEvents`): `reserved`
+// (marshal reserved for `owner` until `until`, wall-clock milliseconds, for `for_ms`; `replaced`
+// names the owner of a reservation it replaced), `unreserved` (ended by `marshal unreserve`) and
+// `reserve-expired` (ended by itself at its end); the last two name the `owner` it was for.
 import avin.collections.mutable.{Map as MutableMap}
 import dev.avinlang.json
 import dev.avinlang.json.Json
@@ -27,6 +32,14 @@ val endings: Set[string] = {"finished", "timeout", "quiet", "killed", "cancelled
 eventLine(ts: long, event: string, job: JobInfo, extra: Vector[(string, Json)]) -> string =
   val head = [("ts", Json.num(ts)), ("event", Json.str(event))]
   Json.Obj(head ++ encodeJob(job).asMembers.get ++ extra).render
+
+// The events of marshal itself, which describe no job.
+val MachineEvents: Set[string] = {"reserved", "unreserved", "reserve-expired"}
+
+// One line of an event of marshal itself, without its line feed: `ts`, `event`, `id` 0 (no job has
+// it, so a reader that looks every event's job up by id finds none), then `members`.
+machineEventLine(ts: long, event: string, members: Vector[(string, Json)]) -> string =
+  Json.Obj([("ts", Json.num(ts)), ("event", Json.str(event)), ("id", Json.num(0))] ++ members).render
 
 // What a daemon learns from the log when it starts.
 // - `nextId`: one past the highest job id the log has seen, or 1.
@@ -92,6 +105,8 @@ recover(lines: Iterable[string], keep: int = 10, projectOf: (string) -> string =
         continue
     val fields = (ev.get("id").flatMap(v -> v.asLong), ev.get("event").flatMap(v -> v.asString))
     val (id, kind) = fields match
+      // an event of marshal's own names no job, and is no part of what is recovered
+      (_, Some(k)) if MachineEvents.contains(k) -> continue
       (Some(i), Some(k)) -> (i, k)
       _ ->
         unreadable += 1

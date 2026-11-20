@@ -135,6 +135,7 @@ whyText(PoliteBudget) = "polite budget"
 whyText(RunsAlone) = "polite: runs alone"
 whyText(ForAlone(id)) = s"polite: $id runs alone"
 whyText(LowWaits) = "low: no spare room"
+whyText(Reserved(owner)) = s"reserved for $owner"
 
 // A job's state cell in `ls`: `stateColumn`, and for a job that is plainly `queued` or `settling` and
 // has a reason in `whys` (job id, reason), the reason after it: `queued (draining)`,
@@ -294,7 +295,8 @@ kindMarked(kind: string, landing: bool, quick: bool, urgent: bool, exclusive: bo
 
 // The line `status` prints. The quick lane is named only while a quick job runs, and an exclusive job
 // only while it runs. While marshal is polite, the units and memory are shown against the polite
-// budget, of the full one (`units 3.25/9 of 12`), and polite mode after them.
+// budget, of the full one (`units 3.25/9 of 12`), and polite mode after them. A reservation that
+// stands is named after the queue (`reserveLine`).
 usageLine(u: Usage) -> string
   val memory = u.polite match
     Some(p) if u.memoryBudget != long.MaxValue ->
@@ -316,7 +318,13 @@ usageLine(u: Usage) -> string
   val quick = if u.quick > 0 then s", quick lane ${u.quick}/$QuickSlots" else ""
   val exclusive = u.exclusive.map(id -> s"; exclusive job $id owns the machine: nothing else starts").getOrElse("")
   val settling = if u.settling > 0 then s", ${u.settling} settling" else ""
-  s"units $units, memory $memory$polite, ${u.running} running, ${u.queued} queued$settling, landing lane $lane$quick$outside$exclusive$held${machineText(u)}"
+  s"units $units, memory $memory$polite, ${u.running} running, ${u.queued} queued$settling, landing lane $lane$quick$outside$exclusive$held${reserveLine(u.reserve)}${machineText(u)}"
+
+// What `status` and `ls` say of a reservation that stands: `; reserved for rel0120 (2h left): only its
+// jobs and quick jobs start`; nothing while marshal is not reserved.
+reserveLine(r: Option[ReserveUse]) -> string = r match
+  Some(res) -> s"; ${reserveText(res.owner, res.leftMs)}: only its jobs and quick jobs start"
+  None -> ""
 
 // What `status` says of the machine's processors and disk, after the rest: `; cpu 7.4 (jobs 5.1),
 // disk 120G free, open files 10240` (the jobs' soft limit on open files), and that nothing new starts while the disk is under `disk_min`

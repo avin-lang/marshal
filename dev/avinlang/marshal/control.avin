@@ -47,7 +47,8 @@ urgentMark(now: long, band: Vector[long]) -> long
 
 // Each queued job's place in its lane's queue (from 1, held jobs counted) and why it waits, in the
 // order of `queue`: `Held` for a job in `held`, `QueueHeld` for any other while the queue is held,
-// and otherwise what the scheduler makes of the jobs not held.
+// `Reserved(owner)` for a job in `reservedOut` (another owner's, while marshal is reserved), and
+// otherwise what the scheduler makes of the jobs neither held nor reserved out.
 queueWaits(
     budget: Budget,
     running: Vector[Started],
@@ -56,22 +57,74 @@ queueWaits(
     queueHeld: bool,
     now: long,
     outside: Outside = NoOutside,
-    fair: Fairness = Unbounded
+    fair: Fairness = Unbounded,
+    reservedOut: Vector[long] = [],
+    reservedFor: string = ""
 ) -> Vector[(long, int, Why)]
   val decided = if queueHeld then Vector[(long, int, Why)]() else waits(
     budget,
     running,
-    queue.filter(w -> !held.contains(w.id)),
+    queue.filter(w -> !held.contains(w.id) && !reservedOut.contains(w.id)),
     now,
     outside,
     fair
   )
   val out = Buffer[(long, int, Why)]()
   for (w, position) in queue.zip(lanePositions(queue))
-    out += (w.id, position, whyWaits(w.id, held, queueHeld, decided))
+    out += (w.id, position, whyWaits(w.id, held, queueHeld, reservedOut, reservedFor, decided))
   out.toVector
 
-private whyWaits(id: long, held: Vector[long], queueHeld: bool, decided: Vector[(long, int, Why)]) -> Why
+private whyWaits(
+    id: long,
+    held: Vector[long],
+    queueHeld: bool,
+    reservedOut: Vector[long],
+    reservedFor: string,
+    decided: Vector[(long, int, Why)]
+) -> Why
   if held.contains(id) then Held
   elif queueHeld then QueueHeld
+  elif reservedOut.contains(id) then Reserved(reservedFor)
   else decided.find(d -> d.0 == id).map(d -> d.2).getOrElse(Starting)
+
+// Reserving marshal for one owner (`marshal reserve --owner <name> --for <t>`): while a reservation
+// stands, only that owner's jobs, and quick jobs of any owner, are admitted; every other queued job
+// keeps its place and waits `Reserved(owner)`. A job reserved out is weighed as a held one is: the
+// scheduler does not see it, so it neither starts, drains the machine nor blocks the owner's jobs
+// behind it. The owner's jobs are admitted against the budget (units, memory, polite mode) as ever.
+// Running jobs of other owners go on. A reservation always ends by itself at `until` (wall-clock
+// milliseconds since 1970), and `marshal unreserve` ends it sooner; then the jobs it kept waiting
+// start in their queue order, nothing done to any of them.
+data OwnerReserve(owner: string, until: long)
+
+// The longest a reservation may be made for: a forgotten one must never hold the machine for long.
+val MaxReserveMs: long = 24 * 3600000
+
+// Whether a queued job of `owner`, quick or not, is kept waiting by `r` at `now` (wall-clock ms).
+reservedOut(r: Option[OwnerReserve], owner: string, quick: bool, now: long) -> bool = r match
+  Some(res) -> now < res.until && !quick && owner != res.owner
+  None -> false
+
+// Why `reserve` refuses an owner and a length, or None when it takes them.
+reserveRefusal(owner: string, forMs: long) -> Option[string]
+  if owner.isEmpty then return Some("reserve needs --owner <name>: the owner whose jobs alone start")
+  if owner.chars.exists(c -> c <= ' ' || '\u{7f}' <= c <= '\u{9f}') then return Some(
+    "an owner is one word: no space, tab or other control character"
+  )
+  if forMs <= 0 then return Some("reserve needs --for <t>, such as 3h or 90m: a reservation always ends by itself")
+  if forMs > MaxReserveMs then return Some(
+    s"a reservation is for at most ${formatMillis(MaxReserveMs)}, not ${formatMillis(forMs)}: reserve again before it ends to go on"
+  )
+  None
+
+// The time left of a reservation, as `status`, `ls` and `top` say it: `45s`, `12m`, `2h`, `2h05m`,
+// rounded up, so it never reads 0 while the reservation stands.
+leftText(ms: long) -> string
+  if ms < 60000 then return s"${(ms + 999) / 1000}s"
+  val minutes = (ms + 59999) / 60000
+  if minutes < 60 then return s"${minutes}m"
+  val m = minutes % 60
+  if m == 0 then s"${minutes / 60}h" elif m < 10 then s"${minutes / 60}h0${m}m" else s"${minutes / 60}h${m}m"
+
+// `reserved for rel0120 (2h left)`.
+reserveText(owner: string, leftMs: long) -> string = s"reserved for $owner (${leftText(leftMs)} left)"

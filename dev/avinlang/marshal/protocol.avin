@@ -6,7 +6,7 @@ import dev.avinlang.json
 import dev.avinlang.json.Json
 
 // marshal's version, as `avin.hocon` gives it: what `marshal version` and `marshal restart` print.
-val Version: string = "0.4.1"
+val Version: string = "0.4.2"
 
 // What a job is to run and how much of the machine it takes. `urgent` queues it in its lane's urgent
 // band, behind the urgent jobs already queued and ahead of every other. `after` names the jobs it
@@ -147,6 +147,10 @@ data Request
   // Makes marshal polite at `fraction` of its budget (polite.avin), or not polite with None, until
   // the user says otherwise; answered with the budget then in use.
   Polite(fraction: Option[real])
+  // Reserves marshal for `owner` for `forMs` (control.avin's `OwnerReserve`), replacing any
+  // reservation, or ends the reservation; both answered with the budget then in use.
+  Reserve(owner: string, forMs: long)
+  Unreserve
   // Keeps one queued job from starting, and lets it start again.
   Hold(id: long)
   Release(id: long)
@@ -409,7 +413,8 @@ reservedText(j: JobInfo) -> string
 // (nofile.avin). `settling` is how many exclusive jobs are settling (`settling`): counted neither as
 // running nor in `queued`. `polite` is the polite budget jobs are admitted against while marshal is
 // polite (polite.avin), None while it is not; `unitBudget` and `memoryBudget` stay the full ones.
-// `pressure` is the memory-pressure guard as last read (pressure.avin).
+// `pressure` is the memory-pressure guard as last read (pressure.avin). `reserve` is the reservation
+// that stands (control.avin's `OwnerReserve`), None while marshal is not reserved.
 data Usage(
     units: int,
     unitBudget: int,
@@ -432,8 +437,32 @@ data Usage(
     nofile: long = 0,
     settling: int = 0,
     polite: Option[PoliteUse] = None,
-    pressure: Pressure = NoPressure
+    pressure: Pressure = NoPressure,
+    reserve: Option[ReserveUse] = None
 )
+
+// A reservation as `status` and `top` show it: its owner, when it ends (wall-clock milliseconds
+// since 1970) and how long it has left as the daemon answered, in milliseconds.
+data ReserveUse(owner: string, until: long, leftMs: long)
+
+// A reservation as the protocol writes it: `{owner, until, left_ms}`, or null while there is none.
+reserveJson(r: Option[ReserveUse]) -> Json = r match
+  None -> Json.Null
+  Some(u) -> Json.obj(("owner", Json.str(u.owner)), ("until", Json.num(u.until)), ("left_ms", Json.num(u.leftMs)))
+
+// The reservation as the protocol wrote it under `reserve` in `j`: None where it is null or absent.
+private decodeReserve(j: Json) -> Result[Option[ReserveUse], string]
+  val r = j.get("reserve").getOrElse(Json.Null)
+  if r == Json.Null then return Ok(None)
+  Ok(
+    Some(
+      ReserveUse(
+        field(r, "owner", v -> v.asString, "a string")?,
+        field(r, "until", v -> v.asLong, "a whole number")?,
+        field(r, "left_ms", v -> v.asLong, "a whole number")?
+      )
+    )
+  )
 
 // The members `status`, `status --json` and the snapshot add for the machine's processors, disk and
 // memory: `cpu` and `job_cpu` in cores, `disk_free` and `disk_min` in bytes and `disk_low`, the jobs'
@@ -497,7 +526,8 @@ private withMachine(u: Usage, m: (long, long, long, long, long, Pressure)) -> Us
     m.4,
     u.settling,
     u.polite,
-    m.5
+    m.5,
+    u.reserve
   )
 
 // What take-slot.zsh holds in the directory `dir` that marshal shares: units its runs hold, how many
@@ -521,7 +551,8 @@ data TakeSlotUse(dir: string, units: int, waiting: int, landing: bool)
 // fit beside what runs in the full budget but not in the polite one waits `PoliteBudget`; one bigger
 // than the polite budget waits `RunsAlone` until nothing else of marshal's runs, and every job held
 // back by it, waiting or running alone, waits `ForAlone(id)`. A low job (low.avin) that cannot start
-// in spare room waits `LowWaits`.
+// in spare room waits `LowWaits`. While marshal is reserved for an owner (control.avin's
+// `OwnerReserve`), a job of any other owner, not quick, waits `Reserved(owner)`.
 data Why
   NoUnits
   NoMemory
@@ -543,6 +574,7 @@ data Why
   RunsAlone
   ForAlone(id: long)
   LowWaits
+  Reserved(owner: string)
 
 // A queued job, its place in its lane's queue (from 1; landing jobs, quick jobs and development jobs
 // each have a queue), and why it waits.
@@ -624,6 +656,12 @@ encodeRequest(PauseJob(id)) = Json.obj(("op", Json.str("pause")), ("id", Json.nu
 encodeRequest(ResumeJob(id)) = Json.obj(("op", Json.str("resume")), ("id", Json.num(id)))
 encodeRequest(Polite(Some(f))) = Json.obj(("op", Json.str("polite")), ("fraction", Json.num(f)))
 encodeRequest(Polite(None)) = Json.obj(("op", Json.str("polite")), ("off", Json.Bool(true)))
+encodeRequest(Reserve(owner, forMs)) = Json.obj(
+  ("op", Json.str("reserve")),
+  ("owner", Json.str(owner)),
+  ("for_ms", Json.num(forMs))
+)
+encodeRequest(Unreserve) = Json.obj(("op", Json.str("unreserve")))
 encodeRequest(Hold(id)) = Json.obj(("op", Json.str("hold")), ("id", Json.num(id)))
 encodeRequest(Release(id)) = Json.obj(("op", Json.str("release")), ("id", Json.num(id)))
 encodeRequest(Prioritize(id, Level(n))) = Json.obj(
@@ -1011,6 +1049,13 @@ decodeRequest(text: string) -> Result[Request, string]
       if optional(j, "off", v -> v.asBool, "a bool", false)? then return Ok(Polite(None))
       val f = field(j, "fraction", v -> v.asReal, "a number")?
       checkFraction(f).map(x -> Polite(Some(x)))
+    "reserve" ->
+      val owner = field(j, "owner", v -> v.asString, "a string")?
+      val forMs = field(j, "for_ms", v -> v.asLong, "a whole number")?
+      reserveRefusal(owner, forMs) match
+        Some(why) -> Err(why)
+        None -> Ok(Reserve(owner, forMs))
+    "unreserve" -> Ok(Unreserve)
     "priority" -> Ok(
       Prioritize(
         field(j, "id", v -> v.asLong, "a whole number")?,
@@ -1292,6 +1337,7 @@ statusJson(u: Usage, jobs: Vector[JobInfo], whys: Vector[(long, Why)] = []) -> J
     ("quick_slots", Json.num(QuickSlots)),
     ("exclusive", u.exclusive.map(id -> Json.num(id)).getOrElse(Json.Null)),
     ("polite", politeJson(u.polite)),
+    ("reserve", reserveJson(u.reserve)),
     ("running", Json.Arr(jobs.filter(j -> j.state == "running").map(encodeJob))),
     ("queued", Json.Arr(jobs.filter(j -> j.state == "queued").map(j -> withWhy(j, whys)))),
     ("settling", Json.Arr(jobs.filter(j -> settling(j)).map(j -> withWhy(j, whys))))
@@ -1382,7 +1428,8 @@ private usageMembers(u: Usage) -> Vector[(string, Json)] = Json.obj(
   ("quick", Json.num(u.quick)),
   ("exclusive", u.exclusive.map(id -> Json.num(id)).getOrElse(Json.Null)),
   ("settling", Json.num(u.settling)),
-  ("polite", politeJson(u.polite))
+  ("polite", politeJson(u.polite)),
+  ("reserve", reserveJson(u.reserve))
 ).asMembers.get ++ machineMembers(u)
 
 // Polite mode as the protocol writes it: `{fraction, units, memory}`, with `until` while the
@@ -1463,7 +1510,8 @@ decodeReply(text: string) -> Result[Reply, string]
             optional(j, "quick", v -> v.asInt, "an int", 0)?,
             optional(j, "exclusive", someLong, "a whole number", None)?,
             settling = optional(j, "settling", v -> v.asInt, "an int", 0)?,
-            polite = decodePolite(j)?
+            polite = decodePolite(j)?,
+            reserve = decodeReserve(j)?
           ),
           machineOf(j)?
         )
@@ -1505,6 +1553,7 @@ whyWord(PoliteBudget) = "polite"
 whyWord(RunsAlone) = "alone"
 whyWord(ForAlone(_)) = "for-alone"
 whyWord(LowWaits) = "low"
+whyWord(Reserved(_)) = "reserved"
 
 // The job a reason names, as the field beside its word: `behind` for `Behind`, `draining_for` for
 // `DrainingFor`, `exclusive_id` for `ForExclusive` (beside the job's own `exclusive`), `alone_id` for
@@ -1516,6 +1565,7 @@ whyId(ForExclusive(id)) = [("exclusive_id", Json.num(id))]
 whyId(ForAlone(id)) = [("alone_id", Json.num(id))]
 whyId(DiskLow(free)) = [("disk_free", Json.num(free))]
 whyId(MemoryPressure(cause)) = [("pressure", Json.str(cause))]
+whyId(Reserved(owner)) = [("reserved_for", Json.str(owner))]
 whyId(Load(load, limit, calmMs)) = [
   ("load", Json.num(load)),
   ("load_limit", Json.num(limit)),
@@ -1575,6 +1625,7 @@ private decodeWhy(j: Json) -> Result[Why, string]
     "alone" -> Ok(RunsAlone)
     "for-alone" -> Ok(ForAlone(field(j, "alone_id", v -> v.asLong, "a whole number")?))
     "low" -> Ok(LowWaits)
+    "reserved" -> Ok(Reserved(field(j, "reserved_for", v -> v.asString, "a string")?))
     other -> Err(s"no such reason to wait: `$other`")
 
 private decodeQueued(j: Json) -> Result[QueuedJob, string] =
@@ -1595,6 +1646,7 @@ encodeOverview(o: Overview) -> Json = Json.Obj(
     ("quick", Json.num(o.usage.quick)),
     ("exclusive", o.usage.exclusive.map(id -> Json.num(id)).getOrElse(Json.Null)),
     ("polite", politeJson(o.usage.polite)),
+    ("reserve", reserveJson(o.usage.reserve)),
     ("uptime_ms", Json.num(o.uptimeMs)),
     ("running", Json.Arr(o.running.map(encodeJob))),
     ("queued", Json.Arr(o.queued.map(encodeQueued))),
@@ -1631,7 +1683,8 @@ decodeOverview(j: Json) -> Result[Overview, string]
           optional(j, "quick", v -> v.asInt, "an int", 0)?,
           optional(j, "exclusive", someLong, "a whole number", None)?,
           settling = queued.filter(q -> settling(q.job)).length,
-          polite = decodePolite(j)?
+          polite = decodePolite(j)?,
+          reserve = decodeReserve(j)?
         ),
         machineOf(j)?
       ),

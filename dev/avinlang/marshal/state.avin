@@ -104,7 +104,8 @@ data SavedJob(
 // name of its waiting ticket in take-slot's directory, whether the queue is held (false when the
 // state does not say), the jobs waiting for others or waiting to retry, oldest first, and what the
 // user last set polite mode to by hand (None where they have not, or the state does not say), and the
-// number the next default hold group is given (1 when the state does not say).
+// number the next default hold group is given (1 when the state does not say), and the reservation
+// that stood (None where none did, or the state does not say).
 data SavedState(
     version: string,
     pid: long,
@@ -118,8 +119,22 @@ data SavedState(
     queueHeld: bool = false,
     waiting: Vector[SavedJob] = [],
     polite: Option[PoliteSetting] = None,
-    nextGroup: long = 1
+    nextGroup: long = 1,
+    reserve: Option[OwnerReserve] = None
 )
+
+// A reservation as the state writes it: its owner and when it ends, in wall-clock milliseconds, so a
+// restart keeps its end where it was.
+private encodeReserve(r: OwnerReserve) -> Json = Json.obj(("owner", Json.str(r.owner)), ("until", Json.num(r.until)))
+
+// The same read back: None for null or absent, an error for anything else that is not one.
+private reserveOf(j: Json) -> Result[Option[OwnerReserve], string]
+  val r = j.get("reserve").getOrElse(Json.Null)
+  if r == Json.Null then return Ok(None)
+  val owner = r.get("owner").flatMap(v -> v.asString)
+  val until = r.get("until").flatMap(v -> v.asLong)
+  if owner.isEmpty || owner.get.isEmpty || until.isEmpty then return Err("`reserve` is an owner and an end")
+  Ok(Some(OwnerReserve(owner.get, until.get)))
 
 // What the user set polite mode to, as the state writes it.
 private encodeSetting(p: PoliteSetting) -> Json = Json.obj(
@@ -351,7 +366,8 @@ encodeState(s: SavedState) -> Json = Json.obj(
   ("queue_held", Json.Bool(s.queueHeld)),
   ("waiting", Json.Arr(s.waiting.map(encodeSavedJob))),
   ("polite", s.polite.map(encodeSetting).getOrElse(Json.Null)),
-  ("next_group", Json.num(s.nextGroup))
+  ("next_group", Json.num(s.nextGroup)),
+  ("reserve", s.reserve.map(encodeReserve).getOrElse(Json.Null))
 )
 
 private savedJobs(j: Json, key: string) -> Result[Vector[SavedJob], string]
@@ -382,6 +398,7 @@ decodeState(saved: string) -> Result[SavedState, string]
       truthOr(j, "queue_held", false)?,
       if j.has("waiting") then savedJobs(j, "waiting")? else Vector[SavedJob](),
       settingOf(j)?,
-      wholeOr(j, "next_group", 1)?
+      wholeOr(j, "next_group", 1)?,
+      reserveOf(j)?
     )
   )

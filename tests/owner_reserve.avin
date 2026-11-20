@@ -1,0 +1,200 @@
+module tests
+
+// Reserving marshal for one owner, below the daemon: who is kept waiting, why the queue says it
+// waits, the refusals, the time left in words, the requests and replies on the wire, the state a
+// restart reads back, and how `status`, `ls` and the event log say it.
+import dev.avinlang.json
+import dev.avinlang.marshal
+import dev.avinlang.marshal.{OwnerReserve, ReserveUse, Request, Reply, SavedState, Usage, Waiting, Why}
+import dev.avinlang.marshal.{Held, QueueHeld, Starting, Behind, Reserved}
+import dev.avinlang.marshal.cli
+
+// `budget`, `hour`, `dev`, `land` and `roundTrip` are the scheduler's and the protocol's tests'.
+
+@test("owner reserve: only another owner's job that is not quick is kept waiting, and only before the end")
+ownerReserveWho()
+  val r = Some(OwnerReserve("rel0120", 10_000))
+  assert(marshal.reservedOut(r, "avin", false, 0))
+  assert(marshal.reservedOut(r, "", false, 9_999))
+  // the owner's own jobs, matched exactly
+  assert(!marshal.reservedOut(r, "rel0120", false, 0))
+  assert(marshal.reservedOut(r, "rel012", false, 0))
+  assert(marshal.reservedOut(r, "rel01200", false, 0))
+  assert(marshal.reservedOut(r, "REL0120", false, 0))
+  // the quick lane bypasses it
+  assert(!marshal.reservedOut(r, "avin", true, 0))
+  // at and after its end it keeps nothing waiting
+  assert(!marshal.reservedOut(r, "avin", false, 10_000))
+  assert(!marshal.reservedOut(r, "avin", false, 20_000))
+  // no reservation, nothing kept
+  assert(!marshal.reservedOut(None, "avin", false, 0))
+
+@test("owner reserve: a reserved-out job waits as reserved, keeps its place, and the others start as if it were not there")
+ownerReserveWaits()
+  val queue = [dev(1, 8), dev(2, 4), dev(3, 4)]
+  assertEq(
+    marshal.queueWaits(budget, [], queue, [], false, 0, reservedOut = [1], reservedFor = "rel0120"),
+    [(long(1), 1, Reserved("rel0120")), (long(2), 2, Starting), (long(3), 3, Starting)]
+  )
+  // every job reserved out: none starts
+  assertEq(
+    marshal.queueWaits(budget, [], queue, [], false, 0, reservedOut = [1, 2, 3], reservedFor = "r"),
+    [(long(1), 1, Reserved("r")), (long(2), 2, Reserved("r")), (long(3), 3, Reserved("r"))]
+  )
+
+@test("owner reserve: a reserved-out job is never the head the owner's jobs wait behind, nor drains for")
+ownerReserveNoHead()
+  val big = [dev(1, 12), dev(2, 12), Waiting(3, 1, 0, false, 2 * hour, 30)]
+  val busy = [marshal.Started(9, 6, 0, false, 0, hour)]
+  // without a reservation job 3 waits behind job 1
+  assertEq(marshal.queueWaits(budget, busy, big, [], false, 0)(2), (long(3), 3, Behind(1)))
+  // with 1 and 2 reserved out, job 3 starts at once
+  assertEq(
+    marshal.queueWaits(budget, busy, big, [], false, 0, reservedOut = [1, 2], reservedFor = "o")(2),
+    (long(3), 3, Starting)
+  )
+
+@test("owner reserve: a hold, and a held queue, still say so over a reservation")
+ownerReserveUnderHolds()
+  val queue = [dev(1, 1), dev(2, 1), land(3)]
+  assertEq(
+    marshal.queueWaits(budget, [], queue, [1], false, 0, reservedOut = [1, 2, 3], reservedFor = "o"),
+    [(long(1), 1, Held), (long(2), 2, Reserved("o")), (long(3), 1, Reserved("o"))]
+  )
+  assertEq(
+    marshal.queueWaits(budget, [], queue, [1], true, 0, reservedOut = [2], reservedFor = "o"),
+    [(long(1), 1, Held), (long(2), 2, QueueHeld), (long(3), 1, QueueHeld)]
+  )
+
+@test("owner reserve: an owner and a length are refused when missing, blank, spaced, zero or over a day")
+ownerReserveRefusals()
+  assertEq(marshal.reserveRefusal("rel0120", 3 * hour), None)
+  assertEq(marshal.reserveRefusal("r", 1), None)
+  assertEq(marshal.reserveRefusal("r", marshal.MaxReserveMs), None)
+  assert(marshal.reserveRefusal("", hour).get.contains("--owner"))
+  assert(marshal.reserveRefusal("a b", hour).get.contains("one word"))
+  assert(marshal.reserveRefusal("a\tb", hour).get.contains("one word"))
+  assert(marshal.reserveRefusal(" a", hour).get.contains("one word"))
+  assert(marshal.reserveRefusal("r", 0).get.contains("--for"))
+  assert(marshal.reserveRefusal("r", -5).get.contains("--for"))
+  assert(marshal.reserveRefusal("r", marshal.MaxReserveMs + 1).get.contains("at most 24h00m"))
+
+@test("owner reserve: the command line reads --owner and --for in either order and refuses everything else")
+ownerReserveCommandLine()
+  assertEq(cli.reserveRequest(["--owner", "rel0120", "--for", "3h"]), Ok(Request.Reserve("rel0120", 3 * hour)))
+  assertEq(cli.reserveRequest(["--for", "90m", "--owner", "x"]), Ok(Request.Reserve("x", 90 * 60000)))
+  assertEq(cli.reserveRequest(["--for", "45", "--owner", "x"]), Ok(Request.Reserve("x", 45 * 60000)))
+  assertEq(cli.reserveRequest(["--for", "30s", "--owner", "x"]), Ok(Request.Reserve("x", 30000)))
+  val refusedWith = (args: Vector[string], why: string) -> cli.reserveRequest(args) match
+    Err(e) -> assert(e.contains(why), s"$args: $e")
+    Ok(r) -> fail(s"$args read as $r")
+  refusedWith([], "--owner")
+  refusedWith(["--owner", "x"], "--for <t>")
+  refusedWith(["--for", "3h"], "--owner")
+  refusedWith(["--owner", "x", "--for"], "--for needs a value")
+  refusedWith(["--owner", "x", "--for", "soon"], "not `soon`")
+  refusedWith(["--owner", "x", "--for", "0"], "not `0`")
+  refusedWith(["--owner", "x", "--for", "25h"], "at most")
+  refusedWith(["--owner", "x", "--for", "1h", "--owner", "y"], "one --owner")
+  refusedWith(["--owner", "x", "--for", "1h", "--for", "2h"], "one --for")
+  refusedWith(["--owner", "x", "--for", "1h", "extra"], "not `extra`")
+  refusedWith(["--owner", "", "--for", "1h"], "--owner")
+
+@test("owner reserve: reserve and unreserve read back as themselves, and a bad one on the wire is refused")
+ownerReserveWire()
+  roundTrip(Request.Reserve("rel0120", 3 * hour))
+  roundTrip(Request.Unreserve)
+  assertEq(
+    marshal.encodeRequest(Request.Reserve("r", 60000)).render,
+    "{\"op\":\"reserve\",\"owner\":\"r\",\"for_ms\":60000}"
+  )
+  assertEq(marshal.encodeRequest(Request.Unreserve).render, "{\"op\":\"unreserve\"}")
+  assert(marshal.decodeRequest("{\"op\":\"reserve\",\"owner\":\"r\",\"for_ms\":0}").isErr)
+  assert(marshal.decodeRequest("{\"op\":\"reserve\",\"owner\":\"\",\"for_ms\":10}").isErr)
+  assert(marshal.decodeRequest("{\"op\":\"reserve\",\"for_ms\":10}").isErr)
+  assert(marshal.decodeRequest("{\"op\":\"reserve\",\"owner\":\"r\"}").isErr)
+
+@test("owner reserve: the status reply and a snapshot carry the reservation, and a queued job's reason names its owner")
+ownerReserveReplies()
+  val r = Some(ReserveUse("rel0120", 1_762_000_000_000, 2 * hour))
+  val u = Usage(4, 48, 0, 1024, 1, 2, None, None, reserve = r)
+  val text = marshal.encodeReply(Reply.Using(u)).render
+  assert(text.contains("\"reserve\":{\"owner\":\"rel0120\",\"until\":1762000000000,\"left_ms\":7200000}"), text)
+  marshal.decodeReply(text) match
+    Ok(Reply.Using(back)) -> assertEq(back.reserve, r)
+    other -> fail(s"read back as $other")
+  val none = marshal.encodeReply(Reply.Using(Usage(4, 48, 0, 1024, 1, 2, None, None))).render
+  assert(none.contains("\"reserve\":null"), none)
+  marshal.decodeReply(none) match
+    Ok(Reply.Using(back)) -> assertEq(back.reserve, None)
+    other -> fail(s"read back as $other")
+  val job = marshal.JobInfo(5, "build", 4, 0, false, "/d", ["make"], "queued", None, false, 0, 0, 60000, "/h/5.log", None)
+  val o = marshal.Overview(u, 1000, [], [marshal.QueuedJob(job, 1, Reserved("rel0120"))], [])
+  val snap = marshal.encodeOverview(o)
+  assertEq(snap("queued").asVector.get(0)("waits").asString, Some("reserved"))
+  assertEq(snap("queued").asVector.get(0)("reserved_for").asString, Some("rel0120"))
+  val back = marshal.decodeOverview(json.parse(snap.render).ok.get).ok.get
+  assertEq(back.queued(0).why, Reserved("rel0120"))
+  assertEq(back.usage.reserve, r)
+  assertEq(marshal.jobStatusJson(job, Some(Reserved("x")))("reserved_for").asString, Some("x"))
+
+@test("owner reserve: the time left reads 45s, 12m, 2h, 2h05m, rounded up so it never reads 0")
+ownerReserveLeft()
+  assertEq(marshal.leftText(1), "1s")
+  assertEq(marshal.leftText(45_000), "45s")
+  assertEq(marshal.leftText(59_001), "60s")
+  assertEq(marshal.leftText(60_000), "1m")
+  assertEq(marshal.leftText(60_001), "2m")
+  assertEq(marshal.leftText(12 * 60_000), "12m")
+  assertEq(marshal.leftText(59 * 60_000), "59m")
+  assertEq(marshal.leftText(hour), "1h")
+  assertEq(marshal.leftText(2 * hour), "2h")
+  assertEq(marshal.leftText(2 * hour + 5 * 60_000), "2h05m")
+  assertEq(marshal.leftText(2 * hour + 30 * 60_000), "2h30m")
+  assertEq(marshal.leftText(2 * hour - 1), "2h")
+  assertEq(marshal.leftText(marshal.MaxReserveMs), "24h")
+  assertEq(marshal.reserveText("rel0120", 2 * hour), "reserved for rel0120 (2h left)")
+
+@test("owner reserve: status names the reservation after the queue; ls and a queued job's reason say who it is for")
+ownerReserveWords()
+  val r = Some(ReserveUse("rel0120", 0, 2 * hour))
+  val line = marshal.usageLine(Usage(4, 48, 0, 1024, 1, 2, None, None, reserve = r))
+  assert(line.contains("; reserved for rel0120 (2h left): only its jobs and quick jobs start"), line)
+  assert(!marshal.usageLine(Usage(4, 48, 0, 1024, 1, 2, None, None)).contains("reserved"))
+  assertEq(cli.reserveState(r), "marshal: reserved for rel0120 (2h left): only its jobs and quick jobs start")
+  assertEq(cli.reserveState(None), "marshal: not reserved: every owner's jobs start")
+  assertEq(marshal.whyText(Reserved("rel0120")), "reserved for rel0120")
+  val job = marshal.JobInfo(5, "build", 4, 0, false, "/d", ["make"], "queued", None, false, 0, 0, 60000, "/h/5.log", None)
+  assertEq(marshal.stateWithWhy(job, [(long(5), Reserved("rel0120"))]), "queued (reserved for rel0120)")
+  assertEq(marshal.statusLine(job, Some(Reserved("rel0120"))).contains("is queued (reserved for rel0120)"), true)
+
+@test("owner reserve: the saved state keeps the reservation and its end, and a state without one reads as none")
+ownerReserveState()
+  val kept = SavedState("0.4.2", 501, 1_762_000_000_500, 1_761_999_000_000, 10, [], [], [], None, reserve = Some(
+    OwnerReserve("rel0120", 1_762_007_200_000)
+  ))
+  assertEq(marshal.decodeState(marshal.encodeState(kept).render), Ok(kept))
+  val without = SavedState("0.4.2", 501, 1_762_000_000_500, 1_761_999_000_000, 10, [], [], [], None)
+  assertEq(marshal.decodeState(marshal.encodeState(without).render), Ok(without))
+  // a state from before reservations has no `reserve`
+  val old = "{\"version\":\"0.4.1\",\"pid\":1,\"saved_at\":2,\"began_at\":1,\"next_id\":3,\"queue\":[],\"running\":[],\"ended\":[],\"ticket\":null}"
+  assertEq(marshal.decodeState(old).ok.get.reserve, None)
+  assert(marshal.decodeState(old.dropRight(1) + ",\"reserve\":{\"owner\":\"\",\"until\":5}}").isErr)
+  assert(marshal.decodeState(old.dropRight(1) + ",\"reserve\":{\"owner\":\"x\"}}").isErr)
+
+@test("owner reserve: its events name no job, are no lost job and no unreadable line to a daemon starting, and filters find them")
+ownerReserveEvents()
+  val line = marshal.machineEventLine(5, "reserved", [("owner", json.Json.str("r")), ("until", json.Json.num(9))])
+  assertEq(line, "{\"ts\":5,\"event\":\"reserved\",\"id\":0,\"owner\":\"r\",\"until\":9}")
+  val gone = marshal.machineEventLine(6, "reserve-expired", [("owner", json.Json.str("r"))])
+  val back = marshal.recover([line, gone, marshal.machineEventLine(7, "unreserved", [("owner", json.Json.str("r"))])])
+  assertEq(back.unreadable, 0)
+  assertEq(back.open.length, 0)
+  assertEq(back.nextId, 1)
+  // a line with no id that is not one of marshal's own is still unreadable
+  assertEq(marshal.recover(["{\"ts\":1,\"event\":\"started\"}"]).unreadable, 1)
+  for name in ["reserved", "unreserved", "reserve-expired"]
+    val f = marshal.parseFilter(name).ok.get
+    assert(marshal.admits(f, json.parse(marshal.machineEventLine(1, name, [])).ok.get), name)
+    assert(!marshal.admits(f, json.parse(marshal.machineEventLine(1, "held", [])).ok.get), name)
+  assert(marshal.admits(marshal.parseFilter("any").ok.get, json.parse(line).ok.get))
