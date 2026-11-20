@@ -17,7 +17,12 @@ compactToColumns()
   assertEq(rows.length, 2)
   for r in rows do assert(textWidth(r) <= 60, r)
   assert(rows(1).endsWith("…"), rows(1))
-  assertEq(mWith(home, [("COLUMNS", "60")], "ls", "-c").out, narrow.out)
+  // -c lists the same, the running job's ELAPSED aside, which moves between the two listings
+  val short = mWith(home, [("COLUMNS", "60")], "ls", "-c").out.lines.toVector
+  assertEq(short(0), rows(0))
+  assertEq(short.length, rows.length)
+  for r in short do assert(textWidth(r) <= 60, r)
+  assert(short(1).endsWith(rows(1).drop(rows(1).lastIndexOf("  "))), short(1))
   val wide = mWith(home, [("COLUMNS", "300")], "ls", "-c")
   assert(wide.out.contains("--padding-argument-three"), wide.out)
   assert(!wide.out.contains("…"), wide.out)
