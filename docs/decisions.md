@@ -2741,3 +2741,90 @@ selected row's reverse video (the theme's own pair, swapped), the meters' colour
 not text), and the coloured state words (green, yellow, red, from the theme's palette, which a
 theme sets for its own background). **Review with the user:** yellow state text on light themes
 whose yellow is pale; a fixed RGB yellow cannot reach 4.5:1 on both black and white by much.
+
+## 0.4.1: hold by filter, and release a group (branch `marshal-041`)
+
+2026-11-20. The queue was stuck: normal jobs waited behind a draining exclusive job (a held
+benchmark, 7753), the user held it by hand, and a batch started at once. Holding the exclusive jobs
+is now one command, and putting them back another. The items are **settled by the user
+2026-11-20**; the sub-choices under them are **settled on the user's delegation 2026-11-20**.
+
+### `hold` takes filters (holdmany.avin)
+
+**Settled by the user 2026-11-20.** `marshal hold --exclusive | --draining | --kind <k> | --label
+<glob>`, combined as an AND, holds in one step every job not started (queued, waiting for others,
+waiting to retry) that matches, prints the ids it held, and says so when none matches (exit 0).
+Running jobs are never touched. Sub-choices:
+
+- **`--exclusive` does not cover the jobs waiting `--after` a held exclusive job.** They cannot start
+  before it ends anyway, so holding them adds nothing, and releasing the group would have to know to
+  let them go too. A waiting exclusive job is itself held (holding applies to waiting jobs, as by
+  id). Alternative: holding the chain (a release of the exclusive job would leave its dependents
+  held, or the group would grow jobs the filter never named). **Review with the user.**
+- **`--draining` is what the queue waits behind now**: the job whose own reason is `draining` (the
+  job past `drain_after` or the urgent job that took the drain over, or a landing job draining for
+  memory), and an exclusive job or one that runs alone that the queue waits behind (`emptying`,
+  `load`, `polite: runs alone`). Read once, from the same reckoning `ls` shows, before any job is
+  held. Never the jobs that wait behind it (`draining for N`, `exclusive N`). With nothing draining
+  it says `the queue drains for no job now: nothing held` and exits 0.
+- **Landing jobs are skipped unless `--include-landing`, and counted**, as `kill`'s selectors do; so
+  `--draining` alone never holds a landing train. `--exclusive` with `--include-landing` is refused
+  (an exclusive job is never a landing job). Urgent and low jobs are held like any other: the filter
+  says which.
+- **`--label` is a glob over the whole given label** (`*`, `?`), case ignored as `kill --label`'s
+  text is; a derived label never matches, as for `kill`. Why a glob rather than `kill`'s "contains":
+  the brief asked for one, and a glob says both (`*bench*`) and an exact name. **Review with the
+  user:** two label matchers in one CLI.
+- **A job already held is left as it is**, in its group; it is not moved to the new group.
+- **Permission is unchanged: whoever can reach the daemon's socket may hold any job by id today, so
+  a filter may name any job too.** The socket is the user's own and only the user may write to it.
+  No per-owner check was added: a filtered hold that skipped another session's jobs would leave the
+  queue stuck, which is what it is for.
+- **Bad command lines exit 2 before the daemon is asked**: an id beside filters, an option given
+  twice, a missing value, an empty `--kind` or `--label`, an unknown option, `--group` on a hold with
+  no filter.
+
+### Groups
+
+**Settled by the user 2026-11-20.** A filtered hold records a group; `release --group <name>`
+releases exactly what that group still holds; `release` with filters releases by filter; `ls` and
+`status` show a held job's group, and `status --json` has `held_group`. Sub-choices:
+
+- **A group is a mark on each held job (`held_group`), not a list of its own.** "Minus jobs since
+  released or removed" then needs no bookkeeping: a job released by id or ended leaves it. Saved in
+  state.json, so a restart keeps it.
+- **The default name is the filters joined by `+` and the daemon's next group number**:
+  `exclusive-1`, `draining+kind=bench-2`, `label=sysl*-3`; the number counts only default names, and
+  survives a restart (`next_group`). `--group <name>` names it: one word of at most 80 characters.
+  A name that still holds jobs is refused for another hold (it would merge two holds into one
+  release). The hold prints the release command to paste, the name single-quoted, since a glob's
+  `*` would otherwise meet zsh's `NOMATCH`.
+- **`release --group` of a group that holds no job exits 1** (`no held jobs in group`): a script
+  learns its view was wrong, as `release <id>` of a job not held is refused. Release by filters that
+  match nothing exits 0, as hold's does. `--group` with filters releases that group's jobs that
+  match.
+- **`marshal groups`, a command of its own, rather than `ls --held`.** `ls` takes only `--compact`
+  today and its rows already show the group; a list of groups is a different shape (one line a group:
+  name, count, ids). It is computed by the command line from `ls`'s own jobs, so it needs no new
+  request.
+- **The `held` event carries `held_group`**; the `released` event, written once the job is let go,
+  does not.
+
+### Fairness
+
+**Settled by the user 2026-11-20.** A held job keeps its submit time and its arrival, so on release it
+returns to its queue position; the time held is not counted as waiting. Sub-choices:
+
+- **The wait is split into held and waiting.** While a job is held its ELAPSED shows `h` and the
+  time held (`h5m00s` in `ls`, `h5:00` in `top`), and its `w` wait stops counting; released, `w`
+  resumes, leaving the hold out. `queued_ms` leaves the hold out, `held_ms` gives it, and `status
+  <id>` says `, waited 12s, held 5m00s`. Why: "held for 5 minutes" is what someone looking at a held
+  job wants to see, and a `w` that kept counting would read as the job being starved. Alternative:
+  `w` going on counting (simplest, but it puts held time into the wait the user is shown and the
+  bound reads). **Review with the user.**
+- **The drain bound (`drain_after`) and low promotion leave the time held out too**, counting from
+  `arrived` plus the time held since: a benchmark held for an hour does not drain the machine the
+  moment it is released. Held time before the job last joined the queue (while it waited `--after`)
+  is not subtracted from a wait that only began at `arrived`.
+- **A retry starts the held clock again**, as it starts the wait again.
+- **A hold saved by an older daemon** (no `held_at`) counts as held from the restart.

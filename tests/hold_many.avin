@@ -1,0 +1,371 @@
+module tests
+
+// `hold` and `release` with filters, their pure parts: which selectors are refused, which jobs a
+// selector names, what the queue drains for, the label glob, a group's default name, the live
+// groups, the request and its reply on the wire, a held job's group and held time in the protocol,
+// the listing and `status`, the drain bound leaving held time out, the state a restart keeps, and
+// the usage.
+import dev.avinlang.json.Json
+import dev.avinlang.marshal
+import dev.avinlang.marshal.cli
+import dev.avinlang.marshal.{HoldSelector, JobInfo, JobSpec, Fairness, Waiting, SavedJob, SavedState}
+import dev.avinlang.marshal.{Draining, Emptying, Load, RunsAlone, DrainingFor, ForExclusive, Behind, NoUnits, NoMemory, Held, LowWaits, ForAlone}
+
+// Why the selector `s` is refused for a hold (`on`) or a release.
+holdRefusedWith(s: HoldSelector, on: bool, why: string) = marshal.holdSelectorRefusal(s, on) match
+  Some(e) -> assert(e.contains(why), e)
+  None -> fail(s"$s was not refused")
+
+// Whether `s` names a job, every other trait of the job a plain queued one not held.
+names(
+    s: HoldSelector,
+    on: bool = true,
+    state: string = "queued",
+    held: bool = false,
+    exclusive: bool = false,
+    landing: bool = false,
+    kind: string = "test",
+    label: string = "",
+    drains: bool = false,
+    group: string = ""
+) -> bool = marshal.holdNames(s, on, state, held, exclusive, landing, kind, label, drains, group)
+
+val excl: HoldSelector = HoldSelector(exclusive = true)
+
+@test("a hold needs a filter, a release a filter or a group; empty values, bad group names and --include-landing beside --exclusive are refused")
+holdSelectorRefusals()
+  for s in [
+    excl,
+    HoldSelector(draining = true),
+    HoldSelector(kind = Some("bench")),
+    HoldSelector(label = Some("sysl*")),
+    HoldSelector(exclusive = true, draining = true, kind = Some("bench"), label = Some("x"), group = Some("mine")),
+    HoldSelector(kind = Some("land"), includeLanding = true)
+  ]
+    assertEq(marshal.holdSelectorRefusal(s, true), None)
+    assertEq(marshal.holdSelectorRefusal(s, false), None)
+  // a release by group alone; a hold by group alone is not one
+  assertEq(marshal.holdSelectorRefusal(HoldSelector(group = Some("exclusive-3")), false), None)
+  holdRefusedWith(HoldSelector(group = Some("exclusive-3")), true, "--group names the group a hold makes")
+  holdRefusedWith(HoldSelector(), true, "give --exclusive, --draining, --kind or --label")
+  holdRefusedWith(HoldSelector(), false, "give --group, --exclusive, --draining, --kind or --label")
+  holdRefusedWith(HoldSelector(includeLanding = true), true, "give --exclusive")
+  holdRefusedWith(HoldSelector(includeLanding = true), false, "give --group")
+  holdRefusedWith(HoldSelector(kind = Some("")), true, "`--kind` needs a kind")
+  holdRefusedWith(HoldSelector(label = Some("")), false, "`--label` needs a glob")
+  holdRefusedWith(HoldSelector(group = Some("")), false, "`--group` needs a name")
+  holdRefusedWith(HoldSelector(exclusive = true, group = Some("two words")), true, "one word")
+  holdRefusedWith(HoldSelector(exclusive = true, group = Some("tab\there")), true, "one word")
+  holdRefusedWith(HoldSelector(group = Some("line\nbreak")), false, "one word")
+  holdRefusedWith(HoldSelector(group = Some("x".repeat(81))), false, "at most 80 characters, not 81")
+  assertEq(marshal.holdSelectorRefusal(HoldSelector(group = Some("é".repeat(80))), false), None)
+  holdRefusedWith(HoldSelector(exclusive = true, includeLanding = true), true, "never a landing job")
+  holdRefusedWith(HoldSelector(exclusive = true, includeLanding = true), false, "never a landing job")
+
+@test("only a job not started yet is named: queued, waiting or retrying; a hold names jobs not held, a release jobs held")
+holdNamesStates()
+  for state in ["queued", "waiting", "retrying"]
+    assert(names(excl, state = state, exclusive = true), state)
+    assert(names(excl, on = false, state = state, held = true, exclusive = true), state)
+  for state in ["running", "done", "", "settling"]
+    assert(!names(excl, state = state, exclusive = true), state)
+    assert(!names(excl, on = false, state = state, held = true, exclusive = true), state)
+  // a hold leaves a held job as it is; a release has nothing to do with one not held
+  assert(!names(excl, held = true, exclusive = true))
+  assert(!names(excl, on = false, held = false, exclusive = true))
+
+@test("each filter narrows, and together they are an AND")
+holdNamesFilters()
+  assert(names(excl, exclusive = true))
+  assert(!names(excl, exclusive = false))
+  val draining = HoldSelector(draining = true)
+  assert(names(draining, drains = true))
+  assert(!names(draining, drains = false))
+  val bench = HoldSelector(kind = Some("bench"))
+  assert(names(bench, kind = "bench"))
+  assert(!names(bench, kind = "Bench"))
+  assert(!names(bench, kind = "bench2"))
+  assert(!names(bench, kind = ""))
+  val label = HoldSelector(label = Some("sysl *"))
+  assert(names(label, label = "sysl test 3"))
+  assert(names(label, label = "SYSL bench"))
+  assert(!names(label, label = "a sysl test"))
+  assert(!names(label, label = ""))
+  val all = HoldSelector(exclusive = true, draining = true, kind = Some("bench"), label = Some("n*"))
+  assert(names(all, exclusive = true, drains = true, kind = "bench", label = "nbody"))
+  assert(!names(all, exclusive = false, drains = true, kind = "bench", label = "nbody"))
+  assert(!names(all, exclusive = true, drains = false, kind = "bench", label = "nbody"))
+  assert(!names(all, exclusive = true, drains = true, kind = "test", label = "nbody"))
+  assert(!names(all, exclusive = true, drains = true, kind = "bench", label = "fasta"))
+
+@test("a landing job is named only with --include-landing; --exclusive never names one")
+holdNamesLanding()
+  val kind = HoldSelector(kind = Some("test"))
+  assert(!names(kind, landing = true))
+  assert(names(HoldSelector(kind = Some("test"), includeLanding = true), landing = true))
+  assert(names(HoldSelector(kind = Some("test"), includeLanding = true), landing = false))
+  // a landing train that drains the machine is not held by --draining alone
+  assert(!names(HoldSelector(draining = true), landing = true, drains = true))
+  assert(names(HoldSelector(draining = true, includeLanding = true), landing = true, drains = true))
+  // a landing job is never exclusive, so --exclusive cannot name it
+  assert(!names(excl, landing = true))
+
+@test("a release with a group names only that group's jobs; a hold's group does not select")
+holdNamesGroup()
+  val g = HoldSelector(group = Some("exclusive-3"))
+  assert(names(g, on = false, held = true, group = "exclusive-3"))
+  assert(!names(g, on = false, held = true, group = "exclusive-4"))
+  assert(!names(g, on = false, held = true, group = ""))
+  assert(!names(g, on = false, held = false, group = ""))
+  val gx = HoldSelector(exclusive = true, group = Some("exclusive-3"))
+  assert(names(gx, on = false, held = true, exclusive = true, group = "exclusive-3"))
+  assert(!names(gx, on = false, held = true, exclusive = false, group = "exclusive-3"))
+  // release by filter takes held jobs of every group, and jobs held by id
+  assert(names(excl, on = false, held = true, exclusive = true, group = "mine"))
+  assert(names(excl, on = false, held = true, exclusive = true, group = ""))
+  // a hold's group is the one it makes
+  assert(names(HoldSelector(exclusive = true, group = Some("new")), exclusive = true, group = ""))
+
+@test("the queue drains for the job a drain is for and for an exclusive or alone job holding it back, never for those that wait behind")
+drainsNowReasons()
+  assert(marshal.drainsNow(Draining))
+  assert(marshal.drainsNow(Emptying))
+  assert(marshal.drainsNow(Load(3.0, 1.5, 0)))
+  assert(marshal.drainsNow(RunsAlone))
+  for why in [DrainingFor(1), ForExclusive(1), ForAlone(1), Behind(1), NoUnits, NoMemory, Held, LowWaits]
+    assert(!marshal.drainsNow(why), s"$why")
+
+@test("a label glob matches the whole label: * any run, ? one character, case ignored")
+labelGlobs()
+  for (p, t) in [
+    ("*", ""),
+    ("*", "anything"),
+    ("bench", "bench"),
+    ("bench", "BENCH"),
+    ("BeNcH", "bench"),
+    ("bench*", "bench"),
+    ("bench*", "bench nbody"),
+    ("*nbody", "bench nbody"),
+    ("*nb*", "bench nbody 3"),
+    ("b?nch", "bench"),
+    ("??", "ab"),
+    ("a*b*c", "aXXbYYc"),
+    ("a*b*c", "abc"),
+    ("a**c", "ac"),
+    ("*a*a*", "banana"),
+    ("é*", "École"),
+    ("café", "CAFÉ"),
+    ("ж?к", "жук")
+  ]
+    assert(marshal.globMatches(p, t), s"$p ~ $t")
+  for (p, t) in [
+    ("bench", "bench nbody"),
+    ("bench", "a bench"),
+    ("bench", ""),
+    ("", "x"),
+    ("b?nch", "bnch"),
+    ("??", "a"),
+    ("??", "abc"),
+    ("a*b*c", "aXXbYY"),
+    ("*x", "xy"),
+    ("x*", "yx")
+  ]
+    assert(!marshal.globMatches(p, t), s"$p !~ $t")
+  assert(marshal.globMatches("", ""))
+
+@test("a group's default name is its filters and a number")
+defaultGroupNames()
+  assertEq(marshal.defaultGroupName(excl, 3), "exclusive-3")
+  assertEq(marshal.defaultGroupName(HoldSelector(draining = true), 1), "draining-1")
+  assertEq(marshal.defaultGroupName(HoldSelector(draining = true, kind = Some("bench")), 4), "draining+kind=bench-4")
+  assertEq(marshal.defaultGroupName(HoldSelector(label = Some("sysl*")), 5), "label=sysl*-5")
+  assertEq(
+    marshal.defaultGroupName(HoldSelector(exclusive = true, draining = true, kind = Some("k"), label = Some("l")), 12),
+    "exclusive+draining+kind=k+label=l-12"
+  )
+  // a default name is a name a release takes
+  assertEq(marshal.groupNameRefusal(marshal.defaultGroupName(HoldSelector(label = Some("a*")), 9)), None)
+
+@test("the live groups are the groups held jobs are in, in the order of their first job; a job held by id is in none")
+liveGroupsListed()
+  assertEq(marshal.liveGroups([]), Vector[(string, Vector[long])]())
+  assertEq(marshal.liveGroups([(long(3), "")]), Vector[(string, Vector[long])]())
+  assertEq(
+    marshal.liveGroups([(long(9), "b"), (long(2), "a"), (long(5), ""), (long(4), "b"), (long(7), "a")]),
+    [("a", [long(2), long(7)]), ("b", [long(4), long(9)])]
+  )
+  assertEq(marshal.groupsText([]), "marshal: no groups are held")
+  assertEq(
+    marshal.groupsText([("exclusive-3", [long(7753), long(7760)]), ("x", [long(8)])]),
+    "exclusive-3  2 jobs  7753,7760\nx            1 job   8"
+  )
+
+// The selector `s` goes over the wire and back as itself.
+holdTrip(s: HoldSelector, on: bool) = assertEq(
+  marshal.decodeRequest(marshal.encodeRequest(marshal.HoldMany(s, on)).render),
+  Ok(marshal.HoldMany(s, on))
+)
+
+@test("a hold or release request carries only what its selector sets, and reads back as itself")
+holdRequestRoundTrip()
+  for on in [true, false]
+    holdTrip(excl, on)
+    holdTrip(HoldSelector(draining = true), on)
+    holdTrip(HoldSelector(kind = Some("bench"), label = Some("é *")), on)
+    holdTrip(HoldSelector(exclusive = true, draining = true, kind = Some("k"), label = Some("l"), group = Some("g")), on)
+    holdTrip(HoldSelector(kind = Some("land"), includeLanding = true), on)
+  holdTrip(HoldSelector(group = Some("exclusive-3")), false)
+  val hold = marshal.encodeRequest(marshal.HoldMany(excl, true)).render
+  assert(hold.contains("\"op\":\"hold_many\""), hold)
+  assert(!hold.contains("draining") && !hold.contains("kind") && !hold.contains("group"), hold)
+  val release = marshal.encodeRequest(marshal.HoldMany(HoldSelector(group = Some("g")), false)).render
+  assert(release.contains("\"op\":\"release_many\""), release)
+  // the hold by id is as it was
+  assertEq(marshal.decodeRequest("{\"op\":\"hold\",\"id\":3}"), Ok(marshal.Hold(3)))
+  assertEq(marshal.decodeRequest("{\"op\":\"release\",\"id\":3}"), Ok(marshal.Release(3)))
+
+@test("a hold or release request that selects nothing, or badly, or is not typed, is refused as a command line would be")
+holdRequestRefused()
+  for text in [
+    "{\"op\":\"hold_many\"}",
+    "{\"op\":\"release_many\"}",
+    "{\"op\":\"hold_many\",\"group\":\"g\"}",
+    "{\"op\":\"hold_many\",\"kind\":\"\"}",
+    "{\"op\":\"release_many\",\"label\":\"\"}",
+    "{\"op\":\"release_many\",\"group\":\"a b\"}",
+    "{\"op\":\"hold_many\",\"exclusive\":true,\"include_landing\":true}",
+    "{\"op\":\"hold_many\",\"exclusive\":\"yes\"}",
+    "{\"op\":\"hold_many\",\"kind\":3}",
+    "{\"op\":\"release_many\",\"group\":7}"
+  ]
+    assert(marshal.decodeRequest(text).isErr, text)
+  // null reads as not given
+  assertEq(
+    marshal.decodeRequest("{\"op\":\"hold_many\",\"exclusive\":true,\"kind\":null,\"group\":null}"),
+    Ok(marshal.HoldMany(excl, true))
+  )
+
+@test("the jobs a hold or release took, its group and the landing jobs it left go over the wire and back")
+holdReplyRoundTrip()
+  for reply in [
+    marshal.HeldJobs([], "", 0),
+    marshal.HeldJobs([], "", 2),
+    marshal.HeldJobs([long(7753)], "exclusive-1", 0),
+    marshal.HeldJobs([long(1), long(2), long(3)], "label=é*-4", 1),
+    marshal.HeldJobs([long(5)], "", 0)
+  ]
+    assertEq(marshal.decodeReply(marshal.encodeReply(reply).render), Ok(reply))
+
+// A queued job as the daemon describes it, held or not, in `group`, held for `heldMs`, after waiting
+// `queuedMs` not held.
+heldInfo(held: bool = true, group: string = "", heldMs: long = 0, queuedMs: long = 0, state: string = "queued") -> JobInfo =
+  JobInfo(
+    7, "bench", 4, 0, false, "/", ["nbody"], state, None, false, queuedMs, 0, 0, "/h/jobs/7.log", None,
+    held = held, heldGroup = group, heldMs = heldMs
+  )
+
+@test("a held job's group and held time go into the JSON only where there are some, and read back")
+heldJobJson()
+  val plain = marshal.encodeJob(heldInfo(false)).render
+  assert(!plain.contains("held_group") && !plain.contains("held_ms"), plain)
+  val byId = marshal.encodeJob(heldInfo(true, "", 5000)).render
+  assert(!byId.contains("held_group") && byId.contains("\"held_ms\":5000"), byId)
+  val grouped = heldInfo(true, "exclusive-3", 120000, 30000)
+  val text = marshal.encodeJob(grouped).render
+  assert(text.contains("\"held_group\":\"exclusive-3\""), text)
+  assert(text.contains("\"held_ms\":120000") && text.contains("\"queued_ms\":30000"), text)
+  assertEq(marshal.decodeJob(marshal.encodeJob(grouped)), Ok(grouped))
+  // what marshal wrote before groups reads as none
+  assertEq(marshal.decodeJob(marshal.encodeJob(heldInfo(false))), Ok(heldInfo(false)))
+
+@test("ls shows a held job's group, and ELAPSED how long it has been held, marked h; released, w and its wait without the hold")
+heldListing()
+  assertEq(marshal.stateColumn(heldInfo(true, "exclusive-3")), "held [exclusive-3]")
+  assertEq(marshal.stateColumn(heldInfo(true, "")), "held")
+  val waiting = JobInfo(
+    7, "bench", 4, 0, false, "/", ["nbody"], "waiting", None, false, 0, 0, 0, "/h/jobs/7.log", None,
+    held = true, after = [3], heldGroup = "g"
+  )
+  assertEq(marshal.stateColumn(waiting), "held [g] after 3")
+  assertEq(marshal.elapsedColumn(heldInfo(true, "g", 5 * 60000, 7000), 0), "h5m00s")
+  assertEq(marshal.elapsedColumn(heldInfo(true, "", 0, 7000), 0), "h0ms")
+  assertEq(marshal.elapsedColumn(heldInfo(false, "", 5 * 60000, 7000), 0), "w7.0s")
+  assertEq(marshal.elapsedColumn(heldInfo(false, "", 0, 7000), 0), "w7.0s")
+  // the state cell with reasons: a held job's own word, never `queued (held)`
+  assertEq(marshal.stateWithWhy(heldInfo(true, "g"), [(long(7), Held)]), "held [g]")
+
+@test("status says the wait without the hold, then how long it was held")
+heldStatusLine()
+  assertEq(
+    marshal.statusLine(heldInfo(true, "exclusive-3", 300000, 12000), Some(Held)),
+    "marshal: job 7 is queued (held), waited 12.0s, held 5m00s; log /h/jobs/7.log"
+  )
+  assertEq(
+    marshal.statusLine(heldInfo(false, "", 300000, 12000), Some(NoUnits)),
+    "marshal: job 7 is queued (no units), waited 12.0s, held 5m00s; log /h/jobs/7.log"
+  )
+  assertEq(
+    marshal.statusLine(heldInfo(false, "", 0, 12000), Some(NoUnits)),
+    "marshal: job 7 is queued (no units), waited 12.0s; log /h/jobs/7.log"
+  )
+
+val heldBound: long = 10 * 60000
+
+// A development job of 12 units that arrived at 0 and was held for `heldMs` since.
+heldWaiting(id: long, heldMs: long) -> Waiting = Waiting(id, 12, 0, false, 60000, 0, heldMicros = heldMs * 1000)
+
+@test("the time a job was held does not count toward the drain bound, and its arrival keeps its place")
+heldTimeLeavesTheBound()
+  val at = (ms: long) -> Fairness(heldBound, ms * 1000)
+  // the wall clock in microseconds, the wait in milliseconds
+  assertEq(marshal.waitedMs(heldWaiting(1, 0), 11 * 60000 * 1000), 11 * 60000)
+  assertEq(marshal.waitedMs(heldWaiting(1, 4 * 60000), 11 * 60000 * 1000), 7 * 60000)
+  // never held: past the bound at 10 minutes
+  assertEq(marshal.drainTarget([heldWaiting(1, 0)], at(heldBound)).map(w -> w.id), Some(long(1)))
+  // held for 4 minutes: not until 14
+  assertEq(marshal.drainTarget([heldWaiting(1, 4 * 60000)], at(heldBound)), None)
+  assertEq(marshal.drainTarget([heldWaiting(1, 4 * 60000)], at(14 * 60000 - 1)), None)
+  assertEq(marshal.drainTarget([heldWaiting(1, 4 * 60000)], at(14 * 60000)).map(w -> w.id), Some(long(1)))
+  // two jobs past the bound: the first in queue order drains, its place kept by arrival
+  val q = [heldWaiting(1, 60000), heldWaiting(2, 0)]
+  assertEq(marshal.drainTarget(q, at(20 * 60000)).map(w -> w.id), Some(long(1)))
+  // a job behind that was never held passes the bound first
+  assertEq(marshal.drainTarget(q, at(10 * 60000)).map(w -> w.id), Some(long(2)))
+
+@test("a restart keeps a job's hold: its group, its held time, when its hold began, and the next group number")
+heldStateRoundTrip()
+  val spec = JobSpec("bench", 4, 0, false, "/", None, ["nbody"], [])
+  val held = SavedJob(
+    7, spec, "queued", 1, 2, 0, 0, 600000, 60000, "/h/jobs/7.log", 0, 0, None, false, false, None, 0, 0,
+    held = true, heldGroup = "exclusive-3", heldMs = 4000, heldAt = 1_762_000_000_000, heldBeforeQueue = 1000
+  )
+  val state = SavedState("0.4.1", 501, 1_762_000_000_500, 1_761_999_000_000, 10, [held], [], [], None, nextGroup = 4)
+  assertEq(marshal.decodeState(marshal.encodeState(state).render), Ok(state))
+  val text = marshal.encodeState(state).render
+  for key in ["\"held_group\":\"exclusive-3\"", "\"held_ms\":4000", "\"held_at\":1762000000000", "\"held_before_queue\":1000", "\"next_group\":4"]
+    assert(text.contains(key), key)
+  // a state saved before holds were grouped and timed reads as none, and the first group number
+  val old = text.replace(",\"held_group\":\"exclusive-3\",\"held_ms\":4000,\"held_at\":1762000000000,\"held_before_queue\":1000", "").replace(
+    ",\"next_group\":4",
+    ""
+  )
+  assert(!old.contains("held_group") && !old.contains("next_group"), old)
+  val read = marshal.decodeState(old).ok.get
+  assertEq(read.nextGroup, long(1))
+  assertEq(read.queue(0).heldGroup, "")
+  assertEq(read.queue(0).heldMs, long(0))
+  assertEq(read.queue(0).heldAt, long(0))
+  assert(read.queue(0).held)
+
+@test("hold and release name their filters and groups in their usage, and the command list names groups")
+holdUsage()
+  for name in ["hold", "release"]
+    val help = cli.commandHelp(name).get
+    for word in ["--exclusive", "--draining", "--kind", "--label", "--group", "--include-landing", "marshal groups", "exits 0", "exits 1", "release --group"]
+      assert(help.contains(word), s"$name: $word")
+  assert(cli.commandHelp("hold").get.startsWith("usage: marshal hold <id> | <filters>"))
+  assert(cli.commandHelp("release").get.startsWith("usage: marshal release <id> | --group <name> | <filters>"))
+  assert(cli.commandHelp("groups").isDefined)
+  assert(!cli.commandHelp("kill").get.contains("--draining"))
+  assert(cli.asksHelp("hold", ["--exclusive", "--help"]))
+  assert(cli.usage.contains("marshal groups"))

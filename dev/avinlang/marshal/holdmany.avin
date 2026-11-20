@@ -1,0 +1,152 @@
+module dev.avinlang.marshal
+
+// `marshal hold` and `release` with filters instead of an id: every queued exclusive job, the job the
+// queue drains for, the jobs of a kind or whose label matches a glob, combined as an AND. A filtered
+// hold puts the jobs it holds in a group, named after its filters or by `--group`, and `release
+// --group` lets exactly that group go again. The daemon makes the whole selection in one step
+// (daemon.avin's `holdMany`); what is decided here is pure.
+//
+// A held job keeps its arrival, so on release it takes its place in the queue again; the time it is
+// held is not counted as waiting, for the `w` in ELAPSED, `queued_ms` and the drain bound alike.
+
+// Which jobs a filtered `hold` or `release` names. `exclusive`: exclusive jobs; `draining`: the jobs
+// the queue drains for now (`drainsNow`); `kind`: jobs of that kind, exactly; `label`: jobs whose
+// label matches the glob (`globMatches`). On `hold`, `group` names the group the held jobs are put
+// in; on `release`, it selects the jobs held in that group. A landing job is left alone unless
+// `includeLanding`.
+data HoldSelector(
+    exclusive: bool = false,
+    draining: bool = false,
+    kind: Option[string] = None,
+    label: Option[string] = None,
+    group: Option[string] = None,
+    includeLanding: bool = false
+)
+
+// The longest group name, in characters.
+val MaxGroup: int = 80
+
+// Whether a selector has a filter other than its group.
+hasFilter(s: HoldSelector) -> bool = s.exclusive || s.draining || s.kind.isDefined || s.label.isDefined
+
+// Why a selector is not one for a `hold` (`on`) or a `release`, or None where it is. A hold needs a
+// filter (the group only names what it holds); a release needs a filter or a group.
+holdSelectorRefusal(s: HoldSelector, on: bool) -> Option[string]
+  if on && !hasFilter(s)
+    return Some(
+      if s.group.isDefined then "--group names the group a hold makes: give --exclusive, --draining, --kind or --label to say which jobs to hold"
+      else "give --exclusive, --draining, --kind or --label to say which jobs to hold"
+    )
+  if !on && !hasFilter(s) && s.group.isEmpty
+    return Some("give --group, --exclusive, --draining, --kind or --label to say which jobs to release")
+  if s.kind.exists(k -> k.isEmpty) then return Some("`--kind` needs a kind")
+  if s.label.exists(l -> l.isEmpty) then return Some("`--label` needs a glob a label matches")
+  for g in s.group.toList
+    for why in groupNameRefusal(g).toList do return Some(why)
+  if s.exclusive && s.includeLanding
+    return Some("an exclusive job is never a landing job: --include-landing adds nothing to --exclusive")
+  None
+
+// Why `name` cannot name a group, or None where it can: one word of 1 to `MaxGroup` printable
+// characters, no space or control character in it.
+groupNameRefusal(name: string) -> Option[string]
+  if name.isEmpty then return Some("`--group` needs a name")
+  if name.chars.exists(c -> c <= ' ' || '\u{7f}' <= c <= '\u{9f}')
+    return Some("a group's name is one word: no space, tab or other control character")
+  if name.charCount > MaxGroup then return Some(s"a group's name is at most $MaxGroup characters, not ${name.charCount}")
+  None
+
+// Whether a job is among those `s` names for a hold (`on`) or a release. `state` is the daemon's
+// (queued, waiting, retrying, running, done): only a job that has not started is ever named, held
+// (for a release) or not (for a hold). `drains` says the queue drains for it now (`drainsNow`), and
+// `group` is the group it is held in ("" for none). A landing job is named only with
+// `includeLanding` (`holdsLanding`).
+holdNames(
+    s: HoldSelector,
+    on: bool,
+    state: string,
+    held: bool,
+    exclusive: bool,
+    landing: bool,
+    kind: string,
+    label: string,
+    drains: bool,
+    group: string
+) -> bool
+  if state != "queued" && state != "waiting" && state != "retrying" then return false
+  if held == on then return false
+  if landing && !s.includeLanding then return false
+  if s.exclusive && !exclusive then return false
+  if s.draining && !drains then return false
+  if s.kind.exists(k -> k != kind) then return false
+  if s.label.exists(g -> !globMatches(g, label)) then return false
+  // a hold's group is the one it makes; a release's selects
+  if !on && s.group.exists(g -> g != group) then return false
+  true
+
+// Whether a job waiting for this reason is one the queue drains for: the job a drain is for (its
+// own reason `draining`), and an exclusive job, or one that runs alone, that holds the queue behind
+// it while it waits for the machine to empty or for the load (its own reason `emptying`, `load` or
+// `polite: runs alone`).
+drainsNow(why: Why) -> bool
+drainsNow(Draining) = true
+drainsNow(Emptying) = true
+drainsNow(Load(_, _, _)) = true
+drainsNow(RunsAlone) = true
+drainsNow(_) = false
+
+// Whether `text` matches the glob `pattern` as a whole, upper and lower case alike: `*` matches any
+// run of characters, none included, `?` any one character, and every other character itself.
+globMatches(pattern: string, text: string) -> bool
+  val p = pattern.toLower.chars.toVector
+  val t = text.toLower.chars.toVector
+  var i = 0
+  var j = 0
+  // the last `*` met in the pattern, and where in the text its match ends for now
+  var star = -1
+  var mark = 0
+  while j < t.length
+    if i < p.length && p(i) != '*' && (p(i) == '?' || p(i) == t(j))
+      i += 1
+      j += 1
+    elif i < p.length && p(i) == '*'
+      star = i
+      mark = j
+      i += 1
+    elif star >= 0
+      i = star + 1
+      mark += 1
+      j = mark
+    else
+      return false
+  while i < p.length && p(i) == '*' do i += 1
+  i == p.length
+
+// The name of the group a filtered hold makes when it is not given one: its filters, joined by `+`,
+// then `-` and the daemon's next group number: `exclusive-3`, `draining+kind=bench-4`,
+// `label=sysl*-5`.
+defaultGroupName(s: HoldSelector, n: long) -> string
+  val words = Buffer[string]()
+  if s.exclusive then words += "exclusive"
+  if s.draining then words += "draining"
+  for k in s.kind.toList do words += "kind=" + k
+  for l in s.label.toList do words += "label=" + l
+  words.mkString("+") + "-" + n.toString()
+
+// The groups that hold jobs now, each with its held jobs' ids in order, the groups in the order of
+// their first job. `jobs` are (id, group) of the held jobs; a job held by id has group "".
+liveGroups(jobs: Vector[(long, string)]) -> Vector[(string, Vector[long])]
+  val names = Buffer[string]()
+  for (_, g) in jobs.sortBy(j -> j.0)
+    if g.nonEmpty && !names.contains(g) then names += g
+  names.toVector.map(g -> (g, jobs.filter(j -> j.1 == g).map(j -> j.0).sorted))
+
+// What `marshal groups` prints: one line a group, its name, how many jobs it holds and their ids;
+// or a line that says none is held.
+groupsText(groups: Vector[(string, Vector[long])]) -> string
+  if groups.isEmpty then return "marshal: no groups are held"
+  val width = groups.map(g -> g.0.charCount).max
+  groups.map(g ->
+    val n = g.1.length
+    s"${g.0.padEnd(width, ' ')}  $n ${if n == 1 then "job " else "jobs"}  ${g.1.map(id -> id.toString()).mkString(",")}"
+  ).mkString("\n")

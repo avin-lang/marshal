@@ -46,12 +46,17 @@ statusLine(j: JobInfo, why: Option[Why]) -> string
 
 // `, waited 12m03s` for a job not running yet (queued, held, waiting for others or to retry; not a
 // settling one, whose wait is for the load), counted since it last began to wait; "" otherwise.
+// The time it was held is not waiting: it follows as `, held 5m00s` where it has been held.
 waitedFor(j: JobInfo) -> string =
-  if notRunYet(j) && !settling(j) then s", waited ${formatMillis(j.queuedMs)}" else ""
+  if notRunYet(j) && !settling(j) then s", waited ${formatMillis(j.queuedMs)}${heldFor(j)}" else ""
+
+// `, held 5m00s` for a job not running yet that has been held since it last began to wait; "" for
+// any other.
+heldFor(j: JobInfo) -> string = if j.heldMs > 0 then s", held ${formatMillis(j.heldMs)}" else ""
 
 // A job's state as a listing's column shows it: a job waiting for others with the jobs it waits
 // for (`after 3,4`), a job waiting to retry with the attempt it will make, and a job held by hand
-// as `held`.
+// as `held`, with the group a filtered hold put it in (`held [exclusive-3]`).
 stateColumn(j: JobInfo) -> string = j.outcome match
   Some(Exited(code)) -> s"exit $code"
   Some(Signalled(sig)) -> if j.killed then "killed" else s"signal $sig"
@@ -62,7 +67,9 @@ stateColumn(j: JobInfo) -> string = j.outcome match
   Some(DependencyFailed(after)) -> s"dep $after failed"
   None ->
     val waits = "after " + j.after.map(id -> id.toString()).mkString(",")
-    if j.held then (if j.state == "waiting" then "held " + waits else "held")
+    if j.held
+      val held = if j.heldGroup.nonEmpty then s"held [${j.heldGroup}]" else "held"
+      if j.state == "waiting" then held + " " + waits else held
     elif j.paused then "paused"
     else j.state match
       "waiting" -> waits
@@ -77,9 +84,14 @@ notRunYet(j: JobInfo) -> bool = j.outcome.isEmpty && (
 // The ELAPSED column for `ms` of run time: for a job that has not started, how long it has waited
 // (`queued_ms` in the JSON) marked `w` (`waitedText`), except that a settling job shows how long it
 // has waited for the load (`settlingMs`), which is not run time; once it runs, the column counts its
-// run from 0.
+// run from 0. A job held now shows how long it has been held instead, marked `h` (`heldText`): its
+// wait does not count while it is held.
 elapsedColumn(j: JobInfo, ms: long) -> string =
-  if settling(j) then formatMillis(j.settlingMs) elif notRunYet(j) then waitedText(formatMillis(j.queuedMs)) else formatMillis(ms)
+  if settling(j) then formatMillis(j.settlingMs) elif notRunYet(j) && j.held then heldText(formatMillis(j.heldMs)) elif notRunYet(j) then waitedText(formatMillis(j.queuedMs)) else formatMillis(ms)
+
+// How long a job held now has been held since it last began to wait, marked `h`: `h5m00s` in `ls`,
+// `h5:00` in `top`.
+heldText(time: string) -> string = "h" + time
 
 // How long a job not running yet (queued, held, waiting for others, waiting to retry) has waited,
 // marked `w` so it is never read as run time: `w12m03s` in `ls`, `w12:03` in `top`. `time` is the

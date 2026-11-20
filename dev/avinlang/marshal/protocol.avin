@@ -6,7 +6,7 @@ import dev.avinlang.json
 import dev.avinlang.json.Json
 
 // marshal's version, as `avin.hocon` gives it: what `marshal version` and `marshal restart` print.
-val Version: string = "0.4.0"
+val Version: string = "0.4.1"
 
 // What a job is to run and how much of the machine it takes. `urgent` queues it in its lane's urgent
 // band, behind the urgent jobs already queued and ahead of every other. `after` names the jobs it
@@ -150,6 +150,9 @@ data Request
   // Keeps one queued job from starting, and lets it start again.
   Hold(id: long)
   Release(id: long)
+  // Holds (`on`) or releases every job a selector names, in one step (holdmany.avin); a hold puts
+  // them in a group.
+  HoldMany(selector: HoldSelector, on: bool)
   // Places a queued job: by a priority number among the jobs not urgent, or at the back of its
   // lane's urgent band.
   Prioritize(id: long, priority: Priority)
@@ -297,6 +300,9 @@ retryable(_, _) = false
 // `waitText` is why a queued job waits, in full (`needText`: what it needs and what is free, the job
 // it waits for and when), "" for any other. `labelFrom` is `cmd` where `label` was derived from the
 // command because none was given (memory.avin's `derivedLabel`), "" for a given label or none.
+// `heldGroup` is the group a filtered hold put a held job in (holdmany.avin), "" for none, and
+// `heldMs` how long a job not running yet has been held since it last began to wait, its current hold
+// included: time not counted in `queuedMs`.
 data JobInfo(
     id: long,
     kind: string,
@@ -352,7 +358,9 @@ data JobInfo(
     amended: bool = false,
     low: bool = false,
     waitText: string = "",
-    labelFrom: string = ""
+    labelFrom: string = "",
+    heldGroup: string = "",
+    heldMs: long = 0
 )
 
 // Whether a job is settling: an exclusive job with the machine to itself that waits only for the
@@ -573,6 +581,9 @@ data Reply
   Amended(changes: string, hint: string = "")
   // The jobs a `KillMany` stopped, by id, and how many matching landing jobs it left alone.
   KilledJobs(jobs: Vector[StoppedJob], skippedLanding: int = 0)
+  // The jobs a `HoldMany` held or released, by id, the group a hold put them in ("" for a release),
+  // and how many matching landing jobs it left alone.
+  HeldJobs(ids: Vector[long], group: string = "", skippedLanding: int = 0)
   Done
   Failed(message: string)
   // A request about a job that has ended, which only a job that has not may be asked: refused, as
@@ -633,6 +644,9 @@ encodeRequest(Prioritize(id, LowBand)) = Json.obj(
 encodeRequest(KillMany(s)) = Json.Obj(
   [("op", Json.str("kill_many"))] ++ killSelectorMembers(s)
 )
+encodeRequest(HoldMany(s, on)) = Json.Obj(
+  [("op", Json.str(if on then "hold_many" else "release_many"))] ++ holdSelectorMembers(s)
+)
 encodeRequest(Amend(id, a)) = Json.Obj(
   [("op", Json.str("amend")), ("id", Json.num(id))] ++ amendmentMembers(a)
 )
@@ -670,6 +684,33 @@ private decodeKillSelector(j: Json) -> Result[KillSelector, string]
     optional(j, "dry_run", v -> v.asBool, "a bool", false)?
   )
   for why in killSelectorRefusal(s).toList do return Err(why)
+  Ok(s)
+
+// A selector's members of a `hold_many` or `release_many` request: only what it sets.
+private holdSelectorMembers(s: HoldSelector) -> Vector[(string, Json)]
+  val out = Buffer[(string, Json)]()
+  if s.exclusive then out += ("exclusive", Json.Bool(true))
+  if s.draining then out += ("draining", Json.Bool(true))
+  for k in s.kind.toList do out += ("kind", Json.str(k))
+  for l in s.label.toList do out += ("label", Json.str(l))
+  for g in s.group.toList do out += ("group", Json.str(g))
+  if s.includeLanding then out += ("include_landing", Json.Bool(true))
+  out.toVector
+
+// A `hold_many` (`on`) or `release_many` request's selector.
+private decodeHoldSelector(j: Json, on: bool) -> Result[HoldSelector, string]
+  val kind = if j.has("kind") && j("kind") != Json.Null then Some(field(j, "kind", v -> v.asString, "a string")?) else None
+  val label = if j.has("label") && j("label") != Json.Null then Some(field(j, "label", v -> v.asString, "a string")?) else None
+  val group = if j.has("group") && j("group") != Json.Null then Some(field(j, "group", v -> v.asString, "a string")?) else None
+  val s = HoldSelector(
+    optional(j, "exclusive", v -> v.asBool, "a bool", false)?,
+    optional(j, "draining", v -> v.asBool, "a bool", false)?,
+    kind,
+    label,
+    group,
+    optional(j, "include_landing", v -> v.asBool, "a bool", false)?
+  )
+  for why in holdSelectorRefusal(s, on).toList do return Err(why)
   Ok(s)
 
 // An amendment's members of an `amend` request: only the settings it changes.
@@ -977,6 +1018,8 @@ decodeRequest(text: string) -> Result[Request, string]
       )
     )
     "kill_many" -> Ok(KillMany(decodeKillSelector(j)?))
+    "hold_many" -> Ok(HoldMany(decodeHoldSelector(j, true)?, true))
+    "release_many" -> Ok(HoldMany(decodeHoldSelector(j, false)?, false))
     "amend" -> Ok(Amend(field(j, "id", v -> v.asLong, "a whole number")?, decodeAmendment(j)?))
     "clean" ->
       val older = optional(j, "older_ms", someLong, "a whole number", None)?
@@ -1069,6 +1112,9 @@ private learnedFromMembers(i: JobInfo) -> Vector[(string, Json)]
   if i.low then out += ("low", Json.Bool(true))
   if i.waitText.nonEmpty then out += ("wait_text", Json.str(i.waitText))
   if i.labelFrom.nonEmpty then out += ("label_from", Json.str(i.labelFrom))
+  // `held_group` only on a job a filtered hold holds, `held_ms` only where it has been held
+  if i.heldGroup.nonEmpty then out += ("held_group", Json.str(i.heldGroup))
+  if i.heldMs > 0 then out += ("held_ms", Json.num(i.heldMs))
   out.toVector
 
 // `settling_ms` and `load_overdue` are there only on a settling job.
@@ -1200,7 +1246,10 @@ decodeJob(j: Json) -> Result[JobInfo, string]
       // where false or empty
       optional(j, "low", v -> v.asBool, "a bool", false)?,
       optional(j, "wait_text", v -> v.asString, "a string", "")?,
-      optional(j, "label_from", v -> v.asString, "a string", "")?))
+      optional(j, "label_from", v -> v.asString, "a string", "")?,
+      // absent from what marshal wrote before hold groups, and where empty or 0
+      optional(j, "held_group", v -> v.asString, "a string", "")?,
+      optional(j, "held_ms", wholeNumber, "a whole number", 0)?))
 
 encodeTakeSlot(t: TakeSlotUse) -> Json = Json.obj(
   ("dir", Json.str(t.dir)),
@@ -1281,6 +1330,12 @@ encodeReply(Amended(changes, hint)) = Json.Obj(
 encodeReply(KilledJobs(jobs, skipped)) = Json.obj(
   ("ok", Json.Bool(true)),
   ("stopped", Json.Arr(jobs.map(stoppedMembers))),
+  ("skipped_landing", Json.num(skipped))
+)
+encodeReply(HeldJobs(ids, group, skipped)) = Json.obj(
+  ("ok", Json.Bool(true)),
+  ("held_ids", Json.Arr(ids.map(id -> Json.num(id)))),
+  ("group", Json.str(group)),
   ("skipped_landing", Json.num(skipped))
 )
 encodeReply(Done) = Json.obj(("ok", Json.Bool(true)))
@@ -1370,6 +1425,13 @@ decodeReply(text: string) -> Result[Reply, string]
     val jobs = Buffer[StoppedJob]()
     for item in items do jobs += decodeStopped(item)?
     return Ok(KilledJobs(jobs.toVector, optional(j, "skipped_landing", v -> v.asInt, "an int", 0)?))
+  if j.has("held_ids") then return Ok(
+    HeldJobs(
+      field(j, "held_ids", longVector, "an array of job ids")?,
+      optional(j, "group", v -> v.asString, "a string", "")?,
+      optional(j, "skipped_landing", v -> v.asInt, "an int", 0)?
+    )
+  )
   if j.has("event") then return Ok(Streamed(j("event")))
   if j.has("events") then return Ok(Replayed(field(j, "events", v -> v.asVector, "an array")?))
   if j.has("cleaned") then return Ok(Cleaned(decodeReport(j("cleaned"))?))

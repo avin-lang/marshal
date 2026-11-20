@@ -169,9 +169,11 @@ elapsedOf(
 // A line's ELAPSED cell: its run time; for a job that has not run, how long it has waited, counting
 // on between snapshots and marked `w` (`w12:03`, `waitedText`) so it is not read as run time; and
 // for a settling job how long it has waited for the load (not run time: it restarts from 0 when the
-// job runs).
+// job runs). A job held now shows how long it has been held, marked `h` (`h5:00`, `heldText`),
+// counting on in its place: its wait does not count while it is held.
 elapsedText(l: Line, since: long) -> string
   if marshal.settling(l.job) then return clock(l.job.settlingMs + since)
+  if marshal.notRunYet(l.job) && l.job.held then return marshal.heldText(clock(l.job.heldMs + since))
   if marshal.notRunYet(l.job) then marshal.waitedText(clock(l.job.queuedMs + since)) else clock(elapsedOf(l, since))
 
 // What asks for attention at once: the kill prompt and an overdue job's row. Both colours are given,

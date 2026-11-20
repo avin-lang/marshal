@@ -58,8 +58,15 @@ val Commands: Vector[(string, string)] = [
     "clean [--older-than <t>] [--keep <n>] [--dry-run]",
     "removes the logs of ended jobs (never a job that is not over), stale run directories and unused compiled steps; prints what went and the bytes freed; --dry-run only lists them"
   ),
-  ("hold <id>", "keeps a queued job from starting; it keeps its place"),
-  ("release <id>", "lets a held job start again"),
+  (
+    "hold <id> | <filters>",
+    "keeps a queued job from starting; it keeps its place; --exclusive, --draining, --kind <k>, --label <glob> hold every queued job selected, as a group (marshal hold --help)"
+  ),
+  (
+    "release <id> | --group <name> | <filters>",
+    "lets a held job start again, in its place; --group releases what a filtered hold held"
+  ),
+  ("groups", "the groups filtered holds made that still hold jobs: name, count, ids"),
   (
     "priority <id> <n> | --urgent | --low",
     "places a queued job in its lane: higher first; --urgent: the back of the urgent band; --low: behind every job not low, started only in spare room (a number or --urgent makes it normal again)"
@@ -222,6 +229,31 @@ cancelled event, and a job that waits for one of them (--after-ok) is cancelled 
 kill. An exclusive (benchmark) job is stopped like any other, and listed first when --all asks.\
 """
 
+// The options of `hold` and `release`.
+val HoldOptions: string = """
+hold <id> holds one job. With filters it holds every job not started yet (queued, waiting for
+others, waiting to retry) that matches them all, in one step; a running job is never held:
+  --exclusive       exclusive jobs (benchmarks); never a landing job
+  --draining        the jobs the queue drains for now: the job a drain is for, and an exclusive
+                    job (or one that runs alone) the queue waits behind
+  --kind <k>        jobs of kind k, exactly
+  --label <glob>    jobs whose given label matches the glob as a whole (* any run, ? one
+                    character), upper and lower case alike; quote it for the shell
+  --group <name>    the group's name (one word); by default the filters and a number, such as
+                    exclusive-3
+  --include-landing a landing job is skipped unless this is given (the count skipped is said)
+
+It prints the ids held and the group, and how to release it. A job already held is left as it is.
+Matching nothing says so and exits 0. A held job keeps its place: released, it goes where it was,
+and the time it was held is not counted as waiting (ELAPSED shows h and how long it has been held,
+then w and its wait without it), nor toward the drain bound or low promotion.
+
+release <id> releases one job; release --group <name> releases the jobs that group still holds (a
+group holding none exits 1); filters release the held jobs that match them, in any group, and
+--group with filters only those of that group. marshal groups lists the groups held. To unblock a
+queue stuck behind a benchmark: marshal hold --exclusive, then marshal release --group <name>.\
+"""
+
 // The options of `grep`.
 val GrepOptions: string = """
 Options of grep (the log is read directly, as tail reads it: a running job and an ended one are
@@ -277,6 +309,7 @@ commandHelp(name: string) -> Option[string]
     elif name == "grep" then head + "\n\n" + GrepOptions
     elif name == "amend" then head + "\n\n" + AmendOptions
     elif name == "kill" then head + "\n" + KillOptions
+    elif name == "hold" || name == "release" then head + "\n" + HoldOptions
     elif name == "wait" || name == "events" then head + "\n" + marshal.Grammar
     else head)
 
@@ -333,8 +366,13 @@ main(args: Vector[string]) -> int
     "kill" ->
       if rest.exists(a -> a.startsWith("--")) then killMany(rest)
       else withId(rest, id -> simple(Request.Kill(id), s"marshal: job $id is being stopped"))
-    "hold" -> withId(rest, id -> simple(Request.Hold(id), s"marshal: job $id is held"))
-    "release" -> withId(rest, id -> simple(Request.Release(id), s"marshal: job $id is released"))
+    "hold" ->
+      if rest.exists(a -> a.startsWith("--")) then holdMany(rest, true)
+      else withId(rest, id -> simple(Request.Hold(id), s"marshal: job $id is held"))
+    "release" ->
+      if rest.exists(a -> a.startsWith("--")) then holdMany(rest, false)
+      else withId(rest, id -> simple(Request.Release(id), s"marshal: job $id is released"))
+    "groups" -> if rest.isEmpty then groups() else complain("marshal: groups takes no arguments")
     "priority" -> priority(rest)
     "amend" -> amend(rest)
     "pause" ->
@@ -452,6 +490,78 @@ killMany(args: Vector[string]) -> int
         return 1
       for j in jobs do println(stoppedLine(j))
       println(s"marshal: ${jobs.length} ${if jobs.length == 1 then "job" else "jobs"} stopped$note")
+      0
+    Ok(Failed(e)) -> complain(s"marshal: $e")
+    Ok(other) -> complain(s"marshal: unexpected reply $other")
+    Err(e) -> complain(e)
+
+// `hold` (`on`) or `release` with filters: `--exclusive`, `--draining`, `--kind <k>`, `--label
+// <glob>`, `--group <name>`, `--include-landing` (holdmany.avin). An id beside them, an option given
+// twice, or one these commands do not take, is refused (2). A hold prints the ids it held and the
+// group it made, and how to release it; a release the ids it released. Matching nothing is said and
+// exits 0, except a release of a group that holds no job, which exits 1.
+holdMany(args: Vector[string], on: bool) -> int
+  val verb = if on then "hold" else "release"
+  var exclusive = false
+  var draining = false
+  var kind: Option[string] = None
+  var label: Option[string] = None
+  var group: Option[string] = None
+  var landing = false
+  val seen = Buffer[string]()
+  var i = 0
+  while i < args.length
+    val word = args(i)
+    if word.startsWith("--") && seen.contains(word) then return complain(s"marshal: $verb: `$word` is given twice")
+    seen += word
+    word match
+      "--exclusive" -> exclusive = true
+      "--draining" -> draining = true
+      "--include-landing" -> landing = true
+      "--kind" | "--label" | "--group" ->
+        if i + 1 >= args.length then return complain(s"marshal: $verb: `$word` needs a value")
+        val value = Some(args(i + 1))
+        word match
+          "--kind" -> kind = value
+          "--label" -> label = value
+          _ -> group = value
+        i += 1
+      _ ->
+        if word.startsWith("--") then return complain(s"marshal: $verb: no option `$word`")
+        return complain(
+          s"marshal: $verb: `$word` beside a filter: a job id and --exclusive, --draining, --kind, --label or --group are not given together"
+        )
+    i += 1
+  val sel = marshal.HoldSelector(exclusive, draining, kind, label, group, landing)
+  for why in marshal.holdSelectorRefusal(sel, on).toList do return complain(s"marshal: $verb: $why")
+  askDaemon(Request.HoldMany(sel, on)) match
+    Ok(marshal.HeldJobs(ids, made, skipped)) ->
+      val note = if skipped > 0 then s" ($skipped landing skipped: --include-landing ${verb}s them too)" else ""
+      if ids.isEmpty
+        if !on && group.isDefined
+          eprintln(s"marshal: no held jobs in group `${group.get}`${if marshal.hasFilter(sel) then " match" else ""}$note")
+          return 1
+        if on && draining && !exclusive && kind.isEmpty && label.isEmpty
+          println(s"marshal: the queue drains for no job now: nothing held$note")
+        else
+          println(if on then s"marshal: no queued job not already held matches: nothing held$note" else s"marshal: no held job matches: nothing released$note")
+        return 0
+      val list = ids.map(id -> id.toString()).mkString(",")
+      if on
+        println(s"marshal: held $list as group $made$note")
+        println(s"marshal: release them with: marshal release --group '$made'")
+      else
+        println(s"marshal: released $list$note")
+      0
+    Ok(Failed(e)) -> complain(s"marshal: $e")
+    Ok(other) -> complain(s"marshal: unexpected reply $other")
+    Err(e) -> complain(e)
+
+// `marshal groups`: every group a filtered hold made that still holds jobs, with its jobs.
+groups() -> int
+  askDaemon(Request.List) match
+    Ok(Jobs(jobs)) ->
+      println(marshal.groupsText(marshal.liveGroups(jobs.filter(j -> j.held && j.heldGroup.nonEmpty).map(j -> (j.id, j.heldGroup)))))
       0
     Ok(Failed(e)) -> complain(s"marshal: $e")
     Ok(other) -> complain(s"marshal: unexpected reply $other")

@@ -40,7 +40,11 @@ import dev.avinlang.json.Json
 // the low band now (low.avin; `priority` or promotion may have changed what its spec asked); its
 // spec's `low` when absent. `waitSince` is since when a job not running yet has waited (wall clock,
 // milliseconds: its submission, or the end of the attempt a retry follows); 0 when absent, read as
-// its submission.
+// its submission. `heldGroup` is the group a filtered hold put a held job in (holdmany.avin), ""
+// for none; `heldMs` how long it was held, in earlier holds, since `waitSince`, and `heldAt` when its
+// current hold began (wall clock, milliseconds; 0 while not held, or when absent, read as now);
+// `heldBeforeQueue` how much of its held time came before it last joined the queue (`arrived`). All
+// "" or 0 when absent.
 data SavedJob(
     id: long,
     spec: JobSpec,
@@ -88,14 +92,19 @@ data SavedJob(
     amended: bool = false,
     keepsPlace: bool = false,
     low: bool = false,
-    waitSince: long = 0
+    waitSince: long = 0,
+    heldGroup: string = "",
+    heldMs: long = 0,
+    heldAt: long = 0,
+    heldBeforeQueue: long = 0
 )
 
 // The whole daemon: the version and process that saved it, when, when the daemon first began, the
 // next job id, the queue in order, the running jobs, the jobs that ended last (oldest first), the
 // name of its waiting ticket in take-slot's directory, whether the queue is held (false when the
 // state does not say), the jobs waiting for others or waiting to retry, oldest first, and what the
-// user last set polite mode to by hand (None where they have not, or the state does not say).
+// user last set polite mode to by hand (None where they have not, or the state does not say), and the
+// number the next default hold group is given (1 when the state does not say).
 data SavedState(
     version: string,
     pid: long,
@@ -108,7 +117,8 @@ data SavedState(
     ticket: Option[string],
     queueHeld: bool = false,
     waiting: Vector[SavedJob] = [],
-    polite: Option[PoliteSetting] = None
+    polite: Option[PoliteSetting] = None,
+    nextGroup: long = 1
 )
 
 // What the user set polite mode to, as the state writes it.
@@ -129,7 +139,19 @@ private settingOf(j: Json) -> Result[Option[PoliteSetting], string]
 
 private orNull[T](o: Option[T], f: (T) -> Json) -> Json = o.map(f).getOrElse(Json.Null)
 
-encodeSavedJob(j: SavedJob) -> Json = Json.obj(
+// A job's hold, only where it has one: its group, its held time and when its hold began, each left
+// out where empty or 0, as a state from before reads.
+private holdMembers(j: SavedJob) -> Vector[(string, Json)]
+  val out = Buffer[(string, Json)]()
+  if j.heldGroup.nonEmpty then out += ("held_group", Json.str(j.heldGroup))
+  if j.heldMs > 0 then out += ("held_ms", Json.num(j.heldMs))
+  if j.heldAt > 0 then out += ("held_at", Json.num(j.heldAt))
+  if j.heldBeforeQueue > 0 then out += ("held_before_queue", Json.num(j.heldBeforeQueue))
+  out.toVector
+
+encodeSavedJob(j: SavedJob) -> Json = Json.Obj(savedJobMembers(j) ++ holdMembers(j))
+
+private savedJobMembers(j: SavedJob) -> Vector[(string, Json)] = Json.obj(
   ("id", Json.num(j.id)),
   ("spec", encodeSpec(j.spec)),
   ("state", Json.str(j.state)),
@@ -183,7 +205,7 @@ encodeSavedJob(j: SavedJob) -> Json = Json.obj(
   ("keeps_place", Json.Bool(j.keepsPlace)),
   ("low", Json.Bool(j.low)),
   ("wait_since", Json.num(j.waitSince))
-)
+).asMembers.get
 
 // The level and count pairs of `cpu_levels`; none where a state saved before them lacks it.
 private heldWindowsOf(j: Json) -> Result[Map[long, long], string]
@@ -308,7 +330,11 @@ decodeSavedJob(j: Json) -> Result[SavedJob, string]
       truthOr(j, "amended", false)?,
       truthOr(j, "keeps_place", false)?,
       truthOr(j, "low", spec.low)?,
-      wholeOrZero(j, "wait_since")?
+      wholeOrZero(j, "wait_since")?,
+      maybeText(j, "held_group")?.getOrElse(""),
+      wholeOrZero(j, "held_ms")?,
+      wholeOrZero(j, "held_at")?,
+      wholeOrZero(j, "held_before_queue")?
     )
   )
 
@@ -324,7 +350,8 @@ encodeState(s: SavedState) -> Json = Json.obj(
   ("ticket", orNull(s.ticket, t -> Json.str(t))),
   ("queue_held", Json.Bool(s.queueHeld)),
   ("waiting", Json.Arr(s.waiting.map(encodeSavedJob))),
-  ("polite", s.polite.map(encodeSetting).getOrElse(Json.Null))
+  ("polite", s.polite.map(encodeSetting).getOrElse(Json.Null)),
+  ("next_group", Json.num(s.nextGroup))
 )
 
 private savedJobs(j: Json, key: string) -> Result[Vector[SavedJob], string]
@@ -354,6 +381,7 @@ decodeState(saved: string) -> Result[SavedState, string]
       maybeText(j, "ticket")?,
       truthOr(j, "queue_held", false)?,
       if j.has("waiting") then savedJobs(j, "waiting")? else Vector[SavedJob](),
-      settingOf(j)?
+      settingOf(j)?,
+      wholeOr(j, "next_group", 1)?
     )
   )

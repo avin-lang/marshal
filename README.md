@@ -86,6 +86,7 @@ is one line of the budget in use; `marshal top` is the live view, for people.
 | A job submitted on another session's behalf | `--owner <name>` | Otherwise the owner is the project its `--dir` is in, or its label. |
 | A queued job should go sooner or later | `marshal priority <id> <n>` (higher first), `marshal priority <id> --urgent`, or `marshal priority <id> --low` (into the low band; a number or `--urgent` takes it out) | Orders marshal's own queue; a held job (`marshal hold`) keeps its place. |
 | You are working at the machine | `marshal polite` (or config.json's `polite_schedule`) | Admits jobs against three quarters of the budget; `marshal polite off` gives it all back. |
+| The queue is stuck behind an exclusive job (a benchmark) or a drain | `marshal hold --exclusive` (or `--draining`), later `marshal release --group <name>` | Holds them as one group, printed with the release command; they keep their place, and the time held is not counted as waiting. |
 
 **Units, in short.** A unit is about a core. Leave `--units` out: a command's weight is learned from
 the cores its runs held (see [How marshal learns](#how-marshal-learns)), shown with `~` in UNITS
@@ -150,6 +151,20 @@ While it waits it moves through these states in `ls`:
 After its header line, its log begins with `marshal exclusive: load 1.52 1.4 1.31; busiest outside
 marshal: WindowServer 412 12.3%, …`, and gets another such line every 30 s, so a result can say whether anything disturbed
 it. A landing job queued before the benchmark starts still goes first.
+
+**Unblocking the queue.** A waiting benchmark holds back every job queued after it. When that work
+matters more now, hold the benchmarks rather than killing them, and put them back later as one:
+
+```
+marshal hold --exclusive
+marshal release --group exclusive-1
+```
+
+`hold --exclusive` prints the ids it held and the group's name (`exclusive-1`, or `--group <name>`),
+with the release command to paste; `marshal groups` lists the groups still held. `--draining` holds
+whatever the queue waits behind now, an exclusive job or the job a drain is for. A held job keeps its
+place: released, it goes where it was, and its time held is not counted as waiting (nor toward the
+drain bound). See [Holding many jobs at once](#holding-many-jobs-at-once).
 
 ## Common mistakes
 
@@ -246,7 +261,7 @@ scripts.
 | `queued (take-slot)` | take-slot.zsh holds the units, or a take-slot run waits ahead of it | wait |
 | `queued (quick lane full)` (`top`: `quick full`) | both quick slots are taken | wait; it goes ahead of development jobs |
 | `queued (starting)` | the daemon is starting it now | nothing |
-| `held` | someone ran `marshal hold <id>` | `marshal release <id>`, if it is yours |
+| `held` / `held [exclusive-1]` | someone ran `marshal hold <id>`, or a filtered hold that made the group named | `marshal release <id>` or `marshal release --group exclusive-1`, if it is yours |
 | `queued (queue held)` | someone ran `marshal pause` with no id | `marshal resume`, if the hold is yours |
 | `queued (disk low: 14G free)` (`top`: `disk low`) | free disk is under `disk_min` | free disk space; nothing new starts in any lane until then |
 | `queued (memory pressure: warn)` (`top`: `mem pressure`) | the machine is short of memory: the kernel says `warn` or `critical`, or swap grew by 512M within a minute (`swapping`) | free memory (a VM, an IDE); nothing new starts in any lane until then |
@@ -271,7 +286,9 @@ peak (`-` where nothing was measured); RESV the memory it reserves (`~29G` learn
 run time, or for a job not running yet (queued, held, waiting for others or to retry) how long it
 has waited, marked `w` so it is never read as run time (`w12m03s`; a retry counts from its re-queue;
 `queued_ms` in `--json`, and `status <id>` adds `, waited 12m03s`), and for a settling job its wait
-for the load; ETA a running job's expected time left (`~6m`, `<1m`
+for the load. Time held is not waiting: a job held now shows how long it has been held, marked `h`
+(`h5m00s`), and once released `w` again with its wait leaving the hold out (`held_ms` in `--json`,
+and `status <id>` adds `, held 5m00s`); ETA a running job's expected time left (`~6m`, `<1m`
 once past it) or a queued job's expected start (`in ~3m`), `-` where not known; OWNER who the job is
 for; FROM where its units, memory and deadline came from, as `units/memory/deadline` (see
 [How marshal learns](#how-marshal-learns)): `dir` (its command in its directory), `cmd`, `norm`
@@ -292,8 +309,9 @@ marshal ls [--compact | -c]                jobs queued, running and recently end
 marshal kill <id> | <selector>             stops the job's whole process tree (a queued or waiting job is cancelled); --owner <name>, --label <text> or --all stops every job selected (marshal kill --help)
 marshal rerun <id>                         submits an ended job again: its command, directory, environment, kind, label and resources; prints the new id
 marshal clean [--older-than <t>] [--keep <n>] [--dry-run]  removes the logs of ended jobs (never a job that is not over), stale run directories and unused compiled steps; prints what went and the bytes freed; --dry-run only lists them
-marshal hold <id>                          keeps a queued job from starting; it keeps its place
-marshal release <id>                       lets a held job start again
+marshal hold <id> | <filters>              keeps a queued job from starting; it keeps its place; --exclusive, --draining, --kind <k>, --label <glob> hold every queued job selected, as a group (marshal hold --help)
+marshal release <id> | --group <name> | <filters>  lets a held job start again, in its place; --group releases what a filtered hold held
+marshal groups                             the groups filtered holds made that still hold jobs: name, count, ids
 marshal priority <id> <n> | --urgent | --low  places a queued job in its lane: higher first; --urgent: the back of the urgent band; --low: behind every job not low, started only in spare room (a number or --urgent makes it normal again)
 marshal amend <id> [options]               changes a job's settings in place: queued, it keeps its place; running, only --deadline, --label, --retries, --quiet-timeout
 marshal pause [<id>]                       stops a running job's processes, keeping its units, its deadline's clock stopped; with no id, holds the queue
@@ -537,6 +555,47 @@ The daemon makes the selection and stops the jobs in one step, so a job that sta
 command runs is classified once. Each job gets its usual `killed` event; a job waiting for one of
 them (`--after-ok`) is cancelled as a single `kill` cancels it, unless it is selected itself, when
 it is killed.
+
+### Holding many jobs at once
+
+`marshal hold <id>` holds one queued job. With filters it holds, in one step, every job that has not
+started (queued, waiting for others, waiting to retry) and matches them all, and puts them in a
+group that one `release` lets go again:
+
+```
+$ marshal hold --exclusive
+marshal: held 7753,7760 as group exclusive-1
+marshal: release them with: marshal release --group 'exclusive-1'
+$ marshal groups
+exclusive-1  2 jobs  7753,7760
+$ marshal release --group exclusive-1
+marshal: released 7753,7760
+```
+
+| Option | Selects |
+| --- | --- |
+| `--exclusive` | exclusive jobs (benchmarks); never a landing job |
+| `--draining` | what the queue drains for now: the job a drain is for (`queued (draining…)`), and an exclusive job, or one that runs alone, that the queue waits behind (`emptying`, `settling`, `polite: runs alone`) |
+| `--kind <k>` | jobs of kind `k`, exactly |
+| `--label <glob>` | jobs whose given label matches the glob as a whole, upper and lower case alike: `*` any run of characters, `?` one (quote it for the shell) |
+| `--group <name>` | on `hold`, the group's name (one word, at most 80 characters; by default the filters and a number, such as `exclusive-1` or `kind=bench+label=nbody*-2`); on `release`, the group to let go |
+| `--include-landing` | also landing jobs, which are skipped otherwise (the count skipped is printed) |
+
+A running job is never held. A job already held is left as it was, in its group. A filter that
+matches nothing says so and exits 0; `--draining` with no drain says `the queue drains for no job
+now`. `release --group <name>` lets go exactly the jobs that group still holds, without those
+released or ended since (a job released by id leaves its group); a group that holds none exits 1.
+`release` with filters lets go the held jobs that match, in any group or none, and with `--group`
+too only that group's. A group's name in use is refused for another hold until it is released. An
+id beside filters, or an option given twice, is refused (exit 2). The jobs that wait `--after` a
+held job are not held themselves: they wait for it anyway.
+
+A held job keeps its place: released, it goes where it was in the queue, before the jobs that
+queued after it. The time it was held is not counted as waiting: ELAPSED shows `h` and the time
+held while it is held, `queued_ms` and the `w` it shows once released leave the hold out, and so do
+the drain bound (`drain_after`) and low promotion. `status --json` gives a held job's
+`held_group` and its time held as `held_ms`; its `held` event carries the group. A
+restart keeps every hold, its group and its clock.
 
 ## Waking on events
 
@@ -1041,8 +1100,8 @@ landing lane free; take-slot holds 0 units, 0 waiting; cpu 1 (jobs 0), disk 156G
   `disk_min`, `disk_low`, `nofile`, and the memory-pressure guard's `mem_pressure`, `swap_used`,
   `swap_growth`, `mem_pressure_holds` and `mem_pressure_cause`;
 - the jobs: `running`, `queued` and `settling`, arrays of jobs as [the protocol](docs/protocol.md)
-  writes them (with `owner`, `label`, `units_learned`, `resv_from`, `duration_from`, `eta_ms` and
-  `starts_in_ms` where there are any).
+  writes them (with `owner`, `label`, `units_learned`, `resv_from`, `duration_from`, `eta_ms`,
+  `starts_in_ms`, `held_group` and `held_ms` where there are any).
 
 A queued or settling job also has `why`, the protocol's word for why it has not started: `units`,
 `memory`, `lane`, `draining`, `take-slot`, `behind`, `draining-for`, `starting`, `held`,

@@ -41,7 +41,7 @@ import dev.avinlang.marshal.{
 }
 
 import dev.avinlang.marshal.{Submit, Wait, Kill, Status, Stop, Rerun, Clean, Cleaned}
-import dev.avinlang.marshal.{Submitted, Ended, Found, Jobs, Using, Viewed, Hi, Done, Failed, Amended, Over, KilledJobs}
+import dev.avinlang.marshal.{Submitted, Ended, Found, Jobs, Using, Viewed, Hi, Done, Failed, Amended, Over, KilledJobs, HeldJobs}
 import dev.avinlang.marshal.{Overview, QueuedJob, SavedJob, SavedState}
 import dev.avinlang.marshal.{Cancelled, DependencyFailed, TimedOut}
 import dev.avinlang.marshal.Resident
@@ -166,6 +166,14 @@ class Job(
   var sample: Option[string] = None
   // a queued job kept from starting, and its place in the queue
   var held = false
+  // the group a filtered hold put it in ("" for none or held by id, holdmany.avin); how long its
+  // earlier holds since `waitSince` lasted, and since when its current hold has lasted (the daemon's
+  // clock); and how much of that held time came before it last joined the queue (`arrived`), which
+  // the drain bound and low promotion, counted from `arrived`, leave out
+  var heldGroup = ""
+  var heldMs: long = 0
+  var heldAt: long = 0
+  var heldBeforeQueue: long = 0
   var priority = 0
   // when it joined the urgent band (wall-clock microseconds), or 0 outside it
   var urgentAt: long = 0
@@ -220,6 +228,25 @@ class Job(
   var sampledMs: long = 0
   val waiters = Buffer[Channel[Reply]]()
 
+  // How long it has been held by `now` since it last began to wait, its current hold included.
+  heldFor(now: long) -> long = heldMs + (if held then now - heldAt else 0)
+
+  // How long it has been held since it last joined the queue: the time the drain bound and low
+  // promotion leave out of its wait since `arrived`.
+  heldSinceQueued(now: long) -> long = heldFor(now) - heldBeforeQueue
+
+  // Holds it (`on`), in `group`, or releases it, at `now`: the held time adds up.
+  setHeld(on: bool, group: string, now: long)
+    if on
+      held = true
+      heldGroup = group
+      heldAt = now
+    else
+      heldMs += now - heldAt
+      held = false
+      heldGroup = ""
+      heldAt = 0
+
   // How long it has run by `now`, its pauses left out.
   ran(now: long) -> long
     val until = if state == "done" then endedMs else now
@@ -234,8 +261,9 @@ class Job(
     val waits = state == "queued" || state == "waiting" || state == "retrying"
     val elapsed = if waits then long(0) else ran(now)
     // how long it has waited: a job not running yet since it last began to wait (a retry since the
-    // attempt before it ended), a started one from its submission to its start
-    val queued = if waits then now - waitSince else startedMs - submittedMs
+    // attempt before it ended), the time it was held left out; a started one from its submission to
+    // its start
+    val queued = if waits then now - waitSince - heldFor(now) else startedMs - submittedMs
     val rss = if state == "running" then resident.now else 0
     // a waiting job that asked to be urgent joins the urgent band once it queues
     val urgent = urgentAt > 0 || (state == "waiting" && spec.urgent)
@@ -297,7 +325,9 @@ class Job(
       amended,
       low,
       if state == "queued" then waitText else "",
-      if derived.nonEmpty then "cmd" else ""
+      if derived.nonEmpty then "cmd" else "",
+      if held && waits then heldGroup else "",
+      if waits then heldFor(now) else 0
     )
 
 // The daemon's state, owned by its own thread.
@@ -358,6 +388,8 @@ class Daemon(
   var termed = false
   // While the queue is held, nothing new starts in either lane.
   var queueHeld = false
+  // The number the next filtered hold's default group is given (holdmany.avin's `defaultGroupName`).
+  var nextGroup: long = 1
   // What the user last set polite mode to by hand, if anything (polite.avin), and the zone the
   // schedule's windows are read in, the machine's as the daemon began.
   var politeManual: Option[marshal.PoliteSetting] = None
@@ -705,7 +737,8 @@ class Daemon(
       unsettled,
       alone(j, b),
       j.urgentAt > 0,
-      j.low
+      j.low,
+      j.heldSinceQueued(t) * 1000
     )
 
   // Why the load alone holds the exclusive job `j` back at `t`.
@@ -780,6 +813,7 @@ class Daemon(
       Request.Polite(fraction) -> give(reply, polite(fraction))
       Request.Hold(id) -> give(reply, hold(id, true))
       Request.Release(id) -> give(reply, hold(id, false))
+      Request.HoldMany(sel, on) -> give(reply, holdMany(sel, on))
       Request.Prioritize(id, p) -> give(reply, prioritize(id, p))
       Request.Amend(id, a) -> give(reply, amend(id, a))
       Watch(_, _, _, _, _) -> watch(request, reply)
@@ -945,6 +979,8 @@ class Daemon(
       order()
       return
     job.arrived = time.now().epochMicros
+    // the time it was held while it waited came before this arrival
+    job.heldBeforeQueue = job.heldFor(now())
     val urgent = if job.attempt > 1 then job.urgentAt > 0 else job.spec.urgent
     job.urgentAt = if urgent then urgentMark() else 0
     queue += job
@@ -990,8 +1026,11 @@ class Daemon(
     job.pgid = 0
     job.pausedMs = 0
     job.attempt += 1
-    // its wait counts again from now, as it waits to run again
+    // its wait counts again from now, as it waits to run again, and so does the time it is held
     job.waitSince = t
+    job.heldMs = 0
+    job.heldBeforeQueue = 0
+    if job.held then job.heldAt = t
     // a learned deadline is learned again, so an attempt after a timeout is not stopped where it was
     if !job.spec.quick && job.spec.deadlineMs.isEmpty
       val d = learnedDeadline(job.spec)
@@ -1218,10 +1257,55 @@ class Daemon(
         Err(e) -> return Failed(e)
     if on && draining then return Failed("the daemon is stopping")
     if job.held == on then return Failed(if on then s"job $id is already held" else s"job $id is not held")
-    job.held = on
+    job.setHeld(on, "", now())
     record(if on then "held" else "released", job)
     schedule()
     Done
+
+  // Holds (`on`) or releases every job `sel` names (holdmany.avin), in this one step: whether the
+  // queue drains for a job is read once, before any is held. A hold puts the jobs in the group `sel`
+  // names, or a new one named after its filters; a release names jobs only by `sel`, so one released
+  // since or ended is no longer among them. A landing job it would name is left alone unless `sel`
+  // includes landing jobs, and counted. Each job gets the `held` or `released` event its hold by id
+  // gives.
+  holdMany(sel: marshal.HoldSelector, on: bool) -> Reply
+    if on && draining then return Failed("the daemon is stopping")
+    val t = now()
+    // the jobs the queue drains for now, as `ls` would say
+    val drains = if sel.draining then queuedWhys(t, outsideNow().getOrElse(marshal.NoOutside)).filter(
+      w -> marshal.drainsNow(w.2)
+    ).map(w -> w.0) else Vector[long]()
+    if on
+      for g in sel.group.toList
+        if jobs.values.exists(j -> j.held && j.heldGroup == g) then return Failed(
+          s"group `$g` already holds jobs: release it first (marshal release --group $g), or name another"
+        )
+    var skipped = 0
+    val named = Buffer[Job]()
+    for job in jobs.values.toVector.sortBy(j -> j.id)
+      val any = sel.includeLanding || !job.spec.landing
+      val names = marshal.holdNames(
+        marshal.HoldSelector(sel.exclusive, sel.draining, sel.kind, sel.label, sel.group, true),
+        on,
+        job.state,
+        job.held,
+        job.spec.exclusive,
+        job.spec.landing,
+        job.spec.kind,
+        job.spec.label,
+        drains.contains(job.id),
+        job.heldGroup
+      )
+      if !names then continue
+      if any then named += job else skipped += 1
+    if named.isEmpty then return HeldJobs([], "", skipped)
+    val group = if on then sel.group.getOrElse(marshal.defaultGroupName(sel, nextGroup)) else ""
+    if on && sel.group.isEmpty then nextGroup += 1
+    for job in named
+      job.setHeld(on, group, t)
+      record(if on then "held" else "released", job)
+    schedule()
+    HeldJobs(named.toVector.map(j -> j.id), group, skipped)
 
   // Places the queued job `id`, which may start it at once: a number takes it out of the urgent
   // band and places it by priority; `Urgent` moves it to the back of the band, even from within it;
@@ -1337,15 +1421,19 @@ class Daemon(
     Amended(text, if a.units.isDefined then unitsHint(spec) else "")
 
   // A queued low job that has waited `low_promote_after` since it last queued becomes a normal job
-  // (low.avin): its log and a `promoted` event say so, and the queue is ordered again.
+  // (low.avin): its log and a `promoted` event say so, and the queue is ordered again. The time it
+  // was held by hand is not waiting.
   promoteLow()
     val wallNow = time.now().epochMicros
+    val t = now()
     var any = false
     for job in queue
-      if job.low && marshal.lowPromoted(job.arrived, wallNow, config.lowPromoteMs)
+      // its arrival moved on by the time it was held since
+      val from = job.arrived + job.heldSinceQueued(t) * 1000
+      if job.low && marshal.lowPromoted(from, wallNow, config.lowPromoteMs)
         job.low = false
         any = true
-        val waited = marshal.formatMillis((wallNow - job.arrived) / 1000)
+        val waited = marshal.formatMillis((wallNow - from) / 1000)
         val _ = fs.appendText(job.log, s"marshal: low job ${job.id} waited $waited for spare room; it is a normal job now\n")
         eprintln(s"marshal: low job ${job.id} waited $waited; it is a normal job now")
         record("promoted", job)
@@ -2321,7 +2409,11 @@ class Daemon(
       j.amended,
       j.keepsPlace,
       j.low,
-      wall(j.waitSince)
+      wall(j.waitSince),
+      j.heldGroup,
+      j.heldMs,
+      if j.held then wall(j.heldAt) else 0,
+      j.heldBeforeQueue
     )
     SavedState(
       reportedVersion(),
@@ -2335,7 +2427,8 @@ class Daemon(
       ticket,
       queueHeld,
       waitingJobs.map(saved).toVector,
-      politeManual
+      politeManual,
+      nextGroup
     )
 
   // Takes over what an earlier image of this daemon saved: its jobs, queue and ticket. The
@@ -2350,6 +2443,7 @@ class Daemon(
     ticket = s.ticket
     queueHeld = s.queueHeld
     politeManual = s.polite
+    if s.nextGroup > nextGroup then nextGroup = s.nextGroup
     val rebuilt = (sj: SavedJob) ->
       val job = Job(sj.id, sj.spec, mono(sj.submittedAt), sj.arrived, sj.deadlineMs, sj.expectedMs, sj.log)
       job.state = sj.state
@@ -2374,6 +2468,11 @@ class Daemon(
       job.quiet = marshal.quietStart(marshal.fileBytes(sj.log), t)
       job.sample = sj.sample
       job.held = sj.held
+      // a hold keeps its group and its clock; one saved before holds were timed is held from now
+      job.heldGroup = if sj.held then sj.heldGroup else ""
+      job.heldMs = sj.heldMs
+      job.heldAt = if !sj.held then 0 elif sj.heldAt > 0 then mono(sj.heldAt) else t
+      job.heldBeforeQueue = sj.heldBeforeQueue
       job.priority = sj.priority
       job.urgentAt = sj.urgentAt
       job.low = sj.low

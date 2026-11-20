@@ -1,0 +1,250 @@
+module tests
+
+// `hold` and `release` with filters, end to end through the command line: the queue stuck behind an
+// exclusive job freed by `hold --exclusive` and put back by `release --group`; `--draining`, with and
+// without a drain; `--kind` and `--label` together; running jobs never held; groups named, listed,
+// refused when taken and unknown; a held job's place and its wait; the jobs that wait after a held
+// one; landing jobs; a restart; and bad command lines.
+import avin.threads
+import avin.time.millis
+import dev.avinlang.json
+import dev.avinlang.json.Json
+
+// The JSON `status --json` gives for queued job `id`, or fails.
+queuedJson(home: string, id: long) -> Json =
+  statusJsonOf(home)("queued").asVector.get.find(q -> q("id").asLong == Some(id)).getOrElse(fail(s"job $id is not queued"))
+
+// The group `status --json` says queued job `id` is held in, "" for none.
+heldGroupOf(home: string, id: long) -> string = queuedJson(home, id).get("held_group").flatMap(v -> v.asString).getOrElse("")
+
+// Fails unless `r` exited 2 saying `why`.
+holdRefused(r: Ran, why: string)
+  assertEq(r.code, 2)
+  assert(r.out.contains(why), r.out)
+
+@test("a queue stuck behind an exclusive job: hold --exclusive holds it as a group and the queue moves; release --group puts it back in its place")
+holdExclusiveUnblocks()
+  val home = newHome("{\"units\": 2}")
+  val blocker = submitted(home, "--units", "1", "--", "sleep", "30")
+  assert(within(5000, () -> started(home, blocker)))
+  val x = submitted(home, "--exclusive", "--kind", "bench", "--label", "nbody", "--", "true")
+  val n = submitted(home, "--units", "1", "--", "sleep", "30")
+  threads.sleep(millis(300))
+  // the exclusive job empties the machine; the normal job waits for it
+  assert(!started(home, n), "the normal job started beside a waiting exclusive job")
+  val r = m(home, "hold", "--exclusive")
+  assertEq(r.code, 0)
+  assert(r.out.contains(s"marshal: held $x as group exclusive-1"), r.out)
+  assert(r.out.contains("marshal release --group 'exclusive-1'"), r.out)
+  assert(within(5000, () -> started(home, n)), "the queue did not move once the exclusive job was held")
+  // ls, status and status --json say it is held, and in which group
+  assert(m(home, "ls").out.contains("held [exclusive-1]"), m(home, "ls").out)
+  assertEq(heldGroupOf(home, x), "exclusive-1")
+  assert(m(home, "status", x.toString()).out.contains(s"job $x is queued (held), waited "), m(home, "status", x.toString()).out)
+  assertEq(m(home, "groups").out.trim, s"exclusive-1  1 job   $x")
+  // a second hold finds nothing new to hold: the job keeps its group
+  val again = m(home, "hold", "--exclusive")
+  assertEq(again.code, 0)
+  assert(again.out.contains("no queued job not already held matches: nothing held"), again.out)
+  assertEq(heldGroupOf(home, x), "exclusive-1")
+  // the release puts it back; it empties the machine again
+  val back = m(home, "release", "--group", "exclusive-1")
+  assertEq(back.code, 0)
+  assert(back.out.contains(s"marshal: released $x"), back.out)
+  assertEq(heldGroupOf(home, x), "")
+  assertEq(m(home, "groups").out.trim, "marshal: no groups are held")
+  assertEq(eventsOf(home, x), ["submitted", "held", "released"])
+  val held = events(home).find(e -> e("id").asLong == Some(x) && e("event").asString == Some("held")).get
+  assertEq(held.get("held_group").flatMap(v -> v.asString), Some("exclusive-1"))
+  // the group is gone: releasing it again names no job
+  val gone = m(home, "release", "--group", "exclusive-1")
+  assertEq(gone.code, 1)
+  assert(gone.out.contains("no held jobs in group `exclusive-1`"), gone.out)
+  for id in [blocker, n] do m(home, "kill", id.toString())
+  assertEq(m(home, "wait", x.toString()).code, 0)
+  cleanUp(home)
+
+@test("hold --draining holds the job the queue waits behind; with nothing draining it says so and holds nothing")
+holdDraining()
+  val home = newHome("{\"units\": 2}")
+  val idle = m(home, "hold", "--draining")
+  assertEq(idle.code, 0)
+  assert(idle.out.contains("the queue drains for no job now: nothing held"), idle.out)
+  val blocker = submitted(home, "--units", "1", "--", "sleep", "30")
+  assert(within(5000, () -> started(home, blocker)))
+  // a plain queued job that fits is not drained for
+  val plain = submitted(home, "--units", "2", "--", "true")
+  assertEq(m(home, "hold", "--draining").out.trim, "marshal: the queue drains for no job now: nothing held")
+  m(home, "kill", plain.toString())
+  val x = submitted(home, "--exclusive", "--", "true")
+  val n = submitted(home, "--units", "1", "--", "sleep", "30")
+  threads.sleep(millis(300))
+  val r = m(home, "hold", "--draining")
+  assertEq(r.code, 0)
+  assert(r.out.contains(s"marshal: held $x as group draining-1"), r.out)
+  assert(within(5000, () -> started(home, n)))
+  // a job behind it was never drained for, so it was not held
+  assertEq(eventsOf(home, n), ["submitted", "started"])
+  // release by filter: every held exclusive job, whatever its group
+  val back = m(home, "release", "--exclusive")
+  assertEq(back.code, 0)
+  assert(back.out.contains(s"marshal: released $x"), back.out)
+  for id in [blocker, n] do m(home, "kill", id.toString())
+  assertEq(m(home, "wait", x.toString()).code, 0)
+  cleanUp(home)
+
+@test("--kind and --label together hold only the queued jobs that match both; a running job is never held; --group names the group")
+holdKindAndLabel()
+  val home = newHome("{\"units\": 1}")
+  val running = submitted(home, "--kind", "bench", "--label", "nbody 1", "--", "sleep", "30")
+  assert(within(5000, () -> started(home, running)))
+  val both = submitted(home, "--kind", "bench", "--label", "nbody 2", "--", "true")
+  val kindOnly = submitted(home, "--kind", "bench", "--label", "fasta", "--", "true")
+  val labelOnly = submitted(home, "--kind", "test", "--label", "NBODY 3", "--", "true")
+  val upper = submitted(home, "--kind", "bench", "--label", "NBody 4", "--", "true")
+  val r = m(home, "hold", "--kind", "bench", "--label", "nbody*", "--group", "mine")
+  assertEq(r.code, 0)
+  assert(r.out.contains(s"marshal: held $both,$upper as group mine"), r.out)
+  assertEq(heldGroupOf(home, both), "mine")
+  assertEq(heldGroupOf(home, upper), "mine")
+  assertEq(heldGroupOf(home, kindOnly), "")
+  assertEq(heldGroupOf(home, labelOnly), "")
+  assertEq(eventsOf(home, running), ["submitted", "started"])
+  // a group of that name holds jobs: another hold may not take it
+  holdRefused(m(home, "hold", "--kind", "test", "--group", "mine"), "group `mine` already holds jobs")
+  // the next default group number is not spent by a named group
+  val t = m(home, "hold", "--kind", "test")
+  assert(t.out.contains(s"marshal: held $labelOnly as group kind=test-1"), t.out)
+  val listed = m(home, "groups").out
+  // the groups in the order of their first job, names padded to the longest
+  assertEq(listed.trim, "mine".padEnd(11, ' ') + s"  2 jobs  $both,$upper\nkind=test-1  1 job   $labelOnly")
+  // a job released by id leaves its group; the group's release takes what is left
+  assertEq(m(home, "release", both.toString()).code, 0)
+  val rest = m(home, "release", "--group", "mine")
+  assertEq(rest.code, 0)
+  assertEq(rest.out.trim, s"marshal: released $upper")
+  // release with a group and a filter: only that group's jobs that match
+  assertEq(m(home, "release", "--group", "kind=test-1", "--label", "fasta").code, 1)
+  assertEq(m(home, "release", "--group", "kind=test-1", "--label", "nbody*").code, 0)
+  // a release by filter that matches no held job says so and exits 0
+  val none = m(home, "release", "--kind", "bench")
+  assertEq(none.code, 0)
+  assert(none.out.contains("no held job matches: nothing released"), none.out)
+  m(home, "kill", running.toString())
+  for id in [both, kindOnly, labelOnly, upper] do assertEq(m(home, "wait", id.toString()).code, 0)
+  cleanUp(home)
+
+@test("a held job keeps its place: released, it goes before the jobs that queued after it; ELAPSED shows h while it is held and its wait leaves the hold out")
+heldJobKeepsItsPlace()
+  val home = newHome("{\"units\": 1}")
+  val blocker = submitted(home, "--", "sleep", "30")
+  val a = submitted(home, "--label", "first", "--", "true")
+  val b = submitted(home, "--label", "second", "--", "true")
+  assertEq(m(home, "hold", "--label", "first").code, 0)
+  val c = submitted(home, "--label", "third", "--", "true")
+  assertEq(queuedIds(home), [a, b, c])
+  threads.sleep(millis(1200))
+  val held = queuedJson(home, a)
+  assert(held("held_ms").asLong.get >= 1000, held.render)
+  // its wait does not count while it is held
+  assert(held("queued_ms").asLong.get < 1000, held.render)
+  val row = m(home, "ls").out.lines.find(l -> l.startsWith(a.toString() + " ")).get
+  assert(row.contains(" h1.") || row.contains(" h2."), row)
+  assertEq(m(home, "release", "--label", "first").code, 0)
+  assertEq(queuedIds(home), [a, b, c])
+  val after = m(home, "status", a.toString()).out
+  assert(after.contains(", held 1.") || after.contains(", held 2."), after)
+  m(home, "kill", blocker.toString())
+  for id in [a, b, c] do assertEq(m(home, "wait", id.toString()).code, 0)
+  assertEq(startOrder(home, [a, b, c]), [a, b, c])
+  cleanUp(home)
+
+@test("--exclusive holds only the exclusive job, not the jobs waiting after it; released, the chain runs")
+holdExclusiveAfterChain()
+  val home = newHome("{\"units\": 2}")
+  val blocker = submitted(home, "--units", "1", "--", "sleep", "30")
+  assert(within(5000, () -> started(home, blocker)))
+  val x = submitted(home, "--exclusive", "--", "true")
+  val dep = submitted(home, "--after", x.toString(), "--", "true")
+  val r = m(home, "hold", "--exclusive")
+  assert(r.out.contains(s"marshal: held $x as group exclusive-1"), r.out)
+  assertEq(eventsOf(home, dep), ["submitted"])
+  assert(m(home, "ls").out.contains(s"after $x"), m(home, "ls").out)
+  // a waiting exclusive job is held too
+  val y = submitted(home, "--exclusive", "--after", dep.toString(), "--", "true")
+  val r2 = m(home, "hold", "--exclusive")
+  assert(r2.out.contains(s"marshal: held $y as group exclusive-2"), r2.out)
+  assert(m(home, "ls").out.contains(s"held [exclusive-2] after $dep"), m(home, "ls").out)
+  m(home, "kill", blocker.toString())
+  assertEq(m(home, "release", "--group", "exclusive-1").code, 0)
+  assertEq(m(home, "wait", x.toString()).code, 0)
+  assertEq(m(home, "wait", dep.toString()).code, 0)
+  // y queued once dep ended, still held, in its group
+  assert(within(5000, () -> statusJsonOf(home)("queued").asVector.get.exists(q -> q("id").asLong == Some(y))))
+  assertEq(heldGroupOf(home, y), "exclusive-2")
+  assertEq(m(home, "release", "--group", "exclusive-2").code, 0)
+  assertEq(m(home, "wait", y.toString()).code, 0)
+  cleanUp(home)
+
+@test("a landing job a filter matches is left alone and counted unless --include-landing")
+holdLanding()
+  val home = newHome("{\"units\": 1}")
+  // the unit taken and the landing lane busy, so neither job of kind train starts
+  val busy = submitted(home, "--units", "1", "--", "sleep", "30")
+  assert(within(5000, () -> started(home, busy)))
+  val blocker = submitted(home, "--landing", "--", "sleep", "30")
+  assert(within(5000, () -> started(home, blocker)))
+  val land = submitted(home, "--landing", "--kind", "train", "--", "true")
+  val dev = submitted(home, "--kind", "train", "--units", "1", "--", "sleep", "30")
+  val r = m(home, "hold", "--kind", "train")
+  assertEq(r.code, 0)
+  assert(r.out.contains(s"marshal: held $dev as group kind=train-1 (1 landing skipped"), r.out)
+  assertEq(heldGroupOf(home, land), "")
+  val all = m(home, "hold", "--kind", "train", "--include-landing")
+  assert(all.out.contains(s"marshal: held $land as group kind=train-2"), all.out)
+  holdRefused(m(home, "hold", "--exclusive", "--include-landing"), "never a landing job")
+  for id in [busy, blocker, land, dev] do m(home, "kill", id.toString())
+  cleanUp(home)
+
+@test("a restart keeps the holds, their groups and the next group number")
+restartKeepsGroups()
+  val home = newHome("{\"units\": 1}")
+  val blocker = submitted(home, "--", "sleep", "30")
+  val a = submitted(home, "--kind", "bench", "--", "true")
+  val b = submitted(home, "--kind", "bench", "--", "true")
+  assertEq(m(home, "hold", "--kind", "bench").code, 0)
+  threads.sleep(millis(1100))
+  restarted(home)
+  assertEq(heldGroupOf(home, a), "kind=bench-1")
+  assertEq(heldGroupOf(home, b), "kind=bench-1")
+  assert(queuedJson(home, a)("held_ms").asLong.get >= 1000, queuedJson(home, a).render)
+  val c = submitted(home, "--kind", "bench", "--", "true")
+  val r = m(home, "hold", "--kind", "bench")
+  assert(r.out.contains(s"marshal: held $c as group kind=bench-2"), r.out)
+  m(home, "kill", blocker.toString())
+  assertEq(m(home, "release", "--group", "kind=bench-1").code, 0)
+  assertEq(m(home, "release", "--group", "kind=bench-2").code, 0)
+  for id in [a, b, c] do assertEq(m(home, "wait", id.toString()).code, 0)
+  cleanUp(home)
+
+@test("bad command lines are refused before the daemon is asked: an id beside a filter, an option twice, no filter, a missing value, an unknown option, a bad group name")
+holdBadCommandLines()
+  val home = newHome()
+  holdRefused(m(home, "hold", "3", "--exclusive"), "a job id and --exclusive")
+  holdRefused(m(home, "release", "--group", "g", "4"), "a job id and --exclusive")
+  holdRefused(m(home, "hold", "--exclusive", "--exclusive"), "`--exclusive` is given twice")
+  holdRefused(m(home, "hold", "--kind", "a", "--kind", "b"), "`--kind` is given twice")
+  holdRefused(m(home, "hold", "--group", "g"), "--group names the group a hold makes")
+  holdRefused(m(home, "hold", "--include-landing"), "give --exclusive, --draining, --kind or --label")
+  holdRefused(m(home, "release", "--include-landing"), "give --group, --exclusive")
+  holdRefused(m(home, "hold", "--kind"), "`--kind` needs a value")
+  holdRefused(m(home, "release", "--group"), "`--group` needs a value")
+  holdRefused(m(home, "hold", "--kind", ""), "`--kind` needs a kind")
+  holdRefused(m(home, "hold", "--owner", "x"), "hold: no option `--owner`")
+  holdRefused(m(home, "release", "--all"), "release: no option `--all`")
+  holdRefused(m(home, "hold", "--exclusive", "--group", "a b"), "one word")
+  holdRefused(m(home, "groups", "x"), "groups takes no arguments")
+  // the hold and release by id are as they were
+  holdRefused(m(home, "hold", "x"), "`x` is not a job id")
+  assertEq(m(home, "hold", "99").code, 2)
+  cleanUp(home)

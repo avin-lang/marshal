@@ -87,7 +87,8 @@ data Budget(units: int, memory: long, fullUnits: int = 0, fullMemory: long = 0)
 isPolite(b: Budget) -> bool = b.fullUnits > 0
 
 // How long a development job may wait before the machine drains for it: a job counts as waited once
-// `wallNow` (wall-clock microseconds, as `arrived`) is `afterMs` past its arrival.
+// `wallNow` (wall-clock microseconds, as `arrived`) is `afterMs` past its arrival, the time it was
+// held by hand left out (`waitedMs`).
 data Fairness(afterMs: long, wallNow: long)
 
 // No bound: nothing ever drains for a development job.
@@ -104,6 +105,8 @@ val Unbounded: Fairness = Fairness(long.MaxValue, 0)
 // `urgent` says it is in the urgent band: a drain is for it ahead of every job not in the band.
 // `low` says it is in the low band (low.avin): it starts only in spare room, never drains the machine
 // and holds nothing back; the queue holds it behind every job not low.
+// `heldMicros` is how long it was held by hand since `arrived` (holdmany.avin): the drain bound
+// leaves it out of the job's wait, while `arrived` keeps its place in the queue.
 data Waiting(
     id: long,
     units: int,
@@ -117,8 +120,13 @@ data Waiting(
     unsettled: Option[Why] = None,
     alone: bool = false,
     urgent: bool = false,
-    low: bool = false
+    low: bool = false,
+    heldMicros: long = 0
 )
+
+// How long `w` has waited by `wallNow` (wall-clock microseconds) since it joined the queue, the time
+// it was held left out, in milliseconds.
+waitedMs(w: Waiting, wallNow: long) -> long = (wallNow - w.arrived - w.heldMicros) / 1000
 
 // What a development job that does not fit needs and what is free as the scheduler looks: `units`
 // (quarters) and `memory` it needs, `freeUnits` and `freeMemory` beside what runs and starts before
@@ -307,7 +315,7 @@ upToExclusive(queue: Vector[Waiting]) -> Vector[Waiting]
 // The first development job in queue order that has waited past the bound, if one has. A low job
 // never drains the machine: it becomes a normal job once it has waited long enough (low.avin).
 waitedPast(queue: Vector[Waiting], fair: Fairness) -> Option[Waiting] =
-  queue.find(w -> !w.landing && !w.quick && !w.low && (fair.wallNow - w.arrived) / 1000 >= fair.afterMs)
+  queue.find(w -> !w.landing && !w.quick && !w.low && waitedMs(w, fair.wallNow) >= fair.afterMs)
 
 // The development jobs that go ahead of every other once `past` has waited past the bound, in the
 // order they go: the urgent band's, in queue order, then `past` (in its place in the band when it is
@@ -378,7 +386,7 @@ private decide(
   // for. And when on the daemon's clock the drain began: when the job past the bound waited past it.
   val past = waitedPast(weighed, fair)
   val first = drainOrder(weighed, past)
-  val began = past.map(s -> now - ((fair.wallNow - s.arrived) / 1000 - fair.afterMs)).getOrElse(long.MinValue)
+  val began = past.map(s -> now - (waitedMs(s, fair.wallNow) - fair.afterMs)).getOrElse(long.MinValue)
   for r in running
     if r.landing then laneBusy = true
     elif r.quick then quicks += 1
