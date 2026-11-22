@@ -113,7 +113,11 @@ private diskJob(
     owner: string = "",
     from: string = "",
     expected: long = 0,
-    startsIn: long = -1
+    startsIn: long = -1,
+    eta: long = -1,
+    late: bool = false,
+    guess: bool = false,
+    waitsOn: long = 0
 ) -> JobInfo =
   JobInfo(
     7,
@@ -134,17 +138,28 @@ private diskJob(
     owner = owner,
     expectedMs = expected,
     durationFrom = from,
-    startsInMs = startsIn
+    startsInMs = startsIn,
+    etaMs = eta,
+    etaLate = late,
+    etaGuess = guess,
+    waitsOn = waitsOn
   )
 
 @test("a job's owner, where its duration came from, its ETA and its expected start go through the protocol")
 jobFieldsThroughProtocol()
   for j in [
-    diskJob("running", "sysl", "cmd+dir", 300000),
-    diskJob("queued", "avin", "cmd", 60000, 120000),
+    diskJob("running", "sysl", "cmd+dir", 300000, eta = 240000),
+    diskJob("running", "sysl", "kind+project", 30000, eta = 90000, late = true, guess = true),
+    diskJob("queued", "avin", "cmd", 60000, 120000, waitsOn = 3),
     diskJob("queued")
   ]
     assertEq(marshal.decodeReply(marshal.encodeReply(Ended(j)).render), Ok(Ended(j)))
+  // a running job the daemon gave no ETA is sent with the one its expectation gives, and read back
+  // with it
+  assertEq(
+    marshal.decodeReply(marshal.encodeReply(Ended(diskJob("running", "sysl", "cmd+dir", 300000))).render),
+    Ok(Ended(diskJob("running", "sysl", "cmd+dir", 300000, eta = 240000)))
+  )
   val e = marshal.encodeJob(diskJob("running", "sysl", "cmd+dir", 300000))
   assertEq(e.get("owner").flatMap(v -> v.asString), Some("sysl"))
   assertEq(e.get("duration_from").flatMap(v -> v.asString), Some("cmd+dir"))

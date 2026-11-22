@@ -4,8 +4,8 @@
 |cpu  [|||||||||||||||||||||||||||||||||||||      4.9+3.5/12] disk 31G free                                              |
 |                                                                                                                        |
 |   ID STATE          KIND     UNITS   RESV   RSS STARTED  ELAPSED     ETA DEADLINE OWNER LABEL      COMMAND             |
-|   21 landing        test*        2     4G  3.0G -          30:00     ~1m     over sysl  release 0… sysl test compiler …|
-|   22 running        build        3     2G  2.5G -          34:30   ~1h01     over nex              cargo build --relea…|
+|   21 landing        test*        2     4G  3.0G -          30:00     <1m     over sysl  release 0… sysl test compiler …|
+|   22 running        build        3     2G  2.5G -          34:30     <1m     over nex              cargo build --relea…|
 |   23 paused         bench        1  ~1.0G     - -           3:00       -     1:00 -                ./bench.sh          |
 |   24 running        lint         1      -     - -          31:00       -     over -                eslint .            |
 |   30 #1 no units    build        4      -     - -          w5:00  in ~1m    45:00 avin             make -j4            |

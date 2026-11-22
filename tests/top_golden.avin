@@ -636,8 +636,8 @@ etaMarks() -> Overview
 
 @test("golden: a late ETA is marked +, a guessed one ?, a late guess both, and the deadline holds a late one")
 goldenEtaMarks()
-  golden("eta-marks", drawn(viewing(etaMarks()), 120, 12))
-  val g = drawn(viewing(etaMarks()), 120, 12)
+  golden("eta-marks", drawn(viewing(etaMarks()), 120, 14))
+  val g = drawn(viewing(etaMarks()), 120, 14)
   val rows = (0 ..< g.height).map(y -> g.rowText(y)).toVector
   val row = (id: string) -> rows.find(r -> r.trim.startsWith(id + " ")).getOrElse("")
   assert(row("60").contains(" ~6m "), row("60"))

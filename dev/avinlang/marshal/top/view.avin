@@ -889,9 +889,8 @@ val helpLines: Vector[string] = [
   "*! and #! together).",
   "after 3,4 waits for jobs 3 and 4",
   "to end; retry 2 waits to make its second attempt.",
-  "DEADLINE is the time left; yellow, then red, as it nears. ETA is",
-  "the expected time left (~6m; +~4m past its expected end; ~6m? a",
-  "guess) or start (in ~3m); CORES those in use;",
+  "DEADLINE is the time left; yellow, then red, as it nears. ETA is the",
+  "time left (~6m, late +~4m, a guess ~6m?) or start (in ~3m); CORES in use;",
   "OWNER who it is for; disk low: under disk_min, nothing starts."
 ]
 

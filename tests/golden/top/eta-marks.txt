@@ -1,0 +1,44 @@
+|marshal  up 1:00   5 running  1 queued   landing: free                                                       filter: all|
+|units[||||||                                        1.25/12]                                                            |
+|mem  [                                                0/16G] rss 0                                                      |
+|cpu  [                                                 -/12]                                                            |
+|                                                                                                                        |
+|   ID STATE          KIND     UNITS   RESV   RSS STARTED  ELAPSED     ETA DEADLINE OWNER LABEL COMMAND                  |
+|   60 running        build        1      -     - -           4:00     ~6m    26:00 -           make -j4                 |
+|   61 running        build        1      -     - -          14:00    +~7m    16:00 -           make -j4                 |
+|   62 running        build        1      -     - -           4:00    ~6m?    26:00 -           make -j4                 |
+|   63 running        build        1      -     - -          26:00   +~4m?     4:00 -           make -j4                 |
+|   64 running        build        1      -     - -           4:00       -    26:00 -           make -j4                 |
+|   65 #1 no units    build        1      -     - -          w0:00  in ~4m    30:00 -           make -j4                 |
+|                                                                                                                        |
+|hHelp EnterLog kKill fFilter oOwner qQuit                                                                               |
+--
+0 0..7 Default/Default/1
+0 19..28 Basic(2)/Default/0
+0 30..38 Basic(3)/Default/0
+1 6..12 Basic(2)/Default/0
+1 12..59 Basic(8)/Default/0
+2 6..59 Basic(8)/Default/0
+3 6..59 Basic(8)/Default/0
+5 0..120 Default/Default/17
+6 0..6 Default/Default/16
+6 6..20 Basic(2)/Default/17
+6 20..120 Default/Default/16
+7 6..20 Basic(2)/Default/1
+8 6..20 Basic(2)/Default/1
+9 6..20 Basic(2)/Default/1
+9 74..82 Basic(3)/Default/0
+10 6..20 Basic(2)/Default/1
+11 6..20 Basic(3)/Default/0
+13 0..1 Default/Default/1
+13 1..6 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+13 6..11 Default/Default/1
+13 11..15 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+13 15..16 Default/Default/1
+13 16..21 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+13 21..22 Default/Default/1
+13 22..29 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+13 29..30 Default/Default/1
+13 30..36 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+13 36..37 Default/Default/1
+13 37..42 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0

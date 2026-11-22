@@ -2870,7 +2870,16 @@ seconds shows `<1m` either way.
 
 **Queued starts** (780 jobs that waited a minute or more and started within 5 s of one job's end,
 taken as their blocker; their start reckoned as its end, at submission and halfway through the wait,
-1,182 samples): today 0.61 / 1.18, chosen 0.39 / 1.62.
+1,428 samples, each blocker's runs taken only up to its start): today 0.58 / 1.12, chosen 0.42 / 1.88.
+The chosen rule's worse p90 is the metric, not the reckoning. On the 1,094 samples whose blocker was
+still on time the two rules are the same (0.36 / 1.59). On the 334 whose blocker was late, today
+shows `in <1m` every time, which scores exactly 1.00 however long the wait (median and p90 1.00,
+real wait more than twice the shown one 100%); |err|/real cannot go past 1 for a reckoning of 0, so
+the never-right `<1m` caps the tail while any reckoning above 0 can exceed it (chosen 0.57 / 3.04).
+Every other measure of the same samples favours the chosen rule: minutes off 2.7 / 10.1 against
+1.9 / 8.3 (all samples 1.6 / 7.9 against 1.5 / 7.4), |log(shown/real)| 5.08 / 6.41 against
+0.66 / 1.89 (all samples 0.64 / 5.27 against 0.45 / 1.64), `in <1m` shown 36% of all samples against
+16%, real wait more than twice the shown 37% against 19%. Kept as chosen.
 
 **A command with no runs of its own** (its duration from its kind in its project, or none; with a
 deadline; n=2,556, 700 of 5 minutes or more). Shown is the share given an ETA:

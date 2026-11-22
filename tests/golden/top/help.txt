@@ -23,8 +23,8 @@
 |   18 dep 17 faile│ *! and #! together).                                                            │ake -j4            |
 |   17 exit 1      │ after 3,4 waits for jobs 3 and 4                                                │ake -j4            |
 |   16 signal 9    │ to end; retry 2 waits to make its second attempt.                               │ake -j4            |
-|   15 exit 0      │ DEADLINE is the time left; yellow, then red, as it nears. ETA is                │ake -j4            |
-|                  │ the expected time left (~6m) or start (in ~3m); CORES those in use;             │                   |
+|   15 exit 0      │ DEADLINE is the time left; yellow, then red, as it nears. ETA is the            │ake -j4            |
+|                  │ time left (~6m, late +~4m, a guess ~6m?) or start (in ~3m); CORES in use;       │                   |
 |                  │ OWNER who it is for; disk low: under disk_min, nothing starts.                  │                   |
 |                  ╰─────────────────────────────────────────────────────────────────────────────────╯                   |
 |hHelp EnterLog kKill fFilter oOwner qQuit                                                                               |
