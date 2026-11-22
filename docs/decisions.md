@@ -2936,3 +2936,59 @@ frees enough`), even when it is short of nothing now; and the daemon sends the j
 (`waits_on`), which the short words show as `draining on 7263`. Alternative: carrying the id in the
 `Draining` reason itself (a wire change to `why` every client reads). **Review with the user:** the
 short words `draining on <id>`.
+
+## 0.4.2: reserving marshal for one owner (branch `owner-reserve`)
+
+2026-11-20. For sysl's 0.12.0 release the machine had to be kept for the release's jobs: 14 jobs were
+held one by one, and jobs submitted after the holds slipped past them. The user asked for "a mode
+where only jobs from a given owner will run. That way submitted jobs don't need a hold and other
+sessions can continue submitting." The surface below was agreed with the user; the sub-choices are
+**settled on the user's delegation 2026-11-20**.
+
+`marshal reserve --owner <name> --for <t>` and `marshal unreserve`. While a reservation stands, only
+the owner's jobs and quick jobs are admitted; every other queued job keeps its place and waits
+`reserved for <name>` (`why`/`waits` `reserved`, `reserved_for` in JSON). `status`, `status --json`
+(`reserve: {owner, until, left_ms}`), `ls` (a first line) and `top`'s header say
+`reserved for rel0120 (2h left)`. The owner's jobs are admitted against the budget as ever.
+
+- **Owners are matched exactly against a job's OWNER**, the `--owner` it was submitted with or its
+  default owner (owner.avin), as `ls` shows it; no glob, no case folding. A release passes an
+  explicit `--owner`, so the match is the name it chose.
+- **A reserved-out job is weighed as a held job is** (`eligible()` leaves it out): the scheduler does
+  not see it, so it starts nothing, drains nothing, is never the head the owner's jobs wait behind,
+  takes no take-slot ticket, and an exclusive one gives up its settling claim. Alternative: gating at
+  start only, which would let a reserved-out job drain the machine for nothing.
+- **`--for` is required, and at most 24h.** A dead agent or a forgotten reservation must never keep
+  the machine; a release runs for hours, not days, and reserving again before the end goes on. The
+  end is on the wall clock and is checked at every request and every tick (3 s), so it ends at most
+  a tick late. **Review with the user:** the 24h cap.
+- **A second `reserve` replaces the first** (owner and end), whoever it was for, and its `reserved`
+  event names the owner it `replaced`. Why: extending a release's reservation is then the same
+  command, and a refusal would need an `unreserve` first, a window in which other jobs start.
+  Alternative: refusing while one stands, to keep two sessions from taking it from each other.
+  **Review with the user.**
+- **`unreserve` with nothing reserved succeeds** and logs nothing: a release's clean-up step must not
+  fail because the reservation already expired.
+- **The quick lane bypasses it; landing, urgent and exclusive jobs of other owners wait.** A held job
+  still says `held`, and a held queue (`marshal pause`) still holds everything, the owner's jobs
+  included: the hold is the stronger, explicit act. While the disk or memory guard holds, a
+  reserved-out job still says `reserved` (it would wait for that too once the guard lifts).
+- **Running jobs of other owners go on**: only admission is gated. A job waiting `--after` others is
+  gated when it joins the queue.
+- **Polite mode is unchanged**: the owner's jobs are admitted against the polite budget while it is on.
+- **`stop --wait` does not refuse because of a reserved-out job**, as it does for a held one: the
+  reservation ends by itself, so the wait is bounded.
+- **The time reserved out counts as waiting**, unlike the time held (0.4.1's Fairness): after the
+  reservation a job that waited past `drain_after` may drain the machine at once. Why: the jobs a
+  reservation keeps waiting really did wait, and draining for the oldest is what the bound is for.
+  Alternative: leaving reserved time out as held time is. **Review with the user.**
+- **On unreserve or expiry nothing is done to any job**: they were never moved, so they start in their
+  queue order.
+- **It survives `marshal restart`**: state.json's `reserve` holds the owner and the end on the wall
+  clock, so the end stays where it was; one that ended during the handover ends at once. A daemon
+  started afresh (after `stop`) is not reserved, as it does not keep a held queue either.
+- **Three events of marshal's own, `reserved` (`owner`, `until`, `for_ms`, `replaced`), `unreserved`
+  and `reserve-expired` (`owner`)**, with `id` 0: no job has it, so a reader that looks each event's
+  job up by id finds none rather than failing on a missing member. A daemon starting over the log
+  skips them (no lost job, no unreadable line); `events` and `wait --until` filter them by name.
+  Alternative: no `id` at all (a reader indexing `id` would fail).

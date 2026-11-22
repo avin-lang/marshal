@@ -104,6 +104,8 @@ whyText(Why.PoliteBudget) = "polite"
 whyText(Why.RunsAlone) = "runs alone"
 whyText(Why.ForAlone(id)) = s"alone $id"
 whyText(Why.LowWaits) = "low"
+// the header names the owner the reservation is for
+whyText(Why.Reserved(_)) = "reserved"
 whyText(w) = marshal.whyText(w)
 
 // A time as a clock: `0:07`, `18:12`, `1:02:03`; a negative time is shown as none.
@@ -931,7 +933,7 @@ drawHeader(
       Span(s"${u.running} running", Some(Style.fg(Green))),
       Span("  "),
       Span(s"${u.queued} queued", Some(Style.fg(Yellow)))
-    ] ++ settlingSpans(u) ++ held ++ politeSpans(u) ++ [Span("   landing: "), styled(laneText(o))] ++ quickText(u)
+    ] ++ settlingSpans(u) ++ held ++ politeSpans(u) ++ reserveSpans(u) ++ [Span("   landing: "), styled(laneText(o))] ++ quickText(u)
   )
   val shown = s"filter: ${filterName(f)}" + owner.map(o -> s"  owner: $o").getOrElse("")
   if g.width > textWidth(shown) then g.text(g.width - textWidth(shown), 0, shown, Muted)
@@ -1060,6 +1062,12 @@ politeSpans(u: Usage) -> Vector[Span]
     Some(p) ->
       val until = if p.until.isEmpty then "" else s" until ${p.until}"
       [Span("  "), Span(s"polite ${marshal.fractionText(p.fraction)}$until", Some(Style.fg(Magenta).with(Bold)))]
+
+// A reservation in the header, `  reserved for rel0120 (2h left)`, while one stands; nothing otherwise.
+reserveSpans(u: Usage) -> Vector[Span]
+  u.reserve match
+    None -> []
+    Some(r) -> [Span("  "), Span(marshal.reserveText(r.owner, r.leftMs), Some(Style.fg(Cyan).with(Bold)))]
 
 // The settling jobs in the header, `  1 settling`, while one is; nothing otherwise.
 settlingSpans(u: Usage) -> Vector[Span]

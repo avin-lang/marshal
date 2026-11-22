@@ -648,3 +648,25 @@ goldenEtaMarks()
   assert(row("63").contains(" +~4m? "), row("63"))
   assert(!row("64").contains("~"), row("64"))
   assert(row("65").contains(" in ~4m "), row("65"))
+
+// A daemon reserved for `rel0120` with 2h05m left: the owner's job runs, another owner's waits.
+reservedDaemon() -> Overview
+  val running = [gjob(60, kind = "release", units = 8, owner = "rel0120")]
+  val queued = [
+    QueuedJob(gjob(61, kind = "test", state = "queued", units = 4, owner = "avin"), 1, Why.Reserved("rel0120")),
+    QueuedJob(gjob(62, state = "queued", units = 4, owner = "rel0120"), 2, Why.NoUnits)
+  ]
+  Overview(
+    Usage(8, 48, 0, 56 * G, 1, 2, None, None, reserve = Some(marshal.ReserveUse("rel0120", 0, 2 * 3600000 + 5 * 60000))),
+    60000,
+    running,
+    queued,
+    []
+  )
+
+@test("golden: owner reserve in the header, with its time left, and a job of another owner waiting as reserved")
+goldenOwnerReserve()
+  val g = drawn(viewing(reservedDaemon()), 120, 12)
+  golden("owner-reserve", g)
+  assert(g.rowText(0).contains("  reserved for rel0120 (2h05m left)   landing: free"), g.rowText(0))
+  assert(g.rowText(7).contains("#1 reserved"), g.rowText(7))

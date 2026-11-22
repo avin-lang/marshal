@@ -404,6 +404,8 @@ class Daemon(
   var queueHeld = false
   // The number the next filtered hold's default group is given (holdmany.avin's `defaultGroupName`).
   var nextGroup: long = 1
+  // The reservation that stands (control.avin's `OwnerReserve`), if one does.
+  var ownerReserve: Option[marshal.OwnerReserve] = None
   // What the user last set polite mode to by hand, if anything (polite.avin), and the zone the
   // schedule's windows are read in, the machine's as the daemon began.
   var politeManual: Option[marshal.PoliteSetting] = None
@@ -423,6 +425,12 @@ class Daemon(
   record(event: string, job: Job, extra: Vector[(string, Json)] = [])
     val line = marshal.eventLine(time.now().epochMillis, event, job.info(now()), extra)
     // the daemon has no one to tell of a history it cannot append to, and goes on serving
+    val _ = fs.appendText(home + "/events.jsonl", line + "\n")
+    if watchers.nonEmpty then json.parse(line).ok.foreach(ev -> publish(ev))
+
+  // Records an event of marshal's own (events.avin's `MachineEvents`), which names no job.
+  recordMachine(event: string, members: Vector[(string, Json)])
+    val line = marshal.machineEventLine(time.now().epochMillis, event, members)
     val _ = fs.appendText(home + "/events.jsonl", line + "\n")
     if watchers.nonEmpty then json.parse(line).ok.foreach(ev -> publish(ev))
 
@@ -798,6 +806,7 @@ class Daemon(
         Tick ->
           measureDisk()
           measurePressure()
+          expireReserve()
           promoteLow()
           if queue.nonEmpty then schedule()
         Sweep -> sweep()
@@ -821,6 +830,8 @@ class Daemon(
 
   // Answers a request at once, or keeps its reply channel for when the answer is known.
   answer(request: Request, reply: Channel[Reply])
+    // a reservation past its end is over before anything is answered, so none is shown with no time left
+    expireReserve()
     request match
       Submit(spec) -> give(reply, submit(spec))
       Wait(id) -> jobs.get(id) match
@@ -843,6 +854,8 @@ class Daemon(
       Request.PauseJob(id) -> give(reply, pauseJob(id, true))
       Request.ResumeJob(id) -> give(reply, pauseJob(id, false))
       Request.Polite(fraction) -> give(reply, polite(fraction))
+      Request.Reserve(owner, forMs) -> give(reply, reserveFor(owner, forMs))
+      Request.Unreserve -> give(reply, unreserve())
       Request.Hold(id) -> give(reply, hold(id, true))
       Request.Release(id) -> give(reply, hold(id, false))
       Request.HoldMany(sel, on) -> give(reply, holdMany(sel, on))
@@ -1262,6 +1275,52 @@ class Daemon(
     schedule()
     Done
 
+  // Reserves marshal for `owner` for `forMs` from now, replacing any reservation that stands: from
+  // now only its jobs, and quick jobs, are admitted (control.avin). Answers the budget then in use.
+  reserveFor(owner: string, forMs: long) -> Reply
+    for why in marshal.reserveRefusal(owner, forMs).toList do return Failed(why)
+    if stopping || draining then return Failed("the daemon is stopping")
+    val wallNow = time.now().epochMillis
+    val replaced = ownerReserve.map(r -> r.owner)
+    ownerReserve = Some(marshal.OwnerReserve(owner, wallNow + forMs))
+    val members = Buffer[(string, Json)]()
+    members += ("owner", Json.str(owner))
+    members += ("until", Json.num(wallNow + forMs))
+    members += ("for_ms", Json.num(forMs))
+    for r in replaced.toList do members += ("replaced", Json.str(r))
+    recordMachine("reserved", members.toVector)
+    eprintln(s"marshal: ${marshal.reserveText(owner, forMs)}")
+    schedule()
+    Using(usage())
+
+  // Ends the reservation by hand; the jobs it kept waiting start in their queue order. With none
+  // standing there is nothing to end, and that is no failure. Answers the budget then in use.
+  unreserve() -> Reply
+    ownerReserve.foreach(r -> endReserve("unreserved", r))
+    Using(usage())
+
+  // Ends the reservation once its end has come.
+  expireReserve()
+    for r in ownerReserve.toList
+      if time.now().epochMillis >= r.until then endReserve("reserve-expired", r)
+
+  // Ends the reservation `r`, recording `event`, and starts what now fits.
+  endReserve(event: string, r: marshal.OwnerReserve)
+    ownerReserve = None
+    recordMachine(event, [("owner", Json.str(r.owner))])
+    val how = if event == "unreserved" then "was ended" else "has expired"
+    eprintln(s"marshal: the reservation for ${r.owner} $how: every owner's jobs start")
+    schedule()
+
+  // Whether the queued `job` is kept waiting by the reservation that stands.
+  reservedOutNow(job: Job) -> bool =
+    marshal.reservedOut(ownerReserve, job.owner, job.spec.quick, time.now().epochMillis)
+
+  // The reservation as `status` and `top` show it.
+  reserveUse() -> Option[marshal.ReserveUse]
+    val wallNow = time.now().epochMillis
+    ownerReserve.filter(r -> wallNow < r.until).map(r -> marshal.ReserveUse(r.owner, r.until, r.until - wallNow))
+
   // Makes marshal polite at `fraction` of its budget, or not polite with None, until the user says
   // otherwise or, said inside a window of the schedule, until that window ends. What runs goes on;
   // what starts next is admitted against the new budget, at once. Answers the budget then in use.
@@ -1500,8 +1559,8 @@ class Daemon(
         keepTicket(ts, outside)
         ts.unlock()
 
-  // The queued jobs the scheduler weighs: those not held.
-  eligible() -> Vector[Job] = queue.filter(j -> !j.held).toVector
+  // The queued jobs the scheduler weighs: those neither held nor kept waiting by a reservation.
+  eligible() -> Vector[Job] = queue.filter(j -> !j.held && !reservedOutNow(j)).toVector
 
   // The pids of the running jobs.
   ours() -> Vector[long] = running.map(j -> j.pid).toVector
@@ -1529,17 +1588,18 @@ class Daemon(
 
   // Marks the exclusive job that is settling as the scheduler weighs `started` and `waiting` at `t`:
   // the first time, its claim on the machine and the clock `load_wait` measures begin. A job held by
-  // hand gives up its claim, and waits for the machine afresh once let go.
+  // hand, or kept waiting by a reservation, gives up its claim, and waits for the machine afresh once
+  // let go.
   markSettling(b: marshal.Budget, started: Vector[Started], waiting: Vector[Waiting], t: long, outside: Outside)
     for job in queue
-      if job.held
+      if job.held || reservedOutNow(job)
         job.settling = false
         job.settlingSince = None
         job.overdue = false
     if !waiting.exists(w -> w.exclusive && w.unsettled.isDefined) && !queue.exists(j -> j.settling) then return
     val id = marshal.settles(b, started, waiting, t, outside, marshal.fairness(config, time.now().epochMicros))
     for job in queue
-      if job.held then continue
+      if job.held || reservedOutNow(job) then continue
       job.settling = id == Some(job.id)
       if job.settling && job.settlingSince.isEmpty then job.settlingSince = Some(t)
 
@@ -2096,6 +2156,7 @@ class Daemon(
     val started = running.map(j -> startedOf(j, t, b)).toVector
     val waiting = queue.map(j -> waitingOf(j, t, b)).toVector
     val held = queue.filter(j -> j.held).map(j -> j.id).toVector
+    val reservedOut = queue.filter(j -> reservedOutNow(j)).map(j -> j.id).toVector
     val whys = marshal.queueWaits(
       b,
       started,
@@ -2104,14 +2165,17 @@ class Daemon(
       queueHeld,
       t,
       outside,
-      marshal.fairness(config, time.now().epochMicros)
+      marshal.fairness(config, time.now().epochMicros),
+      reservedOut,
+      ownerReserve.map(r -> r.owner).getOrElse("")
     )
     val guard = if diskLow() then Some(Why.DiskLow(diskFree)) elif pressureHeld() then Some(
       Why.MemoryPressure(pressure.cause)
     ) else None
+    // a job held, or kept waiting by a reservation, says so whatever the guards say
     guard match
       None -> whys
-      Some(g) -> whys.map(w -> if w.2 == Why.Held || w.2 == Why.QueueHeld then w else (w.0, w.1, g))
+      Some(g) -> whys.map(w -> if w.2 == Why.Held || w.2 == Why.QueueHeld || reservedOut.contains(w.0) then w else (w.0, w.1, g))
 
   // How long each queued job is expected to wait before it starts, by id, where that can be
   // reckoned from the running jobs' expected ends (eta.avin).
@@ -2231,7 +2295,8 @@ class Daemon(
       nofile,
       queue.filter(j -> j.settling).length,
       politeUse(),
-      pressure
+      pressure,
+      reserveUse()
     )
 
   // A stop asks for the daemon to end: at once when nothing is queued or running; with `force`,
@@ -2471,7 +2536,8 @@ class Daemon(
       queueHeld,
       waitingJobs.map(saved).toVector,
       politeManual,
-      nextGroup
+      nextGroup,
+      ownerReserve
     )
 
   // Takes over what an earlier image of this daemon saved: its jobs, queue and ticket. The
@@ -2486,6 +2552,8 @@ class Daemon(
     ticket = s.ticket
     queueHeld = s.queueHeld
     politeManual = s.polite
+    // its end is on the wall clock, so it stays where it was; one that ended meanwhile is ended at once
+    ownerReserve = s.reserve
     if s.nextGroup > nextGroup then nextGroup = s.nextGroup
     val rebuilt = (sj: SavedJob) ->
       val job = Job(sj.id, sj.spec, mono(sj.submittedAt), sj.arrived, sj.deadlineMs, sj.expectedMs, sj.log)

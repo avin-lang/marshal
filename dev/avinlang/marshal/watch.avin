@@ -50,6 +50,8 @@ Conditions of wait --until, and filters of events:
   paused, resumed      a running job was paused, or resumed
   prioritized          a queued job was given a priority
   amended              a job's settings were changed (amend)
+  reserved             marshal was reserved for an owner (reserve); no job
+  unreserved, reserve-expired  the reservation ended by hand (unreserve), or at its end
   any                  any event (events only)
 Narrow any of these but idle and job= with filters after a colon, separated by commas: kind=<k>,
 label=<text> (the job's label contains text; last, and it takes the rest, commas too),
@@ -94,7 +96,9 @@ admits(f: Filter, ev: Json) -> bool
 private val EndingNames: Vector[string] = ["finished", "timeout", "quiet", "killed", "cancelled", "lost"]
 
 // The events that are filters of their own name, beside `started` and `submitted`.
-private val Named: Vector[string] = ["ready", "retry", "held", "released", "paused", "resumed", "prioritized", "amended", "promoted"]
+private val Named: Vector[string] = [
+  "ready", "retry", "held", "released", "paused", "resumed", "prioritized", "amended", "promoted", "reserved", "unreserved", "reserve-expired"
+]
 
 private baseFilter(name: string) -> Option[Filter]
 baseFilter("ended") = Some(Filter(EndingNames, None, None, false, false))
