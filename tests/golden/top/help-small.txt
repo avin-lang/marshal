@@ -8,9 +8,9 @@
 |│ Enter  l        the selected job's log, followi│|
 |│                 (open: PgUp PgDn Home End scrol│|
 |│ k               kill the selected job, after y │|
+|│ p               hold a queued job, or release a│|
+|│                 job, or resume a paused one (no│|
 |│ f  o            all, running, queued or finishe│|
-|│ h  ?            this help                      │|
-|│ q               quit                           │|
 |╰────────────────────────────────────────────────╯|
 --
 0 0..50 Basic(6)/Default/0

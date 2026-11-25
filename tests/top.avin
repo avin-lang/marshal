@@ -5,12 +5,12 @@ module tests
 import avin.time
 import avin.math
 import dev.avinlang.marshal
-import dev.avinlang.marshal.{JobInfo, Outcome, Overview, QueuedJob, TakeSlotUse, Usage, Why}
+import dev.avinlang.marshal.{Request, JobInfo, Outcome, Overview, QueuedJob, TakeSlotUse, Usage, Why}
 import dev.avinlang.marshal.cli
 import dev.avinlang.marshal.top
 
 import dev.avinlang.marshal.top.{
-  App, IdleHideMs, KillJob, Quit, StartDaemon, Stay, ShowAll, ShowRunning, ShowQueued, ShowFinished
+  Action, App, Ask, IdleHideMs, KillJob, Quit, StartDaemon, Stay, ShowAll, ShowRunning, ShowQueued, ShowFinished
 }
 
 import dev.avinlang.tui.{
@@ -40,7 +40,9 @@ snapJob(
     memory: long = 0,
     rss: long = 0,
     peak: long = 0,
-    started: long = 0
+    started: long = 0,
+    held: bool = false,
+    paused: bool = false
 ) -> JobInfo =
   JobInfo(
     id,
@@ -60,7 +62,9 @@ snapJob(
     None,
     rss,
     peak,
-    started
+    started,
+    held = held,
+    paused = paused
   )
 
 queued(id: long, position: int, why: Why) -> QueuedJob = QueuedJob(
@@ -527,6 +531,75 @@ kill()
   empty.handle(key('k'))
   assertEq(empty.message, "no job selected")
 
+// A snapshot with one job of each kind p acts on: running (1), paused (2), queued (3), held (4),
+// a waiting job (5), a held waiting job (6), and an ended one (7).
+holdable() -> Overview
+  val queuedJobs = [
+    QueuedJob(snapJob(3, "queued"), 1, Why.NoUnits),
+    QueuedJob(snapJob(4, "queued", held = true), 2, Why.Held)
+  ]
+  Overview(
+    full().usage,
+    0,
+    [snapJob(1), snapJob(2, paused = true)],
+    queuedJobs,
+    [snapJob(7, "done", Some(Outcome.Exited(0)))]
+  )
+
+// The action p gives with the job at line `at` selected.
+pressP(at: int) -> (Action, App)
+  val app = viewing(holdable())
+  for _ in 0 ..< at
+    app.handle(press(Down))
+  (app.handle(key('p')), app)
+
+@test("p pauses a running job and resumes a paused one, with no question")
+pausesAndResumes()
+  val (pause, a) = pressP(0)
+  assertEq(pause, Ask(Request.PauseJob(1), "paused 1"))
+  assertEq(a.confirming, None)
+  val (resume, _) = pressP(1)
+  assertEq(resume, Ask(Request.ResumeJob(2), "resumed 2"))
+
+@test("p holds a queued job and releases a held one, with no question")
+holdsAndReleases()
+  val (hold, a) = pressP(2)
+  assertEq(hold, Ask(Request.Hold(3), "held 3"))
+  assertEq(a.confirming, None)
+  val (release, _) = pressP(3)
+  assertEq(release, Ask(Request.Release(4), "released 4"))
+
+@test("p on a job that has ended, or with no job, asks nothing and says why")
+holdsNothingEnded()
+  val (ended, a) = pressP(4)
+  assertEq(ended, Stay)
+  assertEq(a.message, "job 7 has already ended")
+  val empty = viewing(Overview(full().usage, 0, [], [], []))
+  assertEq(empty.handle(key('p')), Stay)
+  assertEq(empty.message, "no job selected")
+
+@test("a held job's STATE says held in the list, and the bottom line gives the daemon's answer")
+heldShows()
+  val app = viewing(holdable())
+  val g = drawn(app, 100, 30)
+  val held = rowOf(g, "#2 held")
+  assert(held >= 0, g.rowText(0))
+  val paused = rowOf(g, "paused")
+  assert(paused >= 0)
+  // the loop sets the message after the daemon answers; it shows on the bottom line
+  app.message = "held 3"
+  assert(drawn(app, 100, 30).rowText(29).contains("held 3"))
+  app.message = "job 3 has already started"
+  assert(drawn(app, 100, 30).rowText(29).contains("job 3 has already started"))
+
+@test("the help lists p")
+helpListsP()
+  val app = viewing(holdable())
+  app.handle(key('h'))
+  val g = drawn(app, 120, 30)
+  assert(rowOf(g, "p               hold a queued job") >= 0)
+  assert(rowOf(g, "or resume a paused one") >= 0)
+
 @test("Enter and l open the selected job's log, which follows the selection; Esc and a second press close it")
 logPane()
   val app = viewing(full())
@@ -587,7 +660,7 @@ logScroll()
 helpAndQuit()
   val app = viewing(full())
   assertEq(app.handle(key('h')), Stay)
-  assert(rowOf(drawn(app, 100, 30), "help; any key closes") > 0)
+  assert(rowOf(drawn(app, 100, 30), "help; any key closes") >= 0)
   assertEq(app.handle(key('q')), Stay)
   assert(!app.helpShown())
   app.handle(key('?'))

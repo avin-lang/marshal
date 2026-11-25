@@ -5,7 +5,7 @@ module dev.avinlang.marshal.top
 // that reads the terminal and asks the daemon is the command line's (`cli/top.avin`).
 import avin.time
 import dev.avinlang.marshal
-import dev.avinlang.marshal.{JobInfo, Overview, QueuedJob, Usage, Why}
+import dev.avinlang.marshal.{Request, JobInfo, Overview, QueuedJob, Usage, Why}
 import dev.avinlang.marshal.{NoUnits, NoMemory, LaneBusy, Draining, ForTakeSlot, Behind, Starting, Held, QueueHeld}
 import dev.avinlang.marshal.{Exited, Signalled, TimedOut, Cancelled, Lost, DependencyFailed, Quiet}
 
@@ -35,11 +35,13 @@ filterName(ShowRunning) = "running"
 filterName(ShowQueued) = "queued"
 filterName(ShowFinished) = "finished"
 
-// What the loop does after a key: draw again, end, kill a job, or start a daemon.
+// What the loop does after a key: draw again, end, kill a job, send the daemon a request (`said` is
+// the bottom line when it answers Done), or start a daemon.
 data Action
   Stay
   Quit
   KillJob(id: long)
+  Ask(request: Request, said: string)
   StartDaemon
 
 // One line of the table: the job, and for a queued one its place and why it waits.
@@ -544,6 +546,7 @@ class App(val sock: string)
   key(Char('f')) = cycleFilter()
   key(Char('o')) = cycleOwner()
   key(Char('k')) = askKill()
+  key(Char('p')) = holdOrPause()
   key(Char('l')) = toggleLog()
   key(Enter) = toggleLog()
   key(Escape) = closeLog()
@@ -602,6 +605,25 @@ class App(val sock: string)
       Some(j) -> confirming = Some(j)
       None -> message = "no job selected"
     Stay
+
+  // `p`: a running job is paused, or resumed if paused; a queued or waiting job is held, or released
+  // if held. Neither asks first: both are undone by the same key. The daemon's answer is the bottom
+  // line, so a job that started or ended meanwhile says so.
+  private holdOrPause() -> Action
+    val j = selected() match
+      Some(j) -> j
+      None ->
+        message = "no job selected"
+        return Stay
+    if j.outcome.isDefined
+      message = s"job ${j.id} has already ended"
+      return Stay
+    if j.state == "running"
+      return (
+        if j.paused then Ask(Request.ResumeJob(j.id), s"resumed ${j.id}")
+        else Ask(Request.PauseJob(j.id), s"paused ${j.id}")
+      )
+    if j.held then Ask(Request.Release(j.id), s"released ${j.id}") else Ask(Request.Hold(j.id), s"held ${j.id}")
 
   private toggleLog() -> Action
     if logOf.isDefined then return closeLog()
@@ -877,6 +899,8 @@ val helpLines: Vector[string] = [
   "Enter  l        the selected job's log, following its end",
   "                (open: PgUp PgDn Home End scroll it, Esc closes)",
   "k               kill the selected job, after y",
+  "p               hold a queued job, or release a held one; pause a running",
+  "                job, or resume a paused one (no question: p again undoes it)",
   "f  o            all, running, queued or finished jobs; o: one owner's, then all",
   "h  ?            this help",
   "q               quit",

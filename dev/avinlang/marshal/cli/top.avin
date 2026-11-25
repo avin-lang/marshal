@@ -13,7 +13,7 @@ import avin.time.millis
 import dev.avinlang.marshal
 import dev.avinlang.marshal.Request
 import dev.avinlang.marshal.{Viewed, Failed, Done, Hi}
-import dev.avinlang.marshal.top.{App, KillJob, Quit, StartDaemon, Stay, logHistory}
+import dev.avinlang.marshal.top.{App, Ask, KillJob, Quit, StartDaemon, Stay, logHistory}
 import dev.avinlang.tui
 import dev.avinlang.tui.Terminal
 
@@ -58,6 +58,14 @@ watch(term: Terminal) -> Result[unit, IoError]
         KillJob(id) ->
           app.message = conn.map(c -> ask(c, Request.Kill(id))) match
             Some(Ok(Done)) -> s"job $id is being stopped"
+            Some(Ok(Failed(why))) -> why
+            Some(Ok(other)) -> s"unexpected reply $other"
+            Some(Err(why)) -> why
+            None -> "no daemon"
+          due = time.monotonic()
+        Ask(request, said) ->
+          app.message = conn.map(c -> ask(c, request)) match
+            Some(Ok(Done)) -> said
             Some(Ok(Failed(why))) -> why
             Some(Ok(other)) -> s"unexpected reply $other"
             Some(Err(why)) -> why

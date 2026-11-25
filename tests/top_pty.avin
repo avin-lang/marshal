@@ -134,6 +134,47 @@ topKills()
   assert(r.out.contains("killed"), r.out)
   cleanUp(home)
 
+@test("top holds a queued job and releases it again with p, and the daemon agrees")
+topHoldsAndReleases()
+  if process.os() != MacOS then return
+  val home = newHome("{\"units\": 1}")
+  val blocker = submitted(home, "--units", "1", "--", "sleep", "60")
+  assert(runningSoon(home, blocker))
+  val waiting = submitted(home, "--units", "1", "--", "sleep", "60")
+  // x shows the highlight, Down moves to the queued job, p holds it
+  val held = topIn(home, "x\\033[Bpq")
+  assert(held.contains(s"held $waiting"), held)
+  assert(m(home, "ls").out.contains("held"), m(home, "ls").out)
+  assert(m(home, "status", waiting.toString()).out.contains("(held)"), m(home, "status", waiting.toString()).out)
+  val released = topIn(home, "x\\033[Bpq")
+  assert(released.contains(s"released $waiting"), released)
+  assert(!m(home, "ls").out.contains("held"), m(home, "ls").out)
+  cleanUp(home)
+
+@test("top pauses a running job and resumes it with p")
+topPausesAndResumes()
+  if process.os() != MacOS then return
+  val home = newHome()
+  val id = submitted(home, "--", "sleep", "60")
+  assert(runningSoon(home, id))
+  val paused = topIn(home, "xpq")
+  assert(paused.contains(s"paused $id"), paused)
+  assert(m(home, "ls").out.contains("paused"), m(home, "ls").out)
+  val resumed = topIn(home, "xpq")
+  assert(resumed.contains(s"resumed $id"), resumed)
+  assert(!m(home, "ls").out.contains("paused"), m(home, "ls").out)
+  cleanUp(home)
+
+@test("top says p cannot hold a job that has ended, and changes nothing")
+topHoldRefusesEnded()
+  if process.os() != MacOS then return
+  val home = newHome()
+  val id = submitted(home, "--", "true")
+  assertEq(m(home, "wait", id.toString()).code, 0)
+  val shown = topIn(home, "xpq")
+  assert(shown.contains(s"job $id has already ended"), shown)
+  cleanUp(home)
+
 @test("top with no daemon says so, starts none, and quits on q with status 0")
 topWithoutDaemon()
   if process.os() != MacOS then return

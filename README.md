@@ -1307,7 +1307,11 @@ against its own budget. `marshal status` shows what take-slot holds.
   the table, following the end as it grows (PgUp, PgDn, Home, End scroll it while it is open, Esc
   closes it); `k` kills the selected job after `y` (the prompt, `Kill job 7289 (zsh
   …/train/train373.zsh)? y/n`, is bold white on a dark red of marshal's own, readable on a dark
-  and a light terminal alike, each long path in the command cut to its last two parts); `f` shows all jobs, the running, the queued or
+  and a light terminal alike, each long path in the command cut to its last two parts); `p` holds
+  the selected queued or waiting job, or releases it if held, and pauses a running job, or resumes
+  it if paused (`marshal hold`, `release`, `pause` and `resume`; no question, since `p` again undoes
+  it; the bottom line says `held 7289`, `released 7289`, `paused 7289` or `resumed 7289`, or why the
+  daemon refused, as when the job started meanwhile); `f` shows all jobs, the running, the queued or
   the ended ones; `o` shows only the first owner's jobs (in alphabetical order, among the jobs
   listed and loaded), the next owner's at the next press, and every owner's again after the last,
   with whichever `f` filter is on; `h` or `?` the keys; `s` starts a daemon when there is none; `q`
