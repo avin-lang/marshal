@@ -15,7 +15,7 @@
 |    6 killed         build        1      -     - -           1:00        - slee…|
 |    5 lost           build        1      -     - -           1:00        - slee…|
 |    3 cancelled      build        1      -     - -           1:00        - slee…|
-|hHelp EnterLog kKill fFilter oOwner qQuit                                       |
+|hHelp EnterLog kKill pHold fFilter oOwner qQuit                                 |
 --
 0 0..7 Default/Default/1
 0 22..31 Basic(2)/Default/0
@@ -49,8 +49,10 @@
 17 15..16 Default/Default/1
 17 16..21 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
 17 21..22 Default/Default/1
-17 22..29 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
-17 29..30 Default/Default/1
-17 30..36 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
-17 36..37 Default/Default/1
-17 37..42 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+17 22..27 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+17 27..28 Default/Default/1
+17 28..35 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+17 35..36 Default/Default/1
+17 36..42 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+17 42..43 Default/Default/1
+17 43..48 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0

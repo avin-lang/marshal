@@ -5,7 +5,7 @@
 |                        |
 |   ID STATE          KIN|
 |    1 running        bu█|
-|hHelp EnterLog kKill fFi|
+|hHelp EnterLog kKill pHo|
 --
 0 0..7 Default/Default/1
 1 6..10 Basic(2)/Default/0

@@ -6,7 +6,7 @@
 |   ID STATE          KIND     UNITS   RESV   RSS STARTED  ELAPSED     ETA DEADLINE COMMAND          |
 |    1 running        build        1      -     - -           2:00       -    28:00 sh -c abcdefghij…|
 |                                                                                                    |
-|hHelp EnterLog kKill fFilter oOwner qQuit                                                           |
+|hHelp EnterLog kKill pHold fFilter oOwner qQuit                                                     |
 --
 0 0..7 Default/Default/1
 0 19..28 Basic(2)/Default/0
@@ -29,8 +29,10 @@
 8 15..16 Default/Default/1
 8 16..21 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
 8 21..22 Default/Default/1
-8 22..29 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
-8 29..30 Default/Default/1
-8 30..36 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
-8 36..37 Default/Default/1
-8 37..42 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+8 22..27 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+8 27..28 Default/Default/1
+8 28..35 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+8 35..36 Default/Default/1
+8 36..42 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+8 42..43 Default/Default/1
+8 43..48 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0

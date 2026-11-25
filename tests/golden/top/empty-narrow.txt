@@ -5,7 +5,7 @@
 |                              |
 |   ID STATE          KIND     |
 |                              |
-|hHelp EnterLog kKill fFilter o|
+|hHelp EnterLog kKill pHold fFi|
 --
 0 0..7 Default/Default/1
 1 6..16 Basic(8)/Default/0
@@ -19,5 +19,6 @@
 7 15..16 Default/Default/1
 7 16..21 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
 7 21..22 Default/Default/1
-7 22..29 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
-7 29..30 Default/Default/1
+7 22..27 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+7 27..28 Default/Default/1
+7 28..30 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0

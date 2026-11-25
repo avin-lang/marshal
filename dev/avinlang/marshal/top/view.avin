@@ -883,6 +883,7 @@ val footerKeys: Vector[(string, string)] = [
   ("h", "Help "),
   ("Enter", "Log "),
   ("k", "Kill "),
+  ("p", "Hold "),
   ("f", "Filter "),
   ("o", "Owner "),
   ("q", "Quit ")

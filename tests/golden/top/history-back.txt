@@ -27,7 +27,7 @@
 |  973 exit 0         build        1      -     - -           1:00       -        - -           sleep 30                │|
 |  972 exit 0         build        1      -     - -           1:00       -        - -           sleep 30                │|
 |  971 exit 0         build        1      -     - -           1:00       -        - -           sleep 30                │|
-|hHelp EnterLog kKill fFilter oOwner qQuit                                                            jobs 19–41 of 1,011|
+|hHelp EnterLog kKill pHold fFilter oOwner qQuit                                                      jobs 19–41 of 1,011|
 --
 0 0..7 Default/Default/1
 0 19..28 Basic(2)/Default/0
@@ -87,8 +87,10 @@
 29 15..16 Default/Default/1
 29 16..21 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
 29 21..22 Default/Default/1
-29 22..29 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
-29 29..30 Default/Default/1
-29 30..36 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
-29 36..37 Default/Default/1
-29 37..42 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+29 22..27 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+29 27..28 Default/Default/1
+29 28..35 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+29 35..36 Default/Default/1
+29 36..42 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+29 42..43 Default/Default/1
+29 43..48 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0

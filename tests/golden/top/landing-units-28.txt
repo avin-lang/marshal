@@ -7,7 +7,7 @@
 |    7 landing        test*  |
 |                            |
 |                            |
-|hHelp EnterLog kKill fFilter|
+|hHelp EnterLog kKill pHold f|
 --
 0 0..7 Default/Default/1
 1 6..16 Basic(8)/Default/0
@@ -24,4 +24,5 @@
 9 15..16 Default/Default/1
 9 16..21 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
 9 21..22 Default/Default/1
-9 22..28 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+9 22..27 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+9 27..28 Default/Default/1

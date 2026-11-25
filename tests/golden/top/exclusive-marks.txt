@@ -13,7 +13,7 @@
 |                                                                                                    |
 |                                                                                                    |
 |                                                                                                    |
-|hHelp EnterLog kKill fFilter oOwner qQuit                                                           |
+|hHelp EnterLog kKill pHold fFilter oOwner qQuit                                                     |
 --
 0 0..7 Default/Default/1
 0 19..28 Basic(2)/Default/0
@@ -36,8 +36,10 @@
 15 15..16 Default/Default/1
 15 16..21 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
 15 21..22 Default/Default/1
-15 22..29 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
-15 29..30 Default/Default/1
-15 30..36 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
-15 36..37 Default/Default/1
-15 37..42 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+15 22..27 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+15 27..28 Default/Default/1
+15 28..35 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+15 35..36 Default/Default/1
+15 36..42 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+15 42..43 Default/Default/1
+15 43..48 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0

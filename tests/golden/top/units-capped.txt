@@ -9,7 +9,7 @@
 |   83 running        build     ~1.5      -     - -           2:00       -    28:00 -           make -j2                 |
 |   84 #1 no units    build     ~1.5      -     - -          w0:00       -    30:00 -           make -j4                 |
 |                                                                                                                        |
-|hHelp EnterLog kKill fFilter oOwner qQuit                                                                               |
+|hHelp EnterLog kKill pHold fFilter oOwner qQuit                                                                         |
 --
 0 0..7 Default/Default/1
 0 19..28 Basic(2)/Default/0
@@ -32,8 +32,10 @@
 11 15..16 Default/Default/1
 11 16..21 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
 11 21..22 Default/Default/1
-11 22..29 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
-11 29..30 Default/Default/1
-11 30..36 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
-11 36..37 Default/Default/1
-11 37..42 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+11 22..27 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+11 27..28 Default/Default/1
+11 28..35 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+11 35..36 Default/Default/1
+11 36..42 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+11 42..43 Default/Default/1
+11 43..48 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
