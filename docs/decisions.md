@@ -3039,6 +3039,11 @@ setting `remote: {"enabled": true, "port": 7177}` in config.json; 50 recently en
   nothing, not even which paths exist); then a path not the API's is 404 `not found`; then a method
   other than GET or HEAD is 405 `method not allowed`, with `Allow: GET, HEAD`. A job id that is not a
   positive whole number is 404 `no such job`, as an id no job has had. A bad `from` or `max` is 400.
+- **A removed log is 404 `log removed`, not an empty log.** A phone cannot tell an empty 200 from a
+  job that printed nothing. For a job marshal still knows (running, ended, or held in the event log)
+  that has started, a log file that is gone is 404 `{"error":"log removed"}`; a job that has not
+  started (queued, never run) has no log yet and still answers 200, empty, `done:false` (`done:true`
+  if it ended without starting). An unknown id stays 404 `no such job`.
 - **Kept ended jobs: 50** (`Kept`, the contract's number), from the event log at start and across a
   restart's handover; `ls` and `top` still show their last 10 (`Recent`). `/v1/jobs` orders the ended
   ones by when they ended, newest first.

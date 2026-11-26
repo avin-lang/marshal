@@ -179,7 +179,11 @@ logAnswer(request: ServerRequest, events: Channel[Message], home: string, word: 
       Some(n) -> if n > long(marshal.LogCeiling) then marshal.LogCeiling else int(n)
       None -> return remoteFailed(400, "`max` is a number of bytes: a whole number, at least 1")
   lookUp(request, events, home, word) match
-    RemoteFound(job) -> remoteOk(marshal.logPieceJson(readLog(job.info.log, from, max, job.info.outcome.isDefined)))
+    RemoteFound(job) -> readLog(job.info.log, from, max, job.info.outcome.isDefined) match
+      Some(piece) -> remoteOk(marshal.logPieceJson(piece))
+      None ->
+        val began = job.started.isDefined || job.info.startedAt > 0
+        if began then remoteFailed(404, "log removed") else remoteOk(marshal.logPieceJson(marshal.LogPiece(0, 0, job.info.outcome.isDefined, "")))
     RemoteMissing -> remoteFailed(404, "no such job")
     RemoteStopping -> remoteStopping()
 
@@ -187,18 +191,18 @@ logAnswer(request: ServerRequest, events: Channel[Message], home: string, word: 
 param(request: ServerRequest, name: string) -> Option[string] = request.queryParams.find(p -> p.0 == name).map(p -> p.1)
 
 // The piece of the log at `file` from `from`, at most `max` bytes (marshal.logPiece). `ended` says the
-// job had ended before the log was read. A log not there (not written yet, or removed by retention)
-// reads as empty.
-readLog(file: string, from: long, max: int, ended: bool) -> marshal.LogPiece
+// job had ended before the log was read. None where the log is not there: not written yet, or removed
+// (the caller tells them apart by whether the job started).
+readLog(file: string, from: long, max: int, ended: bool) -> Option[marshal.LogPiece]
   val f = fs.open(file) match
     Ok(f) -> f
-    Err(_) -> return marshal.LogPiece(0, 0, ended, "")
+    Err(_) -> return None
   val piece = f.size().flatMap(size ->
     val start = if from < size then from else size
     val n = if size - start < long(max) then int(size - start) else max
     f.readAt(start, n).map(bytes -> marshal.logPiece(bytes, start, size, ended)))
   val _ = f.close() // read only: nothing is lost where closing fails
-  piece.getOrElse(marshal.LogPiece(0, 0, ended, ""))
+  Some(piece.getOrElse(marshal.LogPiece(0, 0, ended, "")))
 
 remoteOk(body: json.Json) -> Response = Response.json(200, body.render)
 

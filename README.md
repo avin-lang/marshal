@@ -1137,7 +1137,7 @@ been seen.
 | `/v1/status` | `{"version", "host", "units": {"used", "total"}, "mem": {"used_bytes", "total_bytes"}, "jobs": {"running", "queued"}}` |
 | `/v1/jobs` | `{"jobs": [Job…]}`: the running jobs, the queued ones, then the last 50 that ended, newest first |
 | `/v1/jobs/<id>` | one `Job`, or `404 {"error":"no such job"}` |
-| `/v1/jobs/<id>/log?from=<offset>&max=<bytes>` | `{"from", "next", "done", "text"}`: the log's bytes from `from` (`max` 65536 unless given, at most 1 MiB); poll again with `from=next`; `done` is true once the job has ended and `next` is the log's end |
+| `/v1/jobs/<id>/log?from=<offset>&max=<bytes>` | `{"from", "next", "done", "text"}`: the log's bytes from `from` (`max` 65536 unless given, at most 1 MiB); poll again with `from=next`; `done` is true once the job has ended and `next` is the log's end; `404 {"error":"log removed"}` for a job that started whose log file has been deleted (a job not started yet answers 200 with empty text), `404 {"error":"no such job"}` for an unknown id |
 
 A `Job` is `{"id", "label", "kind", "dir", "state", "detail", "landing", "units", "mem_bytes",
 "submitted", "started", "ended", "elapsed_s", "deadline_s", "exit"}`, every field present, `null`
