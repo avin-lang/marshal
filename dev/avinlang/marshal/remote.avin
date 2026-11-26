@@ -1,0 +1,249 @@
+module dev.avinlang.marshal
+
+// The remote API's own parts that read no socket: its settings in config.json, the token that
+// guards it, and the JSON it answers with. The listener itself is the daemon's (daemon/remote.avin).
+//
+// The API is read-only, plain HTTP/1.1 with JSON bodies, for a phone on the same network: what runs,
+// what waits, what ended last, and each job's log by byte offset. Every request carries
+// `Authorization: Bearer <token>`, the token being 128 random bits written as 26 lower-case base32
+// characters in `<home>/remote-token`, mode 0600.
+import avin.crypto
+import avin.encoding
+import avin.fs
+import avin.io.IoError
+import avin.process
+import avin.random.SecureRandom
+import avin.time
+import dev.avinlang.json
+import dev.avinlang.json.Json
+
+// config.json's `remote`: whether the daemon serves the remote API, and on which port. Read when the
+// daemon starts, so a change takes effect at its next start or `marshal restart`.
+data RemoteSettings(enabled: bool = false, port: int = DefaultRemotePort)
+
+// The port the remote API listens on unless config.json's `remote.port` names another.
+val DefaultRemotePort: int = 7177
+
+// `remote` as config.json gives it, `{"enabled": true, "port": 7177}`, each key optional; the API
+// stays off unless `enabled` is true.
+readRemote(j: Option[Json]) -> Result[RemoteSettings, string]
+  val r = j match
+    None -> return Ok(RemoteSettings())
+    Some(v) -> v
+  if r.asMembers.isEmpty then return Err(
+    "config.json: `remote` is an object such as {\"enabled\": true, \"port\": 7177}"
+  )
+  for key in r.keys
+    if !["enabled", "port"].contains(key) then return Err(s"config.json: no setting `remote.$key`")
+  val enabled = r.get("enabled") match
+    None -> false
+    Some(v) -> v.asBool match
+      Some(b) -> b
+      None -> return Err("config.json: `remote.enabled` is true or false")
+  val port = r.get("port") match
+    None -> DefaultRemotePort
+    Some(v) -> v.asInt.filter(p -> 1 <= p <= 65535) match
+      Some(p) -> p
+      None -> return Err("config.json: `remote.port` is a port number from 1 to 65535")
+  Ok(RemoteSettings(enabled, port))
+
+// The token's file in marshal's home.
+tokenFile(home: string) -> string = home + "/remote-token"
+
+// How many characters a token has: 128 bits in base32, five bits a character.
+val TokenLength: int = 26
+
+// A new token: 128 bits from the operating system's entropy, in lower-case unpadded base32.
+newToken() -> string = encoding.toBase32Lower(SecureRandom.nextBytes(16).toVector)
+
+// Whether `text` is a token as `newToken` writes one.
+isToken(text: string) -> bool = text.byteLength == TokenLength && text.forall(c -> 'a' <= c <= 'z' || '2' <= c <= '7')
+
+// The token `home` holds, None where its file is missing or holds no token.
+readToken(home: string) -> Option[string] = fs.readText(tokenFile(home)).ok.map(t -> t.trim).filter(isToken)
+
+// The token `home` holds, made first where it holds none; its file is mode 0600 either way.
+ensureToken(home: string) -> Result[string, IoError] = readToken(home) match
+  Some(t) -> fs.setPermissions(tokenFile(home), 0o600).map(_ -> t)
+  None -> writeToken(home, newToken())
+
+// Replaces the token `home` holds with a new one and answers it. The listener reads the file at every
+// request, so the old token is refused from the next request on.
+rotateToken(home: string) -> Result[string, IoError] = writeToken(home, newToken())
+
+// Writes `token` to `home`'s token file, mode 0600 from its first byte: under a temporary name made
+// 0600, then renamed into place, so a reader sees the old token or the new one, never half of one.
+private writeToken(home: string, token: string) -> Result[string, IoError]
+  fs.createDirAll(home)?
+  val file = tokenFile(home)
+  val tmp = s"$file.tmp-${process.pid()}"
+  val written = fs.create(tmp, 0o600).flatMap(f ->
+    val w = f.writeText(token + "\n")
+    val c = f.close()
+    w.flatMap(_ -> c)).flatMap(_ -> fs.setPermissions(tmp, 0o600)).flatMap(_ -> fs.rename(tmp, file))
+  if written.isErr then val _ = fs.remove(tmp) // the write's error is the one reported
+  written.map(_ -> token)
+
+// Whether the `Authorization` header `header` carries `token` as a bearer token. The scheme's name is
+// read in either case, as HTTP's are; the token itself is compared in constant time. No token (no
+// file, or one that holds none) authorizes nothing.
+authorized(header: Option[string], token: Option[string]) -> bool
+  val (h, t) = (header, token) match
+    (Some(h), Some(t)) -> (h.trim, t)
+    _ -> return false
+  val space = h.indexOf(' ')
+  if space < 0 || !h.slice(0, space).equalsIgnoreCase("Bearer") then return false
+  crypto.constantTimeEquals(h.drop(space + 1).trim, t)
+
+// One job as the remote API describes it: the daemon's listing of it and, on the wall clock in
+// milliseconds since 1970, when it was submitted, started and ended, each None where it is not known
+// (a job that has not started, has not ended, or whose submission an older record does not give).
+data RemoteJob(info: JobInfo, submitted: Option[long], started: Option[long], ended: Option[long])
+
+// What `/v1/status` and `/v1/jobs` are made from, read by the daemon in one step: the budget in use,
+// then the running jobs, the jobs not started yet (queued, held, waiting for others or to retry, or
+// settling), and the jobs that ended last, the latest first.
+data RemoteView(usage: Usage, running: Vector[RemoteJob], queued: Vector[RemoteJob], finished: Vector[RemoteJob])
+
+// How many ended jobs `/v1/jobs` lists.
+val RemoteFinished: int = 50
+
+// A job that ended earlier, as an ending event recorded it at `endedAt`: when it was submitted is
+// when it started less what it waited, and for one that never started, when it ended less that.
+earlierJob(info: JobInfo, endedAt: Option[long]) -> RemoteJob
+  val started = if info.startedAt > 0 then Some(info.startedAt) else None
+  val submitted = started.orElse(endedAt).map(at -> at - info.queuedMs)
+  RemoteJob(info, submitted, started, endedAt)
+
+// The state the remote API gives a job, and marshal's own word for it where the state does not say
+// it all: a job not started yet is `queued` (`held`, `waiting` for others, `retrying` after a failed
+// attempt, `settling` for the machine's load); a running one `running` (`paused`); an ended one
+// `exited` with its own exit code, `timeout` at its deadline (`quiet` at its quiet timeout), or
+// `killed`: by `marshal kill` (`killed`), by a signal (`signalled`), cancelled before it ran
+// (`cancelled`), lost with a daemon that died while it ran (`lost`), or never run because a job it
+// waited for failed (`dependency failed`).
+remoteState(j: JobInfo) -> (string, Option[string]) = j.outcome match
+  None -> j.state match
+    "running" -> ("running", if j.paused then Some("paused") else None)
+    "waiting" -> ("queued", Some(if j.held then "held" else "waiting"))
+    "retrying" -> ("queued", Some("retrying"))
+    "settling" -> ("queued", Some("settling"))
+    _ -> ("queued", if j.held then Some("held") else None)
+  Some(o) -> endedState(o, j.killed)
+
+private endedState(o: Outcome, killed: bool) -> (string, Option[string])
+endedState(TimedOut, _) = ("timeout", None)
+endedState(Quiet(_), _) = ("timeout", Some("quiet"))
+endedState(Lost, _) = ("killed", Some("lost"))
+endedState(DependencyFailed(_), _) = ("killed", Some("dependency failed"))
+endedState(_, true) = ("killed", Some("killed"))
+endedState(Exited(_), false) = ("exited", None)
+endedState(Signalled(_), false) = ("killed", Some("signalled"))
+endedState(Cancelled, false) = ("killed", Some("cancelled"))
+
+// A count of units, which marshal keeps in quarters, as a JSON number: whole where it is whole
+// (`4`), else with its fraction (`1.25`).
+unitsJson(quarters: long) -> Json = if quarters % 4 == 0 then Json.num(quarters / 4) else Json.num(real(quarters) / 4.0)
+
+// A time on the wall clock, milliseconds since 1970, as RFC 3339 in UTC; null for none.
+timeJson(ms: Option[long]) -> Json = ms match
+  Some(t) -> Json.str(time.epochMillis(t).toString())
+  None -> Json.Null
+
+// A job as the remote API writes it: every field present, null where marshal does not know it.
+remoteJobJson(r: RemoteJob) -> Json
+  val j = r.info
+  val (state, detail) = remoteState(j)
+  val reserved = if j.reserved > j.memory then j.reserved else j.memory
+  Json.obj(
+    ("id", Json.num(j.id)),
+    ("label", if j.label.isEmpty then Json.Null else Json.str(j.label)),
+    ("kind", Json.str(j.kind)),
+    ("dir", Json.str(j.dir)),
+    ("state", Json.str(state)),
+    ("detail", detail.map(d -> Json.str(d)).getOrElse(Json.Null)),
+    ("landing", Json.Bool(j.landing)),
+    ("units", unitsJson(long(j.units))),
+    ("mem_bytes", Json.num(reserved)),
+    ("submitted", timeJson(r.submitted)),
+    ("started", timeJson(r.started)),
+    ("ended", timeJson(r.ended)),
+    ("elapsed_s", Json.num(j.elapsedMs / 1000)),
+    ("deadline_s", if j.deadlineMs > 0 then Json.num(j.deadlineMs / 1000) else Json.Null),
+    ("exit", j.outcome.map(o -> Json.num(exitCode(o))).getOrElse(Json.Null))
+  )
+
+// `/v1/jobs`: the running jobs, the ones not started yet, then the ended ones, the latest first.
+remoteJobsJson(v: RemoteView) -> Json = Json.obj(
+  ("jobs", Json.Arr((v.running ++ v.queued ++ v.finished).map(remoteJobJson)))
+)
+
+// `/v1/status`: marshal's version, the computer's name, the units and memory in use against the
+// budget, and how many jobs run and how many have not started yet.
+remoteStatusJson(v: RemoteView, version: string, host: string) -> Json = Json.obj(
+  ("version", Json.str(version)),
+  ("host", Json.str(host)),
+  ("units", Json.obj(("used", unitsJson(long(v.usage.units))), ("total", unitsJson(long(v.usage.unitBudget))))),
+  ("mem", Json.obj(("used_bytes", Json.num(v.usage.held)), ("total_bytes", Json.num(v.usage.memoryBudget)))),
+  ("jobs", Json.obj(("running", Json.num(v.running.length)), ("queued", Json.num(v.queued.length))))
+)
+
+// The error body the remote API answers with.
+remoteError(message: string) -> string = Json.obj(("error", Json.str(message))).render
+
+// How many bytes of a log one answer gives unless `max` says.
+val LogDefault: int = 65536
+
+// The most bytes of a log one answer gives, whatever `max` asks: a client tails by asking again.
+val LogCeiling: int = 1048576
+
+// One answer of `/v1/jobs/{id}/log`: the bytes of the log from `from` to `next` as text, and whether
+// the job has ended and `next` is the log's end.
+data LogPiece(from: long, next: long, done: bool, text: string)
+
+logPieceJson(p: LogPiece) -> Json = Json.obj(
+  ("from", Json.num(p.from)),
+  ("next", Json.num(p.next)),
+  ("done", Json.Bool(p.done)),
+  ("text", Json.str(p.text))
+)
+
+// The piece of a log of `size` bytes asked for from `from` with at most `max` bytes, of which `bytes`
+// are the ones read from `start` (`from`, or the log's end where `from` is past it). `ended` says the
+// job had ended before the log was read, so it does not grow. A character whose bytes the piece cuts
+// off is left for the next piece, which then begins with it whole, where more of the log follows or
+// the job may yet write it, unless that would leave the piece empty with more of the log to come,
+// which would never move on: then the cut bytes are given, each read as U+FFFD. Every other sequence
+// that is not UTF-8 is read as U+FFFD too; the offsets are the raw log's.
+logPiece(bytes: Array[byte], start: long, size: long, ended: bool) -> LogPiece
+  val more = start + long(bytes.length) < size
+  val keep = kept(cutOff(bytes), bytes.length, more, ended)
+  val next = start + long(keep)
+  LogPiece(start, next, ended && next >= size, string.fromUtf8Lossy(bytes.slice(0, keep)))
+
+// How many of `length` bytes a piece keeps, its last character beginning at `cut` (`length` where
+// none is cut off): `more` says the log goes on past them, `ended` that the job has ended.
+private kept(cut: int, length: int, more: bool, ended: bool) -> int
+kept(cut, length, _, _) | cut == length = length
+kept(0, length, true, _) = length
+kept(cut, _, true, _) = cut
+kept(cut, _, false, false) = cut
+kept(_, length, false, true) = length
+
+// Where the last character of `bytes` begins when its bytes run past their end, else their length:
+// a lead byte among the last four bytes followed by fewer continuation bytes than it begins.
+cutOff(bytes: Array[byte]) -> int
+  val n = bytes.length
+  var i = n - 1
+  while i >= 0 && n - i <= 4
+    val b = int(bytes(i)) & 255
+    if (b & 0xC0) != 0x80 then return if n - i < sequenceLength(b) then i else n
+    i -= 1
+  n
+
+// How many bytes the UTF-8 sequence led by the byte `b` has; 1 for a byte that leads none.
+private sequenceLength(b: int) -> int
+sequenceLength(b) | (b & 0xE0) == 0xC0 = 2
+sequenceLength(b) | (b & 0xF0) == 0xE0 = 3
+sequenceLength(b) | (b & 0xF8) == 0xF0 = 4
+sequenceLength(_) = 1

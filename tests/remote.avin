@@ -1,0 +1,354 @@
+module tests
+
+// The remote API's parts that read no socket (remote.avin): config.json's `remote`, the token, the
+// bearer check, the JSON of a job and of the status, the state each outcome maps to, and the pieces
+// of a log. The listener itself is remote_e2e.avin's.
+import avin.fs
+import dev.avinlang.json.Json
+import dev.avinlang.marshal
+import dev.avinlang.marshal.{JobInfo, Outcome, RemoteJob, RemoteView, Usage}
+
+// A job as a listing shows it, `state` and `outcome` as given, the rest plain.
+remoteInfo(state: string, outcome: Option[Outcome], killed: bool = false) -> JobInfo =
+  JobInfo(
+    9150,
+    "test",
+    16,
+    0,
+    false,
+    "/Users/me/dev/p",
+    ["make"],
+    state,
+    outcome,
+    killed,
+    5000,
+    1421000,
+    7200000,
+    "/h/jobs/9150.log",
+    None
+  )
+
+private readRemoteOf(text: string) -> Result[marshal.RemoteSettings, string] =
+  marshal.readConfig(text, 64 * 1024 * 1024 * 1024).map(c -> c.remote)
+
+@test("config.json's remote: off by default, on with enabled, port 7177 unless given")
+remoteConfigReads()
+  assertEq(readRemoteOf(""), Ok(marshal.RemoteSettings(false, 7177)))
+  assertEq(readRemoteOf("{\"units\": 4}"), Ok(marshal.RemoteSettings(false, 7177)))
+  assertEq(readRemoteOf("{\"remote\": {}}"), Ok(marshal.RemoteSettings(false, 7177)))
+  assertEq(readRemoteOf("{\"remote\": {\"enabled\": true}}"), Ok(marshal.RemoteSettings(true, 7177)))
+  assertEq(readRemoteOf("{\"remote\": {\"enabled\": true, \"port\": 7200}}"), Ok(marshal.RemoteSettings(true, 7200)))
+  assertEq(readRemoteOf("{\"remote\": {\"enabled\": false, \"port\": 1}}"), Ok(marshal.RemoteSettings(false, 1)))
+  assertEq(readRemoteOf("{\"remote\": {\"port\": 65535}}"), Ok(marshal.RemoteSettings(false, 65535)))
+
+@test("config.json's remote refuses what is not an object, an unknown key, a bad enabled and a port out of range")
+remoteConfigRefuses()
+  val shape = "config.json: `remote` is an object such as {\"enabled\": true, \"port\": 7177}"
+  assertEq(readRemoteOf("{\"remote\": true}"), Err(shape))
+  assertEq(readRemoteOf("{\"remote\": [1]}"), Err(shape))
+  assertEq(readRemoteOf("{\"remote\": {\"host\": \"x\"}}"), Err("config.json: no setting `remote.host`"))
+  assertEq(readRemoteOf("{\"remote\": {\"enabled\": \"yes\"}}"), Err("config.json: `remote.enabled` is true or false"))
+  val port = "config.json: `remote.port` is a port number from 1 to 65535"
+  for p in ["0", "65536", "-1", "\"7177\"", "71.5", "null"]
+    assert(readRemoteOf(s"{\"remote\": {\"enabled\": true, \"port\": $p}}") == Err(port), p)
+
+@test("a new token is 26 lower-case base32 characters, a different one each time")
+newTokens()
+  val a = marshal.newToken()
+  val b = marshal.newToken()
+  assertEq(a.byteLength, 26)
+  assert(marshal.isToken(a), a)
+  assert(marshal.isToken(b), b)
+  assert(a != b)
+  assert(a.forall(c -> 'a' <= c <= 'z' || '2' <= c <= '7'), a)
+
+@test("isToken: exactly 26 characters of a-z and 2-7")
+tokenShape()
+  assert(marshal.isToken("abcdefghijklmnopqrstuvwxyz"))
+  assert(marshal.isToken("22222222222222222222222222"))
+  assert(marshal.isToken("77777777777777777777777777"))
+  assert(!marshal.isToken(""))
+  assert(!marshal.isToken("abcdefghijklmnopqrstuvwxy"))
+  assert(!marshal.isToken("abcdefghijklmnopqrstuvwxyza"))
+  assert(!marshal.isToken("Abcdefghijklmnopqrstuvwxyz"))
+  assert(!marshal.isToken("abcdefghijklmnopqrstuvwxy1"))
+  assert(!marshal.isToken("abcdefghijklmnopqrstuvwxy8"))
+  assert(!marshal.isToken("abcdefghijklmnopqrstuvwxy="))
+  assert(!marshal.isToken("abcdefghijklmnopqrstuvwxyé"))
+
+@test("ensureToken makes the token file mode 0600 once, and answers the same token after")
+ensureTokenOnce()
+  val home = fs.createTempDir("marshal-remote-").ok.get
+  val t = marshal.ensureToken(home).ok.get
+  assert(marshal.isToken(t), t)
+  assertEq(fs.readText(home + "/remote-token").ok, Some(t + "\n"))
+  assertEq(fs.permissions(home + "/remote-token").ok, Some(0o600))
+  assertEq(marshal.ensureToken(home).ok, Some(t))
+  assertEq(marshal.readToken(home), Some(t))
+  // no temporary file is left beside it
+  assertEq(fs.listDir(home).ok, Some(["remote-token"]))
+  val _ = fs.removeDirAll(home)
+
+@test("ensureToken puts a token file loosened by hand back to 0600, and replaces one that holds no token")
+ensureTokenRepairs()
+  val home = fs.createTempDir("marshal-remote-").ok.get
+  val t = marshal.ensureToken(home).ok.get
+  fs.setPermissions(home + "/remote-token", 0o644).ok.get
+  assertEq(marshal.ensureToken(home).ok, Some(t))
+  assertEq(fs.permissions(home + "/remote-token").ok, Some(0o600))
+  fs.writeText(home + "/remote-token", "not a token\n").ok.get
+  assertEq(marshal.readToken(home), None)
+  val u = marshal.ensureToken(home).ok.get
+  assert(marshal.isToken(u) && u != t, u)
+  assertEq(fs.permissions(home + "/remote-token").ok, Some(0o600))
+  val _ = fs.removeDirAll(home)
+
+@test("ensureToken makes marshal's home where it is missing")
+ensureTokenMakesHome()
+  val dir = fs.createTempDir("marshal-remote-").ok.get
+  val home = dir + "/new/home"
+  assert(marshal.isToken(marshal.ensureToken(home).ok.get))
+  assertEq(fs.permissions(home + "/remote-token").ok, Some(0o600))
+  val _ = fs.removeDirAll(dir)
+
+@test("rotateToken replaces the token with a new one, mode 0600")
+rotateTokens()
+  val home = fs.createTempDir("marshal-remote-").ok.get
+  val t = marshal.ensureToken(home).ok.get
+  val u = marshal.rotateToken(home).ok.get
+  assert(marshal.isToken(u) && u != t, u)
+  assertEq(marshal.readToken(home), Some(u))
+  assertEq(fs.permissions(home + "/remote-token").ok, Some(0o600))
+  assertEq(fs.listDir(home).ok, Some(["remote-token"]))
+  val _ = fs.removeDirAll(home)
+
+@test("readToken: None for no file, an empty one, or one holding no token; a token is read without its line feed")
+readTokens()
+  val home = fs.createTempDir("marshal-remote-").ok.get
+  assertEq(marshal.readToken(home), None)
+  fs.writeText(home + "/remote-token", "").ok.get
+  assertEq(marshal.readToken(home), None)
+  fs.writeText(home + "/remote-token", "abcdefghijklmnopqrstuvwxyz").ok.get
+  assertEq(marshal.readToken(home), Some("abcdefghijklmnopqrstuvwxyz"))
+  fs.writeText(home + "/remote-token", "  abcdefghijklmnopqrstuvwxyz \n").ok.get
+  assertEq(marshal.readToken(home), Some("abcdefghijklmnopqrstuvwxyz"))
+  val _ = fs.removeDirAll(home)
+
+@test("authorized: a Bearer header with the token, the scheme in any case; nothing else")
+bearerCheck()
+  val t = "abcdefghijklmnopqrstuvwxyz"
+  assert(marshal.authorized(Some("Bearer " + t), Some(t)))
+  assert(marshal.authorized(Some("bearer " + t), Some(t)))
+  assert(marshal.authorized(Some("BEARER " + t), Some(t)))
+  assert(marshal.authorized(Some("Bearer  " + t + " "), Some(t)))
+  // missing, wrong, the wrong scheme, a token one character off at the end or the start
+  assert(!marshal.authorized(None, Some(t)))
+  assert(!marshal.authorized(Some(""), Some(t)))
+  assert(!marshal.authorized(Some("Bearer"), Some(t)))
+  assert(!marshal.authorized(Some("Bearer "), Some(t)))
+  assert(!marshal.authorized(Some(t), Some(t)))
+  assert(!marshal.authorized(Some("Basic " + t), Some(t)))
+  assert(!marshal.authorized(Some("Bearer: " + t), Some(t)))
+  assert(!marshal.authorized(Some("Bearer abcdefghijklmnopqrstuvwxy2"), Some(t)))
+  assert(!marshal.authorized(Some("Bearer 2bcdefghijklmnopqrstuvwxyz"), Some(t)))
+  assert(!marshal.authorized(Some("Bearer ABCDEFGHIJKLMNOPQRSTUVWXYZ"), Some(t)))
+  assert(!marshal.authorized(Some("Bearer " + t + "a"), Some(t)))
+  assert(!marshal.authorized(Some("Bearer " + t.dropRight(1)), Some(t)))
+  assert(!marshal.authorized(Some("Bearer " + t + " " + t), Some(t)))
+  // with no token at all nothing is authorized, the empty one included
+  assert(!marshal.authorized(Some("Bearer " + t), None))
+  assert(!marshal.authorized(Some("Bearer "), None))
+  assert(!marshal.authorized(None, None))
+
+@test("remoteState: each of marshal's states and outcomes, and its detail")
+remoteStates()
+  val cases: Vector[(JobInfo, string, Option[string])] = [
+    (remoteInfo("queued", None), "queued", None),
+    (remoteInfo("queued", None) with {held = true}, "queued", Some("held")),
+    (remoteInfo("waiting", None), "queued", Some("waiting")),
+    (remoteInfo("waiting", None) with {held = true}, "queued", Some("held")),
+    (remoteInfo("retrying", None), "queued", Some("retrying")),
+    (remoteInfo("settling", None), "queued", Some("settling")),
+    (remoteInfo("running", None), "running", None),
+    (remoteInfo("running", None) with {paused = true}, "running", Some("paused")),
+    (remoteInfo("done", Some(Outcome.Exited(0))), "exited", None),
+    (remoteInfo("done", Some(Outcome.Exited(3))), "exited", None),
+    (remoteInfo("done", Some(Outcome.Exited(0)), true), "killed", Some("killed")),
+    (remoteInfo("done", Some(Outcome.Signalled(9))), "killed", Some("signalled")),
+    (remoteInfo("done", Some(Outcome.Signalled(15)), true), "killed", Some("killed")),
+    (remoteInfo("done", Some(Outcome.Cancelled)), "killed", Some("cancelled")),
+    (remoteInfo("done", Some(Outcome.Cancelled), true), "killed", Some("killed")),
+    (remoteInfo("done", Some(Outcome.TimedOut)), "timeout", None),
+    (remoteInfo("done", Some(Outcome.TimedOut), true), "timeout", None),
+    (remoteInfo("done", Some(Outcome.Quiet(60000))), "timeout", Some("quiet")),
+    (remoteInfo("done", Some(Outcome.Lost)), "killed", Some("lost")),
+    (remoteInfo("done", Some(Outcome.DependencyFailed(4))), "killed", Some("dependency failed"))
+  ]
+  for (info, state, detail) in cases
+    assert(marshal.remoteState(info) == (state, detail), s"${info.state} ${info.outcome}")
+
+@test("units are a number: whole where whole, else fractional")
+remoteUnits()
+  assertEq(marshal.unitsJson(16).render, "4")
+  assertEq(marshal.unitsJson(0).render, "0")
+  assertEq(marshal.unitsJson(5).render, "1.25")
+  assertEq(marshal.unitsJson(2).render, "0.5")
+  assertEq(marshal.unitsJson(3).render, "0.75")
+  assertEq(marshal.unitsJson(48).render, "12")
+
+@test("times are RFC 3339 in UTC, null for none")
+remoteTimes()
+  assertEq(marshal.timeJson(Some(0)).render, "\"1970-01-01T00:00:00Z\"")
+  assertEq(marshal.timeJson(Some(1795000000000)).render, "\"2026-11-18T11:06:40Z\"")
+  assertEq(marshal.timeJson(Some(1795000000123)).render, "\"2026-11-18T11:06:40.123Z\"")
+  assertEq(marshal.timeJson(None).render, "null")
+
+@test("a running job's JSON: every field, in order, null where not known")
+remoteRunningJobJson()
+  val info = remoteInfo("running", None) with {label = "train-0133b", units = 5, memory = 1024, reserved = 4096}
+  val j = marshal.remoteJobJson(RemoteJob(info, Some(1795000000000), Some(1795000005000), None))
+  assertEq(
+    j.render,
+    "{\"id\":9150,\"label\":\"train-0133b\",\"kind\":\"test\",\"dir\":\"/Users/me/dev/p\",\"state\":\"running\",\"detail\":null,\"landing\":false,\"units\":1.25,\"mem_bytes\":4096,\"submitted\":\"2026-11-18T11:06:40Z\",\"started\":\"2026-11-18T11:06:45Z\",\"ended\":null,\"elapsed_s\":1421,\"deadline_s\":7200,\"exit\":null}"
+  )
+
+@test("an ended job's JSON: its exit, its end; a job with no label, no deadline and no start has nulls there")
+remoteEndedJobJson()
+  val info = remoteInfo("done", Some(Outcome.Exited(3))) with {landing = true, memory = 8192}
+  val j = marshal.remoteJobJson(RemoteJob(info, Some(1795000000000), Some(1795000005000), Some(1795000010000)))
+  assertEq(j("state").asString, Some("exited"))
+  assertEq(j("exit").asInt, Some(3))
+  assertEq(j("landing").asBool, Some(true))
+  assertEq(j("mem_bytes").asLong, Some(8192))
+  assertEq(j("ended").asString, Some("2026-11-18T11:06:50Z"))
+  val bare = remoteInfo("done", Some(Outcome.Cancelled)) with {label = "", deadlineMs = 0, elapsedMs = 0}
+  val k = marshal.remoteJobJson(RemoteJob(bare, None, None, Some(1795000010000)))
+  assertEq(
+    k.render,
+    "{\"id\":9150,\"label\":null,\"kind\":\"test\",\"dir\":\"/Users/me/dev/p\",\"state\":\"killed\",\"detail\":\"cancelled\",\"landing\":false,\"units\":4,\"mem_bytes\":0,\"submitted\":null,\"started\":null,\"ended\":\"2026-11-18T11:06:50Z\",\"elapsed_s\":0,\"deadline_s\":null,\"exit\":143}"
+  )
+  // a timeout's exit is marshal's 124, a lost job's 125, one whose dependency failed 126
+  assertEq(
+    marshal.remoteJobJson(RemoteJob(remoteInfo("done", Some(Outcome.TimedOut)), None, None, None))("exit").asInt,
+    Some(124)
+  )
+  assertEq(
+    marshal.remoteJobJson(RemoteJob(remoteInfo("done", Some(Outcome.Lost)), None, None, None))("exit").asInt,
+    Some(125)
+  )
+  assertEq(
+    marshal.remoteJobJson(
+      RemoteJob(remoteInfo("done", Some(Outcome.DependencyFailed(2))), None, None, None)
+    )("exit").asInt,
+    Some(126)
+  )
+  assertEq(
+    marshal.remoteJobJson(RemoteJob(remoteInfo("done", Some(Outcome.Signalled(9))), None, None, None))("exit").asInt,
+    Some(137)
+  )
+
+@test("elapsed and the deadline are whole seconds, rounded down")
+remoteSeconds()
+  val info = remoteInfo("running", None) with {elapsedMs = 1999, deadlineMs = 90500}
+  val j = marshal.remoteJobJson(RemoteJob(info, None, None, None))
+  assertEq(j("elapsed_s").asLong, Some(1))
+  assertEq(j("deadline_s").asLong, Some(90))
+
+@test("an earlier job's submission is its start less its wait, or its end less its wait where it never started")
+earlierJobs()
+  val ran = remoteInfo("done", Some(Outcome.Exited(0))) with {startedAt = 1795000005000, queuedMs = 5000}
+  assertEq(
+    marshal.earlierJob(ran, Some(1795000010000)),
+    RemoteJob(ran, Some(1795000000000), Some(1795000005000), Some(1795000010000))
+  )
+  val never = remoteInfo("done", Some(Outcome.Cancelled)) with {startedAt = 0, queuedMs = 2000}
+  assertEq(
+    marshal.earlierJob(never, Some(1795000010000)),
+    RemoteJob(never, Some(1795000008000), None, Some(1795000010000))
+  )
+  assertEq(marshal.earlierJob(never, None), RemoteJob(never, None, None, None))
+
+private remoteUsage() -> Usage = Usage(26, 48, 1000, 60129542144, 2, 3, None, None, held = 7516192768)
+
+@test("the status's JSON: version, host, units in units, memory in bytes, the counts of running and queued jobs")
+remoteStatusShape()
+  val running = RemoteJob(remoteInfo("running", None), None, None, None)
+  val queued = RemoteJob(remoteInfo("queued", None), None, None, None)
+  val v = RemoteView(remoteUsage(), [running, running], [queued], [])
+  assertEq(
+    marshal.remoteStatusJson(v, "0.4.6", "Ed's Mac").render,
+    "{\"version\":\"0.4.6\",\"host\":\"Ed's Mac\",\"units\":{\"used\":6.5,\"total\":12},\"mem\":{\"used_bytes\":7516192768,\"total_bytes\":60129542144},\"jobs\":{\"running\":2,\"queued\":1}}"
+  )
+
+@test("the jobs' JSON: running, then queued, then the ended ones, in the order given")
+remoteJobsOrder()
+  val a = RemoteJob(remoteInfo("running", None) with {id = 3}, None, None, None)
+  val b = RemoteJob(remoteInfo("queued", None) with {id = 4}, None, None, None)
+  val c = RemoteJob(remoteInfo("done", Some(Outcome.Exited(0))) with {id = 2}, None, None, None)
+  val d = RemoteJob(remoteInfo("done", Some(Outcome.Exited(0))) with {id = 1}, None, None, None)
+  val j = marshal.remoteJobsJson(RemoteView(remoteUsage(), [a], [b], [c, d]))
+  assertEq(j("jobs").asVector.get.map(x -> x("id").asLong.get), [3, 4, 2, 1])
+  assertEq(marshal.remoteJobsJson(RemoteView(remoteUsage(), [], [], [])).render, "{\"jobs\":[]}")
+
+@test("an error body is {\"error\": message}, escaped as JSON")
+remoteErrors()
+  assertEq(marshal.remoteError("unauthorized"), "{\"error\":\"unauthorized\"}")
+  assertEq(marshal.remoteError("a \"b\""), "{\"error\":\"a \\\"b\\\"\"}")
+
+private bytesOf(codes: Vector[int]) -> Array[byte] = codes.map(c -> byte(c)).toArray()
+
+@test("cutOff: where a character the bytes end inside begins, else their length")
+cutOffs()
+  assertEq(marshal.cutOff(bytesOf([])), 0)
+  assertEq(marshal.cutOff(bytesOf([0x61])), 1)
+  // é is C3 A9; € is E2 82 AC; 😀 is F0 9F 98 80
+  assertEq(marshal.cutOff(bytesOf([0x61, 0xC3, 0xA9])), 3)
+  assertEq(marshal.cutOff(bytesOf([0x61, 0xC3])), 1)
+  assertEq(marshal.cutOff(bytesOf([0xE2, 0x82, 0xAC])), 3)
+  assertEq(marshal.cutOff(bytesOf([0xE2, 0x82])), 0)
+  assertEq(marshal.cutOff(bytesOf([0x61, 0xE2])), 1)
+  assertEq(marshal.cutOff(bytesOf([0xF0, 0x9F, 0x98, 0x80])), 4)
+  assertEq(marshal.cutOff(bytesOf([0x61, 0xF0, 0x9F, 0x98])), 1)
+  assertEq(marshal.cutOff(bytesOf([0x61, 0xF0, 0x9F])), 1)
+  // a byte that is not UTF-8 at the end, or stray continuation bytes, are not cut characters
+  assertEq(marshal.cutOff(bytesOf([0x61, 0xFF])), 2)
+  assertEq(marshal.cutOff(bytesOf([0x80, 0x80])), 2)
+  assertEq(marshal.cutOff(bytesOf([0x80, 0x80, 0x80, 0x80, 0x80])), 5)
+
+@test("logPiece: from the start, from the middle, at the end, done only once ended and at the end")
+logPieces()
+  val text = "hello\nworld\n".utf8
+  assertEq(marshal.logPiece(text, 0, 12, false), marshal.LogPiece(0, 12, false, "hello\nworld\n"))
+  assertEq(marshal.logPiece(text, 0, 12, true), marshal.LogPiece(0, 12, true, "hello\nworld\n"))
+  assertEq(marshal.logPiece(text.slice(0, 5), 0, 12, true), marshal.LogPiece(0, 5, false, "hello"))
+  assertEq(marshal.logPiece(text.slice(6, 12), 6, 12, true), marshal.LogPiece(6, 12, true, "world\n"))
+  assertEq(marshal.logPiece(Array.empty[byte](), 12, 12, false), marshal.LogPiece(12, 12, false, ""))
+  assertEq(marshal.logPiece(Array.empty[byte](), 12, 12, true), marshal.LogPiece(12, 12, true, ""))
+  assertEq(marshal.logPiece(Array.empty[byte](), 0, 0, true), marshal.LogPiece(0, 0, true, ""))
+
+@test("logPiece: bytes that are not UTF-8 are U+FFFD, the offsets the raw bytes'")
+logPieceInvalid()
+  val bytes = bytesOf([0x61, 0xFF, 0x62, 0x80, 0x63])
+  assertEq(marshal.logPiece(bytes, 10, 15, true), marshal.LogPiece(10, 15, true, "a\u{fffd}b\u{fffd}c"))
+  // a piece beginning inside a character reads its continuation bytes as U+FFFD
+  assertEq(marshal.logPiece(bytesOf([0xA9, 0x61]), 1, 3, true), marshal.LogPiece(1, 3, true, "\u{fffd}a"))
+
+@test("logPiece: a character cut by max is left whole for the next piece")
+logPieceCutByMax()
+  // "aé€" is 61 C3 A9 E2 82 AC
+  val all = bytesOf([0x61, 0xC3, 0xA9, 0xE2, 0x82, 0xAC])
+  assertEq(marshal.logPiece(all.slice(0, 2), 0, 6, true), marshal.LogPiece(0, 1, false, "a"))
+  assertEq(marshal.logPiece(all.slice(1, 5), 1, 6, true), marshal.LogPiece(1, 3, false, "é"))
+  assertEq(marshal.logPiece(all.slice(3, 6), 3, 6, true), marshal.LogPiece(3, 6, true, "€"))
+  // a piece that could hold no whole character gives the cut bytes, so the next one moves on
+  assertEq(marshal.logPiece(all.slice(3, 4), 3, 6, true), marshal.LogPiece(3, 4, false, "\u{fffd}"))
+  assertEq(marshal.logPiece(all.slice(1, 2), 1, 6, false), marshal.LogPiece(1, 2, false, "\u{fffd}"))
+
+@test(
+  "logPiece: at the log's end, a cut character waits for the rest while the job runs, and is U+FFFD once it has ended"
+)
+logPieceCutAtEnd()
+  val bytes = bytesOf([0x61, 0xE2, 0x82])
+  assertEq(marshal.logPiece(bytes, 0, 3, false), marshal.LogPiece(0, 1, false, "a"))
+  assertEq(marshal.logPiece(bytes.slice(1, 3), 1, 3, false), marshal.LogPiece(1, 1, false, ""))
+  assertEq(marshal.logPiece(bytes, 0, 3, true), marshal.LogPiece(0, 3, true, "a\u{fffd}"))

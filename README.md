@@ -332,6 +332,7 @@ marshal stats [options]                    per kind from the event log: count, s
 marshal top                                a live view of the budget, the jobs and their logs; h lists its keys
 marshal stop [--wait | --force]            stops the daemon; refused while jobs run unless it may wait for them or kill them
 marshal restart                            the daemon becomes the marshal installed now, keeping its jobs running and queued
+marshal remote token | rotate              the read-only remote API's bearer token (made if there is none), or a new one replacing it at once; config.json's remote turns the API on (marshal remote --help)
 marshal version                            marshal's version, and the running daemon's
 marshal daemon                             runs the daemon in the foreground
 ```
@@ -1054,6 +1055,7 @@ Marshal's files are in `$MARSHAL_HOME`, or `~/.marshal`:
 | `config.json` | the settings (below); optional |
 | `daemon.log`, `daemon.pid` | the daemon's own log and process id; the log is where to look when a daemon will not start |
 | `runs/`, `steps/`, `typed/` | job types' run directories and compiled steps |
+| `remote-token` | the remote API's bearer token, mode 0600 (see Remote API) |
 
 `config.json` changes the defaults; every key is optional, and an unknown key keeps the daemon from
 starting, saying which. A change takes effect when the daemon next starts (`marshal restart`).
@@ -1080,6 +1082,7 @@ starting, saying which. A change takes effect when the daemon next starts (`mars
 | `keep_jobs` | `1000` | at most this many ended jobs keep their files, the newest; `"never"` for no limit |
 | `keep_events` | `"365d"` | how long an ended job's events stay in `events.jsonl` |
 | `keep_steps` | `"30d"` | how long a compiled step may go unused before it is removed |
+| `remote` | off | the read-only remote API: `{"enabled": true, "port": 7177}`, `port` 7177 unless given (see Remote API) |
 
 **Retention.** Marshal's home would grow for ever, so the daemon removes old files when it starts
 and every hour, and `marshal clean` does it on request. Only a job that has ended for good is ever
@@ -1095,6 +1098,58 @@ nothing. A removed job leaves `ls`; `wait` and `rerun` still answer for it from 
 (else `keep_steps`). A compiled step's last use is the modification time of its executable, which
 every use moves forward. It ends by saying how much it freed (`marshal: freed 1.5M`; with `--dry-run`,
 `marshal: would free 1.5M`).
+
+## Remote API
+
+A phone on the same network can watch marshal: what runs, what waits, what ended last, and each
+job's log. The API only reads; nothing can be run, killed or changed through it.
+
+**Turning it on.** It is off until `config.json` in marshal's home says
+
+```json
+{"remote": {"enabled": true, "port": 7177}}
+```
+
+(`port` is 7177 unless given), and the daemon starts again: `marshal restart`, which keeps every job.
+The daemon reads `config.json` only as it starts, so turning it off is the same: set `enabled` to
+`false`, or remove `remote`, and restart. While it is on, the daemon serves plain HTTP/1.1 on every
+IPv4 interface at that port, says `marshal: remote API listening on port 7177` in `daemon.log`, and
+advertises itself by Bonjour as `_marshal._tcp` under the Mac's computer name with the TXT record
+`v=1` (a `dns-sd -R` the daemon owns and ends with itself). Where the port is taken, the daemon
+says so in `daemon.log` and runs without the API.
+
+**The token.** Every request carries `Authorization: Bearer <token>`; without the right token the
+answer is `401 {"error":"unauthorized"}`. The token is 128 random bits, 26 lower-case base32
+characters, in `remote-token` in marshal's home, mode 0600, made when the API is first turned on.
+`marshal remote token` prints it (making it if there is none); `marshal remote rotate` makes a new
+one, and the old one is refused from the next request on, the daemon running or not.
+
+```sh
+curl -H "Authorization: Bearer $(marshal remote token)" http://my-mac.local:7177/v1/jobs
+```
+
+**Plain HTTP can be read by anyone on the same Wi-Fi, the token with it.** That is accepted because
+the API only reads; use it on a network you trust, and `marshal remote rotate` if the token may have
+been seen.
+
+| GET | Answers |
+| --- | --- |
+| `/v1/status` | `{"version", "host", "units": {"used", "total"}, "mem": {"used_bytes", "total_bytes"}, "jobs": {"running", "queued"}}` |
+| `/v1/jobs` | `{"jobs": [Job…]}`: the running jobs, the queued ones, then the last 50 that ended, newest first |
+| `/v1/jobs/<id>` | one `Job`, or `404 {"error":"no such job"}` |
+| `/v1/jobs/<id>/log?from=<offset>&max=<bytes>` | `{"from", "next", "done", "text"}`: the log's bytes from `from` (`max` 65536 unless given, at most 1 MiB); poll again with `from=next`; `done` is true once the job has ended and `next` is the log's end |
+
+A `Job` is `{"id", "label", "kind", "dir", "state", "detail", "landing", "units", "mem_bytes",
+"submitted", "started", "ended", "elapsed_s", "deadline_s", "exit"}`, every field present, `null`
+where marshal does not know it. `state` is `queued`, `running`, `exited`, `killed` or `timeout`;
+`detail` is marshal's own word where the state does not say it all (`held`, `waiting`, `retrying`,
+`settling`, `paused`, `killed`, `signalled`, `cancelled`, `lost`, `dependency failed`, `quiet`), else
+`null`. `units` may be fractional (`1.25`); times are RFC 3339 in UTC; `exit` is null until the job
+ends. A log's `text` has U+FFFD in place of bytes that are not UTF-8, and its offsets count the raw
+log's bytes; a character the end of a piece would cut in two is left whole for the next one. A
+path that is not the API's is `404`, any method but GET (or HEAD) `405`, a bad `from` or `max`
+`400`; every error is `{"error": "…"}`. A request's line and headers may hold 8 KiB and must
+arrive within 5 seconds.
 
 ## status --json
 

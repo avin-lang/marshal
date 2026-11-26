@@ -2992,3 +2992,74 @@ the owner's jobs and quick jobs are admitted; every other queued job keeps its p
   job up by id finds none rather than failing on a missing member. A daemon starting over the log
   skips them (no lost job, no unreadable line); `events` and `wait --until` filter them by name.
   Alternative: no `id` at all (a reader indexing `id` would fail).
+
+## 0.4.6: a read-only remote API for a phone (branch `remote-api`)
+
+2026-11-23. A phone app on the LAN shows what marshal runs. The contract (endpoints, field names,
+status codes, the token, Bonjour) is fixed by the sysl director session, which owns it and builds
+the phone side against it; marshal implements it exactly. Agreed with the contract's owner: `units`
+is a JSON number that may be fractional; the `state` mapping (held → `queued`; exit code →
+`exited`; signalled, cancelled or killed by the user → `killed`; deadline → `timeout`; lost → `killed`;
+dependency failed → `killed`); a `detail` field always present, marshal's own word or null; the
+setting `remote: {"enabled": true, "port": 7177}` in config.json; 50 recently ended jobs.
+
+**Settled on the user's delegation 2026-11-23:**
+
+- **Enabling: config.json's `remote`** (`enabled`, `port` 7177 by default), read as the daemon starts,
+  so a change holds from the next start or `marshal restart`. An unknown `remote.*` key or a port out
+  of 1–65535 keeps the daemon from starting, as every config.json mistake does. No daemon flag: the
+  daemon is started by the command line, never by hand, so a flag would have no one to pass it.
+- **Discovery: an owned `dns-sd -R <computer name> _marshal._tcp local <port> v=1`**, the name from
+  `scutil --get ComputerName` (then `hostname`). It runs under a small shell that holds a pipe only
+  the daemon writes and ends `dns-sd` when the pipe reaches its end. The daemon closes the pipe on
+  `stop` and TERM, and before `restart` replaces its program (the next image advertises itself, so
+  the two registrations never meet under one name); a daemon killed outright closes it by dying,
+  so no exit path leaves an orphan, KILL included. Why a pipe rather than an exit hook: a hook runs
+  for none of KILL, a signal not watched, or a stack overflow. Alternatives: the `dns_sd.h` C API (a
+  binding and a run loop of its own for one registration); polling the daemon's pid from the shell
+  (a restart keeps the pid, so the old registration would outlive it). A `dns-sd` that ends by
+  itself is logged in daemon.log, and the listener goes on unadvertised; so does one that cannot be
+  found (exit 127). `$MARSHAL_TEST_DNS_SD` names a stand-in for the tests.
+- **The token: re-read from `remote-token` at every request**, so `marshal remote rotate` holds from
+  the next request with or without a daemon, and needs no message to it. Cost: one small file read a
+  request. Alternative: telling the daemon, which would fail while none runs. `remote token` and
+  `remote rotate` touch only the file and never start a daemon. The file is written under a
+  temporary name created 0600, then renamed, so it is never readable by others nor half-written; a
+  file loosened by hand is put back to 0600 by `remote token` and at the daemon's start. With no
+  token file every request is 401. The `Bearer` scheme is matched in any case (HTTP's schemes are
+  case-insensitive); the token itself is compared in constant time.
+- **The listener never holds the scheduler up.** Each connection runs on a lightweight thread of the
+  server's own (at most 32 at once); what it needs from the daemon it asks by one message
+  (`RemoteList`, `RemoteFind`) whose reply channel has room for the answer, so the daemon's thread
+  never waits on a client. A log, and a job the daemon no longer holds, are read on the connection's
+  thread from the job's log and `events.jsonl`. Limits: a request's line and headers within 8 KiB,
+  64 headers and 5 s; the whole request 15 s; a body 1 KiB. Every error, the server's own (400, 408,
+  413, 431, …) included, is `{"error": "…"}`: the server's are the status's reason in lower case.
+- **Order of checks:** the token first, for every path and method (an unauthorized client learns
+  nothing, not even which paths exist); then a path not the API's is 404 `not found`; then a method
+  other than GET or HEAD is 405 `method not allowed`, with `Allow: GET, HEAD`. A job id that is not a
+  positive whole number is 404 `no such job`, as an id no job has had. A bad `from` or `max` is 400.
+- **Kept ended jobs: 50** (`Kept`, the contract's number), from the event log at start and across a
+  restart's handover; `ls` and `top` still show their last 10 (`Recent`). `/v1/jobs` orders the ended
+  ones by when they ended, newest first.
+- **Job fields marshal has in another form:** `label` is null for a job with none (a job submitted
+  without one has the label derived from its command, so this is rare); `mem_bytes` is the memory the
+  scheduler counts for it (its reservation, learned or declared, whichever is more); `elapsed_s` and
+  `deadline_s` are whole seconds, rounded down, `deadline_s` null for no deadline; `exit` is the
+  status `marshal wait` exits with (124 for a timeout, 125 lost, 126 dependency failed, 143
+  cancelled). `started` is null for a job queued again to retry. A job that ended before this daemon
+  started gives `submitted` as its start less its wait (its end less its wait where it never
+  started): the ending event records no submission time. **Review with the user:** null rather than
+  "" for no label.
+- **`detail` words**: `held`, `waiting` (for other jobs), `retrying`, `settling`, `paused`, `killed`
+  (by `marshal kill`), `signalled`, `cancelled`, `lost`, `dependency failed`, `quiet` (its quiet
+  timeout; a deadline's `timeout` needs none).
+- **Logs:** `from` past the end answers from the end (`from` = `next` = the log's size), so a client
+  whose log shrank under it (retention) carries on rather than waiting at an offset that never
+  comes. `max` is held to 1 MiB, so one answer never holds more. A character cut by `max`, or by the
+  end of a log still being written, is left whole for the next piece; where `max` is too small to
+  hold one character, its bytes are given (as U+FFFD) so polling moves on; once the job has ended a
+  cut character at the very end is U+FFFD, and `done` comes. A log not there (a queued job's, or one
+  retention removed) reads as empty, `done` once the job has ended. **Review with the user:** an
+  empty answer rather than an error for a removed log (the contract has no error for it).
+- **The version stays one** (`/v1/`): nothing in the contract is marshal's own extension.

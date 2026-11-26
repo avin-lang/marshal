@@ -39,6 +39,8 @@ module dev.avinlang.marshal
 //   polite_schedule the windows of the week marshal is polite in, an array such as
 //                   [{"days": "mon-fri", "from": "08:00", "until": "16:05", "fraction": 0.75}]
 //                   (none; polite.avin)
+//   remote          the read-only remote API for a phone, {"enabled": true, "port": 7177}; off
+//                   unless `enabled` is true, on port 7177 unless `port` names another (remote.avin)
 import dev.avinlang.json
 import dev.avinlang.json.Json
 
@@ -61,7 +63,8 @@ data Config(
     nofile: Option[long] = None,
     politeSchedule: Vector[PoliteWindow] = [],
     raiseAfterMs: Option[long] = Some(RaiseAfterMs),
-    lowPromoteMs: Option[long] = Some(DefaultLowPromote)
+    lowPromoteMs: Option[long] = Some(DefaultLowPromote),
+    remote: RemoteSettings = RemoteSettings()
 )
 
 // How long a development job waits before the machine drains for it, unless config.json says.
@@ -98,7 +101,7 @@ readConfigOn(text: string, machineMemory: long, processors: Option[int]) -> Resu
     if ![
       "units", "memory", "reserve", "deadline_floor", "deadline_margin", "learn_window", "learn_min_runs", "take_slot", "keep_logs",
       "keep_jobs", "keep_events", "keep_steps", "drain_after", "load_wait", "disk_min", "projects", "nofile",
-      "polite_schedule", "raise_after", "low_promote_after"
+      "polite_schedule", "raise_after", "low_promote_after", "remote"
     ].contains(key)
       return Err(s"config.json: no setting `$key`")
   val units = whole(j, "units", processors.filter(n -> n >= 1).getOrElse(FallbackUnits))?
@@ -145,6 +148,7 @@ readConfigOn(text: string, machineMemory: long, processors: Option[int]) -> Resu
   val schedule = j.get("polite_schedule") match
     None -> Vector[PoliteWindow]()
     Some(v) -> readSchedule(v)?
+  val remote = readRemote(j.get("remote"))?
   Ok(
     Config(
       Budget(wholeUnits(units), memory),
@@ -158,7 +162,8 @@ readConfigOn(text: string, machineMemory: long, processors: Option[int]) -> Resu
       nofile,
       schedule,
       raiseAfter,
-      lowPromote
+      lowPromote,
+      remote
     )
   )
 

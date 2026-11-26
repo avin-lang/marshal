@@ -1,0 +1,704 @@
+module tests
+
+// End to end, the remote API (daemon/remote.avin) against a daemon on a free port: off unless
+// config.json turns it on; each endpoint's JSON; the token, refused when missing, wrong, of the wrong
+// scheme or one character off, and replaced at once by `remote rotate`; the order of `/v1/jobs` and
+// its 50 ended jobs, across a restart and a new daemon; a log read by byte offsets; the paths and
+// methods it refuses; a header too large refused while other clients are answered; and the
+// advertisement, a stand-in for `dns-sd` the tests give by `$MARSHAL_TEST_DNS_SD` (and the real one
+// where there is one), started with the listener and gone with the daemon however it ends. The
+// helpers not defined here are e2e.avin's.
+import avin.fs
+import avin.net.{TcpListener, TcpStream}
+import avin.net.http
+import avin.process
+import avin.process.Command
+import avin.threads
+import avin.threads.{Atomic, spawn}
+import avin.time
+import avin.time.{millis, seconds}
+import dev.avinlang.json
+import dev.avinlang.json.Json
+
+// A port nothing listens on now.
+freePort() -> int
+  val l = TcpListener.bind("127.0.0.1", 0).ok.get
+  val p = l.port()
+  val _ = l.close()
+  p
+
+// The stand-in for `dns-sd`: it adds a line of its pid and arguments to `dns-sd.log` in the home,
+// then sleeps as the real one stays registered.
+private val FakeDnsSd: string = """
+#!/bin/sh
+echo "$$ $*" >> "$(dirname "$0")/dns-sd.log"
+exec sleep 600
+"""
+
+// A home whose config.json turns the remote API on at `port` (with `extra` members before it), with
+// the stand-in for `dns-sd` beside it.
+remoteHome(port: int, extra: string = "") -> string
+  val home = newHome(s"{$extra\"remote\": {\"enabled\": true, \"port\": $port}}")
+  fs.writeText(home + "/dns-sd.sh", FakeDnsSd).ok.get
+  assertEq(Command("chmod", "+x", home + "/dns-sd.sh").run().ok, Some(process.ExitStatus.Exited(0)))
+  home
+
+// The environment a daemon of `home` is started with: the stand-in for `dns-sd`.
+remoteEnv(home: string) -> Vector[(string, string)] = [("MARSHAL_TEST_DNS_SD", home + "/dns-sd.sh")]
+
+// Starts the daemon of `home` (by `marshal remote token`, which needs none, then `ls`, which starts
+// one) and answers the token once the listener is up.
+remoteDaemon(home: string) -> string
+  val t = m(home, "remote", "token").out.trim
+  assertEq(mWith(home, remoteEnv(home), "ls").code, 0)
+  assert(within(5000, () -> daemonLog(home).contains("remote API listening on port")), daemonLog(home))
+  t
+
+// A GET of `path` with `headers`.
+rget(port: int, path: string, headers: Vector[(string, string)] = []) -> http.Response =
+  http.get(s"http://127.0.0.1:$port$path", headers).ok.get
+
+// A GET of `path` with the bearer token `token`, which must answer 200: its JSON.
+rjson(port: int, path: string, token: string) -> Json
+  val r = rget(port, path, [("Authorization", s"Bearer $token")])
+  assert(r.status == 200, s"$path: ${r.status} ${r.text}")
+  assertEq(r.header("Content-Type"), Some("application/json"))
+  json.parse(r.text).ok.get
+
+// Asserts `r` is the error `status` with `{"error": message}`.
+rerror(r: http.Response, status: int, message: string)
+  assert(r.status == status, s"${r.status} ${r.text}")
+  assertEq(r.header("Content-Type"), Some("application/json"))
+  assertEq(r.text, "{\"error\":" + Json.str(message).render + "}")
+
+// The fields of a job, in the contract's order.
+val JobFields: Vector[string] = [
+  "id", "label", "kind", "dir", "state", "detail", "landing", "units", "mem_bytes", "submitted", "started", "ended",
+  "elapsed_s", "deadline_s", "exit"
+]
+
+// Whether a TCP connection to `port` is refused.
+refused(port: int) -> bool = TcpStream.connect("127.0.0.1", port, seconds(2)).isErr
+
+// The pids the stand-in for `dns-sd` recorded, in the order it started.
+dnsSdPids(home: string) -> Vector[long] =
+  fs.readText(home + "/dns-sd.log").getOrElse("").lines.filter(l -> l.nonEmpty).map(
+    l -> l.split(" ")(0).toLong()
+  ).toVector
+
+@test("the remote API is off by default: nothing listens, no token is made, the daemon log says nothing of it")
+remoteOffByDefault()
+  val port = freePort()
+  val home = newHome()
+  assertEq(m(home, "ls").code, 0)
+  assert(!fs.exists(home + "/remote-token"))
+  assert(!daemonLog(home).contains("remote API"), daemonLog(home))
+  cleanUp(home)
+  // nor with `enabled` false and a port given
+  val off = newHome(s"{\"remote\": {\"enabled\": false, \"port\": $port}}")
+  assertEq(m(off, "ls").code, 0)
+  assert(refused(port))
+  assert(!fs.exists(off + "/remote-token"))
+  assert(!daemonLog(off).contains("remote API"), daemonLog(off))
+  cleanUp(off)
+
+@test("a remote setting config.json refuses keeps the daemon from starting, saying why")
+remoteBadConfig()
+  val home = newHome("{\"remote\": {\"enabled\": true, \"port\": 70000}}")
+  val r = m(home, "ls")
+  assertEq(r.code, 2)
+  assert(r.out.contains("config.json: `remote.port` is a port number from 1 to 65535"), r.out)
+  cleanUp(home)
+
+@test("turned on, the daemon makes the token file (0600, 26 base32 characters) and listens on the port")
+remoteOn()
+  val port = freePort()
+  val home = remoteHome(port)
+  assertEq(mWith(home, remoteEnv(home), "ls").code, 0)
+  assert(within(5000, () -> daemonLog(home).contains(s"marshal: remote API listening on port $port")), daemonLog(home))
+  val t = fs.readText(home + "/remote-token").ok.get
+  assertEq(t.byteLength, 27)
+  assert(t.endsWith("\n"))
+  assert(t.trim.forall(c -> 'a' <= c <= 'z' || '2' <= c <= '7'), t)
+  assertEq(fs.permissions(home + "/remote-token").ok, Some(0o600))
+  // `remote token` prints the one the daemon made
+  assertEq(m(home, "remote", "token").out, t)
+  assertEq(rget(port, "/v1/status", [("Authorization", "Bearer " + t.trim)]).status, 200)
+  cleanUp(home)
+
+@test("/v1/status: version, host, units and memory in use against the budget, the counts of running and queued jobs")
+remoteStatus()
+  val port = freePort()
+  val home = remoteHome(port, "\"units\": 2, \"memory\": \"10G\", ")
+  val t = remoteDaemon(home)
+  val a = submitted(home, "--units", "1.5", "--mem", "1G", "--", "sleep", "30")
+  assert(within(3000, () -> started(home, a)))
+  val b = submitted(home, "--units", "1", "--", "sleep", "30")
+  val c = submitted(home, "--units", "1", "--", "sleep", "30")
+  assertEq(m(home, "hold", c.toString()).code, 0)
+  val s = rjson(port, "/v1/status", t)
+  assertEq(s.keys, ["version", "host", "units", "mem", "jobs"])
+  assertEq(s("version").asString, Some("0.4.6"))
+  assert(s("host").asString.exists(h -> h.nonEmpty), s.render)
+  assertEq(s("units").render, "{\"used\":1.5,\"total\":2}")
+  assertEq(s("mem").keys, ["used_bytes", "total_bytes"])
+  assertEq(s("mem")("total_bytes").asLong, Some(long(10) * 1024 * 1024 * 1024))
+  assert(s("mem")("used_bytes").asLong.exists(n -> n >= long(1024 * 1024 * 1024)), s.render)
+  assertEq(s("jobs").render, "{\"running\":1,\"queued\":2}")
+  // HEAD answers as GET without the body
+  val h = http.head(s"http://127.0.0.1:$port/v1/status", [("Authorization", "Bearer " + t)]).ok.get
+  assertEq(h.status, 200)
+  assertEq(h.text, "")
+  for id in [a, b, c] do m(home, "kill", id.toString())
+  cleanUp(home)
+
+@test("/v1/jobs and /v1/jobs/{id}: every field of each job, running, queued, held and ended, in the contract's order")
+remoteJobs()
+  val port = freePort()
+  val home = remoteHome(port, "\"units\": 1, ")
+  val t = remoteDaemon(home)
+  val d = submitted(home, "--label", "lab", "--landing", "--deadline", "90s", "--", "sh", "-c", "exit 3")
+  assertEq(m(home, "wait", d.toString()).code, 3)
+  val a = submitted(home, "--units", "1", "--", "sleep", "30")
+  assert(within(3000, () -> started(home, a)))
+  val b = submitted(home, "--units", "1", "--", "sleep", "30")
+  val c = submitted(home, "--units", "0.25", "--", "sleep", "30")
+  assertEq(m(home, "hold", c.toString()).code, 0)
+  val jobs = rjson(port, "/v1/jobs", t)("jobs").asVector.get
+  assertEq(jobs.map(j -> j("id").asLong.get), [a, b, c, d])
+  for j in jobs do assert(j.keys == JobFields, j.render)
+  val (ja, jb, jc, jd) = (jobs(0), jobs(1), jobs(2), jobs(3))
+  assertEq(ja("state").asString, Some("running"))
+  assertEq(ja("detail"), Json.Null)
+  assertEq(ja("exit"), Json.Null)
+  assertEq(ja("ended"), Json.Null)
+  assert(ja("started").asString.isDefined && ja("submitted").asString.isDefined, ja.render)
+  assertEq(ja("units").render, "1")
+  assertEq(ja("dir").asString, process.currentDir().ok)
+  assertEq(jb("state").asString, Some("queued"))
+  assertEq(jb("detail"), Json.Null)
+  assertEq(jb("started"), Json.Null)
+  assertEq(jb("elapsed_s").asLong, Some(0))
+  assertEq(jc("state").asString, Some("queued"))
+  assertEq(jc("detail").asString, Some("held"))
+  assertEq(jc("units").render, "0.25")
+  assertEq(jd("state").asString, Some("exited"))
+  assertEq(jd("detail"), Json.Null)
+  assertEq(jd("exit").asLong, Some(3))
+  assertEq(jd("label").asString, Some("lab"))
+  assertEq(jd("landing").asBool, Some(true))
+  assertEq(jd("deadline_s").asLong, Some(90))
+  // RFC 3339 times, in order
+  val times = ["submitted", "started", "ended"].map(k -> time.parseTimestamp(jd(k).asString.get).ok.get)
+  assert(times(0) <= times(1) && times(1) <= times(2), jd.render)
+  // each job alone is the same object, its elapsed time apart
+  for j in jobs
+    val one = rjson(port, s"/v1/jobs/${j("id").asLong.get}", t)
+    assertEq(one.keys, JobFields)
+    assertEq(one("state"), j("state"))
+    assertEq(one("submitted"), j("submitted"))
+    assertEq(one("ended"), j("ended"))
+  // a job killed by hand is killed, its exit what wait gives
+  assertEq(m(home, "kill", a.toString()).code, 0)
+  assertEq(m(home, "wait", a.toString()).code, 143)
+  val killed = rjson(port, s"/v1/jobs/$a", t)
+  assertEq(killed("state").asString, Some("killed"))
+  assertEq(killed("detail").asString, Some("killed"))
+  assertEq(killed("exit").asLong, Some(143))
+  m(home, "kill", b.toString())
+  m(home, "kill", c.toString())
+  cleanUp(home)
+
+@test("/v1/jobs/{id}: 404 no such job for an id no job has had, 0, a negative one and a word that is not an id")
+remoteNoSuchJob()
+  val port = freePort()
+  val home = remoteHome(port)
+  val t = remoteDaemon(home)
+  val auth = [("Authorization", "Bearer " + t)]
+  for path in [
+    "/v1/jobs/99",
+    "/v1/jobs/0",
+    "/v1/jobs/",
+    "/v1/jobs/-1",
+    "/v1/jobs/abc",
+    "/v1/jobs/1.0",
+    "/v1/jobs/1e3",
+    "/v1/jobs/99/log"
+  ]
+    rerror(rget(port, path, auth), 404, "no such job")
+  cleanUp(home)
+
+@test("a job ended before this daemon started is found from what the last one left, and from the event log")
+remoteEarlierJobs()
+  val port = freePort()
+  val home = remoteHome(port)
+  remoteDaemon(home)
+  val x = submitted(home, "--", "sh", "-c", "exit 4")
+  assertEq(m(home, "wait", x.toString()).code, 4)
+  val before = rjson(port, s"/v1/jobs/$x", m(home, "remote", "token").out.trim)
+  assertEq(m(home, "stop").code, 0)
+  val t = remoteDaemon(home)
+  val after = rjson(port, s"/v1/jobs/$x", t)
+  assertEq(after("state").asString, Some("exited"))
+  assertEq(after("exit").asLong, Some(4))
+  assertEq(after("started"), before("started"))
+  // the daemon that ran it reckons its end and submission from its own clock, the next one from the
+  // event log's: the same to within a few milliseconds
+  for k in ["submitted", "ended"] do assert(near(after(k), before(k)), s"$k: ${after.render} ${before.render}")
+  // once `clean` forgets it, the event log still has its ending
+  assertEq(m(home, "clean", "--keep", "0").code, 0)
+  val logged = rjson(port, s"/v1/jobs/$x", t)
+  assertEq(logged("exit").asLong, Some(4))
+  assertEq(logged("ended"), after("ended"))
+  assertEq(logged("submitted"), after("submitted"))
+  cleanUp(home)
+
+// Whether two RFC 3339 times are within 50 milliseconds of each other.
+near(a: Json, b: Json) -> bool
+  val x = time.parseTimestamp(a.asString.get).ok.get
+  val y = time.parseTimestamp(b.asString.get).ok.get
+  val d = if x < y then y - x else x - y
+  d.toMillis <= 50
+
+@test(
+  "401 unauthorized for a missing token, a wrong one, the wrong scheme and one differing in its last character, whatever the path or method"
+)
+remoteUnauthorized()
+  val port = freePort()
+  val home = remoteHome(port)
+  val t = remoteDaemon(home)
+  val last = t.dropRight(1) + (if t.endsWith("a") then "b" else "a")
+  val wrong = [
+    Vector[(string, string)](),
+    [("Authorization", "")],
+    [("Authorization", "Bearer")],
+    [("Authorization", "Bearer abcdefghijklmnopqrstuvwxyz")],
+    [("Authorization", "Basic " + t)],
+    [("Authorization", t)],
+    [("Authorization", "Bearer " + last)],
+    [("Authorization", "Bearer " + t.dropRight(1))],
+    [("Authorization", "Bearer " + t + "a")],
+    [("Authorization", "Bearer " + t.toUpper)],
+    [("X-Token", t)]
+  ]
+  for headers in wrong
+    for path in ["/v1/status", "/v1/jobs", "/v1/jobs/1", "/v1/jobs/1/log", "/nope"]
+      rerror(rget(port, path, headers), 401, "unauthorized")
+    rerror(http.post(s"http://127.0.0.1:$port/v1/jobs", "{}", "application/json", headers).ok.get, 401, "unauthorized")
+  // the scheme's name in any case
+  assertEq(rget(port, "/v1/status", [("Authorization", "bearer " + t)]).status, 200)
+  assertEq(rget(port, "/v1/status", [("Authorization", "BEARER " + t)]).status, 200)
+  // no token file: nothing is authorized, not even an empty token
+  fs.remove(home + "/remote-token").ok.get
+  rerror(rget(port, "/v1/status", [("Authorization", "Bearer " + t)]), 401, "unauthorized")
+  rerror(rget(port, "/v1/status", [("Authorization", "Bearer ")]), 401, "unauthorized")
+  cleanUp(home)
+
+@test("remote rotate: the old token is refused at once, the new one accepted; remote token prints the current one")
+remoteRotate()
+  val port = freePort()
+  val home = remoteHome(port)
+  val t = remoteDaemon(home)
+  assertEq(rget(port, "/v1/status", [("Authorization", "Bearer " + t)]).status, 200)
+  val r = m(home, "remote", "rotate")
+  assertEq(r.code, 0)
+  val u = r.out.trim
+  assert(u != t && u.byteLength == 26, u)
+  assertEq(fs.permissions(home + "/remote-token").ok, Some(0o600))
+  assertEq(m(home, "remote", "token").out.trim, u)
+  rerror(rget(port, "/v1/status", [("Authorization", "Bearer " + t)]), 401, "unauthorized")
+  assertEq(rget(port, "/v1/status", [("Authorization", "Bearer " + u)]).status, 200)
+  cleanUp(home)
+
+@test("remote token makes the token without a daemon, prints the same one again; remote refuses other words")
+remoteTokenCommand()
+  val home = newHome()
+  val r = m(home, "remote", "token")
+  assertEq(r.code, 0)
+  val t = r.out.trim
+  assertEq(t.byteLength, 26)
+  assertEq(fs.permissions(home + "/remote-token").ok, Some(0o600))
+  assertEq(m(home, "remote", "token").out.trim, t)
+  // no daemon was started for it
+  assert(!fs.exists(home + "/daemon.pid"))
+  for args in [["remote"], ["remote", "show"], ["remote", "token", "x"], ["remote", "rotate", "now"]]
+    val bad = m(home, args*)
+    assertEq(bad.code, 2)
+    assert(bad.out.contains("marshal: remote takes token or rotate"), bad.out)
+  val help = m(home, "remote", "--help")
+  assertEq(help.code, 0)
+  assert(
+    help.out.contains("usage: marshal remote token | rotate") && help.out.contains(
+      "\"remote\": {\"enabled\": true, \"port\": 7177}"
+    ),
+    help.out
+  )
+  assert(help.out.contains("anyone on the same network"), help.out)
+  cleanUp(home)
+
+@test(
+  "/v1/jobs: running, then queued, then the last 50 ended, newest first; the same after a restart and from a new daemon"
+)
+remoteJobsListOrder()
+  val port = freePort()
+  val home = remoteHome(port, "\"units\": 1, ")
+  val t = remoteDaemon(home)
+  val ended = Buffer[long]()
+  for _ in 1 .. 53
+    val id = submitted(home, "--units", "1", "--", "true")
+    assertEq(m(home, "wait", id.toString()).code, 0)
+    ended += id
+  val a = submitted(home, "--units", "1", "--", "sleep", "60")
+  assert(within(3000, () -> started(home, a)))
+  val b = submitted(home, "--units", "1", "--", "sleep", "60")
+  val newest = ended.toVector.reverse.take(50)
+  checkOrder(rjson(port, "/v1/jobs", t), [a, b] ++ newest)
+  // `ls` still lists only its last 10 ended jobs
+  val ls = m(home, "ls").out
+  val listed = ls.lines.filter(l -> l.contains(" exit 0 ")).map(l -> l.trim.split(" ")(0).toLong()).toVector
+  assert(listed == ended.toVector.drop(43), ls)
+  // a restart hands the 50 over
+  restarted(home)
+  assert(within(5000, () -> daemonLog(home).split("remote API listening").length == 3), daemonLog(home))
+  checkOrder(rjson(port, "/v1/jobs", t), [a, b] ++ newest)
+  m(home, "kill", b.toString())
+  m(home, "wait", b.toString())
+  threads.sleep(millis(20))
+  m(home, "kill", a.toString())
+  assertEq(m(home, "wait", a.toString()).code, 143)
+  // and a new daemon reads them from the event log
+  assertEq(m(home, "stop").code, 0)
+  remoteDaemon(home)
+  val fresh = rjson(port, "/v1/jobs", t)("jobs").asVector.get
+  assertEq(fresh.length, 50)
+  assertEq(fresh.map(j -> j("id").asLong.get), ([a, b] ++ ended.toVector.reverse).take(50))
+  for j in fresh do assert(j("ended").asString.isDefined, j.render)
+  cleanUp(home)
+
+// `j`'s jobs are `ids`, in order, each with its fields, the ended ones with their end.
+checkOrder(j: Json, ids: Vector[long])
+  val jobs = j("jobs").asVector.get
+  assertEq(jobs.map(x -> x("id").asLong.get), ids)
+  for x in jobs.drop(2) do assert(x("state").asString == Some("exited") && x("ended").asString.isDefined, x.render)
+  val ends = jobs.drop(2).map(x -> time.parseTimestamp(x("ended").asString.get).ok.get)
+  for i in 1 ..< ends.length do assert(ends(i - 1) >= ends(i), j.render)
+
+@test(
+  "/v1/jobs/{id}/log: from 0, from the middle, past the end, a default and a small max, done only at the end of an ended job's log"
+)
+remoteLog()
+  val port = freePort()
+  val home = remoteHome(port)
+  val t = remoteDaemon(home)
+  // `aé` then a byte that is not UTF-8, `b€`, a line feed: 61 C3 A9 FF 62 E2 82 AC 0A
+  val x = submitted(home, "--", "sh", "-c", "printf 'a\\303\\251\\377b\\342\\202\\254\\n'; exec sleep 30")
+  val file = s"$home/jobs/$x.log"
+  assert(within(3000, () -> string.fromUtf8Lossy(fs.readBytes(file).getOrElse(Array.empty[byte]())).contains("b€\n")))
+  val raw = fs.readBytes(file).ok.get
+  val size = long(raw.length)
+  val head = size - 9
+  val path = s"/v1/jobs/$x/log"
+  val whole = rjson(port, path, t)
+  assertEq(whole.keys, ["from", "next", "done", "text"])
+  assertEq(whole("from").asLong, Some(0))
+  assertEq(whole("next").asLong, Some(size))
+  assertEq(whole("done").asBool, Some(false))
+  assertEq(whole("text").asString, Some(string.fromUtf8Lossy(raw)))
+  assert(whole("text").asString.get.endsWith("aé\u{fffd}b€\n"), whole.render)
+  val mid = rjson(port, s"$path?from=$head", t)
+  assertEq(mid.render, s"{\"from\":$head,\"next\":$size,\"done\":false,\"text\":\"aé\u{fffd}b€\\n\"}")
+  // past the end: nothing, from the end
+  assertEq(
+    rjson(port, s"$path?from=${size + 100}", t).render,
+    s"{\"from\":$size,\"next\":$size,\"done\":false,\"text\":\"\"}"
+  )
+  assertEq(rjson(port, s"$path?from=$size", t).render, s"{\"from\":$size,\"next\":$size,\"done\":false,\"text\":\"\"}")
+  // a small max: a character cut by it waits for the next piece, whole
+  assertEq(
+    rjson(port, s"$path?from=$head&max=2", t).render,
+    s"{\"from\":$head,\"next\":${head + 1},\"done\":false,\"text\":\"a\"}"
+  )
+  assertEq(rjson(port, s"$path?from=${head + 1}&max=2", t)("text").asString, Some("é"))
+  assertEq(rjson(port, s"$path?from=${head + 3}&max=1", t)("text").asString, Some("\u{fffd}"))
+  assertEq(
+    rjson(port, s"$path?from=${head + 4}&max=3", t).render,
+    s"{\"from\":${head + 4},\"next\":${head + 5},\"done\":false,\"text\":\"b\"}"
+  )
+  assertEq(rjson(port, s"$path?from=${head + 5}&max=3", t)("text").asString, Some("€"))
+  // a max too small for one character gives its bytes, so polling moves on
+  assertEq(
+    rjson(port, s"$path?from=${head + 5}&max=1", t).render,
+    s"{\"from\":${head + 5},\"next\":${head + 6},\"done\":false,\"text\":\"\u{fffd}\"}"
+  )
+  // a max past the ceiling is held to it
+  assertEq(rjson(port, s"$path?max=999999999999", t)("next").asLong, Some(size))
+  // tailing by polling from `next` reads the whole log, piece by piece
+  assertEq(tailed(port, path, t, 3).0, string.fromUtf8Lossy(raw))
+  // once the job has ended, done is true only for the piece that reaches the end
+  assertEq(m(home, "kill", x.toString()).code, 0)
+  assertEq(m(home, "wait", x.toString()).code, 143)
+  val end = long(fs.readBytes(file).ok.get.length)
+  val first = rjson(port, s"$path?max=4", t)
+  assertEq(first("done").asBool, Some(false))
+  val last = rjson(port, s"$path?from=${end - 1}", t)
+  assertEq(last("next").asLong, Some(end))
+  assertEq(last("done").asBool, Some(true))
+  assertEq(
+    rjson(port, s"$path?from=${end + 5}", t).render,
+    s"{\"from\":$end,\"next\":$end,\"done\":true,\"text\":\"\"}"
+  )
+  val (text, dones) = tailed(port, path, t, 5)
+  assertEq(text, string.fromUtf8Lossy(fs.readBytes(file).ok.get))
+  assertEq(dones, 1)
+  cleanUp(home)
+
+// The log at `path` read by polling from `next` with `max`, until `done`: its text, and how many
+// pieces said `done` (the last only).
+tailed(port: int, path: string, token: string, max: int) -> (string, int)
+  val out = StringWriter()
+  var from: long = 0
+  var dones = 0
+  for _ in 1 .. 10000
+    val p = rjson(port, s"$path?from=$from&max=$max", token)
+    out.write(p("text").asString.get)
+    if p("done").asBool == Some(true) then dones += 1
+    if p("done").asBool == Some(true) || p("next").asLong == Some(from) then break
+    from = p("next").asLong.get
+  (out.toString(), dones)
+
+@test("/v1/jobs/{id}/log: 400 for a from or a max that is not a whole number in range; a queued job's log is empty")
+remoteLogRefusals()
+  val port = freePort()
+  val home = remoteHome(port, "\"units\": 1, ")
+  val t = remoteDaemon(home)
+  val a = submitted(home, "--units", "1", "--", "sleep", "30")
+  assert(within(3000, () -> started(home, a)))
+  val b = submitted(home, "--units", "1", "--", "sleep", "30")
+  val auth = [("Authorization", "Bearer " + t)]
+  val fromError = "`from` is a byte offset: a whole number, at least 0"
+  val maxError = "`max` is a number of bytes: a whole number, at least 1"
+  for q in ["from=-1", "from=x", "from=", "from=1.5", "from=99999999999999999999"]
+    rerror(rget(port, s"/v1/jobs/$a/log?$q", auth), 400, fromError)
+  for q in ["max=0", "max=-5", "max=abc", "max=", "from=0&max=1.5"]
+    rerror(rget(port, s"/v1/jobs/$a/log?$q", auth), 400, maxError)
+  // the first of a repeated parameter counts
+  assertEq(rjson(port, s"/v1/jobs/$a/log?from=0&from=x&max=1", t)("next").asLong, Some(1))
+  // a queued job has no log yet
+  val q = rjson(port, s"/v1/jobs/$b/log", t)
+  assertEq(q.render, "{\"from\":0,\"next\":0,\"done\":false,\"text\":\"\"}")
+  m(home, "kill", b.toString())
+  m(home, "kill", a.toString())
+  cleanUp(home)
+
+@test("a path that is not the API's is 404, a method other than GET or HEAD 405 naming them")
+remotePathsAndMethods()
+  val port = freePort()
+  val home = remoteHome(port)
+  val t = remoteDaemon(home)
+  val auth = [("Authorization", "Bearer " + t)]
+  for path in [
+    "/",
+    "/v1",
+    "/v1/",
+    "/v2/status",
+    "/v1/status/x",
+    "/v1/jobs/1/log/x",
+    "/v1/jobs/1/logs",
+    "/V1/status",
+    "/v1/STATUS"
+  ]
+    rerror(rget(port, path, auth), 404, "not found")
+  for method in ["POST", "PUT", "DELETE", "PATCH", "OPTIONS"]
+    for path in ["/v1/status", "/v1/jobs", "/v1/jobs/1", "/v1/jobs/1/log"]
+      val r = http.send(http.Request(method, s"http://127.0.0.1:$port$path", auth)).ok.get
+      rerror(r, 405, "method not allowed")
+      assertEq(r.header("Allow"), Some("GET, HEAD"))
+  // a path not the API's is 404 whatever the method
+  rerror(http.send(http.Request("POST", s"http://127.0.0.1:$port/nope", auth)).ok.get, 404, "not found")
+  cleanUp(home)
+
+// Sends `request` on a connection of its own and answers what came back, whole.
+rawExchange(port: int, request: string) -> string
+  val c = TcpStream.connect("127.0.0.1", port, seconds(5)).ok.get
+  c.setTimeout(seconds(20)).ok.get
+  val _ = c.writeText(request) // a server that answers before reading it all may close first
+  val back = c.readAll().map(b -> string.fromUtf8Lossy(b)).getOrElse("")
+  val _ = c.close()
+  back
+
+@test(
+  "a header too large, a request line too long and a client that sends nothing are refused as JSON, and other clients are answered meanwhile"
+)
+remoteHostileClients()
+  val port = freePort()
+  val home = remoteHome(port)
+  val t = remoteDaemon(home)
+  // a client that connects and sends nothing holds only its own connection
+  val silent = TcpStream.connect("127.0.0.1", port, seconds(5)).ok.get
+  val began = time.monotonic()
+  assertEq(rget(port, "/v1/status", [("Authorization", "Bearer " + t)]).status, 200)
+  assert((time.monotonic() - began).toMillis < 2000)
+  // a header past the limit is 431
+  val big = rawExchange(
+    port,
+    s"GET /v1/status HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer $t\r\nX-Big: ${"a".repeat(10000)}\r\n\r\n"
+  )
+  assert(big.startsWith("HTTP/1.1 431 "), big)
+  assert(
+    big.contains("Content-Type: application/json") && big.endsWith("{\"error\":\"request header fields too large\"}"),
+    big
+  )
+  // so are a great many headers
+  val many = rawExchange(
+    port,
+    s"GET /v1/status HTTP/1.1\r\nHost: x\r\n" + (1 .. 100).map(i -> s"X-$i: y\r\n").mkString("") + "\r\n"
+  )
+  assert(many.startsWith("HTTP/1.1 431 ") && many.contains("{\"error\":"), many)
+  // a request line past the limit is refused, as JSON
+  val lengthy = rawExchange(port, s"GET /v1/${"x".repeat(10000)} HTTP/1.1\r\nHost: x\r\n\r\n")
+  assert(
+    lengthy.startsWith("HTTP/1.1 4") && lengthy.contains(
+      "Content-Type: application/json"
+    ) && lengthy.contains("{\"error\":"),
+    lengthy
+  )
+  // a request that is not HTTP is 400
+  val junk = rawExchange(port, "HELLO\r\n\r\n")
+  assert(junk.startsWith("HTTP/1.1 400 ") && junk.endsWith("{\"error\":\"bad request\"}"), junk)
+  // the silent client is closed after the header timeout, answered 408
+  silent.setTimeout(seconds(20)).ok.get
+  val waited = silent.readAll().map(b -> string.fromUtf8Lossy(b)).getOrElse("")
+  assert(waited == "" || waited.startsWith("HTTP/1.1 408 "), waited)
+  val _ = silent.close()
+  // and through it all the daemon went on
+  assertEq(rget(port, "/v1/status", [("Authorization", "Bearer " + t)]).status, 200)
+  val id = submitted(home, "--", "true")
+  assertEq(m(home, "wait", id.toString()).code, 0)
+  cleanUp(home)
+
+@test("a slow client trickling its headers does not stall the daemon or other clients")
+remoteSlowloris()
+  val port = freePort()
+  val home = remoteHome(port)
+  val t = remoteDaemon(home)
+  val done = Atomic[bool](false)
+  val slow = spawn(() ->
+    val c = TcpStream.connect("127.0.0.1", port, seconds(5)).ok.get
+    val _ = c.writeText("GET /v1/status HTTP/1.1\r\n")
+    for i in 1 .. 20
+      if done.load() then break
+      if c.writeText(s"X-$i: y\r\n").isErr then break
+      threads.sleep(millis(500))
+    val _ = c.close()
+    ())
+  for _ in 1 .. 5
+    val began = time.monotonic()
+    assertEq(rget(port, "/v1/jobs", [("Authorization", "Bearer " + t)]).status, 200)
+    assertEq(m(home, "ls").code, 0)
+    assert((time.monotonic() - began).toMillis < 3000)
+    threads.sleep(millis(300))
+  done.store(true)
+  slow.join()
+  cleanUp(home)
+
+@test(
+  "the advertisement: dns-sd -R <computer name> _marshal._tcp local <port> v=1, started with the listener, gone when the daemon stops"
+)
+remoteAdvertised()
+  val port = freePort()
+  val home = remoteHome(port)
+  val t = remoteDaemon(home)
+  assert(within(3000, () -> dnsSdPids(home).length == 1))
+  val line = fs.readText(home + "/dns-sd.log").ok.get.trim
+  val name = Command("scutil", "--get", "ComputerName").output().ok.map(n -> n.trim).getOrElse("")
+  assert(name.isEmpty || line.endsWith(s" -R $name _marshal._tcp local $port v=1"), line)
+  assert(line.contains(s"_marshal._tcp local $port v=1"), line)
+  val pid = dnsSdPids(home)(0)
+  assert(alive(pid))
+  assertEq(rget(port, "/v1/status", [("Authorization", "Bearer " + t)]).status, 200)
+  assertEq(m(home, "stop").code, 0)
+  assert(within(3000, () -> !alive(pid)), "dns-sd outlived the daemon")
+  assert(refused(port))
+  cleanUp(home)
+
+@test("the advertisement ends with a daemon that is killed outright, TERMed, or replaced by a restart")
+remoteAdvertisementEnds()
+  val port = freePort()
+  val home = remoteHome(port)
+  val t = remoteDaemon(home)
+  assert(within(3000, () -> dnsSdPids(home).length == 1))
+  // a restart: the old advertisement is gone, a new one stands, the listener answers
+  restarted(home)
+  assert(within(5000, () -> dnsSdPids(home).length == 2), fs.readText(home + "/dns-sd.log").getOrElse(""))
+  val pids = dnsSdPids(home)
+  assert(!alive(pids(0)), "the first image's dns-sd outlived the restart")
+  assert(alive(pids(1)))
+  assertEq(rget(port, "/v1/status", [("Authorization", "Bearer " + t)]).status, 200)
+  // KILL, which runs nothing of the daemon's: the pipe closes with it, and the stand-in ends
+  val daemon = fs.readText(home + "/daemon.pid").ok.get.trim.toLong()
+  process.signal(daemon, 9).ok.get
+  assert(within(5000, () -> !alive(pids(1))), "dns-sd outlived a killed daemon")
+  assert(within(5000, () -> refused(port)))
+  // TERM
+  remoteDaemon(home)
+  assert(within(3000, () -> dnsSdPids(home).length == 3))
+  val third = dnsSdPids(home)(2)
+  val next = fs.readText(home + "/daemon.pid").ok.get.trim.toLong()
+  process.signal(next, 15).ok.get
+  assert(within(5000, () -> !alive(third)), "dns-sd outlived a TERMed daemon")
+  cleanUp(home)
+
+@test("a dns-sd that fails is logged, and the listener goes on serving")
+remoteAdvertisementFails()
+  val port = freePort()
+  val home = remoteHome(port)
+  fs.writeText(home + "/dns-sd.sh", "#!/bin/sh\necho \"dns-sd: no\" >&2\nexit 1\n").ok.get
+  val t = remoteDaemon(home)
+  assert(
+    within(5000, () -> daemonLog(home).contains("ended (exit 1); the remote API is not advertised")),
+    daemonLog(home)
+  )
+  assertEq(rget(port, "/v1/status", [("Authorization", "Bearer " + t)]).status, 200)
+  // a program that is not there at all
+  assertEq(m(home, "stop").code, 0)
+  fs.remove(home + "/dns-sd.sh").ok.get
+  remoteDaemon(home)
+  assert(
+    within(5000, () -> daemonLog(home).contains("ended (exit 127); the remote API is not advertised")),
+    daemonLog(home)
+  )
+  assertEq(rget(port, "/v1/status", [("Authorization", "Bearer " + t)]).status, 200)
+  cleanUp(home)
+
+@test(
+  "with the system's own dns-sd, the service is registered while the listener is up and gone after (skipped where there is none)"
+)
+remoteRealDnsSd()
+  if !fs.exists("/usr/bin/dns-sd") then return
+  val port = freePort()
+  val home = remoteHome(port)
+  m(home, "remote", "token")
+  assertEq(m(home, "ls").code, 0)
+  val pattern = s"_marshal._tcp local $port v=1"
+  val running = () -> Command("pgrep", "-f", pattern).output().map(o -> o.trim.nonEmpty).getOrElse(false)
+  assert(within(5000, running), daemonLog(home))
+  assertEq(m(home, "stop").code, 0)
+  assert(within(5000, () -> !running()), "dns-sd outlived the daemon")
+  cleanUp(home)
+
+@test("a port already taken: the daemon says so and runs without the remote API")
+remotePortTaken()
+  val held = TcpListener.bind("0.0.0.0", 0).ok.get
+  val port = held.port()
+  val home = remoteHome(port)
+  assertEq(mWith(home, remoteEnv(home), "ls").code, 0)
+  assert(
+    within(5000, () -> daemonLog(home).contains(s"marshal: the remote API is off: cannot listen on port $port")),
+    daemonLog(home)
+  )
+  assert(!daemonLog(home).contains("remote API listening"))
+  assertEq(dnsSdPids(home), [])
+  val id = submitted(home, "--", "true")
+  assertEq(m(home, "wait", id.toString()).code, 0)
+  val _ = held.close()
+  cleanUp(home)

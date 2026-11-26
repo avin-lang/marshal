@@ -83,6 +83,10 @@ data Message
   DiskMeasured(free: long)
   // The client of a watch has gone: the stream it was read from.
   Unwatch(out: Channel[Reply])
+  // The remote API asks what the daemon holds (`RemoteView`), or for job `id`, None where the daemon
+  // holds no such job; each reply channel has room for its answer, so giving it never waits.
+  RemoteList(reply: Channel[marshal.RemoteView])
+  RemoteFind(id: long, reply: Channel[Option[marshal.RemoteJob]])
 
 // How many replies a watch's stream holds for a reader that has not taken them yet, unless
 // `$MARSHAL_TEST_WATCH_BUFFER` names another, which is how the tests make a reader fall behind
@@ -103,6 +107,10 @@ val Grace: long = 5000
 
 // How many ended jobs `ls` shows.
 val Recent: int = 10
+
+// How many ended jobs the daemon keeps at hand from before it started or restarted: the remote
+// API's `/v1/jobs` lists that many.
+val Kept: int = marshal.RemoteFinished
 
 // How often waiting jobs look again at what take-slot holds, in milliseconds.
 val TickMs: long = 3000
@@ -414,6 +422,10 @@ class Daemon(
   val watchers = Buffer[Watcher]()
   // Whether any client has asked to follow events, so a stop gives their streams time to be written.
   var watched = false
+  // When each job in `earlier` ended, on the wall clock in milliseconds, where the log says.
+  var earlierEnds: Map[long, long] = Map()
+  // The remote API while it serves (daemon/remote.avin).
+  var remote: Option[RemoteRun] = None
 
   now() -> long = time.monotonic().toMillis
 
@@ -818,6 +830,8 @@ class Daemon(
         Measured(sizes, cpu, at, machine, groups) -> measured(sizes, cpu, at, machine, groups)
         DiskMeasured(free) -> diskMeasured(free)
         Unwatch(out) -> unwatch(out)
+        RemoteList(reply) -> reply.send(remoteView())
+        RemoteFind(id, reply) -> reply.send(remoteFind(id))
         Terminate ->
           eprintln("marshal: TERM received: stopping, killing what runs")
           stop(true, false, None)
@@ -2270,6 +2284,40 @@ class Daemon(
       waitingJobs.map(j -> j.info(t)).toVector
     )
 
+  // What the remote API lists: the budget in use, the running jobs, those not started yet (the
+  // queue, then the jobs waiting for others or to retry), and the last `Kept` jobs that ended, the
+  // latest first, this daemon's and its predecessors' together.
+  remoteView() -> marshal.RemoteView
+    val t = now()
+    val wallNow = time.now().epochMillis
+    val before = earlier.map(j -> marshal.earlierJob(j, earlierEnds.get(j.id)))
+    val own = ended.takeRight(Kept).map(j -> remoteJob(j, t, wallNow)).toVector
+    val finished = (before ++ own).sortBy(r -> r.ended.getOrElse(long(0))).reverse.take(Kept)
+    marshal.RemoteView(
+      usage(),
+      running.map(j -> remoteJob(j, t, wallNow)).toVector,
+      (queue.toVector ++ waitingJobs.toVector).map(j -> remoteJob(j, t, wallNow)),
+      finished
+    )
+
+  // Job `id` as the remote API describes it, where this daemon holds it or it is among the jobs that
+  // ended before it started.
+  remoteFind(id: long) -> Option[marshal.RemoteJob] = jobs.get(id) match
+    Some(j) -> Some(remoteJob(j, now(), time.now().epochMillis))
+    None -> earlier.find(j -> j.id == id).map(j -> marshal.earlierJob(j, earlierEnds.get(id)))
+
+  // Job `j` as the remote API describes it, at `t` on the daemon's clock and `wallNow` on the wall
+  // clock: its start only while it runs or once it has ended, so a job queued again to retry has none.
+  remoteJob(j: Job, t: long, wallNow: long) -> marshal.RemoteJob
+    val wall = (at: long) -> wallNow - (t - at)
+    val ran = j.startedAt > 0 && (j.state == "running" || j.state == "done")
+    marshal.RemoteJob(
+      j.info(t),
+      Some(wall(j.submittedMs)),
+      if ran then Some(j.startedAt) else None,
+      if j.state == "done" then Some(wall(j.endedMs)) else None
+    )
+
   private usageWith(outside: Option[Outside]) -> Usage
     // the units admission counts against the budget: every running job's but a quick one's
     val dev = running.filter(j -> !j.spec.quick)
@@ -2354,6 +2402,7 @@ class Daemon(
   // The daemon's last steps: the socket goes first, so a new daemon can start at once, then each
   // `stop` is answered and the daemon waits for those answers to be written.
   finish()
+    for r in remote.toList do stopRemote(r)
     val _ = fs.remove(home + "/sock") // the daemon is ending; a file left is found stale by the next one
     val _ = fs.remove(home + "/daemon.pid")
     for ts in slots.toList
@@ -2373,6 +2422,8 @@ class Daemon(
           r,
           Failed("the daemon is stopping")
         )
+        Some(RemoteList(reply)) -> reply.close()
+        Some(RemoteFind(_, reply)) -> reply.close()
         Some(_) -> ()
         None -> break
     eprintln(s"marshal: daemon ${process.pid()} stopped")
@@ -2419,7 +2470,10 @@ class Daemon(
         eprintln(
           s"marshal: daemon ${process.pid()} restarting as $program with ${running.length} running and ${queue.length} queued"
         )
+        // the next image advertises itself; its listener's socket closes with this image
+        for r in remote.toList do stopAdvertising(r)
         val e = process.exec(program, ["daemon", "--resume", file]).err.get
+        for r in remote.toList do r.beacon = startBeacon(r.host, r.port)
         val _ = fs.removeDirAll(home + "/starting")
         s"cannot run $program: ${e.message}"
     val _ = fs.remove(file)
@@ -2463,6 +2517,8 @@ class Daemon(
       Some(Measured(sizes, cpu, at, machine, groups)) -> measured(sizes, cpu, at, machine, groups)
       Some(DiskMeasured(free)) -> diskMeasured(free)
       Some(Unwatch(out)) -> unwatch(out)
+      Some(RemoteList(reply)) -> reply.send(remoteView())
+      Some(RemoteFind(id, reply)) -> reply.send(remoteFind(id))
       None -> ()
 
   // The daemon's state, as the next image reads it.
@@ -2531,7 +2587,7 @@ class Daemon(
       nextId,
       queue.map(saved).toVector,
       running.map(saved).toVector,
-      ended.takeRight(Recent).map(saved).toVector,
+      ended.takeRight(Kept).map(saved).toVector,
       ticket,
       queueHeld,
       waitingJobs.map(saved).toVector,
@@ -2817,7 +2873,7 @@ run(home: string, resume: Option[string] = None) -> int
     Ok(_) -> ()
     Err(e) -> eprintln(s"marshal: cannot write $home/daemon.pid: ${e.message}")
   val log = home + "/events.jsonl"
-  val recovered = marshal.recover(if fs.exists(log) then fs.readText(log).getOrElse("").lines else [])
+  val recovered = marshal.recover(if fs.exists(log) then fs.readText(log).getOrElse("").lines else [], Kept)
   // the jobs the log left open that a restart did not hand over were lost with the daemon that held them
   val kept = saved.map(s -> (s.queue ++ s.running ++ s.waiting).map(j -> j.id)).getOrElse([])
   val orphans = recovered.open.filter(ev -> !kept.contains(ev.get("id").flatMap(v -> v.asLong).getOrElse(0)))
@@ -2896,9 +2952,14 @@ run(home: string, resume: Option[string] = None) -> int
     recovered.ended.filter(j -> !own.contains(j.id)) ++ orphans.map(
       ev -> marshal.decodeJob(ev)
     ).filter(r -> r.isOk).map(r -> marshal.asLost(r.ok.get))
-  ).sortBy(j -> j.id).takeRight(Recent)
+  ).sortBy(j -> j.id).takeRight(Kept)
   val daemon = Daemon(home, config, events, recovered.nextId, histories, slots, earlier, machine)
   daemon.nofile = nofile
+  // a lost job ended when this daemon recorded it so, just now
+  val lostAt = time.now().epochMillis
+  daemon.earlierEnds = recovered.endedAt ++ orphans.map(
+    ev -> (ev.get("id").flatMap(v -> v.asLong).getOrElse(0), lostAt)
+  ).toMap
   // the learned peaks, cores and durations are memory.json's; where it is missing, unreadable or of
   // another version, they are learned again from the event log and written there at once. A
   // version 1 file keeps its peaks, and the cores, which it never had, come from the event log.
@@ -2936,5 +2997,6 @@ run(home: string, resume: Option[string] = None) -> int
       s"marshal: daemon ${process.pid()} restarted ($upgrade), taking over ${s.running.length} running and ${s.queue.length} queued$waits jobs"
     )
   daemon.sweep()
+  if config.remote.enabled then daemon.remote = startRemote(home, config.remote.port, events, reportedVersion())
   daemon.serve()
   0

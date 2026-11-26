@@ -109,6 +109,10 @@ val Commands: Vector[(string, string)] = [
   ("top", "a live view of the budget, the jobs and their logs; h lists its keys"),
   ("stop [--wait | --force]", "stops the daemon; refused while jobs run unless it may wait for them or kill them"),
   ("restart", "the daemon becomes the marshal installed now, keeping its jobs running and queued"),
+  (
+    "remote token | rotate",
+    "the read-only remote API's bearer token (made if there is none), or a new one replacing it at once; config.json's remote turns the API on (marshal remote --help)"
+  ),
   ("version", "marshal's version, and the running daemon's"),
   ("daemon", "runs the daemon in the foreground")
 ]
@@ -293,6 +297,18 @@ Options of history and stats (both read events.jsonl; no daemon is needed):
 A job's kind is marked as in ls: * landing, ^ quick, # exclusive, then ! urgent or ~ low.\
 """
 
+// What `marshal remote --help` adds.
+val RemoteHelp: string = """
+The remote API is off until config.json in marshal's home says
+  "remote": {"enabled": true, "port": 7177}
+and the daemon starts again (marshal restart): it reads config.json only as it starts. It then
+serves plain HTTP on every IPv4 interface at that port, read-only, advertised by Bonjour as
+_marshal._tcp: GET /v1/status, /v1/jobs, /v1/jobs/<id> and /v1/jobs/<id>/log?from=<offset>&max=<bytes>,
+each with the header `Authorization: Bearer <token>`. The token is in remote-token in marshal's
+home (mode 0600); rotate refuses the old one from the next request on. Plain HTTP can be read by
+anyone on the same network, the token with it: use the API only on a network you trust.\
+"""
+
 val Footer: string = "Marshal's files are in $MARSHAL_HOME, or ~/.marshal. `marshal <command> --help` describes one command."
 
 // One line of the command list: `marshal` and the command, then what it does.
@@ -316,6 +332,7 @@ commandHelp(name: string) -> Option[string]
     elif name == "kill" then head + "\n" + KillOptions
     elif name == "hold" || name == "release" then head + "\n" + HoldOptions
     elif name == "wait" || name == "events" then head + "\n" + marshal.Grammar
+    elif name == "remote" then head + "\n" + RemoteHelp
     else head)
 
 private isHelp(word: string) -> bool = word == "--help" || word == "-h"
@@ -408,6 +425,7 @@ main(args: Vector[string]) -> int
     "stop" -> stop(rest)
     "restart" -> if rest.isEmpty then restart() else complain("marshal: restart takes no arguments")
     "version" -> if rest.isEmpty then version() else complain("marshal: version takes no arguments")
+    "remote" -> remote(rest)
     "daemon" -> rest match
       [] -> daemon.run(home())
       ["--resume", file] -> daemon.run(home(), Some(file))
@@ -426,6 +444,19 @@ main(args: Vector[string]) -> int
         None -> complain(s"marshal: no command `$name`\n\n$usage")
       _ -> complain("marshal: help takes one command")
     other -> complain(s"marshal: no command `$other`\n\n$usage")
+
+// `marshal remote token` and `marshal remote rotate`: the files alone, no daemon needed. The
+// listener reads the token's file at every request, so a rotation holds from the next one.
+remote(args: Vector[string]) -> int
+  val made = args match
+    ["token"] -> marshal.ensureToken(home())
+    ["rotate"] -> marshal.rotateToken(home())
+    _ -> return complain("marshal: remote takes token or rotate")
+  made match
+    Ok(token) ->
+      println(token)
+      0
+    Err(e) -> complain(s"marshal: cannot write ${marshal.tokenFile(home())}: ${e.message}")
 
 complain(message: string) -> int
   eprintln(message)

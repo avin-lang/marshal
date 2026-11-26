@@ -1,0 +1,260 @@
+module dev.avinlang.marshal.daemon
+
+// The remote API's listener: plain HTTP/1.1 on every IPv4 interface at config.json's
+// `remote.port`, read-only, for a phone on the same network (remote.avin has what it answers).
+//
+// It never holds the daemon up. Each connection is served on a lightweight thread of the server's
+// own; what a request needs from the daemon it asks by one message, whose answer comes back on a
+// channel with room for it, so the daemon's thread hands it over and goes on even where the client
+// has gone. A log is read and a job looked up in the event log on the connection's thread, never the
+// daemon's. A slow or hostile client meets the server's limits: a request's line and headers within
+// `HeaderLimit` bytes and five seconds, the whole of it within fifteen, at most `RemoteConnections`
+// connections at once; every answer the server makes itself for a bad request is JSON too.
+//
+// While it listens, it is advertised by Bonjour as `_marshal._tcp` under the computer's name with
+// the TXT record `v=1`, by a `dns-sd -R` the daemon owns (`Beacon`).
+import avin.fs
+import avin.net.TcpServer
+import avin.net.http
+import avin.net.http.{Response, ServerRequest}
+import avin.process
+import avin.process.{ChildInput, Command, ExitStatus}
+import avin.threads.{Atomic, Channel, spawn}
+import avin.time.seconds
+import dev.avinlang.json
+import dev.avinlang.marshal
+import dev.avinlang.marshal.{RemoteJob, RemoteView}
+
+// The most bytes a request's line and headers may hold.
+val HeaderLimit: int = 8192
+
+// The most connections the listener holds at once; the next waits unaccepted.
+val RemoteConnections: int = 32
+
+// The remote API while it serves: its server, the port and the computer name it is advertised
+// under, and the advertisement, None where it could not be started.
+class RemoteRun(val server: TcpServer, val port: int, val host: string)
+  var beacon: Option[Beacon] = None
+
+// Starts the remote API for `home` on `port`, its token made first where `home` has none. A failure
+// (no token can be written, the port is taken) is told on standard error, and the daemon goes on
+// without it.
+startRemote(home: string, port: int, events: Channel[Message], version: string) -> Option[RemoteRun]
+  marshal.ensureToken(home) match
+    Err(e) ->
+      eprintln(s"marshal: the remote API is off: cannot write ${marshal.tokenFile(home)}: ${e.message}")
+      return None
+    Ok(_) -> ()
+  val host = computerName()
+  val server = http.serve(
+    "0.0.0.0",
+    port,
+    request -> answerRemote(request, home, events, version, host),
+    maxConnections = RemoteConnections,
+    readTimeout = seconds(10),
+    writeTimeout = seconds(10),
+    idleTimeout = seconds(5),
+    maxHeaderBytes = HeaderLimit,
+    maxBodyBytes = 1024,
+    errors = remoteErrorPage,
+    requestTimeout = seconds(15),
+    headerTimeout = seconds(5),
+    maxHeaders = 64
+  ) match
+    Ok(s) -> s
+    Err(e) ->
+      eprintln(s"marshal: the remote API is off: cannot listen on port $port: ${e.message}")
+      return None
+  eprintln(s"marshal: remote API listening on port $port")
+  val run = RemoteRun(server, port, host)
+  run.beacon = startBeacon(host, port)
+  Some(run)
+
+// Stops the remote API: its advertisement first, then its server, whose requests still waiting on
+// the daemon are answered 503.
+stopRemote(run: RemoteRun)
+  stopAdvertising(run)
+  run.server.stop()
+
+// Ends the advertisement, as a restart does before the daemon's program is replaced, so the next
+// image's advertisement does not meet this one's.
+stopAdvertising(run: RemoteRun)
+  for b in run.beacon.toList do stopBeacon(b)
+  run.beacon = None
+
+// The computer's name, as Bonjour advertises the machine: `scutil --get ComputerName`, else the
+// host name, else "marshal".
+computerName() -> string
+  for command in [Command("scutil", "--get", "ComputerName"), Command("hostname")]
+    command.output() match
+      Ok(text) if text.trim.nonEmpty -> return text.trim
+      _ -> ()
+  "marshal"
+
+// The answer to one request. Every request is first checked for the token, whatever it asks; then
+// a path that is not the API's is 404, a method other than GET (or HEAD) 405.
+answerRemote(request: ServerRequest, home: string, events: Channel[Message], version: string, host: string) -> Response
+  if !marshal.authorized(request.header("Authorization"), marshal.readToken(home)) then return remoteFailed(
+    401,
+    "unauthorized"
+  )
+  val route = routeOf(request.segments) match
+    Some(r) -> r
+    None -> return remoteFailed(404, "not found")
+  if request.method != "GET" && request.method != "HEAD" then return remoteFailed(405, "method not allowed").withHeader(
+    "Allow",
+    "GET, HEAD"
+  )
+  route match
+    StatusRoute -> viewed(request, events) match
+      Some(v) -> remoteOk(marshal.remoteStatusJson(v, version, host))
+      None -> remoteStopping()
+    JobsRoute -> viewed(request, events) match
+      Some(v) -> remoteOk(marshal.remoteJobsJson(v))
+      None -> remoteStopping()
+    JobRoute(word) -> lookUp(request, events, home, word) match
+      RemoteFound(job) -> remoteOk(marshal.remoteJobJson(job))
+      RemoteMissing -> remoteFailed(404, "no such job")
+      RemoteStopping -> remoteStopping()
+    LogRoute(word) -> logAnswer(request, events, home, word)
+
+// The API's paths.
+data Route
+  StatusRoute
+  JobsRoute
+  JobRoute(id: string)
+  LogRoute(id: string)
+
+routeOf(segments: Vector[string]) -> Option[Route] = segments match
+  ["v1", "status"] -> Some(StatusRoute)
+  ["v1", "jobs"] -> Some(JobsRoute)
+  ["v1", "jobs", id] -> Some(JobRoute(id))
+  ["v1", "jobs", id, "log"] -> Some(LogRoute(id))
+  _ -> None
+
+// A job looked up: found, no job of that id, or the daemon stopping before it answered.
+data RemoteLookup
+  RemoteFound(job: RemoteJob)
+  RemoteMissing
+  RemoteStopping
+
+// The job `word` names: the daemon's own or one of the last that ended before it, else as the event
+// log's ending records it. A word that is not a job id names no job.
+lookUp(request: ServerRequest, events: Channel[Message], home: string, word: string) -> RemoteLookup
+  val id = word.toLongOption().filter(n -> n >= 1) match
+    Some(n) -> n
+    None -> return RemoteMissing
+  val back = Channel[Option[RemoteJob]](1)
+  events.send(RemoteFind(id, back))
+  request.untilStopped(() -> back.receive()) match
+    Some(Some(Some(job))) -> RemoteFound(job)
+    Some(Some(None)) -> fromEventLog(home, id)
+    _ -> RemoteStopping
+
+// Job `id` as the ending the event log has for it, if it has one.
+fromEventLog(home: string, id: long) -> RemoteLookup
+  val lines = fs.readText(home + "/events.jsonl").getOrElse("").lines
+  marshal.endOf(lines, id) match
+    Some(ev) -> marshal.decodeJob(ev) match
+      Ok(info) -> RemoteFound(marshal.earlierJob(info, ev.get("ts").flatMap(v -> v.asLong)))
+      Err(_) -> RemoteMissing
+    None -> RemoteMissing
+
+// What the daemon holds now, or None where it is stopping before it answers.
+viewed(request: ServerRequest, events: Channel[Message]) -> Option[RemoteView]
+  val back = Channel[RemoteView](1)
+  events.send(RemoteList(back))
+  request.untilStopped(() -> back.receive()).flatten
+
+// `/v1/jobs/{id}/log?from=<byte offset>&max=<bytes>`.
+logAnswer(request: ServerRequest, events: Channel[Message], home: string, word: string) -> Response
+  val from = param(request, "from") match
+    None -> long(0)
+    Some(t) -> t.toLongOption().filter(n -> n >= 0) match
+      Some(n) -> n
+      None -> return remoteFailed(400, "`from` is a byte offset: a whole number, at least 0")
+  val max = param(request, "max") match
+    None -> marshal.LogDefault
+    Some(t) -> t.toLongOption().filter(n -> n >= 1) match
+      Some(n) -> if n > long(marshal.LogCeiling) then marshal.LogCeiling else int(n)
+      None -> return remoteFailed(400, "`max` is a number of bytes: a whole number, at least 1")
+  lookUp(request, events, home, word) match
+    RemoteFound(job) -> remoteOk(marshal.logPieceJson(readLog(job.info.log, from, max, job.info.outcome.isDefined)))
+    RemoteMissing -> remoteFailed(404, "no such job")
+    RemoteStopping -> remoteStopping()
+
+// The first value the query gives `name`.
+param(request: ServerRequest, name: string) -> Option[string] = request.queryParams.find(p -> p.0 == name).map(p -> p.1)
+
+// The piece of the log at `file` from `from`, at most `max` bytes (marshal.logPiece). `ended` says the
+// job had ended before the log was read. A log not there (not written yet, or removed by retention)
+// reads as empty.
+readLog(file: string, from: long, max: int, ended: bool) -> marshal.LogPiece
+  val f = fs.open(file) match
+    Ok(f) -> f
+    Err(_) -> return marshal.LogPiece(0, 0, ended, "")
+  val piece = f.size().flatMap(size ->
+    val start = if from < size then from else size
+    val n = if size - start < long(max) then int(size - start) else max
+    f.readAt(start, n).map(bytes -> marshal.logPiece(bytes, start, size, ended)))
+  val _ = f.close() // read only: nothing is lost where closing fails
+  piece.getOrElse(marshal.LogPiece(0, 0, ended, ""))
+
+remoteOk(body: json.Json) -> Response = Response.json(200, body.render)
+
+remoteFailed(status: int, message: string) -> Response = Response.json(status, marshal.remoteError(message))
+
+remoteStopping() -> Response = remoteFailed(503, "the daemon is stopping")
+
+// The answer the server makes itself for a request it refuses (a header too large, a request too
+// slow, a malformed one): the status's reason, in lower case, as the API's error.
+remoteErrorPage(status: int) -> Response = remoteFailed(status, http.reasonPhrase(status).toLower)
+
+// The advertisement: a shell that runs `dns-sd -R` and ends it when its standard input, a pipe only
+// the daemon writes, reaches its end. The daemon closes the pipe to stop it, and when the daemon
+// itself ends, however it ends, the system closes it, so no advertisement outlives the daemon.
+// `ended` closes once the shell has ended; `stopping` says the daemon asked it to.
+class Beacon(val input: ChildInput, val stopping: Atomic[bool], val ended: Channel[unit])
+
+// The shell's script: `$0` is the program (`dns-sd`), `$1` the instance name, `$2` the port. The
+// reader of the pipe is a job of its own, given the pipe as descriptor 3, since an asynchronous job's
+// standard input is otherwise /dev/null; the shell ends with the program's status.
+val BeaconScript: string = """
+exec 3<&0
+"$0" -R "$1" _marshal._tcp local "$2" v=1 </dev/null >/dev/null 3<&- &
+c=$!
+trap 'kill $c 2>/dev/null; exit 143' TERM INT HUP
+{ read -r _ <&3; kill $c 2>/dev/null; } &
+exec 3<&-
+wait $c
+"""
+
+// Starts advertising `host` on `port`: `dns-sd`, or the program `$MARSHAL_TEST_DNS_SD` names, which
+// is how the tests stand in for it. A thread of its own waits for the shell; where it ends without
+// being asked to, it says so on standard error, and the listener goes on unadvertised.
+startBeacon(host: string, port: int) -> Option[Beacon]
+  val program = process.env("MARSHAL_TEST_DNS_SD").getOrElse("dns-sd")
+  val handed = Channel[Option[ChildInput]](1)
+  val stopping = Atomic[bool](false)
+  val ended = Channel[unit](1)
+  spawn(() ->
+    Command("sh", "-c", BeaconScript, program, host, port.toString()).pipeInput().start() match
+      Err(e) ->
+        eprintln(s"marshal: the remote API is not advertised: cannot start $program: ${e.message}")
+        handed.send(None)
+      Ok(child) ->
+        handed.send(Some(child.stdin()))
+        val how = child.waitFor() match
+          Ok(ExitStatus.Exited(code)) -> s"exit $code"
+          Ok(ExitStatus.Signalled(sig)) -> s"signal $sig"
+          Ok(other) -> s"$other"
+          Err(e) -> e.message
+        if !stopping.load() then eprintln(s"marshal: $program ended ($how); the remote API is not advertised")
+    ended.close())
+  handed.receive().flatten.map(input -> Beacon(input, stopping, ended))
+
+// Stops the advertisement and waits, a few seconds at most, for its shell to end.
+stopBeacon(b: Beacon)
+  b.stopping.store(true)
+  val _ = b.input.close() // a pipe that cannot be closed is closed when the daemon ends
+  val _ = b.ended.receive(seconds(3))
