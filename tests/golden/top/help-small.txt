@@ -7,7 +7,7 @@
 |│                 says which jobs show, `jobs 41–│|
 |│ Enter  l        the selected job's log, followi│|
 |│                 (open: PgUp PgDn Home End scrol│|
-|│ k               kill the selected job, after y │|
+|│ k               kill the selected job: a dialog│|
 |│ p               hold a queued job, or release a│|
 |│                 job, or resume a paused one (no│|
 |│ f  o            all, running, queued or finishe│|

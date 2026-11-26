@@ -15,7 +15,7 @@ import dev.avinlang.marshal.top.{
 
 import dev.avinlang.tui.{
   Bold, BrightBlack, Char, Ctrl, Down, End, Enter, Escape, Event, Green, Grid, Home, Key, KeyPress, Magenta, PageDown, PageUp,
-  Red, Resize, Reverse, Span, Stop, Up, Yellow, wrapChars
+  Red, Resize, Reverse, Span, Stop, Style, Up, Yellow, wrapChars
 }
 
 val minuteMs: long = 60000
@@ -42,7 +42,8 @@ snapJob(
     peak: long = 0,
     started: long = 0,
     held: bool = false,
-    paused: bool = false
+    paused: bool = false,
+    label: string = ""
 ) -> JobInfo =
   JobInfo(
     id,
@@ -64,7 +65,8 @@ snapJob(
     peak,
     started,
     held = held,
-    paused = paused
+    paused = paused,
+    label = label
   )
 
 queued(id: long, position: int, why: Why) -> QueuedJob = QueuedJob(
@@ -502,34 +504,100 @@ filters()
   app.handle(key('f'))
   assertEq(app.filter, ShowAll)
 
-@test("k asks before killing: y kills the selected job, anything else does not, and an ended job cannot be")
-kill()
+// Whether `g` shows the kill dialog for job `id`: its title in a border, and its answers.
+showsKillDialog(g: Grid, id: long) -> bool
+  val text = (0 ..< g.height).map(y -> g.rowText(y)).mkString("\n")
+  text.contains(s"╭─Kill job $id?─") && text.contains("│ y kill  n cancel")
+
+@test("k opens a dialog over the screen asking to kill the selected job, the bottom line left as it was")
+killOpensDialog()
   val app = viewing(full())
   app.handle(press(Down))
   assertEq(app.handle(key('k')), Stay)
+  assertEq(app.confirming.map(j -> j.id), Some(long(4)))
+  assert(!app.helpShown())
   val g = drawn(app, 100, 30)
-  assert(g.rowText(29).startsWith("Kill job 4 (sleep 30)? y/n"), g.rowText(29))
-  assertEq(app.handle(key('y')), KillJob(4))
-  app.handle(key('k'))
-  assertEq(app.handle(key('Y')), KillJob(4))
-  app.handle(key('k'))
-  assertEq(app.handle(key('n')), Stay)
-  assertEq(app.message, "not killed")
-  assert(drawn(app, 100, 30).rowText(29).contains("not killed"))
-  app.handle(key('k'))
-  assertEq(app.handle(Stop(15)), Quit)
+  assert(showsKillDialog(g, 4), (0 ..< 30).map(y -> g.rowText(y)).mkString("\n"))
+  assert(g.rowText(29).startsWith("hHelp"), g.rowText(29))
+  assert(!g.rowText(29).contains("y/n"), g.rowText(29))
+
+@test("the kill dialog shows the job's label, its command with long paths shortened, and its state")
+killDialogDetails()
+  val j = snapJob(7289, cmd = ["zsh", "/tmp/rel/train/train373.zsh", "go"], label = "train 373", elapsed = 90000)
+  assertEq(
+    top.killDetails(top.Line(j, None), 30000),
+    [("label", "train 373"), ("command", "zsh …/train/train373.zsh go"), ("state", "running for 2:00")]
+  )
+  // no label, no row for it; a paused job's time stands still
+  val paused = snapJob(5, paused = true, elapsed = 90000)
+  assertEq(top.killDetails(top.Line(paused, None), 30000).map(p -> p.0), ["command", "state"])
+  assertEq(top.killDetails(top.Line(paused, None), 30000)(1), ("state", "paused after 1:30"))
+  // a queued job says its place and why it waits, with no run time
+  val queued = snapJob(10, "queued")
+  assertEq(top.killDetails(top.Line(queued, Some((2, Why.NoUnits))), 30000)(1), ("state", "#2 no units"))
+
+@test("y or Y in the kill dialog kills the job and closes it")
+killYes()
+  for k in ['y', 'Y']
+    val app = viewing(full())
+    app.handle(press(Down))
+    app.handle(key('k'))
+    assertEq(app.handle(key(k)), KillJob(4))
+    assertEq(app.confirming, None)
+    assertEq(app.modals.isEmpty(), true)
+    assert(!showsKillDialog(drawn(app, 100, 30), 4))
   // a queued job may be killed, which cancels it
+  val app = viewing(full())
+  app.handle(press(Down))
   app.handle(press(Down))
   app.handle(key('k'))
   assertEq(app.handle(key('y')), KillJob(10))
+
+@test("n, N or Escape in the kill dialog kills nothing, closes it, and says so on the bottom line")
+killNo()
+  for e in [key('n'), key('N'), press(Escape)]
+    val app = viewing(full())
+    app.handle(press(Down))
+    app.handle(key('k'))
+    assertEq(app.handle(e), Stay)
+    assertEq(app.confirming, None)
+    assertEq(app.modals.isEmpty(), true)
+    assertEq(app.message, "not killed")
+    val g = drawn(app, 100, 30)
+    assert(!showsKillDialog(g, 4))
+    assert(g.rowText(29).contains("not killed"))
+
+@test("any other key leaves the kill dialog open and does nothing under it; a resize keeps it, a stop quits")
+killOtherKeys()
+  val app = viewing(full())
+  app.handle(press(Down))
+  app.handle(key('k'))
+  for e in [key('x'), key('q'), key('h'), key('k'), key('p'), key('f'), press(Down), press(Enter), Resize(80, 24)]
+    assert(app.handle(e) == Stay, s"$e")
+    assert(app.confirming.map(j -> j.id) == Some(long(4)), s"$e")
+  // nothing under it moved, opened or changed
+  assertEq(app.selected().map(j -> j.id), Some(long(4)))
+  assertEq(app.logOf, None)
+  assertEq(app.filter, ShowAll)
+  assert(!app.helpShown())
+  assertEq(app.handle(KeyPress(Char('c'), Ctrl)), Stay)
+  assert(showsKillDialog(drawn(app, 100, 30), 4))
+  assertEq(app.handle(Stop(15)), Quit)
+
+@test("k with no job selected, or on a job that has ended, opens no dialog and says why")
+killNothing()
+  val app = viewing(full())
   app.handle(press(End))
   app.handle(key('k'))
   assertEq(app.confirming, None)
+  assertEq(app.modals.isEmpty(), true)
   assertEq(app.message, "job 3 has already ended")
+  assert(!showsKillDialog(drawn(app, 100, 30), 3))
   // with no jobs there is nothing to kill
   val empty = viewing(Overview(full().usage, 0, [], [], []))
   empty.handle(key('k'))
   assertEq(empty.message, "no job selected")
+  assertEq(empty.modals.isEmpty(), true)
 
 // A snapshot with one job of each kind p acts on: running (1), paused (2), queued (3), held (4),
 // a waiting job (5), a held waiting job (6), and an ended one (7).
@@ -975,29 +1043,47 @@ channelOf(v: int) -> real
   val s = real(v) / 255.0
   if s <= 0.03928 then s / 12.92 else math.pow((s + 0.055) / 1.055, 2.4)
 
-@test("the kill prompt is bold white on a dark red of its own, at least 4.5:1, and cuts a long path to its last two parts")
-killPromptReadable()
-  val long_ = JobInfo(7289, "build", 4, 0, false, "/tmp", ["zsh", "/Users/ed/.claude/tmp/claude-501/s/train/train373.zsh", "go"], "running", None, false, 0, 1000, 60000, "/tmp/l", None)
-  assertEq(top.killPrompt(long_), "Kill job 7289 (zsh …/train/train373.zsh go)? y/n")
-  assertEq(top.shortPath("a/b"), "a/b")
-  assertEq(top.shortPath("/a/b"), "/a/b")
-  assertEq(top.shortPath("sleep"), "sleep")
+@test("the alert style is bold white on a dark red of its own, at least 4.5:1, and the keys' black on teal too")
+alertReadable()
   assertEq(top.AlertStyle.fg, top.AlertFg)
   assert(top.AlertStyle.has(Bold))
   assert(contrastOf((255, 255, 255), (160, 0, 0)) >= 4.5)
   // the 256-colour red it becomes, #af0000, too
   assert(contrastOf((255, 255, 255), (175, 0, 0)) >= 4.5)
-  // the bottom line's keys: black on #00afaf
+  // the bottom line's keys, and the kill dialog's: black on #00afaf
   assert(contrastOf((0, 0, 0), (0, 175, 175)) >= 4.5)
-  // drawn: the whole prompt in the alert style, cut to the width
+
+@test("the kill dialog cuts a long path to its last two parts, its keys in the bottom line's style, and fits a narrow screen")
+killDialogDrawn()
+  val long_ = JobInfo(7289, "build", 4, 0, false, "/tmp", ["zsh", "/Users/ed/.claude/tmp/claude-501/s/train/train373.zsh", "go"], "running", None, false, 0, 1000, 60000, "/tmp/l", None)
+  assertEq(top.shortPath("a/b"), "a/b")
+  assertEq(top.shortPath("/a/b"), "/a/b")
+  assertEq(top.shortPath("sleep"), "sleep")
   val o = full()
   val app = viewing(Overview(o.usage, 0, [long_], [], []))
   app.handle(key('k'))
   val g = drawn(app, 60, 20)
-  assert(g.rowText(19).startsWith("Kill job 7289 (zsh …/train/train373.zsh go)? y/n"), g.rowText(19))
-  assertEq(g(0, 19).style, top.AlertStyle)
-  val narrow = drawn(app, 20, 20)
-  assertEq(narrow.rowText(19).charCount, 20)
+  assert(showsKillDialog(g, 7289))
+  val commandRow = rowOf(g, "command  zsh …/train/train373.zsh go")
+  assert(commandRow >= 0)
+  assert(rowOf(g, "state    running for 0:01") == commandRow + 1)
+  val answers = rowOf(g, "│ y kill  n cancel")
+  // the two keys, y and n, alone in the keys' style, their words plain
+  val keyed = (0 ..< g.width).filter(x -> g(x, answers).style == top.KeyStyle).toVector
+  assertEq(keyed.length, 2)
+  assertEq(keyed(1) - keyed(0), "y kill  ".charCount)
+  assertEq(g(keyed(0) + 2, answers).style, Style.plain())
+  assertEq(g(keyed(1) + 2, answers).style, Style.plain())
+  // a long command is cut with … at the box's edge; the question and answers still show
+  val narrow = drawn(app, 30, 20)
+  assert(showsKillDialog(narrow, 7289), (0 ..< 20).map(y -> narrow.rowText(y)).mkString("\n"))
+  assert(rowOf(narrow, "…") >= 0)
+  for y in 0 ..< 20
+    assertEq(narrow.rowText(y).charCount, 30)
+  // the narrowest screen top draws: the title and both answer keys still show
+  val tiny = drawn(app, 24, 8)
+  assert(rowOf(tiny, "Kill job 7289?") >= 0, (0 ..< 8).map(y -> tiny.rowText(y)).mkString("\n"))
+  assert(rowOf(tiny, "y kill  n cancel") >= 0, (0 ..< 8).map(y -> tiny.rowText(y)).mkString("\n"))
 
 @test("the log pane's header says the job's whole state, the reason it waits in full and its marks, and follows it live")
 logHeaderState()
@@ -1346,7 +1432,8 @@ scrollKeptWhileHeld()
   shortDrawn(logging, later)
   assertEq(logging.selected().map(j -> j.id), Some(long(3)))
   val asking = scrolled()
-  asking.confirming = asking.selected()
+  for j in asking.selected().toList
+    asking.openKill(j)
   shortDrawn(asking, later)
   assert(asking.table.offset > 0)
   assertEq(asking.selected().map(j -> j.id), Some(long(3)))

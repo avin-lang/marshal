@@ -10,7 +10,7 @@ import dev.avinlang.marshal.{NoUnits, NoMemory, LaneBusy, Draining, ForTakeSlot,
 import dev.avinlang.marshal.{Exited, Signalled, TimedOut, Cancelled, Lost, DependencyFailed, Quiet}
 
 import dev.avinlang.tui.{
-  Blue, Bold, Char, Cluster, Color, Column, Ctrl, Cyan, Down, End, Enter, Escape, Event, Fill, Fixed,
+  Blue, Bold, Char, Cluster, Color, Column, Confirm, Ctrl, Cyan, Down, End, Enter, Escape, Event, Fill, Fixed,
   Green, Grid, Home, Key, KeyPress, Magenta, Modal, ModalStack, PageDown, PageUp, Rect, Red, Reverse, Rgb, Rounded,
   Scrollbar, ScrollView, Segment, Span, Stop, Style, Table, Up, Yellow, fitted, textWidth, wrapChars
 }
@@ -360,7 +360,7 @@ revealsOnly(_) = false
 
 // The state of the screen: the latest snapshot and when it came, the filter, the selected job (kept
 // on its job from one snapshot to the next), the log pane and how far back it is scrolled, a kill
-// waiting for its yes, the help, and the last message. `problem` says why there is no snapshot: no
+// waiting for its yes in a dialog, the help, and the last message. `problem` says why there is no snapshot: no
 // daemon, or one that cannot give it.
 class App(val sock: string)
   var overview: Option[Overview] = None
@@ -372,9 +372,12 @@ class App(val sock: string)
   var filter: Filter = ShowAll
   // The owner whose jobs alone show (`o`), None for every owner's.
   var owner: Option[string] = None
-  // The help, while it is open.
+  // The help or the kill dialog, while one is open.
   val modals: ModalStack = ModalStack()
+  // The job the kill dialog asks about, the dialog, and its answer once given (None until then).
   var confirming: Option[JobInfo] = None
+  private var dialog: Option[Confirm] = None
+  private var answered: Option[bool] = None
   var message = ""
   val table: Table = Table(columns)
   var shown: Vector[Line] = []
@@ -492,13 +495,13 @@ class App(val sock: string)
   touch(now: long)
     lastKeyAt = Some(now)
 
-  // Whether the selected row is highlighted at `now`: always while the log pane, the kill prompt
+  // Whether the selected row is highlighted at `now`: always while the log pane, the kill dialog
   // or the help is showing, otherwise until `hideAfter` after the last key.
   highlighted(now: long) -> bool =
     logOf.isDefined || confirming.isDefined || helpShown() || lastKeyAt.exists(t -> now - t < hideAfter)
 
   // Whether the help is showing.
-  helpShown() -> bool = !modals.isEmpty()
+  helpShown() -> bool = confirming.isEmpty && !modals.isEmpty()
 
   // The highlight has hidden at `now`. A list scrolled down by then goes back to the top with the
   // first line selected and following the newest jobs, so the selection is not left on a row out of
@@ -520,14 +523,16 @@ class App(val sock: string)
       message = ""
       if hidden && revealsOnly(k) then return Stay
     if confirming is Some(j)
-      confirming = None
-      return e match
-        KeyPress(Char('y'), _) -> KillJob(j.id)
-        KeyPress(Char('Y'), _) -> KillJob(j.id)
-        Stop(_) -> Quit
-        _ ->
-          message = "not killed"
-          Stay
+      // the dialog takes every key: y kills, n or Escape cancels, any other leaves it open; a
+      // resize redraws it, and a stop ends top
+      if e is Stop(_) then return Quit
+      modals.handle(e)
+      if answered.isEmpty then return Stay
+      val yes = answered.contains(true)
+      closeKill()
+      if yes then return KillJob(j.id)
+      message = "not killed"
+      return Stay
     if helpShown()
       // any event closes the help: a key it takes itself, and a resize or a stop, which the
       // stack leaves to the screen, closes it here
@@ -599,12 +604,47 @@ class App(val sock: string)
       ()
     moveTo(shown.length - 1)
 
+  // `k`: the kill dialog for the selected job; with none, or one that has ended, the bottom line
+  // says so and nothing opens.
   private askKill() -> Action
     selected() match
       Some(j) if j.outcome.isDefined -> message = s"job ${j.id} has already ended"
-      Some(j) -> confirming = Some(j)
+      Some(j) -> openKill(j)
       None -> message = "no job selected"
     Stay
+
+  // Opens the kill dialog for `j` over the screen: its rows are filled in at each draw, so a running
+  // job's time counts on while it is open.
+  openKill(j: JobInfo)
+    closeKill()
+    val d = Confirm(
+      s"Kill job ${j.id}?",
+      "",
+      a -> answer(a),
+      yes = "kill",
+      no = "cancel",
+      keyStyle = KeyStyle,
+      labelStyle = Style.plain().with(Bold)
+    )
+    d.details = killDetails(lineOf(j), 0)
+    confirming = Some(j)
+    dialog = Some(d)
+    modals.push(d)
+
+  // `j`'s line as the table lists it now, or as a running job's where it is not listed.
+  private lineOf(j: JobInfo) -> Line = shown.find(l -> l.job.id == j.id).getOrElse(Line(j, None))
+
+  // The kill dialog's answer: true to kill.
+  private answer(yes: bool)
+    answered = Some(yes)
+
+  // Closes the kill dialog, if open, and forgets its answer. Nothing else is open with it: the help
+  // takes the key that would open it.
+  private closeKill()
+    if dialog.isDefined then modals.clear()
+    confirming = None
+    dialog = None
+    answered = None
 
   // `p`: a running job is paused, or resumed if paused; a queued or waiting job is held, or released
   // if held. Neither asks first: both are undone by the same key. The daemon's answer is the bottom
@@ -700,6 +740,10 @@ class App(val sock: string)
       position = ""
       drawProblem(g)
     drawFooter(g)
+    // the kill dialog's rows as its job stands now, from the latest snapshot where it is listed
+    for j in confirming.toList
+      for d in dialog.toList
+        d.details = killDetails(lineOf(j), since)
     modals.draw(g, g.area())
 
   // What the bottom line says of the table's scroll with `visible` rows for lines: which lines show,
@@ -797,15 +841,12 @@ class App(val sock: string)
     val hint = if noDaemon then "s starts one; q quits; looking again every second" else "q quits; looking again every second"
     g.text(0, 3, hint, Muted)
 
-  // The bottom line: a kill's question, or the keys and the last message.
+  // The bottom line: the keys and the last message.
   private drawFooter(g: Grid)
     if g.height < 1 then return
     val y = g.height - 1
     val line = Rect(0, y, g.width, 1)
     g.fill(0, y, g.width, 1, Style.plain())
-    if confirming is Some(j)
-      g.text(0, y, fitted(killPrompt(j), g.width), AlertStyle, line)
-      return
     val x = g.keyHints(
       0,
       y,
@@ -826,9 +867,18 @@ class App(val sock: string)
     if message.nonEmpty && room > 0
       g.textIn(x + 1, y, room, message, Style.fg(Yellow), 1, line)
 
-// The kill prompt for `j`: `Kill job 7289 (zsh …/train/train373.zsh)? y/n`, each long path in its
-// command cut to its last two parts (`shortPath`), so the job and the question fit the line.
-killPrompt(j: JobInfo) -> string = s"Kill job ${j.id} (${j.cmd.map(shortPath).mkString(" ")})? y/n"
+// The kill dialog's rows for `l`, `since` milliseconds after the snapshot: its label, when it has
+// one; its command, each long path cut to its last two parts (`shortPath`) so the end of a script's
+// path shows; and its state as the STATE column says it, with how long it has run for one that runs
+// (`running for 25:00`, `landing for 3:00`, `paused after 3:00`).
+killDetails(l: Line, since: long) -> Vector[(string, string)]
+  val j = l.job
+  val (state, _) = stateOf(l)
+  val runs = l.queued.isEmpty && j.outcome.isEmpty && !waiting(l) && !marshal.notRunYet(j)
+  val ran = clock(elapsedOf(l, since))
+  val stateText = if !runs then state elif j.paused then s"paused after $ran" else s"$state for $ran"
+  val label: Vector[(string, string)] = if j.label.isEmpty then [] else [("label", j.label)]
+  label ++ [("command", j.cmd.map(shortPath).mkString(" ")), ("state", stateText)]
 
 // A path of more than two parts as `…/` and its last two (`…/train/train373.zsh`); any other word as
 // it is.
@@ -899,7 +949,7 @@ val helpLines: Vector[string] = [
   "                says which jobs show, `jobs 41–60 of 1,234`",
   "Enter  l        the selected job's log, following its end",
   "                (open: PgUp PgDn Home End scroll it, Esc closes)",
-  "k               kill the selected job, after y",
+  "k               kill the selected job: a dialog asks, y kills, n or Esc doesn't",
   "p               hold a queued job, or release a held one; pause a running",
   "                job, or resume a paused one (no question: p again undoes it)",
   "f  o            all, running, queued or finished jobs; o: one owner's, then all",

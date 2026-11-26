@@ -1305,9 +1305,12 @@ against its own budget. `marshal status` shows what take-slot holds.
   `quiet`, `lost`, `cancelled`, `dep N failed` or `signal N`.
 - **Keys**: Up, Down, PgUp, PgDn, Home, End select a job; Enter or `l` opens its log in a pane under
   the table, following the end as it grows (PgUp, PgDn, Home, End scroll it while it is open, Esc
-  closes it); `k` kills the selected job after `y` (the prompt, `Kill job 7289 (zsh
-  …/train/train373.zsh)? y/n`, is bold white on a dark red of marshal's own, readable on a dark
-  and a light terminal alike, each long path in the command cut to its last two parts); `p` holds
+  closes it); `k` opens a dialog over the screen, `Kill job 7289?`, showing the job's label, its
+  command (each long path cut to its last two parts, the whole cut with `…` to fit) and its state,
+  with how long it has run for a running job (`running for 25:00`), then `y kill  n cancel`: `y`
+  kills it, `n` or Esc closes the dialog and the bottom line says `not killed`, and any other key
+  leaves it open, nothing under it taking keys; with no job selected, or one that has ended, the
+  bottom line says so and no dialog opens; `p` holds
   the selected queued or waiting job, or releases it if held, and pauses a running job, or resumes
   it if paused (`marshal hold`, `release`, `pause` and `resume`; no question, since `p` again undoes
   it; the bottom line says `held 7289`, `released 7289`, `paused 7289` or `resumed 7289`, or why the

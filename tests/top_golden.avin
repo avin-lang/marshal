@@ -311,7 +311,7 @@ goldenLog()
   for (w, h) in [(60, 30), (60, 16), (60, 14), (60, 12), (40, 12), (30, 10), (100, 9), (100, 8), (100, 7)]
     golden(s"log-wrap-$w-$h", drawn(wrapping, w, h))
 
-@test("golden: the help, wide and squeezed, and the kill prompt and messages on the bottom line")
+@test("golden: the help, wide and squeezed, the kill dialog, wide to the narrowest, and messages on the bottom line")
 goldenOverlays()
   val app = viewing(busy())
   app.handle(key('h'))
@@ -321,6 +321,13 @@ goldenOverlays()
   app.handle(key('k'))
   golden("kill-prompt", drawn(app, 120, 30))
   golden("kill-prompt-narrow", drawn(app, 40, 12))
+  golden("kill-prompt-tiny", drawn(app, 24, 8))
+  // a queued job's dialog: its place and why it waits, no run time
+  val queuedApp = viewing(busy())
+  for _ in 0 ..< 4
+    queuedApp.handle(press(Down))
+  queuedApp.handle(key('k'))
+  golden("kill-prompt-queued", drawn(queuedApp, 120, 30))
   app.handle(key('n'))
   golden("not-killed", drawn(app, 120, 30))
   app.handle(key('f'))

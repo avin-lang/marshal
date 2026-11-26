@@ -7,7 +7,7 @@
 |   21 landing     │                 says which jobs show, `jobs 41–60 of 1,234`                     │ysl test compiler …|
 |   22 running     │ Enter  l        the selected job's log, following its end                       │argo build --relea…|
 |   23 paused      │                 (open: PgUp PgDn Home End scroll it, Esc closes)                │/bench.sh          |
-|   24 running     │ k               kill the selected job, after y                                  │slint .            |
+|   24 running     │ k               kill the selected job: a dialog asks, y kills, n or Esc doesn't │slint .            |
 |   30 #1 no units │ p               hold a queued job, or release a held one; pause a running       │ake -j4            |
 |   31 #2 no memory│                 job, or resume a paused one (no question: p again undoes it)    │ake -j4            |
 |   32 #3 lane busy│ f  o            all, running, queued or finished jobs; o: one owner's, then all │ake -j4            |
