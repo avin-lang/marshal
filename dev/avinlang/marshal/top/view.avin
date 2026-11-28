@@ -406,8 +406,6 @@ class App(val sock: string)
   var olderLeft: Option[int] = None
   // What the bottom line says of the table's scroll, as the last draw found it ("" for nothing).
   var position = ""
-  // Whether the last draw gave a line to the keys that place a queued job (`placeKeys`).
-  var placing = false
 
   // A new snapshot.
   update(o: Overview)
@@ -733,12 +731,10 @@ class App(val sock: string)
   draw(g: Grid, since: long, now: long = 0)
     settle(now)
     if overview is Some(o)
-      // the header, the body, and the bottom line, with the line of a queued job's keys above it
-      // while one is selected and the table keeps its heading and a row; with the log open, the
-      // table takes half the body (at least two rows) and the pane the rest
+      // the header, the body, and the bottom line; with the log open, the table takes half the
+      // body (at least two rows) and the pane the rest
       val head = drawHeader(g, o, since, filter, owner, daemonVersion)
-      placing = placeable() && g.height - head - 2 >= 2
-      val screen = g.area().rows([Fixed(head), Fill(), Fixed(if placing then 2 else 1)])
+      val screen = g.area().rows([Fixed(head), Fill(), Fixed(1)])
       val body = screen(1)
       val parts = body.rows([Fixed(if logOf.isDefined then maxInt(body.h / 2, 2) else body.h), Fill()])
       val area = parts(0)
@@ -773,9 +769,8 @@ class App(val sock: string)
         drawLog(g, parts(1), j)
     else
       position = ""
-      placing = false
       drawProblem(g)
-    drawFooter(g)
+    drawFooter(g, now)
     // the kill dialog's rows as its job stands now, from the latest snapshot where it is listed
     for j in confirming.toList
       for d in dialog.toList
@@ -877,20 +872,22 @@ class App(val sock: string)
     val hint = if noDaemon then "s starts one; q quits; looking again every second" else "q quits; looking again every second"
     g.text(0, 3, hint, Muted)
 
-  // The bottom line: the keys and the last message.
-  private drawFooter(g: Grid)
+  // The keys the bottom line names at `now`: `footerKeys`, and after them `placeKeys` while the
+  // jobs are listed and the selected one is queued and highlighted.
+  keysAt(now: long) -> Vector[(string, string)] =
+    if overview.isDefined && placeable() && highlighted(now) then footerKeys ++ placeKeys else footerKeys
+
+  // The bottom line: the keys, the scroll position at the right end where it fits whole beside
+  // them, and the last message in the room between, cut to it.
+  private drawFooter(g: Grid, now: long)
     if g.height < 1 then return
     val y = g.height - 1
     val line = Rect(0, y, g.width, 1)
-    if placing && y >= 1
-      val above = Rect(0, y - 1, g.width, 1)
-      g.fill(0, y - 1, g.width, 1, Style.plain())
-      val _ = g.keyHints(0, y - 1, placeKeys, Style.plain().with(Bold), KeyStyle, above, sep = 0, gap = 0, cut = true)
     g.fill(0, y, g.width, 1, Style.plain())
     val x = g.keyHints(
       0,
       y,
-      footerKeys,
+      keysAt(now),
       Style.plain().with(Bold),
       KeyStyle,
       line,
@@ -979,7 +976,7 @@ val footerKeys: Vector[(string, string)] = [
   ("q", "Quit ")
 ]
 
-// The keys that place a queued job, named on a line of their own above the bottom line while one is
+// The keys that place a queued job, named on the bottom line after `footerKeys` while one is
 // selected.
 val placeKeys: Vector[(string, string)] = [
   ("u", "Urgent "),

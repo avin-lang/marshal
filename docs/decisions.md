@@ -3079,13 +3079,19 @@ job priorities using marshal top. any new keys should show at the bottom").
   (`priority <id> <its priority>`), which takes it out of the urgent and the low band and changes
   nothing else. None asks first: each is undone by another. On a job that is not queued the key asks
   the daemon nothing and the bottom line says why, in the daemon's words.
-- **A line of their own.** The bottom line had 32 cells to spare at 80 columns, which the message
-  and the scroll position use; four more hints would have left neither room. So the bottom line and
-  its message are as they were, and `uUrgent wLow nNormal +-Move` is a second line directly above
-  it, drawn only while a queued job is selected, cut at the width as the bottom line is. The list
-  gives it one row and has the row back otherwise. A screen without room for the list's heading, one
-  job and both lines drops this line first. **Review with the user:** the second line, against
-  hints that replace others on the one line.
+- **On the bottom line** (the user, 2026-11-28: "the new keys should be on the bottom line, after
+  the ones that are already there, separated by a space. of course, they only appear when
+  appropriate"). While a queued job is selected and highlighted, the bottom line is its own keys
+  followed by `uUrgent wLow nNormal +-Move`, 75 cells and a space; otherwise it is its own keys alone.
+  There is one bottom line always: the list and the log pane have the same rows whichever job is
+  selected. The line is cut at the screen's width, the placing keys first (at 60 columns it ends
+  `uUrgent wLow`; at 48 and under none of them shows). The scroll position and the message share
+  what is left as they do without these keys: the position stands at the right end where it fits
+  whole with two cells after the keys, and the message is cut to the room between. So at 80
+  columns, with the keys named, the position does not show and the message has three cells; under
+  any other job both have the room they had. **Review with the user:** at 80 columns the answer to
+  a placing key (`7289 urgent`) is cut to three cells while the job stays selected, and reads whole
+  from 90 columns or so.
 - **Moving one place needs a request of its own.** A priority number cannot say it: jobs of equal
   priority are ordered by arrival, so among three jobs at 0 no number puts the third between the
   first two; a number also takes a job out of the urgent and the low band. Alternatives weighed:

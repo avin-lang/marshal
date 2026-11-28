@@ -13,12 +13,14 @@ import avin.time.millis
 import dev.avinlang.marshal
 import dev.avinlang.marshal.{Outcome, Overview, Reply, Why}
 
-// Runs `marshal top` against `home` in a 100 by 30 pty, typing `keys` (a shell `printf` format) once
+// Runs `marshal top` against `home` in a pty of `cols` by 30, typing `keys` (a shell `printf` format) once
 // it has drawn: what it wrote, with every escape sequence a space and runs of blanks one space.
-topIn(home: string, keys: string, zone: string = "") -> string
+topIn(home: string, keys: string, zone: string = "", cols: int = 130) -> string
   val script = "(sleep 3; printf '"
     + keys
-    + "'; sleep 2) | script -q /dev/null sh -c 'stty cols 130 rows 30; \"$M\" top; echo STATUS=$?'"
+    + "'; sleep 2) | script -q /dev/null sh -c 'stty cols "
+    + cols.toString()
+    + " rows 30; \"$M\" top; echo STATUS=$?'"
   val base = Command("sh", "-c", script).withEnv("M", bin()).withEnv("MARSHAL_HOME", home).withEnv(
     "MARSHAL_TAKE_SLOT_DIR",
     slots(home)
@@ -342,7 +344,8 @@ topPlacesLandingAndExclusive()
   val landing = submitted(home, "--landing", "--units", "1", "--", "sleep", "60")
   val exclusive = submitted(home, "--exclusive", "--", "sleep", "60")
   assertEq(queuedIds(home), [landing, exclusive])
-  val low = topIn(home, downs(1) + "w\\033[Bwq")
+  // 160 columns: each refusal is whole after the placing keys, which the bottom line names here
+  val low = topIn(home, downs(1) + "w\\033[Bwq", cols = 160)
   assert(low.contains(s"job $landing is a landing job: only a development job is low"), low)
   assert(low.contains(s"job $exclusive is an exclusive job: only a development job is low"), low)
   val urgent = topIn(home, downs(2) + "uq")
@@ -353,7 +356,7 @@ topPlacesLandingAndExclusive()
   assert(moved.contains(s"job $landing is last in its band"), moved)
   cleanUp(home)
 
-@test("top names the placing keys above the bottom line only while a queued job is selected")
+@test("top names the placing keys on the bottom line, after Quit, only while a queued job is selected")
 topNamesPlacingKeys()
   if process.os() != MacOS then return
   val (home, _, _) = queueOfThree()
@@ -362,6 +365,8 @@ topNamesPlacingKeys()
   assert(running.contains("Quit"), running)
   val queued = topIn(home, downs(1) + "q")
   assert(queued.contains("Urgent") && queued.contains("Normal") && queued.contains("Move"), queued)
+  // the screen is redrawn where it changed: the keys come after the bottom line's own, on its row
+  assert(queued.indexOf("Quit") >= 0 && queued.indexOf("Quit") < queued.indexOf("Urgent"), queued)
   cleanUp(home)
 
 @test("top with no daemon says so, starts none, and quits on q with status 0")

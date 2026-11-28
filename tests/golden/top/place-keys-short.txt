@@ -4,7 +4,7 @@
 |cpu  [                             -/12]                                        |
 |                                                                                |
 |   ID STATE          KIND     UNITS   RESV   RSS STARTED  ELAPSED DEADLINE COMM…|
-|hHelp EnterLog kKill pHold fFilter oOwner qQuit                   jobs 1–1 of 11|
+|hHelp EnterLog kKill pHold fFilter oOwner qQuit uUrgent wLow nNormal +-Move     |
 --
 0 0..7 Default/Default/1
 0 22..31 Basic(2)/Default/0
@@ -32,3 +32,11 @@
 6 36..42 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
 6 42..43 Default/Default/1
 6 43..48 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+6 48..49 Default/Default/1
+6 49..56 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+6 56..57 Default/Default/1
+6 57..61 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+6 61..62 Default/Default/1
+6 62..69 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+6 69..71 Default/Default/1
+6 71..76 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0

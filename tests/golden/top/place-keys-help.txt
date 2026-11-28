@@ -30,8 +30,8 @@
 |│ time left (~6m, late +~4m, a guess ~6m?) or start (in ~3m); CORES in use;    │|
 |│ OWNER who it is for; disk low: under disk_min, nothing starts.               │|
 |╰──────────────────────────────────────────────────────────────────────────────╯|
-|uUrgent wLow nNormal +-Move                                                     |
-|hHelp EnterLog kKill pHold fFilter oOwner qQuit                                 |
+|                                                                                |
+|hHelp EnterLog kKill pHold fFilter oOwner qQuit uUrgent wLow nNormal +-Move     |
 --
 0 0..7 Default/Default/1
 0 22..31 Basic(2)/Default/0
@@ -99,14 +99,6 @@
 30 0..1 Basic(6)/Default/0
 30 79..80 Basic(6)/Default/0
 31 0..80 Basic(6)/Default/0
-32 0..1 Default/Default/1
-32 1..8 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
-32 8..9 Default/Default/1
-32 9..13 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
-32 13..14 Default/Default/1
-32 14..21 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
-32 21..23 Default/Default/1
-32 23..28 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
 33 0..1 Default/Default/1
 33 1..6 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
 33 6..11 Default/Default/1
@@ -121,3 +113,11 @@
 33 36..42 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
 33 42..43 Default/Default/1
 33 43..48 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+33 48..49 Default/Default/1
+33 49..56 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+33 56..57 Default/Default/1
+33 57..61 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+33 61..62 Default/Default/1
+33 62..69 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+33 69..71 Default/Default/1
+33 71..76 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0

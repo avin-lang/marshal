@@ -1375,9 +1375,9 @@ against its own budget. `marshal status` shows what take-slot holds.
   `--down`; no question, since each is undone by another): the bottom line says `7289 urgent`,
   `7289 low`, `7289 normal`, `7289 moved up` or `7289 moved down`, or why not (`job 7289 is first in
   its band`, or that a running or ended job is not placed), the job's mark and place change at the
-  next refresh, and the selection stays on it; while a queued job is selected these keys are named
-  on a line of their own directly above the bottom line (`uUrgent wLow nNormal +-Move`), which a
-  screen too short for it leaves out; `f` shows all jobs, the running, the queued or
+  next refresh, and the selection stays on it; while a queued job is selected and highlighted these
+  keys are named on the bottom line after its other keys (`… qQuit uUrgent wLow nNormal +-Move`),
+  cut at the screen's width as that line is, and the list and the log pane keep every row; `f` shows all jobs, the running, the queued or
   the ended ones; `o` shows only the first owner's jobs (in alphabetical order, among the jobs
   listed and loaded), the next owner's at the next press, and every owner's again after the last,
   with whichever `f` filter is on; `h` or `?` the keys; `s` starts a daemon when there is none; `q`

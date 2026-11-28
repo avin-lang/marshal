@@ -1,15 +1,21 @@
 module tests
 
 // `marshal top`'s keys that place a queued job (u, w, n, +, -), without a terminal: what each asks
-// of the daemon, what it says of a job that is not queued, the line that names them above the
-// bottom line, and the selection following a job that moved.
+// of the daemon, what it says of a job that is not queued, the bottom line naming them after its
+// other keys, and the selection following a job that moved.
 import dev.avinlang.marshal
 import dev.avinlang.marshal.{Request, JobInfo, Outcome, Overview, QueuedJob, Why}
 import dev.avinlang.marshal.top.{Action, App, Ask, Stay}
-import dev.avinlang.tui.{Down, Grid}
+import dev.avinlang.tui.{Down, Grid, Up}
 
-// What the line above the bottom line reads, whole.
+// The keys the bottom line always names, as it reads.
+val FooterLine: string = "hHelp EnterLog kKill pHold fFilter oOwner qQuit"
+
+// The keys that place a queued job, as the bottom line reads after `FooterLine` and a space.
 val PlaceLine: string = "uUrgent wLow nNormal +-Move"
+
+// The bottom line's keys while a queued job is selected: 75 cells and the space that ends them.
+val PlacingLine: string = FooterLine + " " + PlaceLine
 
 // A job as a snapshot gives it, with what places it in the queue.
 private placedInfo(
@@ -176,87 +182,214 @@ private selecting(at: int) -> App
     app.handle(press(Down))
   app
 
-@test("a line above the bottom line names the keys while a queued job is selected, and the bottom line is as it was")
-placeLineShows()
-  val g = drawn(selecting(1), 80, 20)
-  assertEq(g.rowText(18).trim, PlaceLine)
-  assert(g.rowText(19).startsWith("hHelp EnterLog kKill pHold fFilter oOwner qQuit"), g.rowText(19))
-  // every queued job has it: urgent, low and held ones too
-  for at in 1 .. 5
-    assertEq(drawn(selecting(at), 80, 20).rowText(18).trim, PlaceLine)
-  // the bottom line alone is what the screen without the line ends in
-  assertEq(g.rowText(19), drawn(selecting(0), 80, 20).rowText(19))
+// A running job (1) and 39 queued ones (2 to 40): more than a screen of 20 rows lists.
+private longQueue() -> Overview =
+  Overview(full().usage, 0, [snapJob(1)], inQueue((2 .. 40).map(i -> placedInfo(long(i))).toVector), [])
 
-@test("the line is not drawn for a running, waiting or ended job, or with none, and the list has its row")
-placeLineHides()
+// The rows of `g` above its bottom line.
+private aboveBottom(g: Grid) -> Vector[string] = (0 ..< g.height - 1).map(y -> g.rowText(y)).toVector
+
+// `app` drawn 80 by 20 an hour after its last key, when the highlight has hidden.
+private drawnIdle(app: App) -> Grid
+  val g = Grid(80, 20)
+  app.draw(g, 0, 60 * minuteMs)
+  g
+
+@test("while a queued job is selected the bottom line names the placing keys after q Quit, one space between")
+placeKeysOnBottomLine()
+  val g = drawn(selecting(1), 80, 20)
+  assertEq(g.rowText(19).trim, PlacingLine)
+  // every queued job has them: urgent, low and held ones too
+  for at in 1 .. 5
+    assertEq(drawn(selecting(at), 80, 20).rowText(19).trim, PlacingLine)
+  // they are named once, on the bottom line: every row above reads as with the running job selected
+  assertEq(rowOf(g, "uUrgent"), 19)
+  assertEq(aboveBottom(g), aboveBottom(drawn(selecting(0), 80, 20)))
+  // with more jobs than rows, the row above the bottom line is a job's
+  val on = viewing(longQueue())
+  on.handle(press(Down))
+  val long_ = drawn(on, 80, 20)
+  assert(long_.rowText(19).startsWith(PlacingLine), long_.rowText(19))
+  val listed = long_.rowText(18)
+  assert(listed.trim.nonEmpty && !listed.contains("Urgent"), listed)
+  assertEq(listed, drawn(viewing(longQueue()), 80, 20).rowText(18))
+  assert(listed.trim.startsWith((18 - rowOf(long_, "STATE")).toString() + " "), listed)
+
+@test("a running, waiting or ended job, a hidden highlight, no jobs and no snapshot leave the bottom line without the placing keys")
+placeKeysHide()
   for at in [0, 6, 7]
     val g = drawn(selecting(at), 80, 20)
-    assertEq(rowOf(g, "uUrgent"), -1)
-    assert(g.rowText(19).startsWith("hHelp EnterLog"), g.rowText(19))
+    assertEq(rowOf(g, "Urgent"), -1)
+    assertEq(g.rowText(19).trim, FooterLine)
   val empty = drawn(viewing(Overview(full().usage, 0, [], [], [])), 80, 20)
-  assertEq(rowOf(empty, "uUrgent"), -1)
+  assertEq(rowOf(empty, "Urgent"), -1)
+  assertEq(empty.rowText(19).trim, FooterLine)
   val none = drawn(App("/h/sock"), 80, 20)
-  assertEq(rowOf(none, "uUrgent"), -1)
-  // a list too long for the screen shows one row fewer while the line is drawn
-  val many = Overview(full().usage, 0, [snapJob(1)], inQueue((2 .. 40).map(i -> placedInfo(long(i))).toVector), [])
-  val off = viewing(many)
-  val on = viewing(many)
+  assertEq(rowOf(none, "Urgent"), -1)
+  assertEq(none.rowText(19).trim, FooterLine)
+  // a queued job whose highlight has hidden: the keys go with the highlight and come back with it
+  val idle = selecting(1)
+  assertEq(drawn(idle, 80, 20).rowText(19).trim, PlacingLine)
+  val hidden = drawnIdle(idle)
+  assertEq(rowOf(hidden, "Urgent"), -1)
+  assertEq(hidden.rowText(19).trim, FooterLine)
+  assertEq(aboveBottom(hidden), aboveBottom(drawn(selecting(1), 80, 20)))
+  idle.handle(press(Down), 60 * minuteMs)
+  val back = Grid(80, 20)
+  idle.draw(back, 0, 60 * minuteMs)
+  assertEq(idle.selected().map(j -> j.id), Some(long(3)))
+  assertEq(back.rowText(19).trim, PlacingLine)
+
+@test("the list has the same rows whether or not the placing keys show")
+placeKeysTakeNoRow()
+  val off = viewing(longQueue())
+  val on = viewing(longQueue())
   on.handle(press(Down))
-  val heading = rowOf(drawn(off, 80, 20), "STATE")
+  val without = drawn(off, 80, 20)
+  val with_ = drawn(on, 80, 20)
+  val heading = rowOf(without, "STATE")
   assertEq(off.page, 19 - heading - 1)
-  assertEq(drawn(on, 80, 20).rowText(18).trim, PlaceLine)
-  assertEq(on.page, off.page - 1)
+  assertEq(on.page, off.page)
+  assertEq(rowOf(with_, "STATE"), heading)
+  assertEq(aboveBottom(with_), aboveBottom(without))
+  // hidden, the highlight leaves the list its rows too
+  val idle = viewing(longQueue())
+  idle.handle(press(Down))
+  assertEq(aboveBottom(drawnIdle(idle)), aboveBottom(without))
+  assertEq(idle.page, off.page)
+  // a short list: as many rows of jobs under a queued, a running, a waiting and an ended selection
+  for at in [1, 5, 6, 7]
+    assertEq(aboveBottom(drawn(selecting(at), 80, 20)), aboveBottom(drawn(selecting(0), 80, 20)))
 
-@test("the line is cut at the width as the bottom line is, and never wraps")
-placeLineNarrow()
-  for w in [1, 5, 7, 8, 12, 20, 26, 27, 28, 40]
+@test("moving the selection from a queued job to a running one and back takes the placing keys away and brings them back, and no row shifts")
+placeKeysComeAndGo()
+  val app = viewing(longQueue())
+  val start = drawn(app, 80, 20)
+  assert(!start.rowText(19).contains("Urgent"), start.rowText(19))
+  assert(start.rowText(19).startsWith(FooterLine), start.rowText(19))
+  app.handle(press(Down))
+  val queued = drawn(app, 80, 20)
+  assert(queued.rowText(19).startsWith(PlacingLine), queued.rowText(19))
+  assertEq(aboveBottom(queued), aboveBottom(start))
+  app.handle(press(Up))
+  val running = drawn(app, 80, 20)
+  assertEq(running.rowText(19), start.rowText(19))
+  assertEq(aboveBottom(running), aboveBottom(start))
+  app.handle(press(Down))
+  val again = drawn(app, 80, 20)
+  assertEq(again.rowText(19), queued.rowText(19))
+  assertEq(aboveBottom(again), aboveBottom(start))
+  // onto the next queued job: the keys stay
+  app.handle(press(Down))
+  assert(drawn(app, 80, 20).rowText(19).startsWith(PlacingLine))
+
+@test("a screen narrower than the keys cuts the bottom line at its width, the placing keys first, and wraps nothing")
+placeKeysNarrow()
+  for w in [1, 5, 7, 8, 12, 20, 24, 26, 40, 47, 48, 49, 50, 56, 60, 75, 76, 77, 80, 100]
     val g = drawn(selecting(1), w, 20)
-    val want = if w >= PlaceLine.charCount then PlaceLine else PlaceLine.take(w)
-    assertEq(g.rowText(18).trim, want.trim)
-    assertEq(g.rowText(19), drawn(selecting(0), w, 20).rowText(19))
+    assertEq(g.rowText(19).trim, PlacingLine.take(w).trim)
+    // nothing of the keys stands on the row above
+    assertEq(aboveBottom(g), aboveBottom(drawn(selecting(0), w, 20)))
+    // up to the width of the other keys and their space, the line is the one a running job has
+    if w <= FooterLine.charCount + 1 then assertEq(g.rowText(19), drawn(selecting(0), w, 20).rowText(19))
+  // what shows at the widths the goldens are drawn at
+  assertEq(drawn(selecting(1), 24, 20).rowText(19).trim, "hHelp EnterLog kKill pHo")
+  assertEq(drawn(selecting(1), 40, 20).rowText(19).trim, "hHelp EnterLog kKill pHold fFilter oOwne")
+  assertEq(drawn(selecting(1), 60, 20).rowText(19).trim, "hHelp EnterLog kKill pHold fFilter oOwner qQuit uUrgent wLow")
+  assertEq(drawn(selecting(1), 80, 20).rowText(19).trim, PlacingLine)
 
-@test("a screen too short for the list and both lines keeps the bottom line and drops the keys' line first")
-placeLineShort()
-  var shown = 0
-  for h in 1 .. 20
+@test("a screen of any height names the placing keys on its last row only, and the rows above are those a running job has")
+placeKeysShort()
+  for h in 2 .. 20
     val g = drawn(selecting(1), 80, h)
-    assert(g.rowText(h - 1).startsWith("hHelp EnterLog") || h < 2, s"$h: ${g.rowText(h - 1)}")
-    val at = rowOf(g, "uUrgent")
-    if at >= 0
-      shown += 1
-      assertEq(at, h - 2)
-      // the list keeps its heading and a row above it
-      val heading = rowOf(g, "STATE")
-      assert(0 <= heading < at - 1, s"$h: heading $heading, keys $at")
-  assert(shown > 0)
-  // the shortest screen that shows the line, and one row less, which does not
-  var least = 0
-  for h in 1 .. 20
-    if least == 0 && rowOf(drawn(selecting(1), 80, h), "uUrgent") >= 0 then least = h
-  assert(least > 3, s"$least")
-  val under = drawn(selecting(1), 80, least - 1)
-  assertEq(rowOf(under, "uUrgent"), -1)
-  assert(under.rowText(least - 2).startsWith("hHelp EnterLog"), under.rowText(least - 2))
-  assert(rowOf(under, "STATE") >= 0)
+    assertEq(g.rowText(h - 1).trim, PlacingLine)
+    assertEq(rowOf(g, "uUrgent"), h - 1)
+    // the heading stands where it does with the running job selected, and as many rows follow it
+    val queued = selecting(1)
+    val running = selecting(0)
+    assertEq(rowOf(drawn(queued, 80, h), "STATE"), rowOf(drawn(running, 80, h), "STATE"))
+    assertEq(queued.page, running.page)
+  // one row: the bottom line is the screen
+  assertEq(drawn(selecting(1), 80, 1).rowText(0), drawn(selecting(1), 80, 20).rowText(19))
 
-@test("the daemon's answer shows on the bottom line, under the keys' line")
+@test("the daemon's answer stands at the right end of the room the placing keys leave: whole on a wide screen, cut on a narrow one")
 placeMessage()
   val app = selecting(1)
   app.message = "3 moved up"
+  // 120 columns: the keys, and the answer whole at the right end
+  val wide = drawn(app, 120, 20).rowText(19)
+  assert(wide.startsWith(PlacingLine + "  ") && wide.endsWith(" 3 moved up"), wide)
+  assertEq(wide.charCount, 120)
+  // 80 columns: the keys take 76 cells and a space, so three cells of the answer show
   val g = drawn(app, 80, 20)
-  assertEq(g.rowText(18).trim, PlaceLine)
-  assert(g.rowText(19).startsWith("hHelp EnterLog kKill pHold fFilter oOwner qQuit"), g.rowText(19))
-  assert(g.rowText(19).contains("3 moved up"), g.rowText(19))
+  assert(g.rowText(19).startsWith(PlacingLine + " "), g.rowText(19))
+  assert(!g.rowText(19).contains("3 moved up"), g.rowText(19))
+  assert(g.rowText(19).trim.charCount > PlacingLine.charCount, g.rowText(19))
+  assertEq(aboveBottom(g), aboveBottom(drawn(selecting(0), 80, 20)))
+  // the same answer under a running job, where the keys are not named, is whole at 80 columns
+  val running = selecting(0)
+  running.message = "3 moved up"
+  val whole = drawn(running, 80, 20).rowText(19).trim
+  assert(whole.startsWith(FooterLine + " ") && whole.endsWith(" 3 moved up"), whole)
   app.message = "job 3 is first in its band"
-  assert(drawn(app, 80, 20).rowText(19).contains("job 3 is first in its band"))
+  val refused = drawn(app, 120, 20).rowText(19).trim
+  assert(refused.startsWith(PlacingLine + " ") && refused.endsWith(" job 3 is first in its band"), refused)
 
-@test("with the log open the keys' line is still drawn for a queued job")
-placeLineWithLog()
-  val app = selecting(1)
-  app.handle(key('l'))
-  val g = drawn(app, 100, 30)
-  assertEq(g.rowText(28).trim, PlaceLine)
-  assert(g.rowText(29).startsWith("hHelp EnterLog"), g.rowText(29))
+@test("with the placing keys showing, the answer is cut before the scroll position goes, and the position goes whole before any key")
+placeKeysMessageAndPosition()
+  val app = viewing(longQueue())
+  app.handle(press(Down))
+  drawn(app, 140, 20)
+  val position = app.position
+  assert(position.nonEmpty && position.contains("of 40"), position)
+  val answer = "job 2 is first in its band"
+  app.message = answer
+  // room for all three: the keys, the answer, the position at the right end
+  val wide = drawn(app, 140, 20).rowText(19)
+  assert(wide.startsWith(PlacingLine + " ") && wide.contains(" " + answer + " "), wide)
+  assert(wide.endsWith(position), wide)
+  // less room: the position is whole and the answer is cut to the ten cells left between
+  val keys = PlacingLine.charCount + 1
+  val width = keys + 1 + 10 + 1 + position.charCount
+  val cut = drawn(app, width, 20).rowText(19)
+  assert(cut.startsWith(PlacingLine + " ") && cut.contains(" job 2 is"), cut)
+  assert(!cut.contains(answer), cut)
+  assert(cut.endsWith(" " + position), cut)
+  // the position needs two cells after the keys: with one fewer it goes, and the answer has the room
+  val least = keys + 2 + position.charCount
+  assert(drawn(app, least, 20).rowText(19).endsWith(position))
+  val gone = drawn(app, least - 1, 20).rowText(19)
+  assert(!gone.contains("of 40"), gone)
+  assert(gone.startsWith(PlacingLine + " ") && gone.contains(" job 2 is"), gone)
+  // 80 columns: the keys whole, no position, three cells of the answer
+  val eighty = drawn(app, 80, 20).rowText(19)
+  assert(eighty.startsWith(PlacingLine + " "), eighty)
+  assert(!eighty.contains("of 40"), eighty)
+  // under the running job the same screen has the position and fifteen cells of the answer
+  app.handle(press(Up))
+  app.message = answer
+  val running = drawn(app, 80, 20).rowText(19)
+  assert(running.startsWith(FooterLine + "  job 2 is first"), running)
+  assert(running.endsWith(app.position) && app.position.contains("of 40"), running)
+
+@test("the log pane is as tall and stands on the same rows under a queued job as under a running one")
+placeKeysWithLog()
+  val queued = selecting(1)
+  queued.handle(key('l'))
+  val g = drawn(queued, 100, 30)
+  assert(g.rowText(29).startsWith(PlacingLine), g.rowText(29))
+  assertEq(rowOf(g, "uUrgent"), 29)
+  val running = selecting(0)
+  running.handle(key('l'))
+  val r = drawn(running, 100, 30)
+  assert(r.rowText(29).startsWith(FooterLine), r.rowText(29))
+  assertEq(rowOf(r, "Urgent"), -1)
+  val top_ = rowOf(g, "job 3 log")
+  assert(top_ > 0, top_.toString())
+  assertEq(top_, rowOf(r, "job 1 log"))
+  // the pane's box ends on the row above the bottom line in both
+  assert(g.rowText(28).trim.startsWith("╰") && r.rowText(28).trim.startsWith("╰"), g.rowText(28))
+  assertEq(queued.logRows, running.logRows)
 
 // `placeable` with its queue in the order `ids`, job 3 marked as `urgent` and `low` say.
 private reordered(ids: Vector[long], urgent: bool = false, low: bool = false) -> Overview
@@ -336,7 +469,7 @@ private onQueued() -> App
   app.handle(press(Down))
   app
 
-@test("golden: the keys' line above the bottom line at 80 columns and narrower, with a message, and gone on a short screen")
+@test("golden: the placing keys on the bottom line at 80 columns and narrower, on a short screen, with a message, and under the help")
 goldenPlaceKeys()
   for (w, h) in [(80, 18), (60, 16), (40, 12), (24, 12)]
     golden(s"place-keys-$w", drawn(onQueued(), w, h))

@@ -1118,11 +1118,15 @@ logHeaderState()
   // its ELAPSED counts its wait on between snapshots, marked w
   assert(rowOf(drawn(app, 120, 30, 5000), "w12:05") >= 0)
   // the next snapshot moves the header with the job: it runs now
+  val queuedTitle = rowOf(drawn(app, 120, 30), "job 4 log")
   val running = JobInfo(4, "test", 4, 0, false, "/tmp", ["sysl", "test", "compiler"], "running", None, false, 0, 1000, 60000, "/tmp/4.log", None, urgent = true)
   app.update(Overview(o.usage, 0, [running], [], []))
   val later = drawn(app, 120, 30)
-  // a running job has no line of placing keys above the bottom line, so the pane is a row lower
+  // the pane stands on the same rows for the running job as it did for the queued one, whose
+  // placing keys the bottom line named
   val laterTitle = rowOf(later, "job 4 log")
+  assertEq(laterTitle, queuedTitle)
+  assert(queuedTitle > 0)
   assert(later.rowText(laterTitle + 1).contains("state  running; urgent   owner"), later.rowText(laterTitle + 1))
   // a pane too narrow for the whole state ends it in an ellipsis and keeps the owner whole
   val narrow = drawn(app, 60, 30)
