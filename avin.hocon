@@ -2,7 +2,7 @@ package { name = "marshal", version = "0.4.7", description = "A job manager for 
 
 dependencies {
   tui { git = "github.com/avin-lang/tui", version = "0.2.10" }
-  json { git = "github.com/avin-lang/json", version = "0.0.2" }
+  json { git = "github.com/avin-lang/json", version = "0.0.4" }
 }
 
 c-libraries {
