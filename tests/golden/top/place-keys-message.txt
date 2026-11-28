@@ -1,0 +1,68 @@
+|marshal  up 1:02:03   2 running  3 queued   landing: job 4 (4 units) filter: all|
+|units[|||||||||||||||||||||||||  5+4/12] take-slot, 1 waiting   landing 4       |
+|mem  [||||||||                    1G/4G] rss 0                                  |
+|cpu  [                             -/12]                                        |
+|                                                                                |
+|   ID STATE          KIND     UNITS   RESV   RSS STARTED  ELAPSED DEADLINE COM… |
+|    1 running        build        4     1G     - -           1:00    19:00 sys…█|
+|    4 landing        test*        4      -     - -          19:00     1:00 sle…█|
+|   10 #1 no units    build        1      -     - -          w0:00    45:00 sle…█|
+|   11 #2 behind 10   build        1      -     - -          w0:00    45:00 sle…█|
+|   12 #3 take-slot   build        1      -     - -          w0:00    45:00 sle…█|
+|    9 exit 0         build        1      -     - -           1:00        - sle…█|
+|    8 exit 3         build        1      -     - -           1:00        - sle…█|
+|    7 timeout        build        1      -     - -           1:00        - sle…█|
+|    6 killed         build        1      -     - -           1:00        - sle…█|
+|    5 lost           build        1      -     - -           1:00        - sle…│|
+|uUrgent wLow nNormal +-Move                                                     |
+|hHelp EnterLog kKill pHold fFilter oOwner qQuit      10 moved up jobs 1–10 of 11|
+--
+0 0..7 Default/Default/1
+0 22..31 Basic(2)/Default/0
+0 33..41 Basic(3)/Default/0
+0 53..68 Basic(6)/Default/1
+1 6..20 Basic(2)/Default/0
+1 20..31 Basic(5)/Default/0
+1 31..39 Basic(8)/Default/0
+1 64..73 Basic(6)/Default/0
+2 6..14 Basic(6)/Default/0
+2 14..39 Basic(8)/Default/0
+3 6..39 Basic(8)/Default/0
+5 0..80 Default/Default/17
+6 6..20 Basic(2)/Default/1
+7 6..20 Basic(2)/Default/1
+7 66..74 Basic(1)/Default/1
+8 0..6 Default/Default/16
+8 6..20 Basic(3)/Default/16
+8 20..79 Default/Default/16
+9 6..20 Basic(3)/Default/0
+10 6..20 Basic(3)/Default/0
+11 6..20 Basic(2)/Default/0
+12 6..20 Basic(1)/Default/1
+13 6..20 Basic(1)/Default/17
+14 6..20 Basic(5)/Default/1
+15 6..20 Basic(5)/Default/17
+15 79..80 Basic(8)/Default/0
+16 0..1 Default/Default/1
+16 1..8 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+16 8..9 Default/Default/1
+16 9..13 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+16 13..14 Default/Default/1
+16 14..21 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+16 21..23 Default/Default/1
+16 23..28 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+17 0..1 Default/Default/1
+17 1..6 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+17 6..11 Default/Default/1
+17 11..15 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+17 15..16 Default/Default/1
+17 16..21 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+17 21..22 Default/Default/1
+17 22..27 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+17 27..28 Default/Default/1
+17 28..35 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+17 35..36 Default/Default/1
+17 36..42 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+17 42..43 Default/Default/1
+17 43..48 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+17 49..64 Basic(3)/Default/0

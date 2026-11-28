@@ -202,7 +202,7 @@ placeLineHides()
   val off = viewing(many)
   val on = viewing(many)
   on.handle(press(Down))
-  val heading = rowOf(drawn(off, 80, 20), "COMMAND")
+  val heading = rowOf(drawn(off, 80, 20), "STATE")
   assertEq(off.page, 19 - heading - 1)
   assertEq(drawn(on, 80, 20).rowText(18).trim, PlaceLine)
   assertEq(on.page, off.page - 1)
@@ -226,7 +226,7 @@ placeLineShort()
       shown += 1
       assertEq(at, h - 2)
       // the list keeps its heading and a row above it
-      val heading = rowOf(g, "COMMAND")
+      val heading = rowOf(g, "STATE")
       assert(0 <= heading < at - 1, s"$h: heading $heading, keys $at")
   assert(shown > 0)
   // the shortest screen that shows the line, and one row less, which does not
@@ -237,7 +237,7 @@ placeLineShort()
   val under = drawn(selecting(1), 80, least - 1)
   assertEq(rowOf(under, "uUrgent"), -1)
   assert(under.rowText(least - 2).startsWith("hHelp EnterLog"), under.rowText(least - 2))
-  assert(rowOf(under, "COMMAND") >= 0)
+  assert(rowOf(under, "STATE") >= 0)
 
 @test("the daemon's answer shows on the bottom line, under the keys' line")
 placeMessage()
@@ -324,8 +324,10 @@ placeHelp()
   val app = viewing(placeable())
   app.handle(key('h'))
   val g = drawn(app, 120, 34)
-  assert(rowOf(g, "u  w  n         a queued job: urgent, low, or normal again") >= 0)
-  assert(rowOf(g, "+  -            one place up or down in its band") >= 0)
+  assert(rowOf(g, "u  w  n  +  -   a queued job: urgent, low, normal; + - one place up or down") >= 0)
+  // the help is no longer than it was: a screen of 30 rows still shows its last line
+  val small = drawn(app, 120, 30)
+  assert(rowOf(small, "OWNER who it is for; disk low: under disk_min, nothing starts.") >= 0)
 
 // The full daemon's view with its first queued job (10) selected.
 private onQueued() -> App

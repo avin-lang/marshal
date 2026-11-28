@@ -8,7 +8,7 @@
 |   71 #2 exclusive … build        1      -     - -          w0:00       -    30:00 -           make -j4                 |
 |   69 exit 0         build        1      -     - -           2:00       -        - -           make -j4                 |
 |                                                                                                                        |
-|                                                                                                                        |
+|uUrgent wLow nNormal +-Move                                                                                             |
 |hHelp EnterLog kKill pHold fFilter oOwner qQuit                                                                         |
 --
 0 0..7 Default/Default/1
@@ -24,6 +24,14 @@
 7 6..20 Basic(3)/Default/16
 7 20..120 Default/Default/16
 8 6..20 Basic(2)/Default/0
+10 0..1 Default/Default/1
+10 1..8 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+10 8..9 Default/Default/1
+10 9..13 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+10 13..14 Default/Default/1
+10 14..21 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+10 21..23 Default/Default/1
+10 23..28 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
 11 0..1 Default/Default/1
 11 1..6 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
 11 6..11 Default/Default/1

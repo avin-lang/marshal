@@ -236,7 +236,8 @@ topUrgentThenNormal()
   // the third job urgent: it is listed first of the queued, the selection on it still; then n
   val out = topIn(home, downs(3) + "unq")
   assert(out.contains(s"${ids(2)} urgent"), out)
-  assert(out.contains(s"${ids(2)} normal"), out)
+  // the bottom line already began with the job's id, so only the word after it is written again
+  assert(out.contains(" normal "), out)
   assertEq(queuedIds(home), ids)
   assertEq(queuedUrgent(home), [false, false, false])
   cleanUp(home)
@@ -251,7 +252,8 @@ topLowThenUrgent()
   assert(out.contains(s"${ids(0)} urgent"), out)
   assertEq(queuedIds(home), ids)
   assertEq(queuedUrgent(home), [true, false, false])
-  assert(m(home, "status", ids(0).toString(), "--json").out.contains("\"low\":false"))
+  // a job not low has no `low` member
+  assert(!m(home, "status", ids(0).toString(), "--json").out.contains("\"low\""))
   cleanUp(home)
 
 @test("top moves a queued job up with + and down with -, one place each")

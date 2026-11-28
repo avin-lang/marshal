@@ -10,9 +10,9 @@
 |   24 running     │ k               kill the selected job: a dialog asks, y kills, n or Esc doesn't │slint .            |
 |   30 #1 no units │ p               hold a queued job, or release a held one; pause a running       │ake -j4            |
 |   31 #2 no memory│                 job, or resume a paused one (no question: p again undoes it)    │ake -j4            |
-|   32 #3 lane busy│ f  o            all, running, queued or finished jobs; o: one owner's, then all │ake -j4            |
-|   33 #4 draining │ h  ?            this help                                                       │ake -j4            |
-|   34 #5 take-slot│ q               quit                                                            │ake -j4            |
+|   32 #3 lane busy│ u  w  n  +  -   a queued job: urgent, low, normal; + - one place up or down     │ake -j4            |
+|   33 #4 draining │ f  o            all, running, queued or finished jobs; o: one owner's, then all │ake -j4            |
+|   34 #5 take-slot│ h  ?  q         this help; q: quit                                              │ake -j4            |
 |   35 #6 behind 30│                                                                                 │ake -j4            |
 |   36 #7 starting │ A queued job's STATE is its place in the queue and why it waits:                │ake -j4            |
 |   37 #8 held     │ no units, no memory, lane busy (another landing job), take-slot                 │ake -j4            |

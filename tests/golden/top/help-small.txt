@@ -10,7 +10,7 @@
 |│ k               kill the selected job: a dialog│|
 |│ p               hold a queued job, or release a│|
 |│                 job, or resume a paused one (no│|
-|│ f  o            all, running, queued or finishe│|
+|│ u  w  n  +  -   a queued job: urgent, low, norm│|
 |╰────────────────────────────────────────────────╯|
 --
 0 0..50 Basic(6)/Default/0

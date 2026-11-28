@@ -1,0 +1,123 @@
+|marshal  up 1:02:03   2 running  3 queued   landing: job 4 (4 units) filter: all|
+|units[|||||||||||||||||||||||||  5+4/12] take-slot, 1 waiting   landing 4       |
+|╭─help; any key closes─────────────────────────────────────────────────────────╮|
+|│ Up, Down, PgUp, PgDn, Home, End   select a job                               │|
+|│                 (after 5 seconds without a key the highlight hides; the first│|
+|│                 such key or Enter only shows it again, on the same job)      │|
+|│                 Down or PgDn on the last job loads earlier ones from the     │|
+|│                 event log; End goes to the very oldest; the bottom line      │|
+|│                 says which jobs show, `jobs 41–60 of 1,234`                  │|
+|│ Enter  l        the selected job's log, following its end                    │|
+|│                 (open: PgUp PgDn Home End scroll it, Esc closes)             │|
+|│ k               kill the selected job: a dialog asks, y kills, n or Esc doesn│|
+|│ p               hold a queued job, or release a held one; pause a running    │|
+|│                 job, or resume a paused one (no question: p again undoes it) │|
+|│ u  w  n  +  -   a queued job: urgent, low, normal; + - one place up or down  │|
+|│ f  o            all, running, queued or finished jobs; o: one owner's, then a│|
+|│ h  ?  q         this help; q: quit                                           │|
+|│                                                                              │|
+|│ A queued job's STATE is its place in the queue and why it waits:             │|
+|│ no units, no memory, lane busy (another landing job), take-slot              │|
+|│ (what take-slot.zsh holds or waits for), or behind the job at                │|
+|│ the head of the queue, which it would delay; held (marshal hold),            │|
+|│ or queue held (marshal pause); quick full (both quick slots                  │|
+|│ taken). A quick job runs as quick, its kind marked ^; a landing              │|
+|│ job's is marked *; an exclusive job's #; an urgent job's ! (^!,              │|
+|│ *! and #! together).                                                         │|
+|│ after 3,4 waits for jobs 3 and 4                                             │|
+|│ to end; retry 2 waits to make its second attempt.                            │|
+|│ DEADLINE is the time left; yellow, then red, as it nears. ETA is the         │|
+|│ time left (~6m, late +~4m, a guess ~6m?) or start (in ~3m); CORES in use;    │|
+|│ OWNER who it is for; disk low: under disk_min, nothing starts.               │|
+|╰──────────────────────────────────────────────────────────────────────────────╯|
+|uUrgent wLow nNormal +-Move                                                     |
+|hHelp EnterLog kKill pHold fFilter oOwner qQuit                                 |
+--
+0 0..7 Default/Default/1
+0 22..31 Basic(2)/Default/0
+0 33..41 Basic(3)/Default/0
+0 53..68 Basic(6)/Default/1
+1 6..20 Basic(2)/Default/0
+1 20..31 Basic(5)/Default/0
+1 31..39 Basic(8)/Default/0
+1 64..73 Basic(6)/Default/0
+2 0..80 Basic(6)/Default/0
+3 0..1 Basic(6)/Default/0
+3 79..80 Basic(6)/Default/0
+4 0..1 Basic(6)/Default/0
+4 79..80 Basic(6)/Default/0
+5 0..1 Basic(6)/Default/0
+5 79..80 Basic(6)/Default/0
+6 0..1 Basic(6)/Default/0
+6 79..80 Basic(6)/Default/0
+7 0..1 Basic(6)/Default/0
+7 79..80 Basic(6)/Default/0
+8 0..1 Basic(6)/Default/0
+8 79..80 Basic(6)/Default/0
+9 0..1 Basic(6)/Default/0
+9 79..80 Basic(6)/Default/0
+10 0..1 Basic(6)/Default/0
+10 79..80 Basic(6)/Default/0
+11 0..1 Basic(6)/Default/0
+11 79..80 Basic(6)/Default/0
+12 0..1 Basic(6)/Default/0
+12 79..80 Basic(6)/Default/0
+13 0..1 Basic(6)/Default/0
+13 79..80 Basic(6)/Default/0
+14 0..1 Basic(6)/Default/0
+14 79..80 Basic(6)/Default/0
+15 0..1 Basic(6)/Default/0
+15 79..80 Basic(6)/Default/0
+16 0..1 Basic(6)/Default/0
+16 79..80 Basic(6)/Default/0
+17 0..1 Basic(6)/Default/0
+17 79..80 Basic(6)/Default/0
+18 0..1 Basic(6)/Default/0
+18 79..80 Basic(6)/Default/0
+19 0..1 Basic(6)/Default/0
+19 79..80 Basic(6)/Default/0
+20 0..1 Basic(6)/Default/0
+20 79..80 Basic(6)/Default/0
+21 0..1 Basic(6)/Default/0
+21 79..80 Basic(6)/Default/0
+22 0..1 Basic(6)/Default/0
+22 79..80 Basic(6)/Default/0
+23 0..1 Basic(6)/Default/0
+23 79..80 Basic(6)/Default/0
+24 0..1 Basic(6)/Default/0
+24 79..80 Basic(6)/Default/0
+25 0..1 Basic(6)/Default/0
+25 79..80 Basic(6)/Default/0
+26 0..1 Basic(6)/Default/0
+26 79..80 Basic(6)/Default/0
+27 0..1 Basic(6)/Default/0
+27 79..80 Basic(6)/Default/0
+28 0..1 Basic(6)/Default/0
+28 79..80 Basic(6)/Default/0
+29 0..1 Basic(6)/Default/0
+29 79..80 Basic(6)/Default/0
+30 0..1 Basic(6)/Default/0
+30 79..80 Basic(6)/Default/0
+31 0..80 Basic(6)/Default/0
+32 0..1 Default/Default/1
+32 1..8 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+32 8..9 Default/Default/1
+32 9..13 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+32 13..14 Default/Default/1
+32 14..21 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+32 21..23 Default/Default/1
+32 23..28 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+33 0..1 Default/Default/1
+33 1..6 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+33 6..11 Default/Default/1
+33 11..15 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+33 15..16 Default/Default/1
+33 16..21 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+33 21..22 Default/Default/1
+33 22..27 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+33 27..28 Default/Default/1
+33 28..35 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+33 35..36 Default/Default/1
+33 36..42 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0
+33 42..43 Default/Default/1
+33 43..48 Rgb(0, 0, 0)/Rgb(0, 175, 175)/0

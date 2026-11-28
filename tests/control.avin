@@ -278,8 +278,11 @@ cliPriority()
 cliPriorityMoves()
   assertEq(cli.parsePriority("--up"), Some(marshal.OneUp))
   assertEq(cli.parsePriority("--down"), Some(marshal.OneDown))
-  for bad in ["up", "down", "-up", "--Up", "--upper", "--down2", "+", "-", "+1"]
+  for bad in ["up", "down", "-up", "--Up", "--upper", "--down2", "+", "-"]
     assertEq(cli.parsePriority(bad), None)
+  // a number with a sign is a number still
+  assertEq(cli.parsePriority("+1"), Some(marshal.Level(1)))
+  assertEq(cli.parsePriority("-1"), Some(marshal.Level(-1)))
   assert(cli.commandHelp("priority").get.contains("--up"))
   assert(cli.commandHelp("priority").get.contains("--down"))
   assert(cli.usage.contains("priority <id> <n> | --urgent | --low | --up | --down"))
