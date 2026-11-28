@@ -156,6 +156,11 @@ class Job(
   var pid: long = 0
   var startedMs: long = 0
   var startedAt: long = 0
+  // when it was submitted and when it ended, on the wall clock (milliseconds since 1970; 0 until
+  // then), each read once: a time worked out again from the daemon's clock at every asking differs
+  // by a millisecond from one asking to the next
+  var submittedAt: long = 0
+  var endedAt: long = 0
   var resident = Resident(0, 0)
   var meter = marshal.startMeter(0)
   // the process groups its tree was last found in (`jobTree`), which its signals reach even once a
@@ -923,6 +928,7 @@ class Daemon(
     val id = nextId
     nextId += 1
     val job = Job(id, spec, now(), time.now().epochMicros, deadline, 0, s"$home/jobs/$id.log")
+    job.submittedAt = time.now().epochMillis
     job.project = projectFor(spec.dir)
     job.deadlineFrom = deadlineFrom
     job.low = spec.low
@@ -1075,6 +1081,7 @@ class Daemon(
       job.pausedAt = 0
     job.state = "done"
     job.endedMs = t
+    job.endedAt = time.now().epochMillis
     job.outcome = Some(outcome)
     record(
       event,
@@ -1865,6 +1872,7 @@ class Daemon(
     if job.state == "running" then offMachine(job, outcome, event) else job.startedMs = t
     job.state = "done"
     job.endedMs = t
+    job.endedAt = time.now().epochMillis
     job.outcome = Some(outcome)
     ended += job
     val info = job.info(now())
@@ -2318,33 +2326,32 @@ class Daemon(
   // latest first, this daemon's and its predecessors' together.
   remoteView() -> marshal.RemoteView
     val t = now()
-    val wallNow = time.now().epochMillis
     val before = earlier.map(j -> marshal.earlierJob(j, earlierEnds.get(j.id)))
-    val own = ended.takeRight(Kept).map(j -> remoteJob(j, t, wallNow)).toVector
+    val own = ended.takeRight(Kept).map(j -> remoteJob(j, t)).toVector
     val finished = (before ++ own).sortBy(r -> r.ended.getOrElse(long(0))).reverse.take(Kept)
     marshal.RemoteView(
       usage(),
-      running.map(j -> remoteJob(j, t, wallNow)).toVector,
-      (queue.toVector ++ waitingJobs.toVector).map(j -> remoteJob(j, t, wallNow)),
+      running.map(j -> remoteJob(j, t)).toVector,
+      (queue.toVector ++ waitingJobs.toVector).map(j -> remoteJob(j, t)),
       finished
     )
 
   // Job `id` as the remote API describes it, where this daemon holds it or it is among the jobs that
   // ended before it started.
   remoteFind(id: long) -> Option[marshal.RemoteJob] = jobs.get(id) match
-    Some(j) -> Some(remoteJob(j, now(), time.now().epochMillis))
+    Some(j) -> Some(remoteJob(j, now()))
     None -> earlier.find(j -> j.id == id).map(j -> marshal.earlierJob(j, earlierEnds.get(id)))
 
-  // Job `j` as the remote API describes it, at `t` on the daemon's clock and `wallNow` on the wall
-  // clock: its start only while it runs or once it has ended, so a job queued again to retry has none.
-  remoteJob(j: Job, t: long, wallNow: long) -> marshal.RemoteJob
-    val wall = (at: long) -> wallNow - (t - at)
+  // Job `j` as the remote API describes it, at `t` on the daemon's clock: its start only while it
+  // runs or once it has ended, so a job queued again to retry has none. When it was submitted and
+  // when it ended are the same at every asking.
+  remoteJob(j: Job, t: long) -> marshal.RemoteJob
     val ran = j.startedAt > 0 && (j.state == "running" || j.state == "done")
     marshal.RemoteJob(
       j.info(t),
-      Some(wall(j.submittedMs)),
+      Some(j.submittedAt),
       if ran then Some(j.startedAt) else None,
-      if j.state == "done" then Some(wall(j.endedMs)) else None
+      if j.state == "done" then Some(j.endedAt) else None
     )
 
   private usageWith(outside: Option[Outside]) -> Usage
@@ -2559,10 +2566,10 @@ class Daemon(
       j.id,
       j.spec,
       j.state,
-      wall(j.submittedMs),
+      j.submittedAt,
       j.arrived,
       j.startedAt,
-      if j.state == "done" then wall(j.endedMs) else 0,
+      if j.state == "done" then j.endedAt else 0,
       j.deadlineMs,
       j.expectedMs,
       j.log,
@@ -2655,6 +2662,8 @@ class Daemon(
       job.deadlineFrom = sj.deadlineFrom
       job.project = if sj.project.nonEmpty then sj.project else projectFor(sj.spec.dir)
       job.endedMs = mono(sj.endedAt)
+      job.submittedAt = sj.submittedAt
+      job.endedAt = sj.endedAt
       job.pid = sj.pid
       job.pgid = sj.pgid
       job.outcome = sj.outcome

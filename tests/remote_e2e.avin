@@ -198,6 +198,15 @@ remoteJobs()
     assertEq(one("state"), j("state"))
     assertEq(one("submitted"), j("submitted"))
     assertEq(one("ended"), j("ended"))
+  // and the same times at every asking, to the millisecond, for a job that ended and one that waits
+  for id in [d, b]
+    val first = rjson(port, s"/v1/jobs/$id", t)
+    for _ in 0 ..< 40
+      threads.sleep(millis(3))
+      val again = rjson(port, s"/v1/jobs/$id", t)
+      assertEq(again("submitted"), first("submitted"))
+      assertEq(again("started"), first("started"))
+      assertEq(again("ended"), first("ended"))
   // a job killed by hand is killed, its exit what wait gives
   assertEq(m(home, "kill", a.toString()).code, 0)
   assertEq(m(home, "wait", a.toString()).code, 143)
