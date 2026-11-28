@@ -1,0 +1,346 @@
+module tests
+
+// `marshal top`'s keys that place a queued job (u, w, n, +, -), without a terminal: what each asks
+// of the daemon, what it says of a job that is not queued, the line that names them above the
+// bottom line, and the selection following a job that moved.
+import dev.avinlang.marshal
+import dev.avinlang.marshal.{Request, JobInfo, Outcome, Overview, QueuedJob, Why}
+import dev.avinlang.marshal.top.{Action, App, Ask, Stay}
+import dev.avinlang.tui.{Down, Grid}
+
+// What the line above the bottom line reads, whole.
+val PlaceLine: string = "uUrgent wLow nNormal +-Move"
+
+// A job as a snapshot gives it, with what places it in the queue.
+private placedInfo(
+    id: long,
+    state: string = "queued",
+    urgent: bool = false,
+    low: bool = false,
+    priority: int = 0,
+    held: bool = false
+) -> JobInfo =
+  JobInfo(
+    id,
+    "build",
+    4,
+    0,
+    false,
+    "/w",
+    ["sleep", "30"],
+    state,
+    None,
+    false,
+    0,
+    minuteMs,
+    20 * minuteMs,
+    s"/h/jobs/$id.log",
+    None,
+    held = held,
+    priority = priority,
+    urgent = urgent,
+    low = low
+  )
+
+private inQueue(jobs: Vector[JobInfo]) -> Vector[QueuedJob] = jobs.zipWithIndex.map(
+  p -> QueuedJob(p.0, p.1 + 1, if p.0.held then Why.Held else Why.NoUnits)
+)
+
+// A running job (1), then queued ones: 3, 4 at priority 4, 5 urgent, 6 low and 7 held; a job
+// waiting for another (8) and an ended one (9).
+private placeable() -> Overview = Overview(
+  full().usage,
+  0,
+  [snapJob(1)],
+  inQueue(
+    [
+      placedInfo(3),
+      placedInfo(4, priority = 4),
+      placedInfo(5, urgent = true),
+      placedInfo(6, low = true),
+      placedInfo(7, held = true)
+    ]
+  ),
+  [snapJob(9, "done", Some(Outcome.Exited(0)))],
+  [placedInfo(8, "waiting")]
+)
+
+// The action `c` gives with the job at line `at` selected, and the view after it.
+private pressAt(at: int, c: char) -> (Action, App)
+  val app = viewing(placeable())
+  for _ in 0 ..< at
+    app.handle(press(Down))
+  (app.handle(key(c)), app)
+
+@test("u makes the selected queued job urgent, with no question")
+placeUrgent()
+  val (a, app) = pressAt(1, 'u')
+  assertEq(a, Ask(Request.Prioritize(3, marshal.Urgent), "3 urgent"))
+  assertEq(app.confirming, None)
+  assertEq(app.message, "")
+
+@test("w makes the selected queued job low, with no question")
+placeLow()
+  val (a, app) = pressAt(1, 'w')
+  assertEq(a, Ask(Request.Prioritize(3, marshal.LowBand), "3 low"))
+  assertEq(app.confirming, None)
+
+@test("n makes the selected queued job normal by giving it the priority it has, whatever band it is in")
+placeNormal()
+  assertEq(pressAt(1, 'n').0, Ask(Request.Prioritize(3, marshal.Level(0)), "3 normal"))
+  assertEq(pressAt(2, 'n').0, Ask(Request.Prioritize(4, marshal.Level(4)), "4 normal"))
+  assertEq(pressAt(3, 'n').0, Ask(Request.Prioritize(5, marshal.Level(0)), "5 normal"))
+  assertEq(pressAt(4, 'n').0, Ask(Request.Prioritize(6, marshal.Level(0)), "6 normal"))
+
+@test("+ moves the selected queued job up one place")
+placeUp()
+  assertEq(pressAt(2, '+').0, Ask(Request.Prioritize(4, marshal.OneUp), "4 moved up"))
+
+@test("- moves the selected queued job down one place")
+placeDown()
+  assertEq(pressAt(2, '-').0, Ask(Request.Prioritize(4, marshal.OneDown), "4 moved down"))
+
+@test("urgent then normal, and low then urgent, each ask the daemon for just that")
+placeInTurn()
+  val app = viewing(placeable())
+  app.handle(press(Down))
+  assertEq(app.handle(key('u')), Ask(Request.Prioritize(3, marshal.Urgent), "3 urgent"))
+  assertEq(app.handle(key('n')), Ask(Request.Prioritize(3, marshal.Level(0)), "3 normal"))
+  assertEq(app.handle(key('w')), Ask(Request.Prioritize(3, marshal.LowBand), "3 low"))
+  assertEq(app.handle(key('u')), Ask(Request.Prioritize(3, marshal.Urgent), "3 urgent"))
+
+@test("a held queued job is placed as any other: the keys ask the same of it")
+placeHeld()
+  assertEq(pressAt(5, 'u').0, Ask(Request.Prioritize(7, marshal.Urgent), "7 urgent"))
+  assertEq(pressAt(5, 'w').0, Ask(Request.Prioritize(7, marshal.LowBand), "7 low"))
+  assertEq(pressAt(5, 'n').0, Ask(Request.Prioritize(7, marshal.Level(0)), "7 normal"))
+  assertEq(pressAt(5, '+').0, Ask(Request.Prioritize(7, marshal.OneUp), "7 moved up"))
+  assertEq(pressAt(5, '-').0, Ask(Request.Prioritize(7, marshal.OneDown), "7 moved down"))
+
+@test("each key on a running job asks nothing and says only a queued job is placed")
+placeRunning()
+  for c in ['u', 'w', 'n']
+    val (a, app) = pressAt(0, c)
+    assertEq(a, Stay)
+    assertEq(app.message, "job 1 is running: only a queued job is given a priority")
+  for c in ['+', '-']
+    val (a, app) = pressAt(0, c)
+    assertEq(a, Stay)
+    assertEq(app.message, "job 1 is running: only a queued job is moved")
+
+@test("each key on a job that has ended asks nothing and says so")
+placeEnded()
+  for c in ['u', 'w', 'n', '+', '-']
+    val (a, app) = pressAt(7, c)
+    assertEq(a, Stay)
+    assertEq(app.message, "job 9 has already ended")
+
+@test("each key on a job that waits for another asks nothing and says it is not queued yet")
+placeWaiting()
+  for c in ['u', 'w', 'n']
+    val (a, app) = pressAt(6, c)
+    assertEq(a, Stay)
+    assertEq(app.message, "job 8 is not queued yet: only a queued job is given a priority")
+  for c in ['+', '-']
+    val (a, app) = pressAt(6, c)
+    assertEq(a, Stay)
+    assertEq(app.message, "job 8 is not queued yet: only a queued job is moved")
+
+@test("each key with no job selected, or no snapshot, asks nothing")
+placeNothing()
+  for c in ['u', 'w', 'n', '+', '-']
+    val empty = viewing(Overview(full().usage, 0, [], [], []))
+    assertEq(empty.handle(key(c)), Stay)
+    assertEq(empty.message, "no job selected")
+    val none = App("/h/sock")
+    assertEq(none.handle(key(c)), Stay)
+
+@test("the keys do nothing under the kill dialog or the help")
+placeUnderOverlays()
+  val app = viewing(placeable())
+  app.handle(press(Down))
+  app.handle(key('k'))
+  for c in ['u', 'w', '+', '-']
+    assertEq(app.handle(key(c)), Stay)
+  assert(app.confirming.isDefined)
+  val helped = viewing(placeable())
+  helped.handle(press(Down))
+  helped.handle(key('h'))
+  assertEq(helped.handle(key('u')), Stay)
+  assertEq(helped.message, "")
+
+// A view of `placeable` with the job at line `at` selected.
+private selecting(at: int) -> App
+  val app = viewing(placeable())
+  for _ in 0 ..< at
+    app.handle(press(Down))
+  app
+
+@test("a line above the bottom line names the keys while a queued job is selected, and the bottom line is as it was")
+placeLineShows()
+  val g = drawn(selecting(1), 80, 20)
+  assertEq(g.rowText(18).trim, PlaceLine)
+  assert(g.rowText(19).startsWith("hHelp EnterLog kKill pHold fFilter oOwner qQuit"), g.rowText(19))
+  // every queued job has it: urgent, low and held ones too
+  for at in 1 .. 5
+    assertEq(drawn(selecting(at), 80, 20).rowText(18).trim, PlaceLine)
+  // the bottom line alone is what the screen without the line ends in
+  assertEq(g.rowText(19), drawn(selecting(0), 80, 20).rowText(19))
+
+@test("the line is not drawn for a running, waiting or ended job, or with none, and the list has its row")
+placeLineHides()
+  for at in [0, 6, 7]
+    val g = drawn(selecting(at), 80, 20)
+    assertEq(rowOf(g, "uUrgent"), -1)
+    assert(g.rowText(19).startsWith("hHelp EnterLog"), g.rowText(19))
+  val empty = drawn(viewing(Overview(full().usage, 0, [], [], [])), 80, 20)
+  assertEq(rowOf(empty, "uUrgent"), -1)
+  val none = drawn(App("/h/sock"), 80, 20)
+  assertEq(rowOf(none, "uUrgent"), -1)
+  // a list too long for the screen shows one row fewer while the line is drawn
+  val many = Overview(full().usage, 0, [snapJob(1)], inQueue((2 .. 40).map(i -> placedInfo(long(i))).toVector), [])
+  val off = viewing(many)
+  val on = viewing(many)
+  on.handle(press(Down))
+  val heading = rowOf(drawn(off, 80, 20), "COMMAND")
+  assertEq(off.page, 19 - heading - 1)
+  assertEq(drawn(on, 80, 20).rowText(18).trim, PlaceLine)
+  assertEq(on.page, off.page - 1)
+
+@test("the line is cut at the width as the bottom line is, and never wraps")
+placeLineNarrow()
+  for w in [1, 5, 7, 8, 12, 20, 26, 27, 28, 40]
+    val g = drawn(selecting(1), w, 20)
+    val want = if w >= PlaceLine.charCount then PlaceLine else PlaceLine.take(w)
+    assertEq(g.rowText(18).trim, want.trim)
+    assertEq(g.rowText(19), drawn(selecting(0), w, 20).rowText(19))
+
+@test("a screen too short for the list and both lines keeps the bottom line and drops the keys' line first")
+placeLineShort()
+  var shown = 0
+  for h in 1 .. 20
+    val g = drawn(selecting(1), 80, h)
+    assert(g.rowText(h - 1).startsWith("hHelp EnterLog") || h < 2, s"$h: ${g.rowText(h - 1)}")
+    val at = rowOf(g, "uUrgent")
+    if at >= 0
+      shown += 1
+      assertEq(at, h - 2)
+      // the list keeps its heading and a row above it
+      val heading = rowOf(g, "COMMAND")
+      assert(0 <= heading < at - 1, s"$h: heading $heading, keys $at")
+  assert(shown > 0)
+  // the shortest screen that shows the line, and one row less, which does not
+  var least = 0
+  for h in 1 .. 20
+    if least == 0 && rowOf(drawn(selecting(1), 80, h), "uUrgent") >= 0 then least = h
+  assert(least > 3, s"$least")
+  val under = drawn(selecting(1), 80, least - 1)
+  assertEq(rowOf(under, "uUrgent"), -1)
+  assert(under.rowText(least - 2).startsWith("hHelp EnterLog"), under.rowText(least - 2))
+  assert(rowOf(under, "COMMAND") >= 0)
+
+@test("the daemon's answer shows on the bottom line, under the keys' line")
+placeMessage()
+  val app = selecting(1)
+  app.message = "3 moved up"
+  val g = drawn(app, 80, 20)
+  assertEq(g.rowText(18).trim, PlaceLine)
+  assert(g.rowText(19).startsWith("hHelp EnterLog kKill pHold fFilter oOwner qQuit"), g.rowText(19))
+  assert(g.rowText(19).contains("3 moved up"), g.rowText(19))
+  app.message = "job 3 is first in its band"
+  assert(drawn(app, 80, 20).rowText(19).contains("job 3 is first in its band"))
+
+@test("with the log open the keys' line is still drawn for a queued job")
+placeLineWithLog()
+  val app = selecting(1)
+  app.handle(key('l'))
+  val g = drawn(app, 100, 30)
+  assertEq(g.rowText(28).trim, PlaceLine)
+  assert(g.rowText(29).startsWith("hHelp EnterLog"), g.rowText(29))
+
+// `placeable` with its queue in the order `ids`, job 3 marked as `urgent` and `low` say.
+private reordered(ids: Vector[long], urgent: bool = false, low: bool = false) -> Overview
+  val o = placeable()
+  val jobs = ids.map(id -> if id == 3 then placedInfo(id, urgent = urgent, low = low) else o.queued.find(q -> q.job.id == id).get.job)
+  Overview(o.usage, 0, o.running, inQueue(jobs), o.recent, o.waiting)
+
+@test("the selection stays on a job that moved, wherever the next snapshot lists it")
+placeSelectionFollows()
+  val app = selecting(2)
+  assertEq(app.selected().map(j -> j.id), Some(long(4)))
+  app.handle(key('+'))
+  drawn(app, 80, 20)
+  app.update(reordered([4, 3, 5, 6, 7]))
+  assertEq(app.selected().map(j -> j.id), Some(long(4)))
+  assertEq(app.table.selected, 1)
+  app.handle(key('-'))
+  app.handle(key('-'))
+  drawn(app, 80, 20)
+  app.update(reordered([3, 5, 6, 4, 7]))
+  assertEq(app.selected().map(j -> j.id), Some(long(4)))
+  assertEq(app.table.selected, 4)
+
+@test("a job moved from the first line is followed too, though a view left on the first line otherwise stays there")
+placeSelectionFollowsFromTop()
+  val queue = Overview(full().usage, 0, [], inQueue([placedInfo(3), placedInfo(4), placedInfo(5)]), [])
+  val app = viewing(queue)
+  assertEq(app.selected().map(j -> j.id), Some(long(3)))
+  app.handle(key('-'))
+  drawn(app, 80, 20)
+  app.update(Overview(full().usage, 0, [], inQueue([placedInfo(4), placedInfo(3), placedInfo(5)]), []))
+  assertEq(app.selected().map(j -> j.id), Some(long(3)))
+  assertEq(app.table.selected, 1)
+  // without a placing key the first line stays selected as jobs change under it
+  val left = viewing(queue)
+  drawn(left, 80, 20)
+  left.update(Overview(full().usage, 0, [], inQueue([placedInfo(4), placedInfo(3), placedInfo(5)]), []))
+  assertEq(left.selected().map(j -> j.id), Some(long(4)))
+
+@test("a job made urgent or low shows its mark in KIND at the next snapshot, and no mark when normal again")
+placeMarks()
+  val app = selecting(1)
+  val before = drawn(app, 120, 20)
+  val first = before.rowText(app.table.selected + rowOf(before, "COMMAND") + 1)
+  assert(!first.contains("build!") && !first.contains("build~"), first)
+  app.handle(key('u'))
+  drawn(app, 120, 20)
+  app.update(reordered([5, 3, 4, 6, 7], urgent = true))
+  val urgent = drawn(app, 120, 20)
+  assertEq(app.selected().map(j -> j.id), Some(long(3)))
+  assert(urgent.rowText(app.table.selected + rowOf(urgent, "COMMAND") + 1).contains("build!"), urgent.rowText(4))
+  app.handle(key('w'))
+  app.update(reordered([5, 4, 6, 3, 7], low = true))
+  val low = drawn(app, 120, 20)
+  assertEq(app.selected().map(j -> j.id), Some(long(3)))
+  assert(low.rowText(app.table.selected + rowOf(low, "COMMAND") + 1).contains("build~"), low.rowText(4))
+  app.handle(key('n'))
+  app.update(reordered([5, 3, 4, 6, 7]))
+  val normal = drawn(app, 120, 20)
+  val row = normal.rowText(app.table.selected + rowOf(normal, "COMMAND") + 1)
+  assert(!row.contains("build!") && !row.contains("build~"), row)
+
+@test("the help lists the keys that place a queued job")
+placeHelp()
+  val app = viewing(placeable())
+  app.handle(key('h'))
+  val g = drawn(app, 120, 34)
+  assert(rowOf(g, "u  w  n         a queued job: urgent, low, or normal again") >= 0)
+  assert(rowOf(g, "+  -            one place up or down in its band") >= 0)
+
+// The full daemon's view with its first queued job (10) selected.
+private onQueued() -> App
+  val app = viewing(full())
+  app.handle(press(Down))
+  app.handle(press(Down))
+  app
+
+@test("golden: the keys' line above the bottom line at 80 columns and narrower, with a message, and gone on a short screen")
+goldenPlaceKeys()
+  for (w, h) in [(80, 18), (60, 16), (40, 12), (24, 12)]
+    golden(s"place-keys-$w", drawn(onQueued(), w, h))
+  golden("place-keys-short", drawn(onQueued(), 80, 7))
+  val app = onQueued()
+  app.message = "10 moved up"
+  golden("place-keys-message", drawn(app, 80, 18))
+  app.handle(key('h'))
+  golden("place-keys-help", drawn(app, 80, 34))

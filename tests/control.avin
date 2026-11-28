@@ -73,7 +73,12 @@ badControlRequests()
   refused("{\"op\": \"release\", \"id\": \"2\"}", "`id` is not a whole number")
   refused("{\"op\": \"priority\", \"id\": 2}", "`priority` is missing")
   refused("{\"op\": \"priority\", \"priority\": 2}", "`id` is missing")
-  refused("{\"op\": \"priority\", \"id\": 2, \"priority\": \"high\"}", "`priority` is not a whole number, \"urgent\" or \"low\"")
+  refused(
+    "{\"op\": \"priority\", \"id\": 2, \"priority\": \"high\"}",
+    "`priority` is not a whole number, \"urgent\", \"low\", \"up\" or \"down\""
+  )
+  refused("{\"op\": \"priority\", \"id\": 2, \"priority\": \"Up\"}", "`priority` is not a whole number")
+  refused("{\"op\": \"priority\", \"id\": 2, \"priority\": \"\"}", "`priority` is not a whole number")
   refused("{\"op\": \"priority\", \"id\": 2, \"priority\": 1.5}", "`priority` is not a whole number")
   refused("{\"op\": \"priority\", \"id\": 2, \"priority\": 3000000000}", "`priority` is not a whole number")
   refused("{\"op\": \"priority\", \"id\": 2, \"priority\": null}", "`priority` is not a whole number")
@@ -268,6 +273,176 @@ cliPriority()
   assertEq(cli.parsePriority("2147483647"), Some(marshal.Level(int.MaxValue)))
   for bad in ["", "urgent", "-urgent", "1.5", "2147483648", "x", "--urgent2"]
     assertEq(cli.parsePriority(bad), None)
+
+@test("priority takes --up and --down, and nothing near them")
+cliPriorityMoves()
+  assertEq(cli.parsePriority("--up"), Some(marshal.OneUp))
+  assertEq(cli.parsePriority("--down"), Some(marshal.OneDown))
+  for bad in ["up", "down", "-up", "--Up", "--upper", "--down2", "+", "-", "+1"]
+    assertEq(cli.parsePriority(bad), None)
+  assert(cli.commandHelp("priority").get.contains("--up"))
+  assert(cli.commandHelp("priority").get.contains("--down"))
+  assert(cli.usage.contains("priority <id> <n> | --urgent | --low | --up | --down"))
+
+@test("a move reads back as itself, and its wire text is the priority \"up\" or \"down\"")
+moveWire()
+  for id in [long(1), long.MaxValue]
+    roundTrip(Request.Prioritize(id, marshal.OneUp))
+    roundTrip(Request.Prioritize(id, marshal.OneDown))
+  roundTrip(Request.Prioritize(3, marshal.LowBand))
+  assertEq(
+    marshal.encodeRequest(Request.Prioritize(4, marshal.OneUp)).render,
+    "{\"op\":\"priority\",\"id\":4,\"priority\":\"up\"}"
+  )
+  assertEq(
+    marshal.encodeRequest(Request.Prioritize(4, marshal.OneDown)).render,
+    "{\"op\":\"priority\",\"id\":4,\"priority\":\"down\"}"
+  )
+
+@test("a daemon from before moves refuses one as a priority it does not know, and the refusal is put in words")
+moveRefusedByOlderDaemon()
+  // what the daemons before moves answer to \"up\"
+  val older = "`priority` is not a whole number, \"urgent\" or \"low\""
+  assertEq(
+    marshal.moveRefusal(older),
+    "the daemon is older than this marshal and does not know this priority: marshal restart"
+  )
+  assertEq(marshal.moveRefusal("`priority` is not a whole number or \"urgent\"").contains("marshal restart"), true)
+  for why in ["job 3 is first in its band", "no job 9", "job 3 is running: only a queued job is moved", ""]
+    assertEq(marshal.moveRefusal(why), why)
+
+// The queue's seats (id, lane, urgent mark, low, priority, placed) in the order `placeOrder` keeps.
+private seated(seats: Vector[marshal.Seat]) -> Vector[marshal.Seat]
+  val b = seats.toBuffer()
+  b.sortInPlaceWith(
+    (x, y) -> marshal.placeOrder(
+      marshal.Place(x.urgent, x.priority, x.placed, x.low),
+      marshal.Place(y.urgent, y.priority, y.placed, y.low)
+    )
+  )
+  b.toVector
+
+// `seats` after job `id` moves, in order, or the refusal.
+private moved(seats: Vector[marshal.Seat], id: long, up: bool) -> Result[Vector[marshal.Seat], string] =
+  marshal.moveOne(seated(seats), id, up).map(
+    changes -> seated(
+      seats.map(
+        s -> changes.find(c -> c.id == s.id).map(
+          c -> marshal.Seat(s.id, s.lane, c.urgent, s.low, c.priority, c.placed)
+        ).getOrElse(s)
+      )
+    )
+  )
+
+private idsOf(r: Result[Vector[marshal.Seat], string]) -> Vector[long] = r.ok.get.map(s -> s.id)
+
+// A development job outside the urgent and low bands.
+private seat(id: long, priority: int, placed: long) -> marshal.Seat =
+  marshal.Seat(id, marshal.DevelopmentLane, 0, false, priority, placed)
+
+@test("a move among jobs of one priority passes exactly one job, and no priority changes")
+moveAmongEquals()
+  val q = [seat(1, 0, 10), seat(2, 0, 20), seat(3, 0, 30), seat(4, 0, 40)]
+  assertEq(idsOf(moved(q, 3, true)), [long(1), long(3), long(2), long(4)])
+  assertEq(idsOf(moved(q, 2, false)), [long(1), long(3), long(2), long(4)])
+  assertEq(idsOf(moved(q, 4, true)), [long(1), long(2), long(4), long(3)])
+  assertEq(idsOf(moved(q, 2, true)), [long(2), long(1), long(3), long(4)])
+  assertEq(idsOf(moved(q, 3, false)), [long(1), long(2), long(4), long(3)])
+  assertEq(moved(q, 3, true).ok.get.map(s -> s.priority), [0, 0, 0, 0])
+  // the marks stay the band's own, each still used once
+  assertEq(moved(q, 3, true).ok.get.map(s -> s.placed), [long(10), long(20), long(30), long(40)])
+
+@test("the first job is not moved up nor the last down, a lone job neither way, and an unknown job is refused")
+moveAtTheEdges()
+  val q = [seat(1, 0, 10), seat(2, 0, 20)]
+  assertEq(moved(q, 1, true), Err("job 1 is first in its band"))
+  assertEq(moved(q, 2, false), Err("job 2 is last in its band"))
+  assertEq(moved([seat(5, 3, 1)], 5, true), Err("job 5 is first in its band"))
+  assertEq(moved([seat(5, 3, 1)], 5, false), Err("job 5 is last in its band"))
+  assertEq(moved(q, 9, true), Err("no job 9"))
+  assertEq(moved([], 9, false), Err("no job 9"))
+
+@test("a move past a job of another priority takes that priority and stands directly beside it")
+moveAcrossPriorities()
+  // 1 and 2 at priority 5, then 3 and 4 at 0
+  val q = [seat(1, 5, 10), seat(2, 5, 20), seat(3, 0, 5), seat(4, 0, 40)]
+  val up = moved(q, 3, true)
+  assertEq(idsOf(up), [long(1), long(3), long(2), long(4)])
+  assertEq(up.ok.get.map(s -> s.priority), [5, 5, 5, 0])
+  val down = moved(q, 2, false)
+  assertEq(idsOf(down), [long(1), long(3), long(2), long(4)])
+  assertEq(down.ok.get.map(s -> s.priority), [5, 0, 0, 0])
+  // the extremes of priority
+  val far = [seat(1, int.MaxValue, 10), seat(2, int.MinValue, 20)]
+  assertEq(idsOf(moved(far, 2, true)), [long(2), long(1)])
+  assertEq(moved(far, 2, true).ok.get.map(s -> s.priority), [int.MaxValue, int.MaxValue])
+  assertEq(idsOf(moved(far, 1, false)), [long(2), long(1)])
+  assertEq(moved(far, 1, false).ok.get.map(s -> s.priority), [int.MinValue, int.MinValue])
+
+@test("moves are undone by the opposite move, and repeated moves walk a job the length of its band")
+moveRepeated()
+  val q = [seat(1, 2, 10), seat(2, 1, 20), seat(3, 1, 30), seat(4, 0, 40)]
+  var now = q
+  for want in [[long(1), long(2), long(4), long(3)], [long(1), long(4), long(2), long(3)], [long(4), long(1), long(2), long(3)]]
+    now = moved(now, 4, true).ok.get
+    assertEq(now.map(s -> s.id), want)
+  assertEq(moved(now, 4, true), Err("job 4 is first in its band"))
+  for want in [[long(1), long(4), long(2), long(3)], [long(1), long(2), long(4), long(3)], [long(1), long(2), long(3), long(4)]]
+    now = moved(now, 4, false).ok.get
+    assertEq(now.map(s -> s.id), want)
+  assertEq(moved(now, 4, false), Err("job 4 is last in its band"))
+
+@test("a move in the urgent band deals the band's marks again and leaves priorities alone")
+moveInUrgentBand()
+  val u = (id: long, mark: long, priority: int) -> marshal.Seat(id, marshal.DevelopmentLane, mark, false, priority, id)
+  val q = [u(1, 100, 0), u(2, 200, 9), u(3, 300, -9), seat(4, 7, 1)]
+  val up = moved(q, 3, true)
+  assertEq(idsOf(up), [long(1), long(3), long(2), long(4)])
+  assertEq(up.ok.get.map(s -> s.urgent), [long(100), long(200), long(300), long(0)])
+  assertEq(up.ok.get.map(s -> s.priority), [0, -9, 9, 7])
+  assertEq(idsOf(moved(q, 1, false)), [long(2), long(1), long(3), long(4)])
+  // the band's last job does not go down into the jobs not urgent, nor the first of those up into it
+  assertEq(moved(q, 3, false), Err("job 3 is last in its band"))
+  assertEq(moved(q, 4, true), Err("job 4 is first in its band"))
+
+@test("a move in the low band stays in it, and a job not low never goes down into it")
+moveInLowBand()
+  val low = (id: long, priority: int, at: long) -> marshal.Seat(id, marshal.DevelopmentLane, 0, true, priority, at)
+  val q = [seat(1, 0, 10), low(2, 0, 5), low(3, 0, 6), low(4, -1, 1)]
+  assertEq(idsOf(moved(q, 3, true)), [long(1), long(3), long(2), long(4)])
+  assertEq(moved(q, 3, true).ok.get.map(s -> s.low), [false, true, true, true])
+  val down = moved(q, 3, false)
+  assertEq(idsOf(down), [long(1), long(2), long(4), long(3)])
+  assertEq(down.ok.get.map(s -> s.priority), [0, 0, -1, -1])
+  assertEq(moved(q, 2, true), Err("job 2 is first in its band"))
+  assertEq(moved(q, 1, false), Err("job 1 is last in its band"))
+  assertEq(moved(q, 1, true), Err("job 1 is first in its band"))
+
+@test("a move passes the nearest job of its own lane, and the jobs of other lanes keep their order")
+moveWithinItsLane()
+  val land = (id: long, at: long) -> marshal.Seat(id, marshal.LandingLane, 0, false, 0, at)
+  val quick = (id: long, at: long) -> marshal.Seat(id, marshal.QuickLane, 0, false, 0, at)
+  val q = [seat(1, 0, 10), land(2, 20), quick(3, 30), seat(4, 0, 40), land(5, 50)]
+  // 4 passes 1, its lane's neighbour, and stands directly before it
+  assertEq(idsOf(moved(q, 4, true)), [long(4), long(1), long(2), long(3), long(5)])
+  // 2 passes 5 and stands directly after it
+  assertEq(idsOf(moved(q, 2, false)), [long(1), long(3), long(4), long(5), long(2)])
+  assertEq(idsOf(moved(q, 5, true)), [long(1), long(5), long(2), long(3), long(4)])
+  // a lane's only job, and its first and last, stay
+  assertEq(moved(q, 3, true), Err("job 3 is first in its band"))
+  assertEq(moved(q, 3, false), Err("job 3 is last in its band"))
+  assertEq(moved(q, 2, true), Err("job 2 is first in its band"))
+  assertEq(moved(q, 4, false), Err("job 4 is last in its band"))
+
+@test("jobs that share a mark are told apart by a move, in the order the queue had them")
+moveWithEqualMarks()
+  val q = [seat(1, 0, 10), seat(2, 0, 10), seat(3, 0, 10)]
+  val up = marshal.moveOne(q, 3, true).ok.get
+  assertEq(up.map(c -> c.id), [long(1), long(3), long(2)])
+  assertEq(up.map(c -> c.placed), [long(10), long(11), long(12)])
+  val down = marshal.moveOne(q, 1, false).ok.get
+  assertEq(down.map(c -> c.id), [long(2), long(1), long(3)])
+  assertEq(down.map(c -> c.placed), [long(10), long(11), long(12)])
 
 private runningInfo(paused: bool) -> JobInfo =
   JobInfo(

@@ -194,6 +194,174 @@ topHoldRefusesEnded()
   assert(shown.contains(s"job $id has already ended"), shown)
   cleanUp(home)
 
+// A daemon of one unit with a job running (the first id) and three queued behind it, in order.
+queueOfThree() -> (string, long, Vector[long])
+  val home = newHome("{\"units\": 1}")
+  val blocker = submitted(home, "--units", "1", "--", "sleep", "60")
+  assert(runningSoon(home, blocker))
+  val ids = [
+    submitted(home, "--units", "1", "--", "sleep", "60"),
+    submitted(home, "--units", "1", "--", "sleep", "60"),
+    submitted(home, "--units", "1", "--", "sleep", "60")
+  ]
+  (home, blocker, ids)
+
+// The keys that show the highlight and go `n` lines down.
+downs(n: int) -> string = "x" + (0 ..< n).map(_ -> "\\033[B").mkString("")
+
+@test("top makes a queued job urgent with u, and the daemon agrees")
+topMakesUrgent()
+  if process.os() != MacOS then return
+  val (home, _, ids) = queueOfThree()
+  val out = topIn(home, downs(2) + "uq")
+  assert(out.contains(s"${ids(1)} urgent"), out)
+  assertEq(queuedIds(home), [ids(1), ids(0), ids(2)])
+  assertEq(queuedUrgent(home), [true, false, false])
+  cleanUp(home)
+
+@test("top makes a queued job low with w, and the daemon agrees")
+topMakesLow()
+  if process.os() != MacOS then return
+  val (home, _, ids) = queueOfThree()
+  val out = topIn(home, downs(1) + "wq")
+  assert(out.contains(s"${ids(0)} low"), out)
+  assertEq(queuedIds(home), [ids(1), ids(2), ids(0)])
+  assert(m(home, "status", ids(0).toString(), "--json").out.contains("\"low\":true"))
+  cleanUp(home)
+
+@test("top makes an urgent job normal again with n, and it goes back among the jobs not urgent")
+topUrgentThenNormal()
+  if process.os() != MacOS then return
+  val (home, _, ids) = queueOfThree()
+  // the third job urgent: it is listed first of the queued, the selection on it still; then n
+  val out = topIn(home, downs(3) + "unq")
+  assert(out.contains(s"${ids(2)} urgent"), out)
+  assert(out.contains(s"${ids(2)} normal"), out)
+  assertEq(queuedIds(home), ids)
+  assertEq(queuedUrgent(home), [false, false, false])
+  cleanUp(home)
+
+@test("top makes a low job urgent with u, out of the low band")
+topLowThenUrgent()
+  if process.os() != MacOS then return
+  val (home, _, ids) = queueOfThree()
+  // w sends the first queued job to the end, where the selection follows it; u brings it to the front
+  val out = topIn(home, downs(1) + "wuq")
+  assert(out.contains(s"${ids(0)} low"), out)
+  assert(out.contains(s"${ids(0)} urgent"), out)
+  assertEq(queuedIds(home), ids)
+  assertEq(queuedUrgent(home), [true, false, false])
+  assert(m(home, "status", ids(0).toString(), "--json").out.contains("\"low\":false"))
+  cleanUp(home)
+
+@test("top moves a queued job up with + and down with -, one place each")
+topMovesUpAndDown()
+  if process.os() != MacOS then return
+  val (home, _, ids) = queueOfThree()
+  val up = topIn(home, downs(2) + "+q")
+  assert(up.contains(s"${ids(1)} moved up"), up)
+  assertEq(queuedIds(home), [ids(1), ids(0), ids(2)])
+  val down = topIn(home, downs(2) + "-q")
+  assert(down.contains(s"${ids(0)} moved down"), down)
+  assertEq(queuedIds(home), [ids(1), ids(2), ids(0)])
+  cleanUp(home)
+
+@test("top's selection follows a job that moved, so a second + moves the same job again")
+topSelectionFollowsMove()
+  if process.os() != MacOS then return
+  val (home, blocker, ids) = queueOfThree()
+  val out = topIn(home, downs(3) + "++q")
+  assert(out.contains(s"${ids(2)} moved up"), out)
+  assertEq(queuedIds(home), [ids(2), ids(0), ids(1)])
+  // and from the first line of the list, which a view otherwise stays on: the queue is held and
+  // nothing runs, so the first queued job is the first line
+  assertEq(m(home, "pause").code, 0)
+  m(home, "kill", blocker.toString())
+  assertEq(m(home, "wait", blocker.toString()).code, 143)
+  val first = topIn(home, "x--q")
+  assert(first.contains(s"${ids(2)} moved down"), first)
+  assertEq(queuedIds(home), [ids(0), ids(1), ids(2)])
+  cleanUp(home)
+
+@test("top says the first job of its band is not moved up, nor the last down, and nothing changes")
+topMoveAtTheEdges()
+  if process.os() != MacOS then return
+  val (home, _, ids) = queueOfThree()
+  val up = topIn(home, downs(1) + "+q")
+  assert(up.contains(s"job ${ids(0)} is first in its band"), up)
+  val down = topIn(home, downs(3) + "-q")
+  assert(down.contains(s"job ${ids(2)} is last in its band"), down)
+  assertEq(queuedIds(home), ids)
+  cleanUp(home)
+
+@test("top says a running job is not given a priority nor moved, and changes nothing")
+topPlaceRefusesRunning()
+  if process.os() != MacOS then return
+  val (home, blocker, ids) = queueOfThree()
+  val placed = topIn(home, "xuq")
+  assert(placed.contains(s"job $blocker is running: only a queued job is given a priority"), placed)
+  val moved = topIn(home, "x+q")
+  assert(moved.contains(s"job $blocker is running: only a queued job is moved"), moved)
+  assertEq(queuedIds(home), ids)
+  assertEq(eventsOf(home, blocker).filter(e -> e == "prioritized"), Vector[string]())
+  cleanUp(home)
+
+@test("top says a job that has ended is not given a priority nor moved")
+topPlaceRefusesEnded()
+  if process.os() != MacOS then return
+  val home = newHome()
+  val id = submitted(home, "--", "true")
+  assertEq(m(home, "wait", id.toString()).code, 0)
+  for keys in ["xuq", "xwq", "xnq", "x+q", "x-q"]
+    val shown = topIn(home, keys)
+    assert(shown.contains(s"job $id has already ended"), shown)
+  cleanUp(home)
+
+@test("top places a held job, which stays held")
+topPlacesHeld()
+  if process.os() != MacOS then return
+  val (home, _, ids) = queueOfThree()
+  assertEq(m(home, "hold", ids(2).toString()).code, 0)
+  val out = topIn(home, downs(3) + "+q")
+  assert(out.contains(s"${ids(2)} moved up"), out)
+  assertEq(queuedIds(home), [ids(0), ids(2), ids(1)])
+  val urgent = topIn(home, downs(2) + "uq")
+  assert(urgent.contains(s"${ids(2)} urgent"), urgent)
+  assertEq(queuedIds(home), [ids(2), ids(0), ids(1)])
+  assert(m(home, "status", ids(2).toString()).out.contains("(held)"), m(home, "status", ids(2).toString()).out)
+  cleanUp(home)
+
+@test("top gives the daemon's answer for a landing and an exclusive job: urgent yes, low refused")
+topPlacesLandingAndExclusive()
+  if process.os() != MacOS then return
+  val home = newHome("{\"units\": 1}")
+  val blocker = submitted(home, "--landing", "--units", "1", "--", "sleep", "60")
+  assert(runningSoon(home, blocker))
+  val landing = submitted(home, "--landing", "--units", "1", "--", "sleep", "60")
+  val exclusive = submitted(home, "--exclusive", "--", "sleep", "60")
+  assertEq(queuedIds(home), [landing, exclusive])
+  val low = topIn(home, downs(1) + "w\\033[Bwq")
+  assert(low.contains(s"job $landing is a landing job: only a development job is low"), low)
+  assert(low.contains(s"job $exclusive is an exclusive job: only a development job is low"), low)
+  val urgent = topIn(home, downs(2) + "uq")
+  assert(urgent.contains(s"$exclusive urgent"), urgent)
+  assertEq(queuedUrgent(home), [true, false])
+  // each is alone in its lane: no move
+  val moved = topIn(home, downs(2) + "-q")
+  assert(moved.contains(s"job $landing is last in its band"), moved)
+  cleanUp(home)
+
+@test("top names the placing keys above the bottom line only while a queued job is selected")
+topNamesPlacingKeys()
+  if process.os() != MacOS then return
+  val (home, _, _) = queueOfThree()
+  val running = topIn(home, "xq")
+  assert(!running.contains("Urgent"), running)
+  assert(running.contains("Quit"), running)
+  val queued = topIn(home, downs(1) + "q")
+  assert(queued.contains("Urgent") && queued.contains("Normal") && queued.contains("Move"), queued)
+  cleanUp(home)
+
 @test("top with no daemon says so, starts none, and quits on q with status 0")
 topWithoutDaemon()
   if process.os() != MacOS then return

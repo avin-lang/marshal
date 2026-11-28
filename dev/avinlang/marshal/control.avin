@@ -45,6 +45,71 @@ urgentMark(now: long, band: Vector[long]) -> long
   val last = band.maxOption.getOrElse(0)
   if now > last then now else last + 1
 
+// A queued job as a move sees it: its lane (`LandingLane`, `QuickLane` or `DevelopmentLane`), and
+// what orders it, as `Place` has it, `placed` being what orders the jobs of equal priority.
+data Seat(id: long, lane: int, urgent: long, low: bool, priority: int, placed: long)
+
+val LandingLane: int = 0
+val QuickLane: int = 1
+val DevelopmentLane: int = 2
+
+// What a move gives a job: its priority, its urgent mark and what orders it among its equals.
+data Reseat(id: long, priority: int, urgent: long, placed: long)
+
+// Whether two jobs are in the same band: the urgent band, the low band, or the jobs between.
+sameBand(a: Seat, b: Seat) -> bool =
+  if a.urgent > 0 || b.urgent > 0 then a.urgent > 0 && b.urgent > 0 else a.low == b.low
+
+// Moves job `id` one place up (or down) in `queue`, the queued jobs in their order: past the nearest
+// job of its own lane and band before (after) it, to stand directly before (after) that job. It
+// never leaves its band, and a job with none of its lane and band before (after) it is refused.
+// The answer is what each job whose marks change is given, which orders the queue so under
+// `placeOrder` and changes no other job's place among the rest:
+// - in the urgent band, the band's marks are dealt again in the new order;
+// - elsewhere the job takes the priority of the job it passes, and the marks (`placed`) of that
+//   priority's jobs are dealt again in the new order, so no other job's priority changes.
+moveOne(queue: Vector[Seat], id: long, up: bool) -> Result[Vector[Reseat], string]
+  val at = queue.indexWhere(s -> s.id == id)
+  if at < 0 then return Err(s"no job $id")
+  val me = queue(at)
+  var beside: Option[Seat] = None
+  for (s, i) in queue.zipWithIndex
+    val mine = s.lane == me.lane && sameBand(s, me)
+    if mine && up && i < at then beside = Some(s)
+    if mine && !up && i > at && beside.isEmpty then beside = Some(s)
+  val next = beside match
+    Some(s) -> s
+    None -> return Err(s"job $id is ${if up then "first" else "last"} in its band")
+  val urgent = me.urgent > 0
+  val group = queue.filter(s -> s.id != id && sameBand(s, me) && (urgent || s.priority == next.priority))
+  val k = group.indexWhere(s -> s.id == next.id) + (if up then 0 else 1)
+  val order = group.take(k) ++ [me] ++ group.drop(k)
+  val marks = rising(order.map(s -> if urgent then s.urgent else s.placed).sorted)
+  Ok(
+    order.zip(marks).map(
+      p -> if urgent then Reseat(p.0.id, p.0.priority, p.1, p.0.placed) else Reseat(p.0.id, next.priority, 0, p.1)
+    )
+  )
+
+// `marks`, which are in order, each made larger than the one before it.
+private rising(marks: Vector[long]) -> Vector[long]
+  val out = Buffer[long]()
+  var last: long = 0
+  var first = true
+  for m in marks
+    val mark = if !first && m <= last then last + 1 else m
+    out += mark
+    last = mark
+    first = false
+  out.toVector
+
+// What the daemon's refusal of a priority says when the daemon is older than this marshal and does
+// not know the priority asked for (`up` and `down`, to a daemon from before moves); any other
+// refusal as it is.
+moveRefusal(why: string) -> string =
+  if why.startsWith("`priority` is not") then "the daemon is older than this marshal and does not know this priority: marshal restart"
+  else why
+
 // Each queued job's place in its lane's queue (from 1, held jobs counted) and why it waits, in the
 // order of `queue`: `Held` for a job in `held`, `QueueHeld` for any other while the queue is held,
 // `Reserved(owner)` for a job in `reservedOut` (another owner's, while marshal is reserved), and

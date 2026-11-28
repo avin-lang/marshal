@@ -68,8 +68,8 @@ val Commands: Vector[(string, string)] = [
   ),
   ("groups", "the groups filtered holds made that still hold jobs: name, count, ids"),
   (
-    "priority <id> <n> | --urgent | --low",
-    "places a queued job in its lane: higher first; --urgent: the back of the urgent band; --low: behind every job not low, started only in spare room (a number or --urgent makes it normal again)"
+    "priority <id> <n> | --urgent | --low | --up | --down",
+    "places a queued job in its lane: higher first; --urgent: the back of the urgent band; --low: behind every job not low, started only in spare room (a number or --urgent makes it normal again); --up, --down: one place earlier or later among the queued jobs of its band (urgent, normal or low), which it does not leave, taking the priority of the job it passes"
   ),
   (
     "amend <id> [options]",
@@ -468,23 +468,39 @@ withId([word], body) = word.toLongOption() match
   None -> complain(s"marshal: `$word` is not a job id")
 withId(_, _) = complain("marshal: give one job id")
 
-// `priority <id> <n>`, `priority <id> --urgent` or `priority <id> --low`.
+// `priority <id> <n>`, `priority <id> --urgent`, `--low`, `--up` or `--down`. A daemon older than
+// moves refuses `--up` and `--down`, and the refusal says so (`moveRefusal`).
 priority(args: Vector[string]) -> int
   val (word, level) = args match
     [w, l] -> (w, l)
-    _ -> return complain("marshal: priority takes a job id and a whole number, --urgent or --low")
+    _ -> return complain(s"marshal: priority takes a job id and $PriorityWords")
   val id = word.toLongOption() match
     Some(n) -> n
     None -> return complain(s"marshal: `$word` is not a job id")
   val p = parsePriority(level) match
     Some(p) -> p
-    None -> return complain(s"marshal: `$level` is not a priority: a whole number, --urgent or --low")
-  simple(Request.Prioritize(id, p), s"marshal: job $id is placed")
+    None -> return complain(s"marshal: `$level` is not a priority: $PriorityWords")
+  if p != marshal.OneUp && p != marshal.OneDown then return simple(
+    Request.Prioritize(id, p),
+    s"marshal: job $id is placed"
+  )
+  askDaemon(Request.Prioritize(id, p)) match
+    Ok(Done) ->
+      println(s"marshal: job $id is moved ${if p == marshal.OneUp then "up" else "down"}")
+      0
+    Ok(Failed(why)) -> complain(s"marshal: ${marshal.moveRefusal(why)}")
+    Ok(other) -> complain(s"marshal: unexpected reply $other")
+    Err(e) -> complain(e)
 
-// A priority as the command line gives it: a whole number, `--urgent` or `--low`.
+// What `priority` takes after the job id.
+val PriorityWords: string = "a whole number, --urgent, --low, --up or --down"
+
+// A priority as the command line gives it: a whole number, `--urgent`, `--low`, `--up` or `--down`.
 parsePriority(word: string) -> Option[marshal.Priority]
 parsePriority("--urgent") = Some(marshal.Urgent)
 parsePriority("--low") = Some(marshal.LowBand)
+parsePriority("--up") = Some(marshal.OneUp)
+parsePriority("--down") = Some(marshal.OneDown)
 parsePriority(word) = word.toIntOption().map(n -> marshal.Level(n))
 
 // `kill --owner/--label/--all [--queued | --running] [--include-landing] [--yes]`. An id beside a

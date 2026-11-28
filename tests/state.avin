@@ -303,6 +303,45 @@ savedQueueControl()
     stateRoundTrip(stateOf([j], [], []))
   stateRoundTrip(SavedState("0.1.0", 1, 2, 3, 4, [], [], [], None, false))
 
+// A queued job with the mark a move gave it.
+private placedJob(placed: long) -> SavedJob = SavedJob(
+  9,
+  savedSpec,
+  "queued",
+  1,
+  2,
+  0,
+  0,
+  5,
+  6,
+  "/l",
+  0,
+  0,
+  None,
+  false,
+  false,
+  None,
+  0,
+  0,
+  placed = placed
+)
+
+@test("the mark a move gave a queued job reads back, the largest included, and a job never moved saves none")
+savedPlaced()
+  for p in [long(1), 1_762_000_000_000_124, long.MaxValue]
+    stateRoundTrip(stateOf([placedJob(p)], [], []))
+    assert(marshal.encodeSavedJob(placedJob(p)).render.contains(s"\"placed\":$p"))
+  stateRoundTrip(stateOf([placedJob(0)], [], []))
+  assert(!marshal.encodeSavedJob(placedJob(0)).render.contains("placed"))
+  assert(!marshal.encodeSavedJob(savedQueued).render.contains("placed"))
+  assertEq(savedQueued.placed, 0)
+
+@test("a mark that is not a whole number is refused, naming the field")
+savedBadPlaced()
+  val head = "\"version\": \"0.1.0\", \"pid\": 1, \"saved_at\": 2, \"began_at\": 3, \"next_id\": 4"
+  val bad = marshal.encodeSavedJob(placedJob(7)).render.replace("\"placed\":7", "\"placed\":\"7\"")
+  stateRefused(s"{$head, \"queue\": [$bad], \"running\": [], \"ended\": [], \"ticket\": null}", "placed")
+
 @test("a state saved before holding and priorities existed reads as nothing held, every priority 0")
 savedBeforeQueueControl()
   val head = "\"version\": \"0.1.0\", \"pid\": 1, \"saved_at\": 2, \"began_at\": 3, \"next_id\": 4"

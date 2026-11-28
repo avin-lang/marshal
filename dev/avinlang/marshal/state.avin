@@ -44,7 +44,8 @@ import dev.avinlang.json.Json
 // for none; `heldMs` how long it was held, in earlier holds, since `waitSince`, and `heldAt` when its
 // current hold began (wall clock, milliseconds; 0 while not held, or when absent, read as now);
 // `heldBeforeQueue` how much of its held time came before it last joined the queue (`arrived`). All
-// "" or 0 when absent.
+// "" or 0 when absent. `placed` is what orders a queued job among those of its priority (control.avin's
+// `moveOne`): 0, which is left out and read as `arrived`, for a job no move has given another mark.
 data SavedJob(
     id: long,
     spec: JobSpec,
@@ -96,7 +97,8 @@ data SavedJob(
     heldGroup: string = "",
     heldMs: long = 0,
     heldAt: long = 0,
-    heldBeforeQueue: long = 0
+    heldBeforeQueue: long = 0,
+    placed: long = 0
 )
 
 // The whole daemon: the version and process that saved it, when, when the daemon first began, the
@@ -162,6 +164,7 @@ private holdMembers(j: SavedJob) -> Vector[(string, Json)]
   if j.heldMs > 0 then out += ("held_ms", Json.num(j.heldMs))
   if j.heldAt > 0 then out += ("held_at", Json.num(j.heldAt))
   if j.heldBeforeQueue > 0 then out += ("held_before_queue", Json.num(j.heldBeforeQueue))
+  if j.placed > 0 then out += ("placed", Json.num(j.placed))
   out.toVector
 
 encodeSavedJob(j: SavedJob) -> Json = Json.Obj(savedJobMembers(j) ++ holdMembers(j))
@@ -349,7 +352,8 @@ decodeSavedJob(j: Json) -> Result[SavedJob, string]
       maybeText(j, "held_group")?.getOrElse(""),
       wholeOrZero(j, "held_ms")?,
       wholeOrZero(j, "held_at")?,
-      wholeOrZero(j, "held_before_queue")?
+      wholeOrZero(j, "held_before_queue")?,
+      wholeOrZero(j, "placed")?
     )
   )
 

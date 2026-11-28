@@ -84,7 +84,7 @@ is one line of the budget in use; `marshal top` is the live view, for people.
 | A flaky step worth retrying | `--retries <n> [--retry-delay <t>]` | Reruns it on a nonzero exit, a signal or a deadline. |
 | Work done outside the job's own processes: `docker run`, a VM, `sudo -u` another account | `--external --mem <size>` | marshal cannot measure it; it reserves exactly `--mem` and learns nothing. |
 | A job submitted on another session's behalf | `--owner <name>` | Otherwise the owner is the project its `--dir` is in, or its label. |
-| A queued job should go sooner or later | `marshal priority <id> <n>` (higher first), `marshal priority <id> --urgent`, or `marshal priority <id> --low` (into the low band; a number or `--urgent` takes it out) | Orders marshal's own queue; a held job (`marshal hold`) keeps its place. |
+| A queued job should go sooner or later | `marshal priority <id> <n>` (higher first), `marshal priority <id> --urgent`, `marshal priority <id> --low` (into the low band; a number or `--urgent` takes it out), or `marshal priority <id> --up` / `--down` (one place, within its band); in `top`, `u`, `w`, `n`, `+` and `-` on the selected job | Orders marshal's own queue; a held job (`marshal hold`) keeps its place. |
 | You are working at the machine | `marshal polite` (or config.json's `polite_schedule`) | Admits jobs against three quarters of the budget; `marshal polite off` gives it all back. |
 | A release needs the machine for its own jobs | `marshal reserve --owner rel0120 --for 3h`, every release job submitted `--owner rel0120`; `marshal unreserve` when done | Only that owner's jobs (and quick ones) start; others keep submitting and wait in place, `reserved for rel0120`. It ends by itself at `--for`; no per-job holds. |
 | The queue is stuck behind an exclusive job (a benchmark) or a drain | `marshal hold --exclusive` (or `--draining`), later `marshal release --group <name>` | Holds them as one group, printed with the release command; they keep their place, and the time held is not counted as waiting. |
@@ -317,7 +317,7 @@ marshal clean [--older-than <t>] [--keep <n>] [--dry-run]  removes the logs of e
 marshal hold <id> | <filters>              keeps a queued job from starting; it keeps its place; --exclusive, --draining, --kind <k>, --label <glob> hold every queued job selected, as a group (marshal hold --help)
 marshal release <id> | --group <name> | <filters>  lets a held job start again, in its place; --group releases what a filtered hold held
 marshal groups                             the groups filtered holds made that still hold jobs: name, count, ids
-marshal priority <id> <n> | --urgent | --low  places a queued job in its lane: higher first; --urgent: the back of the urgent band; --low: behind every job not low, started only in spare room (a number or --urgent makes it normal again)
+marshal priority <id> <n> | --urgent | --low | --up | --down  places a queued job in its lane: higher first; --urgent: the back of the urgent band; --low: behind every job not low, started only in spare room (a number or --urgent makes it normal again); --up, --down: one place earlier or later among the queued jobs of its band (urgent, normal or low), which it does not leave, taking the priority of the job it passes
 marshal amend <id> [options]               changes a job's settings in place: queued, it keeps its place; running, only --deadline, --label, --retries, --quiet-timeout
 marshal pause [<id>]                       stops a running job's processes, keeping its units, its deadline's clock stopped; with no id, holds the queue
 marshal resume [<id>]                      continues a paused job; with no id, releases the queue
@@ -1369,7 +1369,15 @@ against its own budget. `marshal status` shows what take-slot holds.
   the selected queued or waiting job, or releases it if held, and pauses a running job, or resumes
   it if paused (`marshal hold`, `release`, `pause` and `resume`; no question, since `p` again undoes
   it; the bottom line says `held 7289`, `released 7289`, `paused 7289` or `resumed 7289`, or why the
-  daemon refused, as when the job started meanwhile); `f` shows all jobs, the running, the queued or
+  daemon refused, as when the job started meanwhile); on the selected queued job, `u` makes it
+  urgent, `w` low and `n` normal again, and `+` and `-` move it one place up or down among the
+  queued jobs of its band (`marshal priority <id> --urgent`, `--low`, its own number, `--up` and
+  `--down`; no question, since each is undone by another): the bottom line says `7289 urgent`,
+  `7289 low`, `7289 normal`, `7289 moved up` or `7289 moved down`, or why not (`job 7289 is first in
+  its band`, or that a running or ended job is not placed), the job's mark and place change at the
+  next refresh, and the selection stays on it; while a queued job is selected these keys are named
+  on a line of their own directly above the bottom line (`uUrgent wLow nNormal +-Move`), which a
+  screen too short for it leaves out; `f` shows all jobs, the running, the queued or
   the ended ones; `o` shows only the first owner's jobs (in alphabetical order, among the jobs
   listed and loaded), the next owner's at the next press, and every owner's again after the last,
   with whichever `f` filter is on; `h` or `?` the keys; `s` starts a daemon when there is none; `q`

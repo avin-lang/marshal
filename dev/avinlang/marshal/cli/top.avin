@@ -66,7 +66,8 @@ watch(term: Terminal) -> Result[unit, IoError]
         Ask(request, said) ->
           app.message = conn.map(c -> ask(c, request)) match
             Some(Ok(Done)) -> said
-            Some(Ok(Failed(why))) -> why
+            // a daemon older than moves says so in words of its own
+            Some(Ok(Failed(why))) -> marshal.moveRefusal(why)
             Some(Ok(other)) -> s"unexpected reply $other"
             Some(Err(why)) -> why
             None -> "no daemon"

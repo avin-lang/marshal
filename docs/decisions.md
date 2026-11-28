@@ -3068,3 +3068,48 @@ setting `remote: {"enabled": true, "port": 7177}` in config.json; 50 recently en
   retention removed) reads as empty, `done` once the job has ended. **Review with the user:** an
   empty answer rather than an error for a removed log (the contract has no error for it).
 - **The version stays one** (`/v1/`): nothing in the contract is marshal's own extension.
+
+## 0.4.8: priorities from `top`, and moving a job one place (branch `top-priority`)
+
+Settled on the user's delegation 2026-11-27 (the user: "there should be a way for a user to change
+job priorities using marshal top. any new keys should show at the bottom").
+
+- **The keys.** On the selected queued job: `u` urgent, `w` low, `n` normal again, `+` and `-` one
+  place up or down. `l` was taken (the log), so low is `w` ("wait"). `n` sends the job's own number
+  (`priority <id> <its priority>`), which takes it out of the urgent and the low band and changes
+  nothing else. None asks first: each is undone by another. On a job that is not queued the key asks
+  the daemon nothing and the bottom line says why, in the daemon's words.
+- **A line of their own.** The bottom line had 32 cells to spare at 80 columns, which the message
+  and the scroll position use; four more hints would have left neither room. So the bottom line and
+  its message are as they were, and `uUrgent wLow nNormal +-Move` is a second line directly above
+  it, drawn only while a queued job is selected, cut at the width as the bottom line is. The list
+  gives it one row and has the row back otherwise. A screen without room for the list's heading, one
+  job and both lines drops this line first. **Review with the user:** the second line, against
+  hints that replace others on the one line.
+- **Moving one place needs a request of its own.** A priority number cannot say it: jobs of equal
+  priority are ordered by arrival, so among three jobs at 0 no number puts the third between the
+  first two; a number also takes a job out of the urgent and the low band. Alternatives weighed:
+  renumbering the other jobs from the client (several requests, not atomic, changes priorities the
+  user did not touch); `+`/`-` as priority plus or minus one (jumps every job of that priority, not
+  one). Chosen: `priority <id> --up | --down` (`"priority": "up"` or `"down"` on the wire, the same
+  request), which the daemon does in one step (control.avin's `moveOne`).
+- **What a move is.** The job passes the nearest queued job of its own lane and band before (after)
+  it, held ones counted, and stands directly before (after) it. It never leaves its band (urgent,
+  low, or the jobs between): the first of a band is refused `--up`, the last `--down`, a band of one
+  both. In the urgent band the band's marks (`urgentAt`) are dealt again in the new order. Elsewhere
+  the job takes the priority of the job it passes, and that priority's jobs are dealt their marks
+  again in the new order, so no other job's priority changes and no other pair of jobs changes
+  order. The alternative, swapping two jobs' priorities, would lower the passed job's priority
+  behind the user's back.
+- **`placed`.** Jobs of equal priority were ordered by `arrived`, which is also the clock of the
+  drain bound and of low promotion, so a move must not touch it. Each job now has `placed`, what
+  orders it among its equals: its arrival until a move deals it another mark. It is saved in
+  state.json only where it differs from `arrived` (absent reads as `arrived`), so the order survives
+  `restart`, and a state from before reads as it did. A job given a number afterwards keeps its
+  mark: equal priorities are in arrival order but where moves have placed them otherwise.
+- **Landing, quick and exclusive jobs** move as `priority` places them: a landing or quick job among
+  its own lane's jobs, an exclusive one among the development jobs.
+- **An older daemon** reads `"up"` as a priority it does not know and refuses it; the client puts
+  that refusal in words (`moveRefusal`): the daemon is older than this marshal, `marshal restart`.
+- **A waiting job** (for others, or to retry) given a priority was refused as "has already ended";
+  it is now refused as "not queued yet", for `priority` and the move alike.

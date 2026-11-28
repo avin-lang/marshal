@@ -406,6 +406,8 @@ class App(val sock: string)
   var olderLeft: Option[int] = None
   // What the bottom line says of the table's scroll, as the last draw found it ("" for nothing).
   var position = ""
+  // Whether the last draw gave a line to the keys that place a queued job (`placeKeys`).
+  var placing = false
 
   // A new snapshot.
   update(o: Overview)
@@ -552,6 +554,11 @@ class App(val sock: string)
   key(Char('o')) = cycleOwner()
   key(Char('k')) = askKill()
   key(Char('p')) = holdOrPause()
+  key(Char('u')) = place(_ -> marshal.Urgent, "is given a priority", "urgent")
+  key(Char('w')) = place(_ -> marshal.LowBand, "is given a priority", "low")
+  key(Char('n')) = place(j -> marshal.Level(j.priority), "is given a priority", "normal")
+  key(Char('+')) = place(_ -> marshal.OneUp, "is moved", "moved up")
+  key(Char('-')) = place(_ -> marshal.OneDown, "is moved", "moved down")
   key(Char('l')) = toggleLog()
   key(Enter) = toggleLog()
   key(Escape) = closeLog()
@@ -665,6 +672,31 @@ class App(val sock: string)
       )
     if j.held then Ask(Request.Release(j.id), s"released ${j.id}") else Ask(Request.Hold(j.id), s"held ${j.id}")
 
+  // `u`, `w`, `n`, `+`, `-`: the selected queued job is given the priority `to` makes for it, as
+  // `marshal priority` gives it (`n` its own number again, which takes it out of the urgent and the
+  // low band). None asks first: each is undone by another. A job that is not queued is left alone,
+  // the bottom line saying why as the daemon would (`what` is what only a queued job has done to
+  // it); otherwise the daemon's answer is the bottom line, `said` after the job's id when it agrees.
+  // The selection follows the job to its new place, from the first line too.
+  private place(to: (JobInfo) -> marshal.Priority, what: string, said: string) -> Action
+    val j = selected() match
+      Some(j) -> j
+      None ->
+        message = "no job selected"
+        return Stay
+    if j.outcome.isDefined
+      message = s"job ${j.id} has already ended"
+      return Stay
+    if j.state != "queued"
+      val state = if j.state == "running" then "running" else "not queued yet"
+      message = s"job ${j.id} is $state: only a queued job $what"
+      return Stay
+    followsTop = false
+    Ask(Request.Prioritize(j.id, to(j)), s"${j.id} $said")
+
+  // Whether the keys that place a queued job apply: one is selected.
+  placeable() -> bool = selected().exists(j -> j.outcome.isEmpty && j.state == "queued")
+
   private toggleLog() -> Action
     if logOf.isDefined then return closeLog()
     logOf = selected()
@@ -701,9 +733,12 @@ class App(val sock: string)
   draw(g: Grid, since: long, now: long = 0)
     settle(now)
     if overview is Some(o)
-      // the header, the body, and the bottom line; with the log open, the table takes half the
-      // body (at least two rows) and the pane the rest
-      val screen = g.area().rows([Fixed(drawHeader(g, o, since, filter, owner, daemonVersion)), Fill(), Fixed(1)])
+      // the header, the body, and the bottom line, with the line of a queued job's keys above it
+      // while one is selected and the table keeps its heading and a row; with the log open, the
+      // table takes half the body (at least two rows) and the pane the rest
+      val head = drawHeader(g, o, since, filter, owner, daemonVersion)
+      placing = placeable() && g.height - head - 2 >= 2
+      val screen = g.area().rows([Fixed(head), Fill(), Fixed(if placing then 2 else 1)])
       val body = screen(1)
       val parts = body.rows([Fixed(if logOf.isDefined then maxInt(body.h / 2, 2) else body.h), Fill()])
       val area = parts(0)
@@ -738,6 +773,7 @@ class App(val sock: string)
         drawLog(g, parts(1), j)
     else
       position = ""
+      placing = false
       drawProblem(g)
     drawFooter(g)
     // the kill dialog's rows as its job stands now, from the latest snapshot where it is listed
@@ -846,6 +882,10 @@ class App(val sock: string)
     if g.height < 1 then return
     val y = g.height - 1
     val line = Rect(0, y, g.width, 1)
+    if placing && y >= 1
+      val above = Rect(0, y - 1, g.width, 1)
+      g.fill(0, y - 1, g.width, 1, Style.plain())
+      val _ = g.keyHints(0, y - 1, placeKeys, Style.plain().with(Bold), KeyStyle, above, sep = 0, gap = 0, cut = true)
     g.fill(0, y, g.width, 1, Style.plain())
     val x = g.keyHints(
       0,
@@ -939,6 +979,15 @@ val footerKeys: Vector[(string, string)] = [
   ("q", "Quit ")
 ]
 
+// The keys that place a queued job, named on a line of their own above the bottom line while one is
+// selected.
+val placeKeys: Vector[(string, string)] = [
+  ("u", "Urgent "),
+  ("w", "Low "),
+  ("n", "Normal "),
+  ("+-", "Move ")
+]
+
 // What the help shows.
 val helpLines: Vector[string] = [
   "Up, Down, PgUp, PgDn, Home, End   select a job",
@@ -952,6 +1001,8 @@ val helpLines: Vector[string] = [
   "k               kill the selected job: a dialog asks, y kills, n or Esc doesn't",
   "p               hold a queued job, or release a held one; pause a running",
   "                job, or resume a paused one (no question: p again undoes it)",
+  "u  w  n         a queued job: urgent, low, or normal again (marshal priority);",
+  "+  -            one place up or down in its band; named above the bottom line",
   "f  o            all, running, queued or finished jobs; o: one owner's, then all",
   "h  ?            this help",
   "q               quit",

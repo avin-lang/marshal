@@ -157,8 +157,8 @@ data Request
   // Holds (`on`) or releases every job a selector names, in one step (holdmany.avin); a hold puts
   // them in a group.
   HoldMany(selector: HoldSelector, on: bool)
-  // Places a queued job: by a priority number among the jobs not urgent, or at the back of its
-  // lane's urgent band.
+  // Places a queued job: by a priority number among the jobs not urgent, at the back of its
+  // lane's urgent band, in the low band, or one place up or down in its band.
   Prioritize(id: long, priority: Priority)
   // Changes the settings of a job that has not ended, in place (`Amendment`).
   Amend(id: long, amendment: Amendment)
@@ -171,11 +171,15 @@ data Request
 
 // The priority a queued job is given: a number (higher first, equal ones in arrival order, all
 // behind the urgent band), the back of the urgent band, or the low band behind every other job
-// (`LowBand`, low.avin). A number or `Urgent` takes a job out of the low band.
+// (`LowBand`, low.avin). A number or `Urgent` takes a job out of the low band. `OneUp` and `OneDown`
+// move it one place among the queued jobs of its own lane and band, which it never leaves
+// (control.avin's `moveOne`).
 data Priority
   Level(n: int)
   Urgent
   LowBand
+  OneUp
+  OneDown
 
 // What `amend` changes; None leaves a setting as it is. `deadlineMs` is a deadline measured from the
 // job's start, or, with `extend`, what is added to the deadline it has. `units` is in quarters and
@@ -687,6 +691,16 @@ encodeRequest(Prioritize(id, LowBand)) = Json.obj(
   ("id", Json.num(id)),
   ("priority", Json.str("low"))
 )
+encodeRequest(Prioritize(id, OneUp)) = Json.obj(
+  ("op", Json.str("priority")),
+  ("id", Json.num(id)),
+  ("priority", Json.str("up"))
+)
+encodeRequest(Prioritize(id, OneDown)) = Json.obj(
+  ("op", Json.str("priority")),
+  ("id", Json.num(id)),
+  ("priority", Json.str("down"))
+)
 encodeRequest(KillMany(s)) = Json.Obj(
   [("op", Json.str("kill_many"))] ++ killSelectorMembers(s)
 )
@@ -1067,7 +1081,7 @@ decodeRequest(text: string) -> Result[Request, string]
     "priority" -> Ok(
       Prioritize(
         field(j, "id", v -> v.asLong, "a whole number")?,
-        field(j, "priority", priorityOf, "a whole number, \"urgent\" or \"low\"")?
+        field(j, "priority", priorityOf, "a whole number, \"urgent\", \"low\", \"up\" or \"down\"")?
       )
     )
     "kill_many" -> Ok(KillMany(decodeKillSelector(j)?))
@@ -1086,6 +1100,8 @@ decodeRequest(text: string) -> Result[Request, string]
 private priorityOf(j: Json) -> Option[Priority] = j.asString match
   Some("urgent") -> Some(Urgent)
   Some("low") -> Some(LowBand)
+  Some("up") -> Some(OneUp)
+  Some("down") -> Some(OneDown)
   Some(_) -> None
   None -> j.asInt.map(n -> Level(n))
 

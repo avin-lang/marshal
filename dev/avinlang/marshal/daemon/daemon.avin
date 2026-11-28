@@ -183,6 +183,9 @@ class Job(
   var heldAt: long = 0
   var heldBeforeQueue: long = 0
   var priority = 0
+  // what orders it among the queued jobs of its priority, the smaller first: its arrival, until a
+  // move (`priority --up`, `--down`) deals the marks of its priority's jobs again
+  var placed: long = arrived
   // when it joined the urgent band (wall-clock microseconds), or 0 outside it
   var urgentAt: long = 0
   // whether it is in the low band (low.avin): its spec's `--low`, until `priority` or promotion
@@ -1038,6 +1041,7 @@ class Daemon(
       order()
       return
     job.arrived = time.now().epochMicros
+    job.placed = job.arrived
     // the time it was held while it waited came before this arrival
     job.heldBeforeQueue = job.heldFor(now())
     val urgent = if job.attempt > 1 then job.urgentAt > 0 else job.spec.urgent
@@ -1351,6 +1355,9 @@ class Daemon(
   queued(id: long, what: string) -> Result[Job, string] = jobs.get(id) match
     Some(j) if j.state == "queued" -> Ok(j)
     Some(j) if j.state == "running" -> Err(s"job $id is running: only a queued job $what")
+    Some(j) if j.state == "waiting" || j.state == "retrying" -> Err(
+      s"job $id is not queued yet: only a queued job $what"
+    )
     Some(_) -> Err(s"job $id has already ended")
     None -> Err(if 1 <= id < nextId then s"job $id has already ended" else s"no job $id")
 
@@ -1417,12 +1424,33 @@ class Daemon(
   // Places the queued job `id`, which may start it at once: a number takes it out of the urgent
   // band and places it by priority; `Urgent` moves it to the back of the band, even from within it;
   // `LowBand` moves a development job into the low band (low.avin), out of the urgent band. A number
-  // or `Urgent` takes it out of the low band.
+  // or `Urgent` takes it out of the low band. `OneUp` and `OneDown` move it one place among the
+  // queued jobs of its lane and band, held ones counted (`moveOne`): in this one step, and never out
+  // of its band; a job with no such job before (after) it is refused.
   prioritize(id: long, p: marshal.Priority) -> Reply
-    val job = queued(id, "is given a priority") match
+    val job = queued(id, if p == marshal.OneUp || p == marshal.OneDown then "is moved" else "is given a priority") match
       Ok(j) -> j
       Err(e) -> return Failed(e)
     p match
+      marshal.OneUp | marshal.OneDown ->
+        val seats = queue.toVector.map(
+          j -> marshal.Seat(
+            j.id,
+            if j.spec.landing then marshal.LandingLane elif j.spec.quick then marshal.QuickLane else marshal.DevelopmentLane,
+            j.urgentAt,
+            j.low,
+            j.priority,
+            j.placed
+          )
+        )
+        val seated = marshal.moveOne(seats, id, p == marshal.OneUp) match
+          Ok(s) -> s
+          Err(e) -> return Failed(e)
+        for s in seated
+          for j in jobs.get(s.id).toList
+            j.priority = s.priority
+            j.urgentAt = s.urgent
+            j.placed = s.placed
       marshal.Level(n) ->
         job.priority = n
         job.urgentAt = 0
@@ -1550,11 +1578,12 @@ class Daemon(
   urgentMark() -> long = marshal.urgentMark(time.now().epochMicros, queue.map(j -> j.urgentAt).toVector)
 
   // Orders the queue: the urgent band first, in the order its jobs joined it, then the rest by
-  // priority, the highest first, keeping arrival order among equals.
+  // priority, the highest first, keeping arrival order among equals but where a move has placed
+  // them otherwise (`placed`).
   order() = queue.sortInPlaceWith(
     (a, b) -> marshal.placeOrder(
-      marshal.Place(a.urgentAt, a.priority, a.arrived, a.low),
-      marshal.Place(b.urgentAt, b.priority, b.arrived, b.low)
+      marshal.Place(a.urgentAt, a.priority, a.placed, a.low),
+      marshal.Place(b.urgentAt, b.priority, b.placed, b.low)
     )
   )
 
@@ -2577,7 +2606,8 @@ class Daemon(
       j.heldGroup,
       j.heldMs,
       if j.held then wall(j.heldAt) else 0,
-      j.heldBeforeQueue
+      j.heldBeforeQueue,
+      if j.placed == j.arrived then 0 else j.placed
     )
     SavedState(
       reportedVersion(),
@@ -2641,6 +2671,8 @@ class Daemon(
       job.heldAt = if !sj.held then 0 elif sj.heldAt > 0 then mono(sj.heldAt) else t
       job.heldBeforeQueue = sj.heldBeforeQueue
       job.priority = sj.priority
+      // a job saved before moves is placed by its arrival
+      job.placed = if sj.placed > 0 then sj.placed else sj.arrived
       job.urgentAt = sj.urgentAt
       job.low = sj.low
       job.waitSince = if sj.waitSince > 0 then mono(sj.waitSince) else mono(sj.submittedAt)
